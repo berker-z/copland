@@ -82,6 +82,7 @@ export function TasksPane() {
             key={task.id}
             task={task}
             members={detail.members}
+            labels={detail.labels}
             showKey={false}
             onOpen={() => setOpenTask(task.id)}
             lead={
@@ -113,6 +114,7 @@ export function TasksPane() {
             key={task.id}
             task={task}
             members={detail.members}
+            labels={detail.labels}
             showKey={false}
             onOpen={() => setOpenTask(task.id)}
             lead={

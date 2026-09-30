@@ -7,11 +7,12 @@
    of stageId and rank (domain/tasks.ts rankBetween), applied optimistically.
 
    The URL carries the board key (/b/CPL), which people can read and share;
-   the id comes from the boards list.
+   the id comes from the boards list. ?view=list and ?view=gantt switch to
+   the other two views (ListView, GanttView) over the same data.
    ========================================================================== */
 
 import { useState, type DragEvent } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { ArrowLeft, Settings2, Users } from "lucide-react";
 import { rankBetween } from "@/domain/tasks";
 import type { BoardDetail, Stage } from "@/domain/types";
@@ -19,6 +20,8 @@ import { useBoard, useBoards } from "@/lib/queries";
 import { tasksIn, useCreateTask, useUpdateTask } from "@/lib/tasks";
 import { toneText } from "@/ui/tone";
 import { BoardSettingsModal } from "./BoardSettingsModal";
+import { GanttView } from "./GanttView";
+import { ListView } from "./ListView";
 import { TaskModal } from "./TaskModal";
 import { TASK_DRAG_TYPE, TaskRow } from "./TaskRow";
 
@@ -92,6 +95,7 @@ function Column({ detail, stage, onOpen }: ColumnProps) {
             key={task.id}
             task={task}
             members={detail.members}
+            labels={detail.labels}
             draggable={canEdit}
             dropMarker={over === task.id}
             onOpen={() => onOpen(task.id)}
@@ -128,6 +132,9 @@ function Column({ detail, stage, onOpen }: ColumnProps) {
   );
 }
 
+const VIEWS = ["kanban", "list", "gantt"] as const;
+type View = (typeof VIEWS)[number];
+
 export function BoardScreen({ boardKey }: { boardKey: string }) {
   const navigate = useNavigate();
   const boards = useBoards();
@@ -135,6 +142,8 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   const board = useBoard(summary?.id ?? null);
   const [openTask, setOpenTask] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const view = VIEWS.includes(params.get("view") as View) ? (params.get("view") as View) : "kanban";
 
   if (boards.isPending || (summary && board.isPending)) {
     return <p className="p-8 text-muted animate-pulse">loading…</p>;
@@ -162,24 +171,39 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
         <span className="text-faint">{detail.board.key}</span>
         <span className="text-bright truncate">{detail.board.name}</span>
         <span className="flex-1" />
+        <span className="flex items-center gap-px text-sm">
+          {VIEWS.map((v) => (
+            <button
+              key={v}
+              onClick={() => setParams(v === "kanban" ? {} : { view: v }, { replace: true })}
+              className={`px-2 py-0.5 transition-colors ${view === v ? "text-accent bg-raised" : "text-muted hover:text-ink"}`}
+            >
+              {v}
+            </button>
+          ))}
+        </span>
         {detail.members.length > 1 && (
           <span className="flex items-center gap-1.5 text-muted text-sm" title={detail.members.map((m) => m.user.name).join(", ")}>
             <Users size={14} /> {detail.members.length}
           </span>
         )}
-        {!detail.board.isInbox && detail.board.role === "owner" && (
+        {detail.board.role === "owner" && (
           <button onClick={() => setSettingsOpen(true)} className="text-muted hover:text-accent flex items-center gap-1.5">
-            <Settings2 size={14} /> share
+            <Settings2 size={14} /> {detail.board.isInbox ? "settings" : "share"}
           </button>
         )}
         {detail.board.role === "viewer" && <span className="text-xs text-yellow">view only</span>}
       </div>
 
-      <div className="flex-1 min-h-0 flex items-stretch gap-px overflow-x-auto px-4 md:px-8 py-4">
-        {detail.stages.map((stage) => (
-          <Column key={stage.id} detail={detail} stage={stage} onOpen={setOpenTask} />
-        ))}
-      </div>
+      {view === "kanban" && (
+        <div className="flex-1 min-h-0 flex items-stretch gap-px overflow-x-auto px-4 md:px-8 py-4">
+          {detail.stages.map((stage) => (
+            <Column key={stage.id} detail={detail} stage={stage} onOpen={setOpenTask} />
+          ))}
+        </div>
+      )}
+      {view === "list" && <ListView detail={detail} onOpen={setOpenTask} />}
+      {view === "gantt" && <GanttView detail={detail} onOpen={setOpenTask} />}
 
       {openTask && <TaskModal detail={detail} taskId={openTask} onClose={() => setOpenTask(null)} />}
       {settingsOpen && <BoardSettingsModal detail={detail} onClose={() => setSettingsOpen(false)} />}

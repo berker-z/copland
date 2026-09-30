@@ -27,10 +27,12 @@ The plan, roughly in order. Each phase should leave the app working.
 - [x] Task create/update/move/delete routes, optimistic on the client, events logged
 - [x] `/tasks` pane on the inbox (the old todo list, but instant)
 - [x] Board screen: kanban with drag and drop, task modal; planning fields (level, parent) where `has_planning` is on
-- [ ] Board screens: list and gantt; dependencies UI
+- [x] Board screens: list and gantt (drag to move, drag ends to resize); dependencies UI
 - [x] Members UI: add by email (invite link for newcomers), roles, leave, rename, archive
-- [ ] Stage editing (rename, add, reorder) and labels UI
-- [ ] Comments and mentions on shared boards
+- [x] Stage editing (rename, category, colour, add, reorder, delete with somewhere for the tasks) and labels
+- [x] Comments (edit and delete your own) and task history
+- [ ] @mentions and notifications
+- [ ] Touch: HTML5 drag does not work on phones; the task modal's stage buttons do
 
 ## 4. Integrations
 
@@ -39,6 +41,7 @@ The plan, roughly in order. Each phase should leave the app working.
 
 ## 5. Shipping
 
-- [ ] Deploy to my own Cloudflare account and GitHub (not the company ones)
+- [x] Deployed backbone to my own Cloudflare account (copland.gnaw.workers.dev) and GitHub
+- [ ] Custom domain (copland.berkerz.dev?), Google OAuth client, secrets
 - [ ] "Deploy to Cloudflare" button, if it can provision D1 and the Durable Object cleanly
 - [ ] Publish the Google consent screen so refresh tokens stop expiring after 7 days

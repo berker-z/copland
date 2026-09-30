@@ -5,8 +5,8 @@
    ========================================================================== */
 
 import type { DragEvent, ReactNode } from "react";
-import type { BoardMember, Task } from "@/domain/types";
-import { dueClass, isDraft, shortDate } from "@/ui/tone";
+import type { BoardMember, Label, Task } from "@/domain/types";
+import { dueClass, isDraft, shortDate, toneText } from "@/ui/tone";
 
 export const TASK_DRAG_TYPE = "application/x-copland-task";
 
@@ -25,6 +25,7 @@ function initials(name: string): string {
 interface TaskRowProps {
   task: Task;
   members: BoardMember[];
+  labels?: Label[];
   /** Left of the title: the tasks pane puts a checkbox here. */
   lead?: ReactNode;
   showKey?: boolean;
@@ -35,12 +36,13 @@ interface TaskRowProps {
   onDrop?: (event: DragEvent) => void;
 }
 
-export function TaskRow({ task, members, lead, showKey = true, draggable, dropMarker, onOpen, onDragOver, onDrop }: TaskRowProps) {
+export function TaskRow({ task, members, labels = [], lead, showKey = true, draggable, dropMarker, onOpen, onDragOver, onDrop }: TaskRowProps) {
   const closed = task.completedAt !== null;
   const draft = isDraft(task.id);
   const assignees = task.assigneeIds
     .map((id) => members.find((m) => m.user.id === id)?.user)
     .filter((u): u is NonNullable<typeof u> => u !== undefined);
+  const taskLabels = labels.filter((l) => task.labelIds.includes(l.id));
 
   return (
     <div
@@ -70,11 +72,16 @@ export function TaskRow({ task, members, lead, showKey = true, draggable, dropMa
           {PRIORITY_MARK[task.priority] && <span className="mr-1.5">{PRIORITY_MARK[task.priority]}</span>}
           {task.title}
         </div>
-        {(showKey || task.dueDate || assignees.length > 0 || task.commentCount > 0) && (
-          <div className="flex items-center gap-2 mt-0.5 text-xs">
+        {(showKey || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0) && (
+          <div className="flex flex-wrap items-center gap-x-2 mt-0.5 text-xs">
             {showKey && <span className="text-faint">{task.key}</span>}
             {task.dueDate && <span className={dueClass(task.dueDate, closed)}>{shortDate(task.dueDate)}</span>}
             {task.commentCount > 0 && <span className="text-muted">¶{task.commentCount}</span>}
+            {taskLabels.map((l) => (
+              <span key={l.id} className={toneText(l.tone)}>
+                #{l.name}
+              </span>
+            ))}
             <span className="flex-1" />
             {assignees.map((u) => (
               <span key={u.id} title={u.name} className="text-muted border border-faint px-1 leading-4">

@@ -1,7 +1,9 @@
 /* ============================================================================
-   Board settings, for owners: who is on it, what it is called, planning on
-   or off, and archiving it. Adding an email that has no account here yet
-   gives back an invite link that brings them straight to this board.
+   Board settings, for owners: who is on it, its stages and labels, what it is
+   called, planning on or off, and archiving it. The inbox is private, so it
+   has no people or archive sections. Adding an email that has no account
+   here yet gives back an invite link that brings them straight to this
+   board.
    ========================================================================== */
 
 import { useState, type ReactNode } from "react";
@@ -13,6 +15,7 @@ import { send } from "@/lib/api";
 import { KEYS, useMe } from "@/lib/queries";
 import { Checkbox } from "@/ui/Checkbox";
 import { ModalFrame } from "@/ui/ModalFrame";
+import { LabelEditor, StageEditor } from "./StageEditor";
 
 const input = "bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent";
 const button = "px-3 py-1.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50";
@@ -78,65 +81,75 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
   const error = add.error ?? changeRole.error ?? removeMember.error ?? patchBoard.error ?? archive.error;
 
   return (
-    <ModalFrame title={`${board.key} · settings`} onClose={onClose} size="lg">
+    <ModalFrame title={`${board.key} · settings`} onClose={onClose} size="lg" className="max-h-[90vh]">
       {error && <p className="text-red text-xs mb-3">{error.message}</p>}
 
-      <Section title="people">
-        <ul className="mb-3">
-          {members.map((m) => (
-            <li key={m.user.id} className="flex items-center gap-3 py-1.5">
-              <span className="text-ink truncate">{m.user.name}</span>
-              <span className="text-muted text-sm truncate">{m.user.email}</span>
-              <span className="flex-1" />
-              <select
-                className={`${input} py-0.5`}
-                value={m.role}
-                onChange={(e) => changeRole.mutate({ userId: m.user.id, role: e.target.value as BoardRole })}
-              >
-                {BOARD_ROLES.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-              <button onClick={() => removeMember.mutate(m.user.id)} className="text-muted hover:text-red text-xs">
-                {m.user.id === me.data?.user.id ? "leave" : "remove"}
-              </button>
-            </li>
-          ))}
-        </ul>
-        <form
-          className="flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (email.trim()) add.mutate();
-          }}
-        >
-          <input className={`${input} flex-1`} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="friend@example.com" type="email" />
-          <select className={input} value={role} onChange={(e) => setRole(e.target.value as BoardRole)}>
-            {BOARD_ROLES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
+      {!board.isInbox && (
+        <Section title="people">
+          <ul className="mb-3">
+            {members.map((m) => (
+              <li key={m.user.id} className="flex items-center gap-3 py-1.5">
+                <span className="text-ink truncate">{m.user.name}</span>
+                <span className="text-muted text-sm truncate">{m.user.email}</span>
+                <span className="flex-1" />
+                <select
+                  className={`${input} py-0.5`}
+                  value={m.role}
+                  onChange={(e) => changeRole.mutate({ userId: m.user.id, role: e.target.value as BoardRole })}
+                >
+                  {BOARD_ROLES.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+                <button onClick={() => removeMember.mutate(m.user.id)} className="text-muted hover:text-red text-xs">
+                  {m.user.id === me.data?.user.id ? "leave" : "remove"}
+                </button>
+              </li>
             ))}
-          </select>
-          <button className={button} type="submit" disabled={add.isPending}>
-            add
-          </button>
-        </form>
-        {invite && (
-          <div className="mt-3 p-2 border border-green/60 bg-green/10 text-xs">
-            <p className="text-green mb-1">
-              {invite.invite.email} has no account here yet. Send them this link; it brings them onto this board:
-            </p>
-            <div className="flex items-center gap-2">
-              <code className="text-yellow truncate flex-1">{invite.url}</code>
-              <button onClick={() => navigator.clipboard.writeText(invite.url)} className="text-ink hover:text-accent p-1" title="Copy">
-                <Copy size={14} />
-              </button>
+          </ul>
+          <form
+            className="flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (email.trim()) add.mutate();
+            }}
+          >
+            <input className={`${input} flex-1`} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="friend@example.com" type="email" />
+            <select className={input} value={role} onChange={(e) => setRole(e.target.value as BoardRole)}>
+              {BOARD_ROLES.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+            <button className={button} type="submit" disabled={add.isPending}>
+              add
+            </button>
+          </form>
+          {invite && (
+            <div className="mt-3 p-2 border border-green/60 bg-green/10 text-xs">
+              <p className="text-green mb-1">
+                {invite.invite.email} has no account here yet. Send them this link; it brings them onto this board:
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="text-yellow truncate flex-1">{invite.url}</code>
+                <button onClick={() => navigator.clipboard.writeText(invite.url)} className="text-ink hover:text-accent p-1" title="Copy">
+                  <Copy size={14} />
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </Section>
+      )}
+
+      <Section title="stages">
+        <StageEditor detail={detail} />
+      </Section>
+
+      <Section title="labels">
+        <LabelEditor detail={detail} />
       </Section>
 
       <Section title="board">
@@ -160,17 +173,19 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
         />
       </Section>
 
-      <Section title="archive">
-        <button
-          onClick={() => (confirmArchive ? archive.mutate() : setConfirmArchive(true))}
-          onBlur={() => setConfirmArchive(false)}
-          className={`px-3 py-1.5 border transition-colors ${
-            confirmArchive ? "border-red text-red" : "border-faint text-muted hover:border-red hover:text-red"
-          }`}
-        >
-          {confirmArchive ? "really archive for everyone" : "archive board"}
-        </button>
-      </Section>
+      {!board.isInbox && (
+        <Section title="archive">
+          <button
+            onClick={() => (confirmArchive ? archive.mutate() : setConfirmArchive(true))}
+            onBlur={() => setConfirmArchive(false)}
+            className={`px-3 py-1.5 border transition-colors ${
+              confirmArchive ? "border-red text-red" : "border-faint text-muted hover:border-red hover:text-red"
+            }`}
+          >
+            {confirmArchive ? "really archive for everyone" : "archive board"}
+          </button>
+        </Section>
+      )}
     </ModalFrame>
   );
 }

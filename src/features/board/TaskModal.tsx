@@ -11,6 +11,8 @@ import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
 import { ModalFrame } from "@/ui/ModalFrame";
 import { toneText } from "@/ui/tone";
+import { LabelPicker } from "./LabelPicker";
+import { TaskActivity } from "./TaskActivity";
 
 const field = "bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent disabled:opacity-60";
 
@@ -68,6 +70,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
       }
       onClose={onClose}
       size="lg"
+      className="max-h-[90vh]"
       footer={
         canEdit && (
           <>
@@ -159,6 +162,10 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
         </div>
       </Row>
 
+      <Row label="labels">
+        <LabelPicker detail={detail} task={task} canEdit={canEdit} onChange={(labelIds) => save({ labelIds })} />
+      </Row>
+
       {detail.members.length > 1 && (
         <Row label="assignees">
           <div className="flex flex-col gap-1 pt-1.5">
@@ -207,6 +214,39 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
               ))}
             </select>
           </Row>
+          <Row label="after">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {task.dependsOn.map((id) => {
+                const dep = detail.tasks.find((t) => t.id === id);
+                return (
+                  <span key={id} className={`inline-flex items-center gap-1 border border-faint px-1.5 py-0.5 text-sm ${dep?.completedAt ? "text-green" : "text-ink"}`}>
+                    {dep ? `${dep.key} ${dep.title}` : "(deleted)"}
+                    {canEdit && (
+                      <button onClick={() => save({ dependsOn: task.dependsOn.filter((x) => x !== id) })} className="text-muted hover:text-red" aria-label="Remove dependency">
+                        ×
+                      </button>
+                    )}
+                  </span>
+                );
+              })}
+              {canEdit && (
+                <select
+                  className={field}
+                  value=""
+                  onChange={(e) => e.target.value && save({ dependsOn: [...task.dependsOn, e.target.value] })}
+                >
+                  <option value="">+ waits on…</option>
+                  {others
+                    .filter((t) => !task.dependsOn.includes(t.id))
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.key} {t.title}
+                      </option>
+                    ))}
+                </select>
+              )}
+            </div>
+          </Row>
         </>
       )}
 
@@ -224,6 +264,8 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
           className={`${field} w-full min-h-28 resize-y leading-relaxed`}
         />
       </Row>
+
+      <TaskActivity detail={detail} taskId={task.id} />
     </ModalFrame>
   );
 }

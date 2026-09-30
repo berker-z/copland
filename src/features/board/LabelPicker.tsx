@@ -4,7 +4,7 @@
    and puts it on the task in one go.
    ========================================================================== */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { BoardDetail, Task } from "@/domain/types";
 import { useLabelEdits } from "@/lib/boardEdits";
 import { toneText } from "@/ui/tone";
@@ -19,6 +19,10 @@ interface LabelPickerProps {
 export function LabelPicker({ detail, task, canEdit, onChange }: LabelPickerProps) {
   const labels = useLabelEdits(detail.board.id);
   const [draft, setDraft] = useState("");
+  /* The label is made first and put on the task when the Worker answers; by
+     then the task may have changed (another toggle), so read it fresh. */
+  const current = useRef(task.labelIds);
+  current.current = task.labelIds;
   const shown = canEdit ? detail.labels : detail.labels.filter((l) => task.labelIds.includes(l.id));
 
   const toggle = (id: string) =>
@@ -54,7 +58,7 @@ export function LabelPicker({ detail, task, canEdit, onChange }: LabelPickerProp
               if (!task.labelIds.includes(existing.id)) toggle(existing.id);
               return;
             }
-            labels.add.mutate({ name }, { onSuccess: (label) => onChange([...task.labelIds, label.id]) });
+            labels.add.mutate({ name }, { onSuccess: (label) => onChange([...current.current, label.id]) });
           }}
         >
           <input

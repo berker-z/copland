@@ -35,3 +35,17 @@ export function rankBetween(before: number | null, after: number | null): number
 
 export const TITLE_MAX = 200;
 export const BRIEF_MAX = 20_000;
+
+/* ---------------------------------------------------------- calendar days -- */
+
+const DAY_MS = 86_400_000;
+
+/** YYYY-MM-DD plus n days (negative goes back). Done in UTC, so no DST drift. */
+export function addDays(date: string, n: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + n * DAY_MS).toISOString().slice(0, 10);
+}
+
+/** Whole days from a to b (b - a). */
+export function daysBetween(a: string, b: string): number {
+  return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DAY_MS);
+}
