@@ -52,7 +52,7 @@
   "vars": {
     // The OAuth client from your own Google Cloud project. Its redirect URIs
     // are <origin>/auth/callback for each host this runs on.
-    "GOOGLE_CLIENT_ID": "",
+    "GOOGLE_CLIENT_ID": "249933182444-fq651rpc52qv8msi1tbguee8thfkamb0.apps.googleusercontent.com",
     // Comma-separated emails that are always admins. The bootstrap path: on a
     // fresh instance nobody can have been invited yet.
     "ADMIN_EMAILS": "berker.zor@gmail.com",
