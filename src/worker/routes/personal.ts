@@ -3,17 +3,12 @@
    to anyone else, so every write notifies only its author's other tabs.
    ========================================================================== */
 
-import {
-  DEFAULT_SETTINGS,
-  isSettingKey,
-  isVaultName,
-  parseSetting,
-  type Settings,
-} from "@/domain/settings";
+import { isSettingKey, isVaultName, parseSetting } from "@/domain/settings";
 import type { Me, Viewer } from "@/domain/types";
 import type { Env } from "../env";
 import { badRequest, json, readJson } from "../http";
 import type { Changes } from "../live";
+import { readSettings } from "../repo/settings";
 import { inboxIdFor, signupMode } from "../repo/users";
 import { listVault, removeVault, sealVault } from "../vault";
 
@@ -29,17 +24,7 @@ export async function getMe(env: Env, viewer: Viewer): Promise<Response> {
 /* -------------------------------------------------------------- settings -- */
 
 export async function getSettings(env: Env, viewer: Viewer): Promise<Response> {
-  const { results } = await env.DB.prepare(`SELECT key, value FROM settings WHERE user_id = ?1`)
-    .bind(viewer.user.id)
-    .all<{ key: string; value: string }>();
-  const settings: Settings = { ...DEFAULT_SETTINGS };
-  for (const row of results) {
-    /* A row a later version stopped understanding reads as the default. */
-    if (!isSettingKey(row.key)) continue;
-    const value = parseSetting(row.key, JSON.parse(row.value));
-    if (value !== undefined) (settings as unknown as Record<string, unknown>)[row.key] = value;
-  }
-  return json(settings);
+  return json(await readSettings(env.DB, viewer.user.id));
 }
 
 /** PATCH /api/settings { key: value, ... }: each key validated, all written together. */

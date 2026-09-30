@@ -18,6 +18,14 @@ export interface Settings {
   location: { name: string; latitude: number; longitude: number } | null;
   /** Binance spot symbols, quoted in USDT: ["BTC", "ETH"]. */
   coins: string[];
+  /**
+   * CoinGecko coin ids ("milady-cult-coin"), shown by market cap in the
+   * markets pane. They need the coingecko vault key, so the Worker fetches
+   * them.
+   */
+  coingeckoCoins: string[];
+  /** CoinGecko NFT collection ids ("milady-maker"), shown by floor price. */
+  coingeckoNfts: string[];
 }
 
 export type SettingKey = keyof Settings;
@@ -26,11 +34,26 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "nord",
   location: null,
   coins: ["BTC", "ETH", "SOL"],
+  coingeckoCoins: [],
+  coingeckoNfts: [],
 };
 
 type Parser<T> = (raw: unknown) => T | null;
 
 const SYMBOL = /^[A-Z0-9]{2,12}$/;
+/* CoinGecko ids are lowercase slugs. They end up in a URL the Worker
+   fetches, so nothing outside this set gets through. */
+const COINGECKO_ID = /^[a-z0-9][a-z0-9._-]{0,79}$/;
+
+/** At most `max` CoinGecko ids, trimmed, lowercased and deduplicated. */
+const coingeckoIds =
+  (max: number): Parser<string[]> =>
+  (raw) => {
+    if (!Array.isArray(raw) || raw.length > max) return null;
+    const ids = raw.map((c) => (typeof c === "string" ? c.trim().toLowerCase() : ""));
+    if (ids.some((c) => !COINGECKO_ID.test(c))) return null;
+    return [...new Set(ids)];
+  };
 
 const PARSERS: { [K in SettingKey]: Parser<Settings[K]> } = {
   theme: (raw) => (typeof raw === "string" && THEMES.some((t) => t.id === raw) ? raw : null),
@@ -51,6 +74,11 @@ const PARSERS: { [K in SettingKey]: Parser<Settings[K]> } = {
     if (coins.some((c) => !SYMBOL.test(c))) return null;
     return [...new Set(coins)];
   },
+
+  /* All the coins are one request; every NFT is a request of its own, so
+     that list is kept shorter. */
+  coingeckoCoins: coingeckoIds(20),
+  coingeckoNfts: coingeckoIds(8),
 };
 
 export function isSettingKey(key: string): key is SettingKey {
