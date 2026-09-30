@@ -210,6 +210,7 @@ interface Schema {
 }
 
 function typeProblem(schema: Schema, value: unknown): string | null {
+  if (value === null) return null;
   /* A union (a stage by name or position) passes when any of its types does. */
   if (Array.isArray(schema.type)) {
     const problems = schema.type.map((type) => typeProblem({ ...schema, type }, value));
@@ -355,6 +356,7 @@ function resolveLevel(ref: unknown): Level | null {
 
 /** A date to set: YYYY-MM-DD, or "none"/"" to clear. */
 function dateOrNull(value: unknown, what: string): string | null {
+  if (value === null) return null;
   if (typeof value === "string" && (value.trim() === "" || fold(value) === "none")) return null;
   return date(value, what);
 }
@@ -740,7 +742,7 @@ const TOOLS: Tool[] = [
     name: "create_task",
     title: "Create a task",
     description:
-      "Open a task. Without board it goes in your inbox. It starts in the board's first stage unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on only on boards with planning; they are refused elsewhere. Dates must be real YYYY-MM-DD days, start on or before due. Returns { created: summary }.",
+      "Open a task. Without board it goes in your inbox. It starts in the board's first stage unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on only on boards with planning; they are refused elsewhere. Dates must be real YYYY-MM-DD days, start on or before due; start defaults to today (UTC) unless given, and start: null leaves it undated. Returns { created: summary }.",
     inputSchema: {
       type: "object",
       properties: {
@@ -749,7 +751,7 @@ const TOOLS: Tool[] = [
         brief: { type: "string", description: "Markdown" },
         stage: STAGE,
         priority: PRIORITY,
-        start: { type: "string", description: "YYYY-MM-DD" },
+        start: { type: ["string", "null"], description: "YYYY-MM-DD; defaults to today, null for none" },
         due: { type: "string", description: "YYYY-MM-DD" },
         assignees: PEOPLE,
         labels: { type: "array", items: S, description: "Existing label names on that board" },

@@ -165,8 +165,17 @@ export async function postTask(
   const stage = body.stageId === undefined ? stages[0] : stageIn(stages, body.stageId);
   const brief = body.brief === undefined ? "" : parseBrief(body.brief);
   const priority = body.priority === undefined ? "normal" : parsePriority(body.priority);
-  const startDate = body.startDate === undefined ? null : parseDate(body.startDate, "startDate");
   const dueDate = body.dueDate === undefined ? null : parseDate(body.dueDate, "dueDate");
+  /* No start given means it starts today (UTC here; the app sends the
+     browser's own date). Only an explicit null leaves it undated. A due date
+     already in the past pulls the default back to it, so start <= due holds. */
+  const today = nowIso().slice(0, 10);
+  const startDate =
+    body.startDate === undefined
+      ? dueDate !== null && dueDate < today
+        ? dueDate
+        : today
+      : parseDate(body.startDate, "startDate");
   if (startDate && dueDate && startDate > dueDate) throw badRequest("The start date is after the due date");
   const assigneeIds = body.assigneeIds === undefined ? [] : parseIdList(body.assigneeIds, "assigneeIds");
   const labelIds = body.labelIds === undefined ? [] : parseIdList(body.labelIds, "labelIds");
