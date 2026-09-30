@@ -1,0 +1,11 @@
+{
+  // Three programs for three runtimes that must not share globals: the
+  // browser (DOM), workerd (@cloudflare/workers-types), and node (the Vite
+  // config). src/domain is shared by the first two and depends on neither.
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.worker.json" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}

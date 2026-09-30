@@ -1,0 +1,160 @@
+/* ============================================================================
+   Splits themes. Every colour in the app routes through these role variables
+   (raw RGB triplets, so utilities can apply alpha). A theme overrides the
+   same set under [data-theme="..."]; the roles never change, only the values.
+
+   Surfaces   surface  pane background
+              raised   inputs, hover rows, selected states
+              bar      statusline / filled chrome
+              divider  hairlines between panes (near-black)
+   Text       ink      primary text
+              bright   emphasized text
+              muted    secondary text
+              faint    disabled text, in-content borders
+   Accent     accent   focus, active pane, interactive highlight
+   Hues       red orange yellow green magenta blue cyan teal
+   ========================================================================== */
+
+:root,
+[data-theme="nord"] {
+  --surface: 38 43 53;
+  --raised: 49 56 71;
+  --bar: 30 42 58;
+  --divider: 23 28 38;
+  --ink: 216 222 233;
+  --bright: 236 239 244;
+  --muted: 97 110 136;
+  --faint: 76 86 106;
+  --accent: 136 192 208;
+  --red: 191 97 106;
+  --orange: 208 135 112;
+  --yellow: 235 203 139;
+  --green: 163 190 140;
+  --magenta: 180 142 173;
+  --blue: 129 161 193;
+  --cyan: 136 192 208;
+  --teal: 143 188 187;
+  color-scheme: dark;
+  font-family: "JetBrains Mono", monospace;
+}
+
+[data-theme="tokyo-night"] {
+  --surface: 26 27 38;
+  --raised: 36 40 59;
+  --bar: 22 22 30;
+  --divider: 14 14 21;
+  --ink: 169 177 214;
+  --bright: 192 202 245;
+  --muted: 86 95 137;
+  --faint: 59 66 97;
+  --accent: 122 162 247;
+  --red: 247 118 142;
+  --orange: 255 158 100;
+  --yellow: 224 175 104;
+  --green: 158 206 106;
+  --magenta: 187 154 247;
+  --blue: 122 162 247;
+  --cyan: 125 207 255;
+  --teal: 115 218 202;
+}
+
+[data-theme="dracula"] {
+  --surface: 40 42 54;
+  --raised: 52 55 70;
+  --bar: 33 34 44;
+  --divider: 25 26 33;
+  --ink: 248 248 242;
+  --bright: 255 255 255;
+  --muted: 98 114 164;
+  --faint: 68 71 90;
+  --accent: 189 147 249;
+  --red: 255 85 85;
+  --orange: 255 184 108;
+  --yellow: 241 250 140;
+  --green: 80 250 123;
+  --magenta: 255 121 198;
+  --blue: 98 114 164;
+  --cyan: 139 233 253;
+  --teal: 139 233 253;
+}
+
+[data-theme="catppuccin"] {
+  --surface: 30 30 46;
+  --raised: 49 50 68;
+  --bar: 24 24 37;
+  --divider: 17 17 27;
+  --ink: 186 194 222;
+  --bright: 205 214 244;
+  --muted: 108 112 134;
+  --faint: 69 71 90;
+  --accent: 203 166 247;
+  --red: 243 139 168;
+  --orange: 250 179 135;
+  --yellow: 249 226 175;
+  --green: 166 227 161;
+  --magenta: 245 194 231;
+  --blue: 137 180 250;
+  --cyan: 137 220 235;
+  --teal: 148 226 213;
+}
+
+[data-theme="gruvbox"] {
+  --surface: 40 40 40;
+  --raised: 60 56 54;
+  --bar: 29 32 33;
+  --divider: 20 22 23;
+  --ink: 235 219 178;
+  --bright: 251 241 199;
+  --muted: 146 131 116;
+  --faint: 80 73 69;
+  --accent: 254 128 25;
+  --red: 251 73 52;
+  --orange: 254 128 25;
+  --yellow: 250 189 47;
+  --green: 184 187 38;
+  --magenta: 211 134 155;
+  --blue: 131 165 152;
+  --cyan: 142 192 124;
+  --teal: 142 192 124;
+}
+
+[data-theme="one-dark"] {
+  --surface: 40 44 52;
+  --raised: 47 52 63;
+  --bar: 33 37 43;
+  --divider: 24 27 32;
+  --ink: 171 178 191;
+  --bright: 215 218 224;
+  --muted: 92 99 112;
+  --faint: 62 68 82;
+  --accent: 97 175 239;
+  --red: 224 108 117;
+  --orange: 209 154 102;
+  --yellow: 229 192 123;
+  --green: 152 195 121;
+  --magenta: 198 120 221;
+  --blue: 97 175 239;
+  --cyan: 86 182 194;
+  --teal: 86 182 194;
+}
+
+[data-theme="solarized"] {
+  --surface: 0 43 54;
+  --raised: 7 54 66;
+  --bar: 0 33 43;
+  --divider: 0 18 23;
+  --ink: 131 148 150;
+  --bright: 147 161 161;
+  --muted: 88 110 117;
+  --faint: 23 68 79;
+  --accent: 38 139 210;
+  --red: 220 50 47;
+  --orange: 203 75 22;
+  --yellow: 181 137 0;
+  --green: 133 153 0;
+  --magenta: 211 54 130;
+  --blue: 38 139 210;
+  --cyan: 42 161 152;
+  --teal: 42 161 152;
+}
+

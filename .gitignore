@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+*.local
+.DS_Store
+backups/
+
+# Tooling injected into this directory by the environment, not project files
+.claude/
+.mcp.json

@@ -1,0 +1,11 @@
+{
+  // The browser bundle: UI, features, and the domain layer it shares.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+    "jsx": "react-jsx"
+  },
+  "include": ["src"],
+  "exclude": ["src/worker"]
+}

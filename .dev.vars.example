@@ -1,0 +1,13 @@
+# Copy to .dev.vars (gitignored) for local development.
+
+# The OAuth client secret that pairs with GOOGLE_CLIENT_ID in wrangler.jsonc.
+GOOGLE_CLIENT_SECRET=
+
+# 32 random bytes, base64. Encrypts the API keys people save in settings.
+# Generate one with: openssl rand -base64 32
+# Losing it makes every saved key unreadable, so keep the production one safe.
+VAULT_KEY=
+
+# Local only: with no session, act as this email (created as an admin on
+# first use). Honoured only for requests to localhost.
+DEV_USER_EMAIL=you@example.com

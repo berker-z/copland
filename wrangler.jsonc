@@ -1,0 +1,61 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "copland",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // The Worker authenticates its own requests (worker/auth.ts), so the
+  // workers.dev hostname can be public: an anonymous request gets the login
+  // screen and a 401 from /api.
+  "workers_dev": true,
+
+  // The built SPA. Unknown paths fall back to index.html so client routes
+  // survive a refresh. That fallback answers browser navigations before the
+  // Worker runs, which would swallow the sign-in redirects, so /auth/* and
+  // /api/* go to the Worker first.
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/auth/*", "/api/*"]
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "copland",
+      // Placeholder until `wrangler d1 create copland` runs on the account
+      // this instance deploys to. Local dev does not need a real id.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // Live updates: one hub object per user, holding that user's open tabs
+  // (worker/live.ts). SQLite-backed because that is what new classes get; it
+  // stores nothing.
+  "durable_objects": {
+    "bindings": [{ "name": "LIVE", "class_name": "LiveHub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LiveHub"] }],
+
+  // Nothing here is a secret. GOOGLE_CLIENT_SECRET and VAULT_KEY are set with
+  // `wrangler secret put` (and .dev.vars locally). See .dev.vars.example.
+  "vars": {
+    // The OAuth client from your own Google Cloud project. Its redirect URIs
+    // are <origin>/auth/callback for each host this runs on.
+    "GOOGLE_CLIENT_ID": "",
+    // Comma-separated emails that are always admins. The bootstrap path: on a
+    // fresh instance nobody can have been invited yet.
+    "ADMIN_EMAILS": "",
+    // Who may create an account: "invite" (an admin's invite link), "open"
+    // (anyone with a Google account) or "closed" (admins only; a personal
+    // instance).
+    "SIGNUP": "invite"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

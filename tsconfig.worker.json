@@ -1,0 +1,9 @@
+{
+  // The Worker: no DOM. Imports from src/domain are allowed and intended.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["src/worker", "src/domain"]
+}

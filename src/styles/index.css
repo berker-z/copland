@@ -1,0 +1,79 @@
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap");
+@import "tailwindcss";
+@import "./themes.css";
+
+/* Semantic colour roles as utilities (bg-surface, text-muted, border-faint/50).
+   `inline` so each utility reads the variable at use, which is what lets a
+   data-theme on any element restyle everything under it. */
+@theme inline {
+  --font-mono: "JetBrains Mono", monospace;
+
+  --color-surface: rgb(var(--surface));
+  --color-raised: rgb(var(--raised));
+  --color-bar: rgb(var(--bar));
+  --color-divider: rgb(var(--divider));
+  --color-ink: rgb(var(--ink));
+  --color-bright: rgb(var(--bright));
+  --color-muted: rgb(var(--muted));
+  --color-faint: rgb(var(--faint));
+  --color-accent: rgb(var(--accent));
+  --color-red: rgb(var(--red));
+  --color-orange: rgb(var(--orange));
+  --color-yellow: rgb(var(--yellow));
+  --color-green: rgb(var(--green));
+  --color-magenta: rgb(var(--magenta));
+  --color-blue: rgb(var(--blue));
+  --color-cyan: rgb(var(--cyan));
+  --color-teal: rgb(var(--teal));
+}
+
+@layer base {
+  * {
+    border-color: rgb(var(--faint));
+  }
+
+  html {
+    font-size: 15px;
+  }
+
+  body {
+    background-color: rgb(var(--divider));
+    color: rgb(var(--ink));
+    font-family: "JetBrains Mono", monospace;
+    min-height: 100vh;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  ::selection {
+    background: rgb(var(--accent));
+    color: rgb(var(--surface));
+  }
+
+  /* Square terminal scrollbars */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: rgb(var(--surface));
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--faint));
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--accent));
+  }
+}
+
+@utility text-label {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+  color: rgb(var(--muted));
+}
