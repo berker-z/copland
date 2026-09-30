@@ -1,8 +1,9 @@
 /* ============================================================================
    Settings: everything that used to be hardcoded or in .env, per user.
    Sections: markets (Binance coins, CoinGecko ids), weather location (a
-   city search), API keys (the vault), and, for admins, the instance
-   (invites and users).
+   city search), API keys (the vault), integrations (AI assistants and
+   tokens, IntegrationsSection.tsx) and, for admins, the instance (invites
+   and users).
    ========================================================================== */
 
 import { useEffect, useState, type ReactNode } from "react";
@@ -16,6 +17,7 @@ import { send } from "@/lib/api";
 import { KEYS, useAdminInvites, useAdminUsers, useSettings, useVault } from "@/lib/queries";
 import { useUpdateSettings } from "@/lib/settings";
 import { ModalFrame } from "@/ui/ModalFrame";
+import { IntegrationsSection } from "./IntegrationsSection";
 
 const input =
   "bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent";
@@ -369,6 +371,7 @@ export function SettingsModal({ me, onClose }: { me: Me; onClose: () => void }) 
       <MarketsSection />
       <LocationSection />
       <VaultSection />
+      <IntegrationsSection />
       {me.user.isAdmin && <InstanceSection me={me} />}
     </ModalFrame>
   );

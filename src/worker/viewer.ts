@@ -1,5 +1,5 @@
 /* ============================================================================
-   Viewer resolution: session cookie → user row.
+   Viewer resolution: API token or session cookie → user row.
    ========================================================================== */
 
 import type { Viewer } from "@/domain/types";
@@ -7,10 +7,40 @@ import { sessionUser } from "./auth";
 import type { Env } from "./env";
 import { UnauthenticatedError } from "./http";
 import { adminEmails, createUser, findUserByEmail, rowToUser, type UserRow } from "./repo/users";
+import { bearerFrom, tokenAccess } from "./tokens";
 
+/**
+ * A request with an Authorization header is judged by its token alone: a
+ * bad token is a 401 even if a session cookie came along too, and it never
+ * falls back to the local dev user, so a script never silently acts as
+ * whoever's browser (or dev server) it ran against.
+ */
 export async function resolveViewer(request: Request, env: Env): Promise<Viewer> {
-  const row = (await sessionUser(request, env)) ?? (await resolveForLocalDev(request, env));
+  const secret = bearerFrom(request);
+  if (secret !== null || request.headers.has("authorization")) {
+    const viaToken = secret ? await tokenAccess(env.DB, secret) : null;
+    if (!viaToken) throw new UnauthenticatedError("Invalid, expired or revoked token");
+    return { user: rowToUser(viaToken.user, adminEmails(env)), access: viaToken.access };
+  }
+  const row = await browserUser(request, env);
+  if (!row) throw new UnauthenticatedError();
   return { user: rowToUser(row, adminEmails(env)) };
+}
+
+/**
+ * The person at the browser: the session, or the local dev user. Never a
+ * token. The OAuth consent page uses this directly, since approving an app
+ * is something only a signed-in person does.
+ */
+export async function browserUser(request: Request, env: Env): Promise<UserRow | null> {
+  const session = await sessionUser(request, env);
+  if (session) return session;
+  try {
+    return await resolveForLocalDev(request, env);
+  } catch (error) {
+    if (error instanceof UnauthenticatedError) return null;
+    throw error;
+  }
 }
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);

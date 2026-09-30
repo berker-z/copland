@@ -168,7 +168,8 @@ export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: 
             <li key={e.id} className="flex gap-2 py-0.5">
               <span className="text-faint w-14 shrink-0">{when(e.createdAt)}</span>
               <span className="text-muted">
-                <span className="text-ink">{e.actorName ?? "someone"}</span> {describe(e, detail)}
+                <span className="text-ink">{e.actorName ?? "someone"}</span>
+                {e.via && <span className="text-faint"> via {e.via}</span>} {describe(e, detail)}
               </span>
             </li>
           ))}

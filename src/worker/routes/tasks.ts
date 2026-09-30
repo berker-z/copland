@@ -240,6 +240,32 @@ async function taskFor(env: Env, viewer: Viewer, id: string, role: "viewer" | "e
   return { task, board };
 }
 
+/** "CPL-12": a board key and a task number. A uuid never looks like this. */
+const TASK_KEY = /^([A-Za-z][A-Za-z0-9]{1,5})-(\d{1,9})$/;
+
+/**
+ * GET /api/tasks/:ref, where ref is a task's id or its key ("cpl-12" works
+ * too). The board screen has every task already; this is for a caller that
+ * holds only a key, like an assistant. A task on a board the caller is not
+ * on reads as not found, the same as a key that names nothing.
+ */
+export async function getTask(env: Env, viewer: Viewer, ref: string): Promise<Response> {
+  let id = ref;
+  const key = TASK_KEY.exec(ref);
+  if (key) {
+    const row = await env.DB.prepare(
+      `SELECT t.id FROM tasks t JOIN boards b ON b.id = t.board_id
+        WHERE b.key = ?1 AND t.number = ?2 AND t.deleted_at IS NULL`,
+    )
+      .bind(key[1].toUpperCase(), Number(key[2]))
+      .first<{ id: string }>();
+    if (!row) throw notFound("No such task");
+    id = row.id;
+  }
+  const { task } = await taskFor(env, viewer, id, "viewer");
+  return json(task);
+}
+
 /** PATCH /api/tasks/:id: any subset of the fields POST takes. */
 export async function patchTask(
   request: Request,

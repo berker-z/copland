@@ -4,11 +4,11 @@ A personal dashboard and project tracker that runs on your own Cloudflare accoun
 
 It's the successor to [nord-dash](https://github.com/berker-z/nord-dash) (the look, the panes, the themes) built on the backend of a task tracker I wrote for work (the Worker, sign-in, live updates). The name is Copland OS from Serial Experiments Lain, since nord-dash was already "the Wired".
 
-**Status:** early, but usable locally. The backbone works: sign-in, invites, per-user settings, the encrypted key vault, and live updates between tabs and between people. Every nord-dash pane is ported: calendar and agenda (Google or any ICS link), tasks, markets, notepad, verse, and the statusline weather. The tracker has boards you can share, a kanban with drag and drop, a list view, a Gantt you can drag bars on, labels, comments, editable stages, and planning (epics, milestones, parent tasks, dependencies) on boards that switch it on. See [TODO.md](TODO.md).
+**Status:** early, but usable locally. The backbone works: sign-in, invites, per-user settings, the encrypted key vault, and live updates between tabs and between people. Every nord-dash pane is ported: calendar and agenda (Google or any ICS link), tasks, markets, notepad, verse, and the statusline weather. The tracker has boards you can share, a kanban with drag and drop, a list view, a Gantt you can drag bars on, labels, comments, editable stages, and planning (epics, milestones, parent tasks, dependencies) on boards that switch it on. Claude and other AI assistants can connect over MCP. See [TODO.md](TODO.md).
 
 ## How it fits together
 
-One Cloudflare Worker serves everything. The React app is static assets on the same Worker; `/api/*` and `/auth/*` go to the Worker code. There is no separate backend.
+One Cloudflare Worker serves everything. The React app is static assets on the same Worker; `/api/*`, `/auth/*`, and the MCP server and its OAuth (`/mcp`, `/oauth/*`, `/.well-known/*`) go to the Worker code. There is no separate backend.
 
 - **D1** (Cloudflare's SQLite) holds users, sessions, settings, boards and tasks. Schema in [migrations/](migrations/).
 - **A Durable Object per user** holds that user's open tabs as WebSockets. After a write succeeds, the Worker tells the affected users' hubs which topics changed, and their tabs refetch. Your settings change reaches your other tabs; a task moved on a shared board reaches everyone on the board. Messages carry topic names only, never data, so a refetch still goes through the normal access checks.
@@ -18,6 +18,20 @@ One Cloudflare Worker serves everything. The React app is static assets on the s
 Data comes in two kinds. Personal things (settings, keys, notes, calendar connections) are only ever visible to their owner. Boards have members with roles (owner, editor, viewer), and every board route checks membership first. Your private todo list is just a board with one member, your inbox; a project with a friend is the same thing with two.
 
 The code is split by runtime: `src/worker` runs on Cloudflare, `src/app`, `src/features`, `src/lib` and `src/ui` run in the browser, and `src/domain` is plain TypeScript both sides import (types, settings shapes, live topics). Three tsconfigs keep them from sharing globals by accident.
+
+## Connecting an AI assistant
+
+Copland has an MCP server at `/mcp`, so Claude (or anything else that speaks MCP) can read and change your boards: "what's due this week?", "move LNCH-4 to done", "put a passport renewal in my inbox for the 20th". Settings › integrations has the URL and the steps.
+
+- **claude.ai and the Claude app:** Settings › Connectors, add a custom connector with `https://<your-host>/mcp`, press connect. You sign in to Copland if you aren't already, see a consent page, and pick read and write or read only.
+- **Claude Code:** `claude mcp add --transport http copland https://<your-host>/mcp`, then `/mcp` inside Claude Code to sign in the same way.
+- **Anything else:** make a personal token in settings (`cpl_…`, shown once) and send it as `Authorization: Bearer <token>`. The same token works on `/api` directly, for scripts.
+
+Whatever connects acts as you and nothing more: it gets your role on each board, and a task's history says "berker via Claude Code". The tools don't touch the database. They call the app's own API routes in-process as you (`src/worker/mcp.ts`), so the access checks, validation, event log and live updates are the same ones the browser goes through. A read-only token is refused on any write, on `/mcp` and `/api` alike. `/mcp` only takes tokens, never the session cookie, so another site can't drive it through your open tab.
+
+The OAuth side (`src/worker/oauth.ts`) is the minimum MCP clients need: protected-resource and authorization-server metadata, dynamic client registration, public clients with PKCE only, and refresh tokens that rotate on use. Tokens of both kinds live in `api_tokens` as hashes, and stop working the moment their owner is disabled. Settings lists them with when each was last used, and revokes them.
+
+`src/worker/mcpCoverage.ts` says, for every API route, which tools use it or why none do. `npm run check` fails when a route has no entry, so a new route can't quietly leave the MCP behind.
 
 ## One instance, several people
 

@@ -1,0 +1,256 @@
+/* ============================================================================
+   API tokens: signing in without a browser.
+   ----------------------------------------------------------------------------
+   A token is another way of being a user (migrations/0002_api_access.sql):
+   the Worker resolves it to the same user, with the same board roles, that a
+   session would, plus a scope (read or write) and a label for the history
+   ("Claude Code").
+
+   Secrets are "cpl_" + 32 random bytes; only their SHA-256 is stored, the
+   same as session cookies. A token whose user has been disabled stops
+   resolving at once, because the lookup joins on a live user row.
+
+   The history label rides in an AsyncLocalStorage for the length of the
+   request (viaContext), so repo/tasks.ts eventStatement can stamp every
+   event the request writes without each route passing it along.
+   ========================================================================== */
+
+import { AsyncLocalStorage } from "node:async_hooks";
+import { agentLabel } from "@/domain/agents";
+import type { ApiAccess, ApiToken, ApiTokenScope, Viewer } from "@/domain/types";
+import { HttpError, nowIso, randomToken, sha256Hex } from "./http";
+import { findUserById, type UserRow } from "./repo/users";
+
+export const TOKEN_PREFIX = "cpl_";
+
+/** OAuth access tokens are short-ish; the refresh token keeps the connection. */
+export const OAUTH_ACCESS_SECONDS = 7 * 24 * 3600;
+export const OAUTH_REFRESH_SECONDS = 90 * 24 * 3600;
+
+export const viaContext = new AsyncLocalStorage<{ via: string }>();
+
+/** What made the current request's changes, when it was not the web app. */
+export function currentVia(): string | null {
+  return viaContext.getStore()?.via ?? null;
+}
+
+const inSeconds = (s: number) => new Date(Date.now() + s * 1000).toISOString();
+
+export function bearerFrom(request: Request): string | null {
+  const header = request.headers.get("authorization");
+  if (!header) return null;
+  const match = /^Bearer\s+(\S+)\s*$/i.exec(header);
+  return match?.[1] ?? null;
+}
+
+/** A read-only token may look at everything its user may, and change nothing. */
+export function requireWriteScope(viewer: Viewer, method: string): void {
+  if (viewer.access?.scope === "read" && method !== "GET" && method !== "HEAD") {
+    throw new HttpError(403, "This token is read-only; it cannot change anything");
+  }
+}
+
+interface TokenRow {
+  id: string;
+  user_id: string;
+  kind: "personal" | "oauth";
+  name: string;
+  scope: ApiTokenScope;
+  agent: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  expires_at: string | null;
+}
+
+const TOKEN_COLUMNS = `t.id, t.user_id, t.kind, t.name, t.scope, t.agent, t.created_at, t.last_used_at, t.expires_at`;
+
+function toToken(row: TokenRow): ApiToken {
+  return {
+    id: row.id,
+    kind: row.kind,
+    name: row.name,
+    scope: row.scope,
+    agent: row.agent,
+    createdAt: row.created_at,
+    lastUsedAt: row.last_used_at,
+    expiresAt: row.expires_at,
+  };
+}
+
+/** The label the history shows: the client that introduced itself, else the token's name. */
+function viaLabel(row: Pick<TokenRow, "agent" | "name">): string {
+  return row.agent ? agentLabel(row.agent) : row.name;
+}
+
+/** A presented secret → its live, unexpired token and a live user, or null. */
+export async function tokenAccess(
+  db: D1Database,
+  secret: string,
+): Promise<{ user: UserRow; access: ApiAccess } | null> {
+  if (!secret.startsWith(TOKEN_PREFIX)) return null;
+  const row = await db
+    .prepare(
+      `SELECT ${TOKEN_COLUMNS}
+         FROM api_tokens t JOIN users u ON u.id = t.user_id AND u.disabled_at IS NULL
+        WHERE t.token_hash = ?1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?2)`,
+    )
+    .bind(await sha256Hex(secret), nowIso())
+    .first<TokenRow>();
+  if (!row) return null;
+  const user = await findUserById(db, row.user_id);
+  if (!user) return null;
+  return { user, access: { tokenId: row.id, kind: row.kind, scope: row.scope, via: viaLabel(row) } };
+}
+
+/** last_used_at, at most every five minutes: a busy agent should not write per call. */
+export function touchStatement(db: D1Database, tokenId: string): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE api_tokens SET last_used_at = ?2
+        WHERE id = ?1 AND (last_used_at IS NULL OR last_used_at < ?3)`,
+    )
+    .bind(tokenId, nowIso(), inSeconds(-5 * 60));
+}
+
+/** The MCP client's own name ("claude-code"), from its initialize call. */
+export async function setAgent(db: D1Database, tokenId: string, agent: string): Promise<void> {
+  await db.prepare(`UPDATE api_tokens SET agent = ?2 WHERE id = ?1`).bind(tokenId, agent.trim().slice(0, 60)).run();
+}
+
+async function mint(): Promise<{ secret: string; hash: string }> {
+  const secret = TOKEN_PREFIX + randomToken();
+  return { secret, hash: await sha256Hex(secret) };
+}
+
+export async function createPersonalToken(
+  db: D1Database,
+  userId: string,
+  fields: { name: string; scope: ApiTokenScope; days: number | null },
+): Promise<{ secret: string; token: ApiToken }> {
+  const { secret, hash } = await mint();
+  const id = crypto.randomUUID();
+  await db
+    .prepare(
+      `INSERT INTO api_tokens (id, user_id, kind, name, scope, token_hash, expires_at)
+       VALUES (?1, ?2, 'personal', ?3, ?4, ?5, ?6)`,
+    )
+    .bind(id, userId, fields.name, fields.scope, hash, fields.days === null ? null : inSeconds(fields.days * 24 * 3600))
+    .run();
+  const token = (await listTokens(db, userId)).find((t) => t.id === id);
+  if (!token) throw new Error("Token insert reported success but no row");
+  return { secret, token };
+}
+
+/** Everything this user has handed out that still works (or can still refresh). */
+export async function listTokens(db: D1Database, userId: string): Promise<ApiToken[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT ${TOKEN_COLUMNS} FROM api_tokens t
+        WHERE t.user_id = ?1 AND t.revoked_at IS NULL
+          AND (t.expires_at IS NULL OR t.expires_at > ?2
+               OR (t.refresh_expires_at IS NOT NULL AND t.refresh_expires_at > ?2))
+        ORDER BY t.created_at DESC`,
+    )
+    .bind(userId, nowIso())
+    .all<TokenRow>();
+  return results.map(toToken);
+}
+
+export async function revokeToken(db: D1Database, userId: string, id: string): Promise<boolean> {
+  const result = await db
+    .prepare(`UPDATE api_tokens SET revoked_at = ?3 WHERE id = ?1 AND user_id = ?2 AND revoked_at IS NULL`)
+    .bind(id, userId, nowIso())
+    .run();
+  return result.meta.changes > 0;
+}
+
+/* ---------------------------------------------------------------- OAuth --- */
+
+export interface IssuedTokens {
+  access_token: string;
+  token_type: "Bearer";
+  expires_in: number;
+  refresh_token: string;
+  scope: ApiTokenScope;
+}
+
+export async function issueOAuthTokens(
+  db: D1Database,
+  grant: { userId: string; clientId: string; clientName: string; scope: ApiTokenScope },
+): Promise<IssuedTokens> {
+  const access = await mint();
+  const refresh = await mint();
+  await db
+    .prepare(
+      `INSERT INTO api_tokens
+         (id, user_id, kind, name, scope, token_hash, refresh_hash, client_id, expires_at, refresh_expires_at)
+       VALUES (?1, ?2, 'oauth', ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      grant.userId,
+      grant.clientName,
+      grant.scope,
+      access.hash,
+      refresh.hash,
+      grant.clientId,
+      inSeconds(OAUTH_ACCESS_SECONDS),
+      inSeconds(OAUTH_REFRESH_SECONDS),
+    )
+    .run();
+  return {
+    access_token: access.secret,
+    token_type: "Bearer",
+    expires_in: OAUTH_ACCESS_SECONDS,
+    refresh_token: refresh.secret,
+    scope: grant.scope,
+  };
+}
+
+/**
+ * Rotate: a refresh token is used once. The connection (the row) stays, so
+ * settings lists one "Claude" however many times it refreshed.
+ */
+export async function refreshOAuthTokens(
+  db: D1Database,
+  refreshSecret: string,
+  clientId: string,
+): Promise<IssuedTokens | null> {
+  const row = await db
+    .prepare(
+      `SELECT t.id, t.scope FROM api_tokens t
+         JOIN users u ON u.id = t.user_id AND u.disabled_at IS NULL
+        WHERE t.refresh_hash = ?1 AND t.client_id = ?2 AND t.kind = 'oauth'
+          AND t.revoked_at IS NULL AND t.refresh_expires_at > ?3`,
+    )
+    .bind(await sha256Hex(refreshSecret), clientId, nowIso())
+    .first<{ id: string; scope: ApiTokenScope }>();
+  if (!row) return null;
+  const access = await mint();
+  const refresh = await mint();
+  /* Guarded on the old refresh hash: two refreshes racing with the same
+     token, and only one of them gets new secrets. */
+  const result = await db
+    .prepare(
+      `UPDATE api_tokens
+          SET token_hash = ?2, refresh_hash = ?3, expires_at = ?4, refresh_expires_at = ?5
+        WHERE id = ?1 AND refresh_hash = ?6`,
+    )
+    .bind(
+      row.id,
+      access.hash,
+      refresh.hash,
+      inSeconds(OAUTH_ACCESS_SECONDS),
+      inSeconds(OAUTH_REFRESH_SECONDS),
+      await sha256Hex(refreshSecret),
+    )
+    .run();
+  if (result.meta.changes === 0) return null;
+  return {
+    access_token: access.secret,
+    token_type: "Bearer",
+    expires_in: OAUTH_ACCESS_SECONDS,
+    refresh_token: refresh.secret,
+    scope: row.scope,
+  };
+}

@@ -11,10 +11,11 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
+    "check": "node checks/mcp.check.ts",
     "cf-typegen": "wrangler types",
     "db:migrate": "wrangler d1 migrations apply copland --local",
     "db:migrate:remote": "wrangler d1 migrations apply copland --remote",
-    "deploy": "npm run build && npm run db:migrate:remote && wrangler deploy"
+    "deploy": "npm run check && npm run build && npm run db:migrate:remote && wrangler deploy"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",

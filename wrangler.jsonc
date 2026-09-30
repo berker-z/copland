@@ -18,12 +18,13 @@
   // The built SPA. Unknown paths fall back to index.html so client routes
   // survive a refresh. That fallback answers browser navigations before the
   // Worker runs, which would swallow the sign-in redirects, so /auth/* and
-  // /api/* go to the Worker first.
+  // /api/* go to the Worker first, and so do the MCP server and its OAuth
+  // (/mcp, /oauth/*, /.well-known/*), which an assistant reaches by URL.
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/auth/*", "/api/*"]
+    "run_worker_first": ["/auth/*", "/api/*", "/mcp", "/oauth/*", "/.well-known/*"]
   },
 
   "d1_databases": [

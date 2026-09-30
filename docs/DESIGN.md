@@ -137,5 +137,15 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 - Typography utilities in `src/styles/index.css` (`@utility`): `text-label`
   so far; the rest of nord-dash's set (`text-nav`, `text-section`, ...) comes
   over with the widgets that use them. Use these instead of inline weights.
+- Settings › integrations: copyable values (the MCP URL, a command, a new
+  token's secret) are a `bg-raised border-faint` line with the value in
+  `text-yellow` and a copy icon. A token's secret shows once in the same
+  green-bordered box as a new invite link. Token rows show scope in
+  `text-blue` (read only) or `text-yellow` (read + write); revoke asks once
+  more in `text-red`.
+- The OAuth consent page (`src/worker/oauth.ts`) is served by the Worker and
+  cannot load the app's stylesheet. It is one pane in the modal's shape
+  (hairline border, rule under the title, footer on `bar`), with the nord
+  theme's role values copied in under the same variable names.
 - Scrollbars are standardized in `src/styles/index.css` (surface track, faint thumb,
   accent hover); no per-component overrides.

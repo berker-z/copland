@@ -2,10 +2,13 @@
    Worker entry. Routing only; no business logic lives here.
    ----------------------------------------------------------------------------
      /auth/*    sign-in: Google redirect, invite links, callback, logout
-     /api/*     resolve the viewer (session cookie, or DEV_USER_EMAIL on
-                localhost) → route → JSON. A successful write then tells the
+     /api/*     resolve the viewer (API token, session cookie, or
+                DEV_USER_EMAIL on localhost) → route → JSON. A successful write then tells the
                 affected users' open tabs what changed (live.ts).
      /api/live  a tab's WebSocket for those messages
+     /mcp, /oauth/*, /.well-known/oauth-*
+                AI assistants: the MCP server and its OAuth (integrations.ts).
+                /api also takes the same tokens as a Bearer header.
      anything   the built SPA from the ASSETS binding
 
    Identity is resolved once, before any route runs, so no route can forget
@@ -45,7 +48,10 @@ import {
 } from "./routes/calendar";
 import { deleteComment, getComments, getTaskEvents, patchComment, postComment } from "./routes/comments";
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
-import { deleteTask, patchTask, postTask } from "./routes/tasks";
+import { deleteTask, getTask, patchTask, postTask } from "./routes/tasks";
+import { deleteToken, getTokens, postToken } from "./routes/tokens";
+import { handleIntegration, isIntegrationPath } from "./integrations";
+import { bearerFrom, requireWriteScope, touchStatement, viaContext } from "./tokens";
 import { getMarketExtras } from "./routes/markets";
 import { deleteNote, getNotes, patchNote, postNote } from "./routes/notes";
 import { deleteVault, getMe, getSettings, getVault, patchSettings, putVault } from "./routes/personal";
@@ -74,6 +80,9 @@ const api = new Router<Ctx>()
     putVault(request, env, viewer, name, changes),
   )
   .on("DELETE", "/api/vault/:name", ({ env, viewer, changes }, { name }) => deleteVault(env, viewer, name, changes))
+  .on("GET", "/api/tokens", ({ env, viewer }) => getTokens(env, viewer))
+  .on("POST", "/api/tokens", ({ request, env, viewer, changes }) => postToken(request, env, viewer, changes))
+  .on("DELETE", "/api/tokens/:id", ({ env, viewer, changes }, { id }) => deleteToken(env, viewer, id, changes))
 
   .on("GET", "/api/notes", ({ env, viewer }) => getNotes(env, viewer))
   .on("POST", "/api/notes", ({ request, env, viewer, changes }) => postNote(request, env, viewer, changes))
@@ -121,6 +130,7 @@ const api = new Router<Ctx>()
   .on("POST", "/api/boards/:id/tasks", ({ request, env, viewer, changes }, { id }) =>
     postTask(request, env, viewer, id, changes),
   )
+  .on("GET", "/api/tasks/:id", ({ env, viewer }, { id }) => getTask(env, viewer, id))
   .on("PATCH", "/api/tasks/:id", ({ request, env, viewer, changes }, { id }) =>
     patchTask(request, env, viewer, id, changes),
   )
@@ -172,6 +182,9 @@ const api = new Router<Ctx>()
  */
 function requireSameOrigin(request: Request, url: URL): void {
   if (request.method === "GET" || request.method === "HEAD") return;
+  /* A token is not sent by the browser on its own, so it cannot be forged
+     from another site; a tool calling from a browser tab has its own Origin. */
+  if (bearerFrom(request)) return;
   const origin = request.headers.get("origin");
   if (origin !== null && origin !== url.origin) throw new HttpError(403, "Cross-origin request refused");
 }
@@ -203,20 +216,47 @@ async function handleAuth(request: Request, env: Env, url: URL): Promise<Respons
   throw notFound(`No route for ${request.method} ${url.pathname}`);
 }
 
-async function handleApi(request: Request, env: Env, ctx: ExecutionContext, url: URL): Promise<Response> {
-  requireSameOrigin(request, url);
-  const viewer = await resolveViewer(request, env);
+/**
+ * One API request as a viewer: the route, then live updates if it worked.
+ * /api requests and the MCP tools' in-process calls both come through here,
+ * so a read-only token is refused the same way on either path.
+ */
+async function runApi(
+  env: Env,
+  ctx: ExecutionContext,
+  request: Request,
+  url: URL,
+  viewer: Viewer,
+  tab: string | null,
+): Promise<Response> {
+  requireWriteScope(viewer, request.method);
   const changes = new Changes();
   const pending = api.dispatch(request.method, url.pathname, { request, env, viewer, url, changes });
   if (!pending) throw notFound(`No route for ${request.method} ${url.pathname}`);
   const response = await pending;
-  if (response.ok) changes.publish(env, ctx, request.headers.get(TAB_HEADER));
+  if (response.ok) changes.publish(env, ctx, tab);
   return response;
+}
+
+async function handleApi(request: Request, env: Env, ctx: ExecutionContext, url: URL): Promise<Response> {
+  requireSameOrigin(request, url);
+  const viewer = await resolveViewer(request, env);
+  const run = () => runApi(env, ctx, request, url, viewer, request.headers.get(TAB_HEADER));
+  if (!viewer.access) return run();
+  ctx.waitUntil(touchStatement(env.DB, viewer.access.tokenId).run());
+  return viaContext.run({ via: viewer.access.via }, run);
 }
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    if (isIntegrationPath(url.pathname)) {
+      return withSecurityHeaders(
+        await handleIntegration(request, env, ctx, url, (req, target, viewer, tab) =>
+          runApi(env, ctx, req, target, viewer, tab),
+        ),
+      );
+    }
     const isAuth = url.pathname.startsWith("/auth/");
     if (!isAuth && !url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
     try {

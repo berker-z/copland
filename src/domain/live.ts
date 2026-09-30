@@ -25,7 +25,9 @@ export type LiveTopic =
   /** Calendar connections and events (your own only). */
   | "calendar"
   /** Admin screens: users and invites. */
-  | "admin";
+  | "admin"
+  /** My API tokens and connected apps (settings). */
+  | "tokens";
 
 export interface LiveEvent {
   topics: LiveTopic[];

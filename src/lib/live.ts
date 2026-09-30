@@ -31,6 +31,7 @@ const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
   notes: [KEYS.notes],
   calendar: [["calendar"]],
   admin: [KEYS.admin],
+  tokens: [KEYS.tokens],
 };
 
 /* Several writes in a burst (a drag across stages, an assistant filing ten
