@@ -149,3 +149,13 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   theme's role values copied in under the same variable names.
 - Scrollbars are standardized in `src/styles/index.css` (surface track, faint thumb,
   accent hover); no per-component overrides.
+
+## The mark
+
+The utility pole from Serial Experiments Lain, wires sagging off the right edge
+(`src/ui/LogoMark.tsx`, `public/logo.svg`). Drawn on a 16-unit grid: use it at
+16px or 32px only, where it is crisp. In the app it is `currentColor` (accent
+in the statusline, where it and the "copland" wordmark are the home link);
+`--mark-2` on a parent gives the wires a second tone. The favicons
+(`public/favicon.svg`, `favicon.png`, `apple-touch-icon.png`) bake in the nord
+bar and accent colours.

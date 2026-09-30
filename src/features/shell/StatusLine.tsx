@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router";
 import { Cloud, CloudRain, Sun } from "lucide-react";
 import { getMoonPhase } from "@/domain/moon";
 import type { Settings } from "@/domain/settings";
 import { THEMES } from "@/domain/themes";
 import { useSettings } from "@/lib/queries";
 import { useUpdateSettings } from "@/lib/settings";
+import { LogoMark } from "@/ui/LogoMark";
 import { MoonPhaseIcon } from "@/ui/MoonPhaseIcon";
 import { useWeather } from "./weather";
 
@@ -145,7 +147,10 @@ export function StatusLine({ userName, onOpenSettings, onLogout }: StatusLinePro
   return (
     <header className="fixed top-0 inset-x-0 z-[55] h-11 bg-bar border-b border-divider px-4 flex items-center justify-between gap-4 whitespace-nowrap">
       <div className="flex items-center gap-2 min-w-0">
-        <span className="text-accent">[copland]</span>
+        <Link to="/" className="flex items-center gap-2 text-accent hover:text-bright transition-colors" title="Dashboard">
+          <LogoMark />
+          <span>copland</span>
+        </Link>
         <span className="text-muted truncate">{userName.toLowerCase()}</span>
       </div>
 

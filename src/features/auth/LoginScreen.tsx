@@ -1,5 +1,6 @@
 import { Lock } from "lucide-react";
 import { loginUrl } from "@/lib/api";
+import { LogoMark } from "@/ui/LogoMark";
 
 /* What /auth/callback puts in ?login= when it refuses someone (worker/auth.ts). */
 const REASONS: Record<string, string> = {
@@ -25,6 +26,7 @@ export function LoginScreen() {
         </div>
 
         <div className="p-8 flex flex-col items-center text-center">
+          <LogoMark size={32} className="text-accent mb-3" />
           <h2 className="text-bright mb-2">copland</h2>
           <p className="text-ink mb-8 text-sm leading-relaxed opacity-80 max-w-xs">
             Sign in to reach your dashboard and boards.
