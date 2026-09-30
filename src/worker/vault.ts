@@ -17,7 +17,7 @@ import { fromBase64, HttpError, toBase64 } from "./http";
 let cachedKey: { raw: string; key: CryptoKey } | null = null;
 
 async function vaultKey(env: Env): Promise<CryptoKey> {
-  if (!env.VAULT_KEY) throw new HttpError(503, "This instance has no VAULT_KEY set, so it cannot store API keys");
+  if (!env.VAULT_KEY) throw new HttpError(503, "This instance has no VAULT_KEY set, so it cannot store keys or calendar connections");
   if (cachedKey?.raw === env.VAULT_KEY) return cachedKey.key;
   const bytes = fromBase64(env.VAULT_KEY);
   if (bytes.length !== 32) throw new HttpError(503, "VAULT_KEY must be 32 bytes, base64");
@@ -27,6 +27,35 @@ async function vaultKey(env: Env): Promise<CryptoKey> {
 }
 
 const aad = (userId: string, name: string) => new TextEncoder().encode(`${userId}:${name}`);
+
+export interface Sealed {
+  iv: string;
+  ciphertext: string;
+}
+
+/**
+ * Encrypt anything under VAULT_KEY, bound to `context` (associated data): the
+ * same context must be given to open it. Calendar refresh tokens and ICS
+ * links use this with "<user>:calendar:<id>"; vault rows use "<user>:<name>".
+ */
+export async function seal(env: Env, context: string, plaintext: string): Promise<Sealed> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(context) },
+    await vaultKey(env),
+    new TextEncoder().encode(plaintext),
+  );
+  return { iv: toBase64(iv), ciphertext: toBase64(new Uint8Array(ciphertext)) };
+}
+
+export async function unseal(env: Env, context: string, sealed: Sealed): Promise<string> {
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: fromBase64(sealed.iv), additionalData: new TextEncoder().encode(context) },
+    await vaultKey(env),
+    fromBase64(sealed.ciphertext),
+  );
+  return new TextDecoder().decode(plain);
+}
 
 export async function sealVault(env: Env, userId: string, name: VaultName, secret: string): Promise<void> {
   const iv = crypto.getRandomValues(new Uint8Array(12));

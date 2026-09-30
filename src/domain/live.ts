@@ -22,6 +22,8 @@ export type LiveTopic =
   | "settings"
   | "vault"
   | "notes"
+  /** Calendar connections and events (your own only). */
+  | "calendar"
   /** Admin screens: users and invites. */
   | "admin";
 

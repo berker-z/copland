@@ -3,8 +3,8 @@
    ----------------------------------------------------------------------------
    /api/me decides everything: a 401 is the login screen, anything else is
    the dashboard. The grid is the Splits layout from nord-dash: one surface
-   split into panes by 1px dividers. Its panes come over from nord-dash one
-   at a time; until they do, their slots say so.
+   split into panes by 1px dividers, all of them ported from nord-dash.
+   /b/KEY swaps the grid for a board screen.
    ========================================================================== */
 
 import { useState } from "react";
@@ -12,6 +12,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useMatch } from "react-router";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { BoardScreen } from "@/features/board/BoardScreen";
+import { AgendaPane, CalendarPane } from "@/features/calendar/CalendarPanes";
 import { BoardsPane } from "@/features/boards/BoardsPane";
 import { MarketsPane } from "@/features/markets/MarketsPane";
 import { NotepadPane } from "@/features/notepad/NotepadPane";
@@ -23,15 +24,6 @@ import { ApiError } from "@/lib/api";
 import { useLiveUpdates } from "@/lib/live";
 import { useMe } from "@/lib/queries";
 import { useApplyTheme } from "@/lib/settings";
-import { WidgetFrame } from "@/ui/WidgetFrame";
-
-function Porting({ title }: { title: string }) {
-  return (
-    <WidgetFrame title={title}>
-      <p className="text-faint text-sm">not ported yet</p>
-    </WidgetFrame>
-  );
-}
 
 export function App() {
   const me = useMe();
@@ -64,8 +56,8 @@ export function App() {
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-3 items-start gap-px w-full max-w-[1500px] mx-auto px-4 py-4 md:px-8 md:py-6">
             <div className="flex flex-col gap-px">
-              <Porting title="/calendar" />
-              <Porting title="/daily_agenda" />
+              <CalendarPane onOpenSettings={() => setSettingsOpen(true)} />
+              <AgendaPane onOpenSettings={() => setSettingsOpen(true)} />
               <NotepadPane />
             </div>
             <div className="flex flex-col gap-px">

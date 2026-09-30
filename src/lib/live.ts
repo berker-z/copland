@@ -29,6 +29,7 @@ const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
   settings: [KEYS.settings],
   vault: [KEYS.vault],
   notes: [KEYS.notes],
+  calendar: [["calendar"]],
   admin: [KEYS.admin],
 };
 

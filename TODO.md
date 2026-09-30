@@ -19,7 +19,8 @@ The plan, roughly in order. Each phase should leave the app working.
 - [x] Weather in the statusline from `settings.location` (Open-Meteo), refreshed, not fetched once
 - [x] `/notepad` on the `notes` table, with autosave and live sync across devices
 - [x] `/bible_qotd` through the Worker with the user's OpenAI key
-- [ ] `/calendar` and `/daily_agenda`: Google Calendar as a separate grant, refresh tokens encrypted server-side, one fetch shared by both panes. Read-only ICS URL as the no-OAuth option.
+- [x] `/calendar` and `/daily_agenda`: Google Calendar as a separate grant (create, edit, delete events; Meet links), refresh tokens encrypted server-side, one fetch shared by both panes. ICS links as the no-OAuth option, with repeats, exceptions and time zones.
+- [ ] Calendar: verify the Google flow end to end once the OAuth client exists
 - [ ] Layout as a setting (which panes, which column), replacing the hardcoded grid
 
 ## 3. Tasks

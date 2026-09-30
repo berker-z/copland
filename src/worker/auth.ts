@@ -3,7 +3,9 @@
    ----------------------------------------------------------------------------
      GET  /auth/google?next=/b/x        send the browser to Google
      GET  /auth/invite/<code>           the same, carrying an invite
+     GET  /auth/calendar                 connect Google Calendar (signed in only)
      GET  /auth/callback?code&state     Google sends it back; verify, sign in
+                                        (or save the calendar connection)
      POST /auth/logout                  drop the session
 
      sessionUser(request, env)          the user behind the cookie, if any
@@ -33,7 +35,9 @@ import {
   sha256Base64url,
   sha256Hex,
 } from "./http";
+import { CALENDAR_SCOPES } from "./calendar/google";
 import { findUserById, signIn, SignInRefused, type GoogleProfile, type UserRow } from "./repo/users";
+import { saveGoogleAccount } from "./routes/calendar";
 
 const SESSION_COOKIE = "copland_session";
 const LOGIN_COOKIE = "copland_login";
@@ -75,7 +79,44 @@ export async function startLogin(request: Request, env: Env, inviteCode: string 
     status: 302,
     headers: {
       location: `${GOOGLE_AUTH}?${params}`,
-      "set-cookie": cookie(LOGIN_COOKIE, encodeState({ state, verifier, next, invite }), {
+      "set-cookie": cookie(LOGIN_COOKIE, encodeState({ state, verifier, next, invite, calendarFor: null }), {
+        path: "/auth",
+        maxAge: LOGIN_MAX_AGE_S,
+        secure: url.protocol === "https:",
+      }),
+    },
+  });
+}
+
+/**
+ * GET /auth/calendar: connect a Google account's calendars. A second consent,
+ * separate from sign-in, asking for calendar access and a refresh token
+ * (access_type=offline, prompt=consent so Google sends one every time). Only
+ * for someone already signed in; the callback checks it is still them.
+ */
+export async function startCalendarConnect(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const user = await sessionUser(request, env);
+  if (!user) return redirect(`/auth/google?next=${encodeURIComponent("/")}`, []);
+  const state = randomToken();
+  const verifier = randomToken();
+  const params = new URLSearchParams({
+    client_id: env.GOOGLE_CLIENT_ID,
+    redirect_uri: callbackUrl(url),
+    response_type: "code",
+    scope: ["openid", "email", ...CALENDAR_SCOPES].join(" "),
+    state,
+    code_challenge: await sha256Base64url(verifier),
+    code_challenge_method: "S256",
+    access_type: "offline",
+    prompt: "consent select_account",
+    include_granted_scopes: "true",
+  });
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: `${GOOGLE_AUTH}?${params}`,
+      "set-cookie": cookie(LOGIN_COOKIE, encodeState({ state, verifier, next: "/", invite: null, calendarFor: user.id }), {
         path: "/auth",
         maxAge: LOGIN_MAX_AGE_S,
         secure: url.protocol === "https:",
@@ -99,10 +140,11 @@ export async function finishLogin(request: Request, env: Env): Promise<Response>
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   if (!login || !code || !state || state !== login.state) return fail("failed");
+  if (login.calendarFor) return finishCalendarConnect(request, env, login.calendarFor, code, login.verifier, clearLogin);
 
   let profile: GoogleProfile;
   try {
-    const idToken = await exchangeCode(env, code, login.verifier, callbackUrl(url));
+    const { idToken } = await exchangeCode(env, code, login.verifier, callbackUrl(url));
     profile = await verifyIdToken(env, idToken);
   } catch (error) {
     console.error("Google sign-in failed:", error);
@@ -122,6 +164,31 @@ export async function finishLogin(request: Request, env: Env): Promise<Response>
     clearLogin,
     cookie(SESSION_COOKIE, token, { path: "/", maxAge: SESSION_DAYS * 24 * 60 * 60, secure }),
   ]);
+}
+
+/** The calendar half of the callback. Lands on the dashboard with ?calendar=. */
+async function finishCalendarConnect(
+  request: Request,
+  env: Env,
+  userId: string,
+  code: string,
+  verifier: string,
+  clearLogin: string,
+): Promise<Response> {
+  const done = (result: string) => redirect(`/?calendar=${result}`, [clearLogin]);
+  /* Whoever started the connection must be who finishes it. */
+  const user = await sessionUser(request, env);
+  if (!user || user.id !== userId) return done("failed");
+  try {
+    const { idToken, refreshToken } = await exchangeCode(env, code, verifier, callbackUrl(new URL(request.url)));
+    if (!refreshToken) return done("no_refresh");
+    const profile = await verifyIdToken(env, idToken);
+    await saveGoogleAccount(env, user.id, profile.email, refreshToken);
+    return done("connected");
+  } catch (error) {
+    console.error("Calendar connect failed:", error);
+    return done("failed");
+  }
 }
 
 /** POST /auth/logout: forget the session on both sides. */
@@ -188,7 +255,12 @@ async function createSession(env: Env, userId: string): Promise<string> {
 
 /* -------------------------------------------------------------- google ----- */
 
-async function exchangeCode(env: Env, code: string, verifier: string, redirectUri: string): Promise<string> {
+async function exchangeCode(
+  env: Env,
+  code: string,
+  verifier: string,
+  redirectUri: string,
+): Promise<{ idToken: string; refreshToken: string | null }> {
   const response = await fetch(GOOGLE_TOKEN, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -201,11 +273,11 @@ async function exchangeCode(env: Env, code: string, verifier: string, redirectUr
       code_verifier: verifier,
     }),
   });
-  const body = (await response.json()) as { id_token?: string; error?: string };
+  const body = (await response.json()) as { id_token?: string; refresh_token?: string; error?: string };
   if (!response.ok || !body.id_token) {
     throw new Error(`token exchange: ${body.error ?? `HTTP ${response.status}`}`);
   }
-  return body.id_token;
+  return { idToken: body.id_token, refreshToken: body.refresh_token ?? null };
 }
 
 /** Signature, issuer, audience and expiry are jose's job; a verified email is ours. */
@@ -254,6 +326,8 @@ interface LoginState {
   next: string;
   /** sha-256 hex of the invite code, when the browser came through a link. */
   invite: string | null;
+  /** Set when this round trip connects a calendar for that user instead of signing in. */
+  calendarFor: string | null;
 }
 
 function encodeState(s: LoginState): string {
@@ -270,6 +344,7 @@ function decodeState(raw: string | null): LoginState | null {
       verifier: parsed.verifier,
       next: safeNext(parsed.next ?? null),
       invite: typeof parsed.invite === "string" ? parsed.invite : null,
+      calendarFor: typeof parsed.calendarFor === "string" ? parsed.calendarFor : null,
     };
   } catch {
     return null;

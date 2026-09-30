@@ -15,7 +15,7 @@
 
 import { TAB_HEADER } from "@/domain/live";
 import type { Viewer } from "@/domain/types";
-import { finishLogin, logout, startLogin } from "./auth";
+import { finishLogin, logout, startCalendarConnect, startLogin } from "./auth";
 import type { Env } from "./env";
 import { errorResponse, HttpError, notFound } from "./http";
 import { Changes, connectLive } from "./live";
@@ -31,6 +31,18 @@ import {
   postBoard,
   postMember,
 } from "./routes/boards";
+import {
+  deleteAccount,
+  deleteCalendar,
+  getCalendarSetup,
+  getEvents,
+  patchCalendar,
+  postAccountSync,
+  postEvent,
+  postIcsFeed,
+  putEvent,
+  removeEvent,
+} from "./routes/calendar";
 import { deleteComment, getComments, getTaskEvents, patchComment, postComment } from "./routes/comments";
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
 import { deleteTask, patchTask, postTask } from "./routes/tasks";
@@ -71,6 +83,23 @@ const api = new Router<Ctx>()
   .on("DELETE", "/api/notes/:id", ({ env, viewer, changes }, { id }) => deleteNote(env, viewer, id, changes))
   .on("GET", "/api/markets/coingecko", ({ env, viewer }) => getMarketExtras(env, viewer))
   .on("POST", "/api/verse", ({ request, env, viewer }) => postVerse(request, env, viewer))
+
+  .on("GET", "/api/calendar", ({ env, viewer }) => getCalendarSetup(env, viewer))
+  .on("POST", "/api/calendar/accounts/:id/sync", ({ env, viewer, changes }, { id }) => postAccountSync(env, viewer, id, changes))
+  .on("DELETE", "/api/calendar/accounts/:id", ({ env, viewer, changes }, { id }) => deleteAccount(env, viewer, id, changes))
+  .on("POST", "/api/calendar/ics", ({ request, env, viewer, changes }) => postIcsFeed(request, env, viewer, changes))
+  .on("PATCH", "/api/calendar/calendars/:id", ({ request, env, viewer, changes }, { id }) =>
+    patchCalendar(request, env, viewer, id, changes),
+  )
+  .on("DELETE", "/api/calendar/calendars/:id", ({ env, viewer, changes }, { id }) => deleteCalendar(env, viewer, id, changes))
+  .on("GET", "/api/calendar/events", ({ env, viewer, url }) => getEvents(env, viewer, url))
+  .on("POST", "/api/calendar/events", ({ request, env, viewer, changes }) => postEvent(request, env, viewer, changes))
+  .on("PUT", "/api/calendar/events/:calendarId/:eventId", ({ request, env, viewer, changes }, p) =>
+    putEvent(request, env, viewer, p.calendarId, p.eventId, changes),
+  )
+  .on("DELETE", "/api/calendar/events/:calendarId/:eventId", ({ env, viewer, changes }, p) =>
+    removeEvent(env, viewer, p.calendarId, p.eventId, changes),
+  )
 
   .on("GET", "/api/boards", ({ env, viewer }) => getBoards(env, viewer))
   .on("POST", "/api/boards", ({ request, env, viewer, changes }) => postBoard(request, env, viewer, changes))
@@ -168,6 +197,7 @@ async function handleAuth(request: Request, env: Env, url: URL): Promise<Respons
   if (request.method === "GET" && url.pathname === "/auth/google") return startLogin(request, env, null);
   const invite = request.method === "GET" ? INVITE_PATH.exec(url.pathname) : null;
   if (invite) return startLogin(request, env, invite[1]);
+  if (request.method === "GET" && url.pathname === "/auth/calendar") return startCalendarConnect(request, env);
   if (request.method === "GET" && url.pathname === "/auth/callback") return finishLogin(request, env);
   if (request.method === "POST" && url.pathname === "/auth/logout") return logout(request, env);
   throw notFound(`No route for ${request.method} ${url.pathname}`);

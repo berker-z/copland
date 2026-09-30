@@ -10,6 +10,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Trash2, X } from "lucide-react";
 import { VAULT_NAMES, type VaultEntry, type VaultName } from "@/domain/settings";
 import type { CreatedInvite, Me } from "@/domain/types";
+import { CalendarSettings } from "@/features/calendar/CalendarSettings";
 import { searchCities, type GeoResult } from "@/features/shell/weather";
 import { send } from "@/lib/api";
 import { KEYS, useAdminInvites, useAdminUsers, useSettings, useVault } from "@/lib/queries";
@@ -361,7 +362,10 @@ function InstanceSection({ me }: { me: Me }) {
 
 export function SettingsModal({ me, onClose }: { me: Me; onClose: () => void }) {
   return (
-    <ModalFrame title="settings" onClose={onClose} size="lg">
+    <ModalFrame title="settings" onClose={onClose} size="lg" className="max-h-[90vh]">
+      <Section title="calendars">
+        <CalendarSettings />
+      </Section>
       <MarketsSection />
       <LocationSection />
       <VaultSection />
