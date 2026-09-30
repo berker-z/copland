@@ -4,7 +4,7 @@ A personal dashboard and project tracker that runs on your own Cloudflare accoun
 
 It's the successor to [nord-dash](https://github.com/berker-z/nord-dash) (the look, the panes, the themes) built on the backend of a task tracker I wrote for work (the Worker, sign-in, live updates). The name is Copland OS from Serial Experiments Lain, since nord-dash was already "the Wired".
 
-**Status:** early. The backbone works: sign-in, invites, per-user settings, the encrypted key vault, boards with shared membership, and live updates between tabs. Most of the nord-dash panes aren't ported yet and say so on the dashboard. See [TODO.md](TODO.md).
+**Status:** early. The backbone works: sign-in, invites, per-user settings, the encrypted key vault, boards with shared membership, and live updates between tabs. From nord-dash, the markets, notepad and verse panes and the statusline weather are ported; the calendar, agenda and tasks panes aren't yet and say so on the dashboard. See [TODO.md](TODO.md).
 
 ## How it fits together
 
@@ -13,7 +13,7 @@ One Cloudflare Worker serves everything. The React app is static assets on the s
 - **D1** (Cloudflare's SQLite) holds users, sessions, settings, boards and tasks. Schema in [migrations/](migrations/).
 - **A Durable Object per user** holds that user's open tabs as WebSockets. After a write succeeds, the Worker tells the affected users' hubs which topics changed, and their tabs refetch. Your settings change reaches your other tabs; a task moved on a shared board reaches everyone on the board. Messages carry topic names only, never data, so a refetch still goes through the normal access checks.
 - **Google** is used for sign-in only (OpenID Connect with PKCE, done server-side). Sessions are our own cookie, stored hashed.
-- **API keys** people add in settings (CoinGecko, OpenAI) are encrypted with AES-GCM under a Worker secret and never sent back to the browser. The Worker calls those services on the user's behalf.
+- **API keys** people add in settings (CoinGecko, OpenAI) are encrypted with AES-GCM under a Worker secret and never sent back to the browser. The Worker calls those services on the user's behalf. CoinGecko answers are cached for ten minutes, since the free plan is rate limited. Services that need no key (Binance prices, Open-Meteo weather and city search) are called straight from the browser.
 
 Data comes in two kinds. Personal things (settings, keys, notes, calendar connections) are only ever visible to their owner. Boards have members with roles (owner, editor, viewer), and every board route checks membership first. Your private todo list is just a board with one member, your inbox; a project with a friend is the same thing with two.
 

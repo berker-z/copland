@@ -34,7 +34,10 @@ import {
 import { deleteComment, getComments, getTaskEvents, patchComment, postComment } from "./routes/comments";
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
 import { deleteTask, patchTask, postTask } from "./routes/tasks";
+import { getMarketExtras } from "./routes/markets";
+import { deleteNote, getNotes, patchNote, postNote } from "./routes/notes";
 import { deleteVault, getMe, getSettings, getVault, patchSettings, putVault } from "./routes/personal";
+import { postVerse } from "./routes/verse";
 import { resolveViewer } from "./viewer";
 
 /* The Durable Object class must be exported from the entry module. */
@@ -59,6 +62,15 @@ const api = new Router<Ctx>()
     putVault(request, env, viewer, name, changes),
   )
   .on("DELETE", "/api/vault/:name", ({ env, viewer, changes }, { name }) => deleteVault(env, viewer, name, changes))
+
+  .on("GET", "/api/notes", ({ env, viewer }) => getNotes(env, viewer))
+  .on("POST", "/api/notes", ({ request, env, viewer, changes }) => postNote(request, env, viewer, changes))
+  .on("PATCH", "/api/notes/:id", ({ request, env, viewer, changes }, { id }) =>
+    patchNote(request, env, viewer, id, changes),
+  )
+  .on("DELETE", "/api/notes/:id", ({ env, viewer, changes }, { id }) => deleteNote(env, viewer, id, changes))
+  .on("GET", "/api/markets/coingecko", ({ env, viewer }) => getMarketExtras(env, viewer))
+  .on("POST", "/api/verse", ({ request, env, viewer }) => postVerse(request, env, viewer))
 
   .on("GET", "/api/boards", ({ env, viewer }) => getBoards(env, viewer))
   .on("POST", "/api/boards", ({ request, env, viewer, changes }) => postBoard(request, env, viewer, changes))

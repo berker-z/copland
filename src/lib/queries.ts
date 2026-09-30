@@ -5,6 +5,7 @@
    ========================================================================== */
 
 import { useQuery } from "@tanstack/react-query";
+import type { MarketExtras, Note } from "@/domain/panes";
 import type { Settings, VaultEntry } from "@/domain/settings";
 import type { BoardDetail, BoardSummary, Invite, Me, User } from "@/domain/types";
 import { api } from "./api";
@@ -20,6 +21,10 @@ export const KEYS = {
   admin: ["admin"],
   adminUsers: ["admin", "users"],
   adminInvites: ["admin", "invites"],
+  notes: ["notes"],
+  /* Keyed on what the Worker will read (the ids in settings, the saved key),
+     so changing either refetches without a live topic of its own. */
+  marketExtras: (ids: unknown[]) => ["markets", "coingecko", ...ids],
 } as const;
 
 /** While the socket is down, poll instead; while it is up, it tells us. */
@@ -56,3 +61,19 @@ export const useAdminUsers = () =>
 
 export const useAdminInvites = () =>
   useQuery({ queryKey: KEYS.adminInvites, queryFn: () => api<Invite[]>("/admin/invites") });
+
+export const useNotes = () =>
+  useQuery({ queryKey: KEYS.notes, queryFn: () => api<Note[]>("/notes"), refetchInterval: fallbackPoll(60_000) });
+
+/* CoinGecko's demo plan is rate limited and the Worker caches for ten
+   minutes, so asking more often than that would only get the same answer. */
+const MARKET_EXTRAS_MS = 10 * 60_000;
+
+export const useMarketExtras = (ids: unknown[], enabled: boolean) =>
+  useQuery({
+    queryKey: KEYS.marketExtras(ids),
+    queryFn: () => api<MarketExtras>("/markets/coingecko"),
+    enabled,
+    staleTime: MARKET_EXTRAS_MS,
+    refetchInterval: MARKET_EXTRAS_MS,
+  });
