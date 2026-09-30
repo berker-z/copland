@@ -15,6 +15,8 @@ export interface User {
 /** Who is making a request, as the Worker resolved it. */
 export interface Viewer {
   user: User;
+  /** Set when the request came with an API token instead of a session. */
+  access?: ApiAccess;
 }
 
 export type SignupMode = "invite" | "open" | "closed";
@@ -143,5 +145,41 @@ export interface TaskEvent {
   actorName: string | null;
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
+  /** What made the change when it was not the web app ("Claude"). */
+  via: string | null;
   createdAt: string;
+}
+
+/* ------------------------------------------------------------ api access -- */
+
+export type ApiTokenScope = "read" | "write";
+
+/** A token someone handed to a tool, as settings lists it. Never the secret. */
+export interface ApiToken {
+  id: string;
+  /** personal: made in settings; oauth: an app connected through its "Connect". */
+  kind: "personal" | "oauth";
+  name: string;
+  scope: ApiTokenScope;
+  /** The MCP client that last used it ("claude-code"). */
+  agent: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  /** Null: a personal token without an expiry. */
+  expiresAt: string | null;
+}
+
+/** POST /api/tokens answers with the secret once; only its hash is kept. */
+export interface CreatedToken {
+  token: ApiToken;
+  secret: string;
+}
+
+/** Set on a Viewer whose request came with a token instead of a session. */
+export interface ApiAccess {
+  tokenId: string;
+  kind: "personal" | "oauth";
+  scope: ApiTokenScope;
+  /** What the history calls it: "Claude", "Claude Code", or the token's name. */
+  via: string;
 }

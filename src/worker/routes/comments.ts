@@ -120,18 +120,27 @@ export async function deleteComment(env: Env, viewer: Viewer, id: string, change
 export async function getTaskEvents(env: Env, viewer: Viewer, taskId: string) {
   await boardOfTask(env.DB, viewer, taskId);
   const { results } = await env.DB.prepare(
-    `SELECT e.id, e.kind, u.name AS actor_name, e.before, e.after, e.created_at
+    `SELECT e.id, e.kind, u.name AS actor_name, e.before, e.after, e.via, e.created_at
        FROM events e LEFT JOIN users u ON u.id = e.actor_id
       WHERE e.task_id = ?1 ORDER BY e.created_at DESC LIMIT 100`,
   )
     .bind(taskId)
-    .all<{ id: string; kind: string; actor_name: string | null; before: string | null; after: string | null; created_at: string }>();
+    .all<{
+      id: string;
+      kind: string;
+      actor_name: string | null;
+      before: string | null;
+      after: string | null;
+      via: string | null;
+      created_at: string;
+    }>();
   const events: TaskEvent[] = results.map((r) => ({
     id: r.id,
     kind: r.kind,
     actorName: r.actor_name,
     before: r.before ? (JSON.parse(r.before) as Record<string, unknown>) : null,
     after: r.after ? (JSON.parse(r.after) as Record<string, unknown>) : null,
+    via: r.via,
     createdAt: r.created_at,
   }));
   return json(events);

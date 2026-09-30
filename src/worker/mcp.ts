@@ -1,0 +1,927 @@
+/* ============================================================================
+   MCP server: Copland as tools for Claude and other AI assistants.
+   ----------------------------------------------------------------------------
+   Streamable HTTP at POST /mcp, stateless: every request is JSON-RPC in and
+   JSON out, no session, no server-sent stream (GET is 405, which the spec
+   allows). Auth is the Authorization header only (integrations.ts resolves
+   it to a Viewer before this runs); a request without one gets the 401 that
+   points the client at the OAuth metadata.
+
+   Every tool goes through `call`, which dispatches to the app's own API
+   routes in-process as the connected user. So a tool can never do what the
+   app would refuse: board roles, validation, the event log and live updates
+   all happen once, in the routes. This file only translates: names to ids
+   ("LNCH-4", "doing", "me", "urgent") on the way in, and compact, readable
+   summaries on the way out.
+
+   Keep it in step with the app (AGENTS.md): a route a tool calls is credited
+   in mcpCoverage.ts, and `npm run check` holds the two together.
+   ========================================================================== */
+
+import { addDays, isDate } from "@/domain/tasks";
+import {
+  LEVELS,
+  PRIORITIES,
+  STAGE_CATEGORIES,
+  type BoardDetail,
+  type BoardMember,
+  type BoardSummary,
+  type Comment,
+  type Label,
+  type Level,
+  type Me,
+  type Priority,
+  type Stage,
+  type Task,
+  type Viewer,
+} from "@/domain/types";
+import { CORS_HEADERS } from "./oauth";
+
+/** The app's API, as the connected user. Resolves to the parsed JSON; throws on an error status. */
+export type ApiCall = <T>(method: string, path: string, body?: unknown) => Promise<T>;
+
+const SUPPORTED_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+/** The tool interface's version, for serverInfo. Bump when tools change shape. */
+const SERVER_VERSION = "1.0.0";
+
+interface JsonRpcRequest {
+  jsonrpc: "2.0";
+  id?: string | number | null;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+const reply = (body: unknown, status = 200) =>
+  new Response(body === null ? null : JSON.stringify(body), {
+    status,
+    headers: { ...(body === null ? {} : { "content-type": "application/json" }), ...CORS_HEADERS },
+  });
+
+const INSTRUCTIONS = `Copland is a personal dashboard and project tracker: boards of tasks, some private, some shared with friends. Everything you do here is done as the user who connected you, with exactly their board roles, and a task's history records that it came through you.
+
+Call the guide tool once before your first change: it explains every board the user is on (its stages and what each means, its labels, its members, whether planning is on), from live data.
+
+- Tasks are identified by keys like CPL-12 (board key + number), case-insensitive.
+- The user's inbox is their private board; create_task puts a task there when no board is given.
+- A stage's category decides whether a task is open: backlog and active stages are open, done and cancelled stages close it.
+- Planning fields (level, parent, depends_on) only exist on boards with planning switched on; a tool refuses them elsewhere.
+- Dates are YYYY-MM-DD. People, stages and labels can be given by name; "me" is the connected user.
+- Pass only the arguments a tool lists, with the types it lists: an unknown or mistyped argument is refused, never ignored.
+- Prefer list_tasks with filters, or my_work, over fetching whole boards.`;
+
+export async function handleMcp(
+  request: Request,
+  viewer: Viewer,
+  call: ApiCall,
+  onAgent: (name: string) => Promise<void>,
+  origin: string,
+): Promise<Response> {
+  if (request.method === "GET" || request.method === "DELETE") {
+    return new Response("This MCP server does not open a server-sent event stream.", {
+      status: 405,
+      headers: { allow: "POST", ...CORS_HEADERS },
+    });
+  }
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return reply({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, 400);
+  }
+  /* An empty batch is itself one invalid request (JSON-RPC 2.0, section 6). */
+  if (Array.isArray(payload) && !payload.length) return reply(invalidRequest(null), 400);
+  const batch = Array.isArray(payload) ? payload : [payload];
+  const ctx: Ctx = { viewer, call, origin };
+  const answers = (await Promise.all(batch.map((m) => answer(m, ctx, onAgent)))).filter(
+    (a): a is object => a !== null,
+  );
+  /* Notifications and responses only: nothing to say back. */
+  if (!answers.length) return reply(null, 202);
+  if (Array.isArray(payload)) return reply(answers);
+  const single = answers[0] as { error?: { code: number } };
+  return reply(single, single.error?.code === -32600 ? 400 : 200);
+}
+
+const invalidRequest = (id: unknown) => ({
+  jsonrpc: "2.0",
+  id: typeof id === "string" || typeof id === "number" ? id : null,
+  error: { code: -32600, message: "Invalid Request: expected a JSON-RPC 2.0 object with a method." },
+});
+
+/**
+ * What a message is. A request has an id and a method; a notification a
+ * method and no id; a response (the client answering us) an id and a result
+ * or an error. Anything else, null and arrays included, is invalid.
+ */
+function classify(message: unknown): "request" | "notification" | "response" | "invalid" {
+  if (typeof message !== "object" || message === null || Array.isArray(message)) return "invalid";
+  const m = message as Record<string, unknown>;
+  if (m.jsonrpc !== "2.0") return "invalid";
+  const hasId = typeof m.id === "string" || typeof m.id === "number";
+  if (m.params !== undefined && (typeof m.params !== "object" || m.params === null)) return "invalid";
+  if (typeof m.method === "string") return hasId ? "request" : m.id === undefined ? "notification" : "invalid";
+  if (m.method === undefined && hasId && ("result" in m || "error" in m)) return "response";
+  return "invalid";
+}
+
+async function answer(raw: unknown, ctx: Ctx, onAgent: (name: string) => Promise<void>): Promise<object | null> {
+  const kind = classify(raw);
+  if (kind === "invalid") return invalidRequest((raw as { id?: unknown } | null)?.id);
+  if (kind !== "request") return null;
+  const message = raw as JsonRpcRequest;
+  const ok = (result: unknown) => ({ jsonrpc: "2.0", id: message.id, result });
+  const fail = (code: number, msg: string) => ({ jsonrpc: "2.0", id: message.id, error: { code, message: msg } });
+
+  switch (message.method) {
+    case "initialize": {
+      const requested = String(message.params?.protocolVersion ?? "");
+      const clientInfo = message.params?.clientInfo as { name?: unknown } | undefined;
+      if (typeof clientInfo?.name === "string" && clientInfo.name.trim()) {
+        await onAgent(clientInfo.name).catch(() => undefined);
+      }
+      return ok({
+        protocolVersion: SUPPORTED_VERSIONS.includes(requested) ? requested : SUPPORTED_VERSIONS[0],
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: "copland", title: "Copland", version: SERVER_VERSION },
+        instructions: INSTRUCTIONS,
+      });
+    }
+    case "ping":
+      return ok({});
+    case "tools/list":
+      return ok({ tools: TOOLS.map(({ run: _run, ...tool }) => tool) });
+    case "tools/call": {
+      const name = String(message.params?.name ?? "");
+      const tool = TOOLS.find((t) => t.name === name);
+      if (!tool) return fail(-32602, `Unknown tool: ${name}`);
+      const args = (message.params?.arguments ?? {}) as Record<string, unknown>;
+      const problems = checkArgs(tool, args);
+      if (problems.length) {
+        return ok({ content: [{ type: "text", text: `${name}: ${problems.join(" ")}` }], isError: true });
+      }
+      try {
+        const result = await tool.run(args, ctx);
+        return ok({
+          content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }],
+        });
+      } catch (error) {
+        /* A refused or invalid action is the tool's answer, not a protocol failure. */
+        return ok({ content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true });
+      }
+    }
+    default:
+      return fail(-32601, `Method not found: ${message.method}`);
+  }
+}
+
+/**
+ * Arguments held against the tool's inputSchema before it runs. An unknown
+ * key is refused rather than ignored: `assignee` for `assignees` would
+ * otherwise quietly do nothing. Types, enums and required keys too, so a
+ * mistake comes back as a message the assistant can act on.
+ */
+function checkArgs(tool: Tool, args: unknown): string[] {
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return ["arguments must be an object."];
+  const { properties, required = [] } = tool.inputSchema;
+  const valid = Object.keys(properties);
+  const problems: string[] = [];
+  const unknown = Object.keys(args).filter((k) => !(k in properties));
+  if (unknown.length) {
+    problems.push(
+      `Unknown argument${unknown.length > 1 ? "s" : ""} ${unknown.map((k) => `"${k}"`).join(", ")}. Valid arguments: ${valid.length ? valid.join(", ") : "none"}.`,
+    );
+  }
+  const missing = required.filter((k) => (args as Record<string, unknown>)[k] === undefined);
+  if (missing.length) problems.push(`Missing required ${missing.map((k) => `"${k}"`).join(", ")}.`);
+  for (const [key, value] of Object.entries(args)) {
+    const schema = properties[key] as Schema | undefined;
+    if (!schema || value === undefined) continue;
+    const wrong = typeProblem(schema, value);
+    if (wrong) problems.push(`"${key}" ${wrong}.`);
+  }
+  return problems;
+}
+
+interface Schema {
+  type?: string | string[];
+  enum?: string[];
+  items?: { type?: string };
+}
+
+function typeProblem(schema: Schema, value: unknown): string | null {
+  /* A union (a stage by name or position) passes when any of its types does. */
+  if (Array.isArray(schema.type)) {
+    const problems = schema.type.map((type) => typeProblem({ ...schema, type }, value));
+    return problems.includes(null) ? null : `must be a ${schema.type.join(" or ")}`;
+  }
+  switch (schema.type) {
+    case "integer":
+      return typeof value === "number" && Number.isInteger(value) ? null : "must be a whole number";
+    case "string":
+      if (typeof value !== "string") return "must be a string";
+      if (schema.enum && !schema.enum.some((e) => fold(e) === fold(value))) return `must be one of: ${schema.enum.join(", ")}`;
+      return null;
+    case "number":
+      return typeof value === "number" && Number.isFinite(value) ? null : "must be a number";
+    case "boolean":
+      return typeof value === "boolean" ? null : "must be true or false";
+    case "array":
+      if (!Array.isArray(value)) return "must be a list (array)";
+      if (schema.items?.type === "string" && value.some((v) => typeof v !== "string")) return "must be a list of strings";
+      return null;
+    default:
+      return null;
+  }
+}
+
+/* ------------------------------------------------------------ the world --- */
+
+interface Ctx {
+  viewer: Viewer;
+  call: ApiCall;
+  origin: string;
+}
+
+/** Boards (all, or the one asked for) in full. One call per board. */
+async function load(ctx: Ctx, boardRef?: unknown): Promise<BoardDetail[]> {
+  const boards = await ctx.call<BoardSummary[]>("GET", "/api/boards");
+  const wanted = boardRef === undefined || boardRef === "" ? boards : [resolveBoard(boards, boardRef)];
+  return Promise.all(wanted.map((b) => ctx.call<BoardDetail>("GET", `/api/boards/${b.id}`)));
+}
+
+/** One task by key or id, with its board in full (names for its ids). */
+async function loadTask(ctx: Ctx, ref: unknown): Promise<{ detail: BoardDetail; task: Task }> {
+  if (typeof ref !== "string" || !/^[A-Za-z0-9_-]+$/.test(ref.trim())) {
+    throw new Error("task must be a key like CPL-12 (or a task id).");
+  }
+  let found: Task;
+  try {
+    found = await ctx.call<Task>("GET", `/api/tasks/${ref.trim()}`);
+  } catch {
+    throw new Error(`No task ${ref} on any board you are on. Keys look like CPL-12; list_tasks finds them.`);
+  }
+  const detail = await ctx.call<BoardDetail>("GET", `/api/boards/${found.boardId}`);
+  return { detail, task: detail.tasks.find((t) => t.id === found.id) ?? found };
+}
+
+/** Lowercased, accents stripped: "cafe" finds "Café". */
+function fold(s: string): string {
+  return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+}
+
+/** Exact match on any key first, then a partial match that fits exactly one. */
+function pick<T>(items: T[], ref: unknown, keys: (t: T) => string[], what: string, names: (t: T) => string): T {
+  if (typeof ref !== "string" && typeof ref !== "number") throw new Error(`${what} is required.`);
+  const q = fold(String(ref));
+  const exact = items.filter((t) => keys(t).some((k) => fold(k) === q));
+  if (exact.length === 1) return exact[0];
+  const partial = items.filter((t) => keys(t).some((k) => fold(k).includes(q)));
+  if (!exact.length && partial.length === 1) return partial[0];
+  const options = (exact.length ? exact : partial.length ? partial : items).map(names).slice(0, 25).join(", ");
+  throw new Error(
+    exact.length + partial.length > 1
+      ? `"${ref}" matches more than one ${what}: ${options}. Be more specific.`
+      : `No ${what} matches "${ref}". Options: ${options || "none"}.`,
+  );
+}
+
+function resolveBoard(boards: BoardSummary[], ref: unknown): BoardSummary {
+  if (typeof ref === "string" && fold(ref) === "inbox") {
+    const inbox = boards.find((b) => b.isInbox);
+    if (inbox) return inbox;
+  }
+  return pick(boards, ref, (b) => [b.id, b.key, b.name], "board", (b) => `${b.name} (${b.key})`);
+}
+
+const isMe = (ref: unknown) => typeof ref === "string" && ["me", "myself", "self"].includes(fold(ref));
+
+function resolvePerson(members: BoardMember[], ref: unknown, viewer: Viewer): BoardMember {
+  if (isMe(ref)) {
+    const me = members.find((m) => m.user.id === viewer.user.id);
+    if (!me) throw new Error("You are not a member of this board.");
+    return me;
+  }
+  return pick(members, ref, (m) => [m.user.id, m.user.email, m.user.name], "board member", (m) => m.user.name);
+}
+
+/**
+ * A stage by position (0 is the first column), name, or category ("done"
+ * finds the board's done stage when it has one), in that order.
+ */
+function resolveStage(stages: Stage[], ref: unknown): Stage {
+  const raw = typeof ref === "number" ? String(ref) : ref;
+  if (typeof raw === "string" && /^\d+$/.test(raw.trim())) {
+    const byPosition = stages.find((s) => s.position === Number(raw));
+    if (byPosition) return byPosition;
+  }
+  if (typeof raw === "string") {
+    const q = fold(raw);
+    const named = stages.filter((s) => fold(s.name) === q || s.id === raw);
+    if (named.length === 1) return named[0];
+    if (!named.length && (STAGE_CATEGORIES as readonly string[]).includes(q)) {
+      const inCategory = stages.filter((s) => s.category === q);
+      if (inCategory.length) return inCategory[0];
+    }
+  }
+  return pick(stages, raw, (s) => [s.id, s.name], "stage", (s) => `${s.position}: ${s.name} (${s.category})`);
+}
+
+function resolveLabels(labels: Label[], refs: unknown): string[] {
+  return list(refs).map((r) => pick(labels, r, (l) => [l.id, l.name], "label", (l) => l.name).id);
+}
+
+/** A task key on this board, or null for "none". */
+function resolveSameBoardTask(detail: BoardDetail, ref: unknown, what: string): Task | null {
+  if (ref === undefined || ref === null || ref === "" || (typeof ref === "string" && fold(ref) === "none")) return null;
+  const q = String(ref).trim().toUpperCase();
+  const task = detail.tasks.find((t) => t.key === q || t.id === String(ref).trim());
+  if (!task) throw new Error(`${what} must be a task on ${detail.board.name} (keys ${detail.board.key}-N); no ${ref} there.`);
+  return task;
+}
+
+function resolvePriority(ref: unknown): Priority {
+  const p = fold(String(ref));
+  if (!(PRIORITIES as readonly string[]).includes(p)) throw new Error(`priority must be one of: ${PRIORITIES.join(", ")}.`);
+  return p as Priority;
+}
+
+function resolveLevel(ref: unknown): Level | null {
+  if (ref === null || ref === "" || fold(String(ref)) === "none") return null;
+  const level = fold(String(ref));
+  if (!(LEVELS as readonly string[]).includes(level)) throw new Error(`level must be one of: ${LEVELS.join(", ")}, or "none".`);
+  return level as Level;
+}
+
+/** A date to set: YYYY-MM-DD, or "none"/"" to clear. */
+function dateOrNull(value: unknown, what: string): string | null {
+  if (typeof value === "string" && (value.trim() === "" || fold(value) === "none")) return null;
+  return date(value, what);
+}
+
+function date(value: unknown, what: string): string {
+  if (!isDate(value)) throw new Error(`${what} must be a real date as YYYY-MM-DD, e.g. 2026-10-15 (got "${String(value)}").`);
+  return value;
+}
+
+function list(value: unknown): unknown[] {
+  if (value === undefined || value === null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+
+const PLANNING_ARGS = ["level", "parent", "depends_on"] as const;
+
+/** Refuse planning fields on a board without planning, instead of letting them vanish. */
+function requirePlanningFor(board: BoardSummary, args: Record<string, unknown>): void {
+  const used = PLANNING_ARGS.filter((f) => args[f] !== undefined);
+  if (used.length && !board.hasPlanning) {
+    throw new Error(
+      `${board.name} does not use planning fields (${used.join(", ")}). Only boards with planning switched on do; see list_boards.`,
+    );
+  }
+}
+
+/* ------------------------------------------------------------- dates --- */
+
+/**
+ * Today, as a calendar day in UTC. Copland has no time zone setting yet, so
+ * "overdue" and my_work's groups turn over at midnight UTC.
+ */
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function statusOf(detail: BoardDetail, task: Task): "open" | "done" | "cancelled" {
+  const category = detail.stages.find((s) => s.id === task.stageId)?.category ?? "active";
+  return category === "done" || category === "cancelled" ? category : "open";
+}
+
+const overdue = (detail: BoardDetail, task: Task, day: string) =>
+  statusOf(detail, task) === "open" && task.dueDate !== null && task.dueDate < day;
+
+/** Soonest due first, undated last, then by key. */
+function byDue(a: Task, b: Task): number {
+  if (a.dueDate !== b.dueDate) {
+    if (a.dueDate === null) return 1;
+    if (b.dueDate === null) return -1;
+    return a.dueDate < b.dueDate ? -1 : 1;
+  }
+  return PRIORITIES.indexOf(b.priority) - PRIORITIES.indexOf(a.priority) || a.key.localeCompare(b.key);
+}
+
+/* ---------------------------------------------------------- summaries --- */
+
+/** A task the way an assistant wants to read it: names and keys, not ids. */
+function summarize(detail: BoardDetail, task: Task, origin: string) {
+  const person = (id: string) => detail.members.find((m) => m.user.id === id)?.user.name ?? id;
+  const keyOf = (id: string) => detail.tasks.find((t) => t.id === id)?.key ?? id;
+  const children = detail.tasks.filter((t) => t.parentId === task.id).length;
+  return {
+    key: task.key,
+    title: task.title,
+    board: detail.board.name,
+    stage: detail.stages.find((s) => s.id === task.stageId)?.name ?? task.stageId,
+    status: statusOf(detail, task),
+    priority: task.priority,
+    start: task.startDate,
+    due: task.dueDate,
+    ...(overdue(detail, task, today()) ? { overdue: true } : {}),
+    assignees: task.assigneeIds.map(person),
+    ...(task.labelIds.length
+      ? { labels: task.labelIds.map((id) => detail.labels.find((l) => l.id === id)?.name ?? id) }
+      : {}),
+    ...(detail.board.hasPlanning
+      ? {
+          ...(task.level ? { level: task.level } : {}),
+          ...(task.parentId ? { parent: keyOf(task.parentId) } : {}),
+          ...(task.dependsOn.length ? { depends_on: task.dependsOn.map(keyOf) } : {}),
+          ...(children ? { children } : {}),
+        }
+      : {}),
+    comments: task.commentCount,
+    url: `${origin}/b/${detail.board.key}`,
+  };
+}
+
+function boardOverview(detail: BoardDetail) {
+  const b = detail.board;
+  return {
+    name: b.name,
+    key: b.key,
+    ...(b.isInbox ? { inbox: true } : {}),
+    your_role: b.role,
+    planning: b.hasPlanning,
+    stages: detail.stages.map((s) => ({
+      position: s.position,
+      name: s.name,
+      category: s.category,
+      tasks: detail.tasks.filter((t) => t.stageId === s.id).length,
+    })),
+    labels: detail.labels.map((l) => l.name),
+    members: detail.members.map((m) => ({ name: m.user.name, email: m.user.email, role: m.role })),
+  };
+}
+
+/* ------------------------------------------------------------- guide --- */
+
+const CATEGORY_MEANING: Record<string, string> = {
+  backlog: "not started",
+  active: "in progress",
+  done: "entering it completes the task",
+  cancelled: "entering it closes the task as dropped",
+};
+
+function guide(details: BoardDetail[], ctx: Ctx): string {
+  const v = ctx.viewer;
+  const via = v.access?.via ?? "this connection";
+  const out: string[] = [];
+  out.push(`# Copland: a guide for AI assistants
+
+You are connected as **${v.user.name}** (${v.user.email}), with ${
+    v.access?.scope === "read"
+      ? "**read-only** access: you can look at everything they can, and change nothing"
+      : "read and write access"
+  }. You act as them: on each board you can do exactly what their role there allows, and every change you make shows in the task's history as "${v.user.name} via ${via}". Today is ${today()} (UTC).`);
+
+  out.push(`## Concepts
+
+- **Boards.** A board is a set of tasks moving through stages, left to right. Everyone has an **inbox**: a private board only they see, where their own todos live. Other boards can be shared.
+- **Roles.** On each board the user is an owner (everything, including members and stages), an editor (tasks, labels, comments) or a viewer (reads and comments only). A tool refuses what the role does not allow.
+- **Stages and categories.** Every stage has a category: backlog (not started), active (in progress), done or cancelled. A task in a done or cancelled stage is closed; moving it back to an open stage reopens it. Stage names are the board's own; the category is what they mean.
+- **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
+- **Planning.** Boards with planning switched on add: level (epic > story > task, plus milestone), parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). Other boards refuse these fields.
+- **Labels** belong to a board and are given by name. Priority is low, normal, high or urgent.`);
+
+  out.push(`## Your boards`);
+  for (const d of details) {
+    const b = d.board;
+    out.push(`### ${b.name} (key ${b.key}${b.isInbox ? ", your inbox" : ""})
+
+- Your role: ${b.role}
+- Planning: ${b.hasPlanning ? "on (level, parent, depends_on)" : "off"}
+- Members: ${d.members.map((m) => `${m.user.name} (${m.role})`).join(", ")}
+- Labels: ${d.labels.length ? d.labels.map((l) => l.name).join(", ") : "none yet"}
+- Open tasks: ${d.tasks.filter((t) => statusOf(d, t) === "open").length}
+
+Stages:
+${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_MEANING[s.category]}`).join("\n")}`);
+  }
+
+  out.push(`## Conventions
+
+- Tasks: a key like CPL-12. People: name, email, or "me"; assignees must be members of the task's board. Stages: name, position number, or a category ("done" finds the board's done stage). Labels: existing names on that board. Partial names work when unambiguous; an unknown or ambiguous name returns the options.
+- Dates: YYYY-MM-DD, real calendar days; "none" clears a date. A start date cannot be after the due date. overdue means past due and still open.
+- Arguments: pass only those a tool lists. An unknown argument, or a planning field on a board without planning, is refused with an error, never silently dropped.
+- Errors come back as the tool's text: read them, they say what to do instead.
+- Ask before deleting or bulk-changing things the user did not explicitly ask for.
+
+## Examples
+
+- "What's on my plate?" → my_work
+- "What's late?" → list_tasks { overdue: true }
+- "Remind me to renew the passport by the 20th" → create_task { title: "Renew passport", due: "YYYY-MM-20" } (no board: the inbox)
+- "What's Sam doing on the launch board?" → list_tasks { board: "launch", assignee: "Sam" }
+- "Move LNCH-4 to done" → move_task { task: "LNCH-4", stage: "done" }
+- "Give LNCH-4 to me, urgent, labelled bug" → update_task { task: "LNCH-4", assignees: ["me"], priority: "urgent", labels: ["bug"] }
+- "Tell the others the brief changed" → comment_on_task { task, text }`);
+  return out.join("\n\n");
+}
+
+/* ----------------------------------------------------------------- tools --- */
+
+interface Tool {
+  name: string;
+  title: string;
+  description: string;
+  inputSchema: { type: "object"; properties: Record<string, unknown>; required?: string[]; additionalProperties?: boolean };
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean };
+  run: (args: Record<string, unknown>, ctx: Ctx) => Promise<unknown>;
+}
+
+const S = { type: "string" } as const;
+const TASK = { type: "string", description: "Task key, e.g. CPL-12" } as const;
+const BOARD = { type: "string", description: "Board name or key; \"inbox\" is your private board" } as const;
+const PEOPLE = { type: "array", items: S, description: "Board members by name, email, or \"me\"" } as const;
+const PRIORITY = { type: "string", enum: [...PRIORITIES] } as const;
+const STAGE = { type: ["string", "integer"], description: "Stage name, position number (0 is the first), or category (backlog, active, done, cancelled)" } as const;
+
+const TOOLS: Tool[] = [
+  {
+    name: "guide",
+    title: "Guide to Copland",
+    description:
+      "Read this first. The manual for working in Copland, built from live data: who you are connected as, how boards, roles, stages and their categories, task keys and planning work, every board you are on with its stages, labels and members, conventions, and example requests with the tool calls that answer them. Markdown.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true },
+    async run(_args, ctx) {
+      return guide(await load(ctx), ctx);
+    },
+  },
+  {
+    name: "whoami",
+    title: "Who am I",
+    description:
+      "The user this connection acts as: name, email, whether they are an instance admin, their inbox's board key, how many boards they are on, and access (\"read and write\" or \"read-only\": a read-only connection cannot change anything).",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true },
+    async run(_args, ctx) {
+      const [me, boards] = await Promise.all([
+        ctx.call<Me>("GET", "/api/me"),
+        ctx.call<BoardSummary[]>("GET", "/api/boards"),
+      ]);
+      return {
+        name: me.user.name,
+        email: me.user.email,
+        admin: me.user.isAdmin,
+        inbox: boards.find((b) => b.id === me.inboxId)?.key ?? null,
+        boards: boards.length,
+        /* How this connection was made is not the app's to say: it lives on the token. */
+        access: ctx.viewer.access?.scope === "read" ? "read-only" : "read and write",
+      };
+    },
+  },
+  {
+    name: "list_boards",
+    title: "List boards",
+    description:
+      "Every board you are on: name, key (the prefix of its task keys), your role (owner, editor, viewer), whether it is your inbox, whether planning is on, member count and open task count. get_board has a board's stages, labels and members.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true },
+    async run(_args, ctx) {
+      const boards = await ctx.call<BoardSummary[]>("GET", "/api/boards");
+      return boards.map((b) => ({
+        name: b.name,
+        key: b.key,
+        your_role: b.role,
+        ...(b.isInbox ? { inbox: true } : {}),
+        planning: b.hasPlanning,
+        members: b.memberCount,
+        open_tasks: b.openTaskCount,
+      }));
+    },
+  },
+  {
+    name: "get_board",
+    title: "Get a board",
+    description:
+      "One board in full: its stages in order (position, name, category, task count), labels, members with their roles, your role, whether planning is on, and its tasks as summaries (open ones unless include_closed), soonest due first.",
+    inputSchema: {
+      type: "object",
+      properties: { board: BOARD, include_closed: { type: "boolean", description: "Also list done and cancelled tasks" } },
+      required: ["board"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
+    async run(args, ctx) {
+      const [detail] = await load(ctx, args.board);
+      const tasks = detail.tasks
+        .filter((t) => args.include_closed === true || statusOf(detail, t) === "open")
+        .sort(byDue)
+        .map((t) => summarize(detail, t, ctx.origin));
+      return { ...boardOverview(detail), tasks };
+    },
+  },
+  {
+    name: "list_tasks",
+    title: "List tasks",
+    description:
+      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields where the board uses them, comment count and the board's url. Filters combine.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        board: { type: "string", description: "Board name or key. Omit for every board." },
+        stage: { ...STAGE, description: `${STAGE.description}. Needs board.` },
+        status: { type: "string", enum: ["open", "closed", "done", "cancelled", "all"], description: "Default open" },
+        assignee: { type: "string", description: "A board member, \"me\", or \"none\" for unassigned" },
+        due_before: { type: "string", description: "Due on or before this day, YYYY-MM-DD" },
+        due_after: { type: "string", description: "Due on or after this day, YYYY-MM-DD" },
+        overdue: { type: "boolean", description: "Only open tasks past their due date" },
+        label: { type: "string", description: "A label name" },
+        priority: PRIORITY,
+        level: { type: "string", enum: [...LEVELS], description: "Planning boards only" },
+        parent: { type: "string", description: "Only direct children of this task key (planning boards)" },
+        query: { type: "string", description: "Text in the title or brief" },
+        limit: { type: "number", description: "Default 50, at most 200" },
+      },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
+    async run(args, ctx) {
+      const details = await load(ctx, args.board);
+      if (args.stage !== undefined && args.board === undefined) throw new Error("stage needs board: stage names are per board.");
+      const single = args.board !== undefined ? details[0] : null;
+      if (single) requirePlanningFor(single.board, { level: args.level, parent: args.parent });
+      const stage = single && args.stage !== undefined ? resolveStage(single.stages, args.stage) : null;
+      const status = fold(str(args.status) ?? "open");
+      const before = args.due_before !== undefined ? date(args.due_before, "due_before") : null;
+      const after = args.due_after !== undefined ? date(args.due_after, "due_after") : null;
+      const priority = args.priority !== undefined ? resolvePriority(args.priority) : null;
+      const level = args.level !== undefined ? resolveLevel(args.level) : undefined;
+      const needle = str(args.query) ? fold(str(args.query) as string) : null;
+      const label = str(args.label) ? fold(str(args.label) as string) : null;
+      const day = today();
+      const assignee = args.assignee;
+      const parentKey = args.parent !== undefined ? String(args.parent).trim().toUpperCase() : null;
+
+      const rows = details.flatMap((d) => {
+        /* A person is resolved per board, since members differ; a board they are not on has none of their tasks. */
+        let personId: string | null | undefined;
+        if (assignee !== undefined && !(typeof assignee === "string" && fold(assignee) === "none")) {
+          try {
+            personId = resolvePerson(d.members, assignee, ctx.viewer).user.id;
+          } catch (error) {
+            if (single) throw error;
+            return [];
+          }
+        } else if (assignee !== undefined) {
+          personId = null;
+        }
+        const parent = parentKey ? d.tasks.find((t) => t.key === parentKey || t.id === args.parent) : undefined;
+        if (parentKey && !parent) return [];
+        return d.tasks
+          .filter((t) => {
+            const s = statusOf(d, t);
+            return status === "all" || s === status || (status === "closed" && s !== "open");
+          })
+          .filter((t) => !stage || t.stageId === stage.id)
+          .filter((t) => personId === undefined || (personId === null ? t.assigneeIds.length === 0 : t.assigneeIds.includes(personId)))
+          .filter((t) => !before || (t.dueDate !== null && t.dueDate <= before))
+          .filter((t) => !after || (t.dueDate !== null && t.dueDate >= after))
+          .filter((t) => args.overdue !== true || overdue(d, t, day))
+          .filter((t) => !label || t.labelIds.some((id) => fold(d.labels.find((l) => l.id === id)?.name ?? "") === label))
+          .filter((t) => !priority || t.priority === priority)
+          .filter((t) => level === undefined || t.level === level)
+          .filter((t) => !parent || t.parentId === parent.id)
+          .filter((t) => !needle || fold(`${t.title} ${t.brief}`).includes(needle))
+          .map((t) => ({ d, t }));
+      });
+      if (parentKey && !rows.length && !details.some((d) => d.tasks.some((t) => t.key === parentKey))) {
+        throw new Error(`No task ${String(args.parent)} to list the children of.`);
+      }
+      rows.sort((a, b) => byDue(a.t, b.t));
+      const limit = typeof args.limit === "number" && args.limit > 0 ? Math.min(Math.floor(args.limit), 200) : 50;
+      return {
+        total: rows.length,
+        ...(rows.length > limit ? { showing: limit } : {}),
+        tasks: rows.slice(0, limit).map(({ d, t }) => summarize(d, t, ctx.origin)),
+      };
+    },
+  },
+  {
+    name: "get_task",
+    title: "Get a task",
+    description:
+      "One task in full: everything list_tasks returns, plus the brief (markdown), created and updated times, children on planning boards, and the comment thread (oldest first). Use a key like CPL-12.",
+    inputSchema: { type: "object", properties: { task: TASK }, required: ["task"], additionalProperties: false },
+    annotations: { readOnlyHint: true },
+    async run(args, ctx) {
+      const { detail, task } = await loadTask(ctx, args.task);
+      const comments = await ctx.call<Comment[]>("GET", `/api/tasks/${task.id}/comments`);
+      return {
+        ...summarize(detail, task, ctx.origin),
+        brief: task.brief,
+        created: task.createdAt,
+        updated: task.updatedAt,
+        ...(detail.board.hasPlanning
+          ? {
+              children: detail.tasks
+                .filter((t) => t.parentId === task.id)
+                .map((t) => `${t.key} ${t.title}${t.level ? ` (${t.level})` : ""}`),
+            }
+          : {}),
+        thread: comments.map((c) => ({ by: c.authorName, at: c.createdAt, text: c.text, ...(c.editedAt ? { edited: true } : {}) })),
+      };
+    },
+  },
+  {
+    name: "create_task",
+    title: "Create a task",
+    description:
+      "Open a task. Without board it goes in your inbox. It starts in the board's first stage unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on only on boards with planning; they are refused elsewhere. Dates must be real YYYY-MM-DD days, start on or before due. Returns { created: summary }.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        board: BOARD,
+        title: S,
+        brief: { type: "string", description: "Markdown" },
+        stage: STAGE,
+        priority: PRIORITY,
+        start: { type: "string", description: "YYYY-MM-DD" },
+        due: { type: "string", description: "YYYY-MM-DD" },
+        assignees: PEOPLE,
+        labels: { type: "array", items: S, description: "Existing label names on that board" },
+        level: { type: "string", enum: [...LEVELS], description: "Planning boards" },
+        parent: { type: "string", description: "Planning boards: the parent's task key, on the same board" },
+        depends_on: { type: "array", items: S, description: "Planning boards: task keys this one is blocked by" },
+      },
+      required: ["title"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+    async run(args, ctx) {
+      const [detail] = await load(ctx, args.board ?? "inbox");
+      requirePlanningFor(detail.board, args);
+      const body: Record<string, unknown> = { title: args.title };
+      if (args.brief !== undefined) body.brief = args.brief;
+      if (args.stage !== undefined) body.stageId = resolveStage(detail.stages, args.stage).id;
+      if (args.priority !== undefined) body.priority = resolvePriority(args.priority);
+      if (args.start !== undefined) body.startDate = dateOrNull(args.start, "start");
+      if (args.due !== undefined) body.dueDate = dateOrNull(args.due, "due");
+      if (args.assignees !== undefined) {
+        body.assigneeIds = list(args.assignees).map((p) => resolvePerson(detail.members, p, ctx.viewer).user.id);
+      }
+      if (args.labels !== undefined) body.labelIds = resolveLabels(detail.labels, args.labels);
+      if (args.level !== undefined) body.level = resolveLevel(args.level);
+      if (args.parent !== undefined) body.parentId = resolveSameBoardTask(detail, args.parent, "parent")?.id ?? null;
+      const dependsOn =
+        args.depends_on !== undefined
+          ? list(args.depends_on).map((k) => (resolveSameBoardTask(detail, k, "depends_on") as Task).id)
+          : [];
+
+      let task = await ctx.call<Task>("POST", `/api/boards/${detail.board.id}/tasks`, body);
+      /* Creation takes no dependencies; they are a second write on the new task. */
+      if (dependsOn.length) {
+        try {
+          task = await ctx.call<Task>("PATCH", `/api/tasks/${task.id}`, { dependsOn });
+        } catch (error) {
+          throw new Error(
+            `Created ${task.key}, but its dependencies were refused: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      /* The summary names parents and dependencies by key: read them against a board that includes the new task. */
+      return { created: summarize({ ...detail, tasks: [...detail.tasks, task] }, task, ctx.origin) };
+    },
+  },
+  {
+    name: "update_task",
+    title: "Update a task",
+    description:
+      "Change a task. Only what you pass changes; lists (assignees, labels, depends_on) replace the whole list, [] clears. stage moves it (the same as move_task). \"none\" clears start, due, level or parent. Planning fields only on boards with planning. Needs the editor role. Everything you pass is saved in one write: all of it, or (on an error) none of it. Returns { updated: summary }.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: TASK,
+        title: S,
+        brief: { type: "string", description: "Markdown; replaces the brief" },
+        stage: STAGE,
+        priority: PRIORITY,
+        start: { type: "string", description: "YYYY-MM-DD, or \"none\"" },
+        due: { type: "string", description: "YYYY-MM-DD, or \"none\"" },
+        assignees: PEOPLE,
+        labels: { type: "array", items: S, description: "Label names; [] clears" },
+        level: { type: "string", enum: [...LEVELS, "none"] },
+        parent: { type: "string", description: "Task key, or \"none\"" },
+        depends_on: { type: "array", items: S, description: "Task keys; [] clears" },
+      },
+      required: ["task"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    async run(args, ctx) {
+      const { detail, task } = await loadTask(ctx, args.task);
+      requirePlanningFor(detail.board, args);
+      const fields: Record<string, unknown> = {};
+      if (args.title !== undefined) fields.title = args.title;
+      if (args.brief !== undefined) fields.brief = args.brief;
+      if (args.stage !== undefined) fields.stageId = resolveStage(detail.stages, args.stage).id;
+      if (args.priority !== undefined) fields.priority = resolvePriority(args.priority);
+      if (args.start !== undefined) fields.startDate = dateOrNull(args.start, "start");
+      if (args.due !== undefined) fields.dueDate = dateOrNull(args.due, "due");
+      if (args.assignees !== undefined) {
+        fields.assigneeIds = list(args.assignees).map((p) => resolvePerson(detail.members, p, ctx.viewer).user.id);
+      }
+      if (args.labels !== undefined) fields.labelIds = resolveLabels(detail.labels, args.labels);
+      if (args.level !== undefined) fields.level = resolveLevel(args.level);
+      if (args.parent !== undefined) fields.parentId = resolveSameBoardTask(detail, args.parent, "parent")?.id ?? null;
+      if (args.depends_on !== undefined) {
+        fields.dependsOn = list(args.depends_on).map((k) => (resolveSameBoardTask(detail, k, "depends_on") as Task).id);
+      }
+      if (!Object.keys(fields).length) return "Nothing to change.";
+      const updated = await ctx.call<Task>("PATCH", `/api/tasks/${task.id}`, fields);
+      return { updated: summarize(detail, updated, ctx.origin) };
+    },
+  },
+  {
+    name: "move_task",
+    title: "Move a task to a stage",
+    description:
+      "Move a task to another stage of its board, to the bottom of that column. Moving into a done or cancelled stage closes it; moving back to a backlog or active stage reopens it. Stage by name, position number, or category (\"done\" finds the board's done stage). Needs the editor role. Returns { moved: summary }.",
+    inputSchema: {
+      type: "object",
+      properties: { task: TASK, stage: STAGE },
+      required: ["task", "stage"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    async run(args, ctx) {
+      const { detail, task } = await loadTask(ctx, args.task);
+      const stage = resolveStage(detail.stages, args.stage);
+      const moved = await ctx.call<Task>("PATCH", `/api/tasks/${task.id}`, { stageId: stage.id });
+      return { moved: summarize(detail, moved, ctx.origin) };
+    },
+  },
+  {
+    name: "comment_on_task",
+    title: "Comment on a task",
+    description:
+      "Write in a task's comment thread, as the connected user. Markdown. Anyone on the board may comment, viewers included. Returns the thread's length.",
+    inputSchema: {
+      type: "object",
+      properties: { task: TASK, text: { type: "string", description: "Markdown" } },
+      required: ["task", "text"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+    async run(args, ctx) {
+      const { task } = await loadTask(ctx, args.task);
+      const thread = await ctx.call<Comment[]>("POST", `/api/tasks/${task.id}/comments`, { text: args.text });
+      return `Commented on ${task.key} (${thread.length} comment${thread.length === 1 ? "" : "s"} now).`;
+    },
+  },
+  {
+    name: "delete_task",
+    title: "Delete a task",
+    description:
+      "Delete a task (needs the editor role). It disappears from its board and every list; tasks under it lose their parent and dependencies on it are dropped. Confirm with the user first unless they asked for it explicitly.",
+    inputSchema: { type: "object", properties: { task: TASK }, required: ["task"], additionalProperties: false },
+    annotations: { readOnlyHint: false, destructiveHint: true },
+    async run(args, ctx) {
+      const { task } = await loadTask(ctx, args.task);
+      await ctx.call("DELETE", `/api/tasks/${task.id}`);
+      return `Deleted ${task.key} “${task.title}”.`;
+    },
+  },
+  {
+    name: "my_work",
+    title: "My work",
+    description:
+      "What the connected user has to do: open tasks assigned to them on any board, plus every open task in their inbox, grouped by due date (overdue, today, this_week = the next 7 days, later, no_date; date is today in UTC) and soonest due first within each. Start here for \"what should I do today\".",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true },
+    async run(_args, ctx) {
+      const details = await load(ctx);
+      const me = ctx.viewer.user.id;
+      const day = today();
+      const week = addDays(day, 7);
+      const mine = details
+        .flatMap((d) =>
+          d.tasks
+            .filter((t) => statusOf(d, t) === "open" && (d.board.isInbox || t.assigneeIds.includes(me)))
+            .map((t) => ({ d, t })),
+        )
+        .sort((a, b) => byDue(a.t, b.t));
+      const group = (test: (due: string | null) => boolean) =>
+        mine.filter(({ t }) => test(t.dueDate)).map(({ d, t }) => summarize(d, t, ctx.origin));
+      return {
+        date: day,
+        overdue: group((due) => due !== null && due < day),
+        today: group((due) => due === day),
+        this_week: group((due) => due !== null && due > day && due <= week),
+        later: group((due) => due !== null && due > week),
+        no_date: group((due) => due === null),
+      };
+    },
+  },
+];

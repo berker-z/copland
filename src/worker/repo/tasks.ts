@@ -4,6 +4,7 @@
    ========================================================================== */
 
 import type { Label, Level, Priority, Stage, StageCategory, Task } from "@/domain/types";
+import { currentVia } from "../tokens";
 
 interface TaskRow {
   id: string;
@@ -107,14 +108,19 @@ export async function bottomRank(db: D1Database, stageId: string): Promise<numbe
   return row?.r === null || row?.r === undefined ? 0 : row.r + 1;
 }
 
-/** An event row for the board's activity log, as a statement for a batch. */
+/**
+ * An event row for the board's activity log, as a statement for a batch.
+ * `via` comes from the request (tokens.ts viaContext): which assistant or
+ * token made the change, null for the web app.
+ */
 export function eventStatement(
   db: D1Database,
   event: { boardId: string; taskId: string | null; actorId: string; kind: string; before?: unknown; after?: unknown },
 ): D1PreparedStatement {
   return db
     .prepare(
-      `INSERT INTO events (id, board_id, task_id, actor_id, kind, before, after) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+      `INSERT INTO events (id, board_id, task_id, actor_id, kind, before, after, via)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
     )
     .bind(
       crypto.randomUUID(),
@@ -124,5 +130,6 @@ export function eventStatement(
       event.kind,
       event.before === undefined ? null : JSON.stringify(event.before),
       event.after === undefined ? null : JSON.stringify(event.after),
+      currentVia(),
     );
 }

@@ -30,6 +30,7 @@ const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
   vault: [KEYS.vault],
   notes: [KEYS.notes],
   admin: [KEYS.admin],
+  tokens: [KEYS.tokens],
 };
 
 /* Several writes in a burst (a drag across stages, an assistant filing ten
