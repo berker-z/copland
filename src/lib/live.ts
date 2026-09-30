@@ -24,7 +24,8 @@ import { isLive, setLive, TAB_ID } from "./liveState";
 
 const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
   boards: [KEYS.boards],
-  board: [KEYS.boardAll, KEYS.boards],
+  /* Comments and history live under their own keys but change with the board. */
+  board: [KEYS.boardAll, KEYS.boards, ["comments"], ["events"]],
   settings: [KEYS.settings],
   vault: [KEYS.vault],
   notes: [["notes"]],

@@ -31,6 +31,8 @@ import {
   postBoard,
   postMember,
 } from "./routes/boards";
+import { deleteComment, getComments, getTaskEvents, patchComment, postComment } from "./routes/comments";
+import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
 import { deleteTask, patchTask, postTask } from "./routes/tasks";
 import { deleteVault, getMe, getSettings, getVault, patchSettings, putVault } from "./routes/personal";
 import { resolveViewer } from "./viewer";
@@ -82,6 +84,33 @@ const api = new Router<Ctx>()
     patchTask(request, env, viewer, id, changes),
   )
   .on("DELETE", "/api/tasks/:id", ({ env, viewer, changes }, { id }) => deleteTask(env, viewer, id, changes))
+  .on("GET", "/api/tasks/:id/comments", ({ env, viewer }, { id }) => getComments(env, viewer, id))
+  .on("POST", "/api/tasks/:id/comments", ({ request, env, viewer, changes }, { id }) =>
+    postComment(request, env, viewer, id, changes),
+  )
+  .on("PATCH", "/api/comments/:id", ({ request, env, viewer, changes }, { id }) =>
+    patchComment(request, env, viewer, id, changes),
+  )
+  .on("DELETE", "/api/comments/:id", ({ env, viewer, changes }, { id }) => deleteComment(env, viewer, id, changes))
+  .on("GET", "/api/tasks/:id/events", ({ env, viewer }, { id }) => getTaskEvents(env, viewer, id))
+
+  .on("POST", "/api/boards/:id/stages", ({ request, env, viewer, changes }, { id }) =>
+    postStage(request, env, viewer, id, changes),
+  )
+  .on("PUT", "/api/boards/:id/stages/order", ({ request, env, viewer, changes }, { id }) =>
+    putStageOrder(request, env, viewer, id, changes),
+  )
+  .on("PATCH", "/api/stages/:id", ({ request, env, viewer, changes }, { id }) =>
+    patchStage(request, env, viewer, id, changes),
+  )
+  .on("DELETE", "/api/stages/:id", ({ env, viewer, url, changes }, { id }) => deleteStage(env, viewer, id, url, changes))
+  .on("POST", "/api/boards/:id/labels", ({ request, env, viewer, changes }, { id }) =>
+    postLabel(request, env, viewer, id, changes),
+  )
+  .on("PATCH", "/api/labels/:id", ({ request, env, viewer, changes }, { id }) =>
+    patchLabel(request, env, viewer, id, changes),
+  )
+  .on("DELETE", "/api/labels/:id", ({ env, viewer, changes }, { id }) => deleteLabel(env, viewer, id, changes))
 
   .on("GET", "/api/admin/users", ({ env, viewer }) => getUsers(env, viewer))
   .on("PATCH", "/api/admin/users/:id", ({ request, env, viewer, changes }, { id }) =>

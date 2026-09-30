@@ -123,3 +123,25 @@ export interface CreatedInvite {
   invite: Invite;
   url: string;
 }
+
+/* -------------------------------------------------------------- comments -- */
+
+export interface Comment {
+  id: string;
+  taskId: string;
+  authorId: string;
+  authorName: string;
+  text: string;
+  createdAt: string;
+  editedAt: string | null;
+}
+
+/** One row of a task's history (GET /api/tasks/:id/events). */
+export interface TaskEvent {
+  id: string;
+  kind: string;
+  actorName: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  createdAt: string;
+}
