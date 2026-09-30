@@ -10,6 +10,11 @@
   // screen and a 401 from /api.
   "workers_dev": true,
 
+  // This instance's address. Cloudflare creates the DNS record and the
+  // certificate; the zone must be on the same account. A fork changes or
+  // removes this.
+  "routes": [{ "pattern": "copland.berkerz.dev", "custom_domain": true }],
+
   // The built SPA. Unknown paths fall back to index.html so client routes
   // survive a refresh. That fallback answers browser navigations before the
   // Worker runs, which would swallow the sign-in redirects, so /auth/* and
