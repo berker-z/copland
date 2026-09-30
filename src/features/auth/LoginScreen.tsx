@@ -47,6 +47,11 @@ export function LoginScreen() {
           </a>
         </div>
       </div>
+      <p className="mt-6 text-xs text-muted">
+        <a href="/privacy.html" className="hover:text-accent">privacy</a>
+        <span className="text-faint"> · </span>
+        <a href="/terms.html" className="hover:text-accent">terms</a>
+      </p>
     </div>
   );
 }

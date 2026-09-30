@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy Policy · copland</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1a1a1a;
+        --muted: #5a5a5a;
+        --rule: #d8d8d8;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #262b35;
+          --fg: #d8dee9;
+          --muted: #8a94a8;
+          --rule: #3b4252;
+        }
+      }
+      body {
+        margin: 0;
+        padding: 3rem 1.25rem 5rem;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.65 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      main { max-width: 46rem; margin: 0 auto; }
+      h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+      h2 { font-size: 1rem; margin: 2.25rem 0 0.5rem; text-transform: uppercase; letter-spacing: 0.06em; }
+      .updated { color: var(--muted); font-size: 0.85rem; margin: 0 0 2rem; }
+      ul { padding-left: 1.25rem; }
+      li { margin: 0.35rem 0; }
+      a { color: inherit; }
+      hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5rem 0 0; }
+      footer { color: var(--muted); font-size: 0.85rem; margin-top: 1rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Privacy Policy</h1>
+      <p class="updated">copland · copland.berkerz.dev · last updated 1 October 2026</p>
+
+      <p>
+        Copland is a personal dashboard and project tracker. This instance, at
+        copland.berkerz.dev, is run by berker-z for themselves and people they
+        invite. It is not a commercial service, shows no ads, and has no
+        analytics. Copland is also open source; copies that other people host
+        are run by them, and this policy covers only this instance.
+      </p>
+
+      <h2>What it stores</h2>
+      <ul>
+        <li>Your Google account email, name and profile picture, from signing in.</li>
+        <li>
+          What you create: tasks, boards, comments, labels, notes, and your
+          settings (theme, weather location, the coins you follow).
+        </li>
+        <li>
+          API keys you choose to save for panes that need them (CoinGecko,
+          OpenAI). They are encrypted before they are stored and are never sent
+          back to your browser.
+        </li>
+        <li>
+          If you connect Google Calendar: a refresh token for each Google
+          account you connect, encrypted before it is stored, and the list of
+          that account's calendars with which ones you chose to show. Calendar
+          events themselves are not stored; they are read from Google when the
+          dashboard asks for them.
+        </li>
+        <li>
+          If you add a calendar by ICS link: the link, encrypted, since those
+          links are usually secret.
+        </li>
+        <li>
+          If you connect an AI assistant or make an API token: a record of the
+          token (only a hash of its secret), its name, and when it was last
+          used.
+        </li>
+        <li>A history of changes on boards (who changed what, and when), shown to the board's members.</li>
+      </ul>
+
+      <h2>Who can see it</h2>
+      <p>
+        Your settings, notes, saved keys and calendars are visible only to you.
+        Your inbox board is private. Anything you put on a board you share
+        (tasks, comments, your name on assignments) is visible to that board's
+        members. The operator of this instance can technically read the
+        database, but does not look at people's data except to fix a problem
+        you have asked them to fix.
+      </p>
+
+      <h2>Where it is stored</h2>
+      <p>
+        On Cloudflare, which hosts the app (Cloudflare Workers) and its
+        database (Cloudflare D1). Sign-in is a cookie holding a random session
+        token; the app sets no other cookies. Your browser also keeps your
+        theme and the notepad's open note in local storage, only to draw the
+        page faster.
+      </p>
+
+      <h2>How Google data is used</h2>
+      <p>
+        Your Google sign-in is used only to know who you are. Calendar access,
+        if you grant it, is used only to show your calendars in the dashboard
+        and to create, edit and delete events when you ask it to. Google data is
+        never sold, never shared with anyone else, never used for advertising,
+        and never used to train AI models or for anything beyond the features
+        you see in the app. If you connect an AI assistant, it can read your
+        calendar events through that connection only because you created it,
+        and only while you keep it.
+      </p>
+      <p>
+        Copland's use and transfer of information received from Google APIs
+        adheres to the
+        <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noreferrer noopener"
+          >Google API Services User Data Policy</a
+        >, including the Limited Use requirements.
+      </p>
+
+      <h2>Other services</h2>
+      <ul>
+        <li>Google, for sign-in and (if you connect it) Calendar.</li>
+        <li>
+          Binance and Open-Meteo, called directly by your browser for crypto
+          prices, weather and the city search. They receive an ordinary web
+          request and nothing about your account.
+        </li>
+        <li>
+          CoinGecko and OpenAI, called by the server with your own saved key,
+          only if you saved one. OpenAI receives the text you type into the
+          verse pane.
+        </li>
+        <li>Any ICS link you add, which the server fetches to read the calendar.</li>
+      </ul>
+
+      <h2>Retention and removal</h2>
+      <p>
+        Disconnecting a Google account in settings deletes its stored token
+        and calendar list, and tells Google to revoke the access. You can also
+        revoke it from Google's side at
+        <a href="https://myaccount.google.com/permissions" rel="noreferrer noopener"
+          >myaccount.google.com/permissions</a
+        >. Removing a saved key, a feed or a token deletes it. To have your
+        account and everything in it deleted, write to the address below.
+      </p>
+
+      <h2>Changes</h2>
+      <p>If this policy changes, the date at the top changes with it.</p>
+
+      <h2>Contact</h2>
+      <p>berker@lat48.io</p>
+
+      <hr />
+      <footer>copland, a personal project by berker-z · <a href="/terms.html">terms</a></footer>
+    </main>
+  </body>
+</html>
