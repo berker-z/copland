@@ -26,6 +26,7 @@ import { readSettings } from "../repo/settings";
 import { openVault } from "../vault";
 
 const API = "https://api.coingecko.com/api/v3/";
+const USER_AGENT = "copland/0.1 (+https://github.com/berker-z/copland)";
 const CACHE_SECONDS = 600;
 /* Not an address anything answers on; only a key for caches.default. */
 const CACHE_ORIGIN = "https://coingecko.cache.copland.invalid/";
@@ -50,7 +51,11 @@ async function coingecko(path: string, key: string): Promise<unknown> {
 
   /* The header, not the query string: nord-dash put the key in the URL only
      to dodge a CORS preflight, which a Worker does not have. */
-  const response = await fetch(API + path, { headers: { accept: "application/json", "x-cg-demo-api-key": key } });
+  /* CoinGecko refuses requests without a descriptive User-Agent (403), and a
+     Worker's fetch sends none by default. */
+  const response = await fetch(API + path, {
+    headers: { accept: "application/json", "user-agent": USER_AGENT, "x-cg-demo-api-key": key },
+  });
   if (!response.ok) throw new UpstreamError(`${path.split("?")[0]}: ${response.status}`);
   const body: unknown = await response.json();
   remember(path, body);

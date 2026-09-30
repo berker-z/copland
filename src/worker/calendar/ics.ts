@@ -396,7 +396,11 @@ export async function fetchFeed(url: string): Promise<VEvent[]> {
   const cached = feedCache.get(url);
   if (cached && Date.now() - cached.at < FEED_TTL_MS) return cached.parsed;
   const response = await fetch(url.replace(/^webcals?:\/\//i, "https://"), {
-    headers: { accept: "text/calendar, text/plain;q=0.9, */*;q=0.1" },
+    headers: {
+      accept: "text/calendar, text/plain;q=0.9, */*;q=0.1",
+      /* Some feed hosts refuse requests without one; a Worker sends none by default. */
+      "user-agent": "copland/0.1 (+https://github.com/berker-z/copland)",
+    },
   });
   if (!response.ok) throw new Error(`the feed answered ${response.status}`);
   const text = await response.text();
