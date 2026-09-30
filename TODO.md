@@ -45,6 +45,14 @@ this order:
 
 ### Small things noticed
 
+- [ ] Modals have an odd bottom margin nord-dash's did not. Suspects: the
+      `max-h-[90vh]` passed to `ModalFrame` as `className` (added for the long
+      task and settings modals; the frame's own wrapper already caps height),
+      the footer's `bg-bar/60` strip, or Tailwind 4's defaults differing from
+      nord-dash's Tailwind 3 in `ModalFrame`. Compare side by side and hunt.
+- [ ] Bring gnaw into Copland. gnaw is the earlier personal project the
+      `*.gnaw.workers.dev` subdomain is named after. Talk through what that
+      means first: a pane, a board, or folding its features in.
 - [ ] Rotate the OpenAI and CoinGecko keys that nord-dash shipped in its public
       bundle; revoke the old ones.
 - [ ] Turn off `copland.gnaw.workers.dev` (`workers_dev: false`): sign-in does
