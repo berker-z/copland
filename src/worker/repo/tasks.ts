@@ -1,6 +1,6 @@
 /* ============================================================================
-   Tasks: reading a board's tasks with their assignees, labels and
-   dependencies attached. Writes arrive with the tracker (phase 4).
+   Tasks, stages and labels: the reads a board screen needs, and the row
+   lookups the task routes start from.
    ========================================================================== */
 
 import type { Label, Level, Priority, Stage, StageCategory, Task } from "@/domain/types";
@@ -57,21 +57,29 @@ function rowToTask(row: TaskRow): Task {
   };
 }
 
+const TASK_SELECT = `
+  SELECT t.*, b.key AS board_key,
+         (SELECT group_concat(user_id) FROM task_assignees WHERE task_id = t.id) AS assignee_ids,
+         (SELECT group_concat(label_id) FROM task_labels WHERE task_id = t.id) AS label_ids,
+         (SELECT group_concat(depends_on_id) FROM task_dependencies WHERE task_id = t.id) AS depends_on,
+         (SELECT count(*) FROM comments WHERE task_id = t.id) AS comment_count
+    FROM tasks t JOIN boards b ON b.id = t.board_id`;
+
 export async function listTasks(db: D1Database, boardId: string): Promise<Task[]> {
   const { results } = await db
-    .prepare(
-      `SELECT t.*, b.key AS board_key,
-              (SELECT group_concat(user_id) FROM task_assignees WHERE task_id = t.id) AS assignee_ids,
-              (SELECT group_concat(label_id) FROM task_labels WHERE task_id = t.id) AS label_ids,
-              (SELECT group_concat(depends_on_id) FROM task_dependencies WHERE task_id = t.id) AS depends_on,
-              (SELECT count(*) FROM comments WHERE task_id = t.id) AS comment_count
-         FROM tasks t JOIN boards b ON b.id = t.board_id
-        WHERE t.board_id = ?1 AND t.deleted_at IS NULL
-        ORDER BY t.rank, t.number`,
-    )
+    .prepare(`${TASK_SELECT} WHERE t.board_id = ?1 AND t.deleted_at IS NULL ORDER BY t.rank, t.number`)
     .bind(boardId)
     .all<TaskRow>();
   return results.map(rowToTask);
+}
+
+/** A live (not deleted) task, or null. Access is the caller's job. */
+export async function findTask(db: D1Database, id: string): Promise<Task | null> {
+  const row = await db
+    .prepare(`${TASK_SELECT} WHERE t.id = ?1 AND t.deleted_at IS NULL`)
+    .bind(id)
+    .first<TaskRow>();
+  return row ? rowToTask(row) : null;
 }
 
 export async function listStages(db: D1Database, boardId: string): Promise<Stage[]> {
@@ -88,4 +96,33 @@ export async function listLabels(db: D1Database, boardId: string): Promise<Label
     .bind(boardId)
     .all<Label>();
   return results;
+}
+
+/** The rank that puts a task at the bottom of a stage. */
+export async function bottomRank(db: D1Database, stageId: string): Promise<number> {
+  const row = await db
+    .prepare(`SELECT max(rank) AS r FROM tasks WHERE stage_id = ?1 AND deleted_at IS NULL`)
+    .bind(stageId)
+    .first<{ r: number | null }>();
+  return row?.r === null || row?.r === undefined ? 0 : row.r + 1;
+}
+
+/** An event row for the board's activity log, as a statement for a batch. */
+export function eventStatement(
+  db: D1Database,
+  event: { boardId: string; taskId: string | null; actorId: string; kind: string; before?: unknown; after?: unknown },
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO events (id, board_id, task_id, actor_id, kind, before, after) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      event.boardId,
+      event.taskId,
+      event.actorId,
+      event.kind,
+      event.before === undefined ? null : JSON.stringify(event.before),
+      event.after === undefined ? null : JSON.stringify(event.after),
+    );
 }

@@ -24,10 +24,12 @@ The plan, roughly in order. Each phase should leave the app working.
 
 ## 3. Tasks
 
-- [ ] Task create/update/move/delete routes, optimistic on the client, events logged
-- [ ] `/tasks` pane on the inbox (the old todo list, but instant)
-- [ ] Board screens: kanban, list, gantt; planning fields where `has_planning` is on
-- [ ] Members UI: add by email, roles, leave
+- [x] Task create/update/move/delete routes, optimistic on the client, events logged
+- [x] `/tasks` pane on the inbox (the old todo list, but instant)
+- [x] Board screen: kanban with drag and drop, task modal; planning fields (level, parent) where `has_planning` is on
+- [ ] Board screens: list and gantt; dependencies UI
+- [x] Members UI: add by email (invite link for newcomers), roles, leave, rename, archive
+- [ ] Stage editing (rename, add, reorder) and labels UI
 - [ ] Comments and mentions on shared boards
 
 ## 4. Integrations

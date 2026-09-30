@@ -31,6 +31,7 @@ import {
   postBoard,
   postMember,
 } from "./routes/boards";
+import { deleteTask, patchTask, postTask } from "./routes/tasks";
 import { deleteVault, getMe, getSettings, getVault, patchSettings, putVault } from "./routes/personal";
 import { resolveViewer } from "./viewer";
 
@@ -73,6 +74,14 @@ const api = new Router<Ctx>()
   .on("DELETE", "/api/boards/:id/members/:userId", ({ env, viewer, changes }, p) =>
     deleteMember(env, viewer, p.id, p.userId, changes),
   )
+
+  .on("POST", "/api/boards/:id/tasks", ({ request, env, viewer, changes }, { id }) =>
+    postTask(request, env, viewer, id, changes),
+  )
+  .on("PATCH", "/api/tasks/:id", ({ request, env, viewer, changes }, { id }) =>
+    patchTask(request, env, viewer, id, changes),
+  )
+  .on("DELETE", "/api/tasks/:id", ({ env, viewer, changes }, { id }) => deleteTask(env, viewer, id, changes))
 
   .on("GET", "/api/admin/users", ({ env, viewer }) => getUsers(env, viewer))
   .on("PATCH", "/api/admin/users/:id", ({ request, env, viewer, changes }, { id }) =>

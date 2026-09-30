@@ -9,10 +9,13 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useMatch } from "react-router";
 import { LoginScreen } from "@/features/auth/LoginScreen";
+import { BoardScreen } from "@/features/board/BoardScreen";
 import { BoardsPane } from "@/features/boards/BoardsPane";
 import { SettingsModal } from "@/features/settings/SettingsModal";
 import { StatusLine } from "@/features/shell/StatusLine";
+import { TasksPane } from "@/features/tasks/TasksPane";
 import { ApiError } from "@/lib/api";
 import { useLiveUpdates } from "@/lib/live";
 import { useMe } from "@/lib/queries";
@@ -32,6 +35,7 @@ export function App() {
   const signedIn = me.isSuccess;
   const queryClient = useQueryClient();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const boardRoute = useMatch("/b/:key");
 
   useApplyTheme(signedIn);
   useLiveUpdates(signedIn);
@@ -52,6 +56,9 @@ export function App() {
     <div className="min-h-screen bg-divider text-ink font-mono flex flex-col">
       <StatusLine userName={me.data.user.name} onOpenSettings={() => setSettingsOpen(true)} onLogout={logout} />
       <main className="flex-1 pt-11">
+        {boardRoute?.params.key ? (
+          <BoardScreen boardKey={boardRoute.params.key} />
+        ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 items-start gap-px w-full max-w-[1500px] mx-auto px-4 py-4 md:px-8 md:py-6">
           <div className="flex flex-col gap-px">
             <Porting title="/calendar" />
@@ -59,7 +66,7 @@ export function App() {
             <Porting title="/notepad" />
           </div>
           <div className="flex flex-col gap-px">
-            <Porting title="/tasks" />
+            <TasksPane />
             <BoardsPane />
           </div>
           <div className="flex flex-col gap-px">
@@ -67,6 +74,7 @@ export function App() {
             <Porting title="/bible_qotd" />
           </div>
         </div>
+        )}
       </main>
       {settingsOpen && <SettingsModal me={me.data} onClose={() => setSettingsOpen(false)} />}
     </div>

@@ -1,11 +1,11 @@
 /* ============================================================================
    The boards pane: every board you are on, and a way to make one. A shared
-   board shows how many people are on it. The full board screens (kanban,
-   list, gantt) arrive with the tracker.
+   board shows how many people are on it. A row opens the board (/b/KEY).
    ========================================================================== */
 
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate } from "react-router";
 import { Plus, Users } from "lucide-react";
 import type { BoardDetail } from "@/domain/types";
 import { send } from "@/lib/api";
@@ -13,6 +13,7 @@ import { KEYS, useBoards } from "@/lib/queries";
 import { WidgetFrame } from "@/ui/WidgetFrame";
 
 export function BoardsPane() {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: boards, isLoading, error } = useBoards();
   const [adding, setAdding] = useState(false);
@@ -20,10 +21,13 @@ export function BoardsPane() {
 
   const create = useMutation({
     mutationFn: () => send<BoardDetail>("POST", "/boards", { name: name.trim() }),
-    onSuccess: () => {
+    onSuccess: async (detail) => {
       setName("");
       setAdding(false);
-      void queryClient.invalidateQueries({ queryKey: KEYS.boards });
+      /* The board screen finds boards by key in this list, so it must have
+         the new one before we go there. */
+      await queryClient.invalidateQueries({ queryKey: KEYS.boards });
+      navigate(`/b/${detail.board.key}`);
     },
   });
 
@@ -62,20 +66,22 @@ export function BoardsPane() {
       )}
       {create.error && <p className="text-red text-xs mb-2">{create.error.message}</p>}
       <ul>
-        {boards?.map((b) => (
-          <li key={b.id} className="flex items-center gap-3 py-1.5 px-1 hover:bg-raised">
-            <span className="text-muted w-14 shrink-0">{b.key}</span>
-            <span className={b.isInbox ? "text-accent" : "text-bright"}>{b.name}</span>
-            <span className="flex-1" />
-            {b.memberCount > 1 && (
-              <span className="flex items-center gap-1 text-xs text-muted" title={`${b.memberCount} members`}>
-                <Users size={12} />
-                {b.memberCount}
-              </span>
-            )}
+          {boards?.map((b) => (
+            <li key={b.id}>
+              <Link to={`/b/${b.key}`} className="flex items-center gap-3 py-1.5 px-1 hover:bg-raised">
+              <span className="text-muted w-14 shrink-0">{b.key}</span>
+              <span className={b.isInbox ? "text-accent" : "text-bright"}>{b.name}</span>
+              <span className="flex-1" />
+              {b.memberCount > 1 && (
+                <span className="flex items-center gap-1 text-xs text-muted" title={`${b.memberCount} members`}>
+                  <Users size={12} />
+                  {b.memberCount}
+                </span>
+              )}
             <span className="text-xs text-muted tabular-nums w-8 text-right" title="open tasks">
               {b.openTaskCount}
             </span>
+            </Link>
           </li>
         ))}
       </ul>
