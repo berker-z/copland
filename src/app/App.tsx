@@ -11,8 +11,11 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { BoardsPane } from "@/features/boards/BoardsPane";
+import { MarketsPane } from "@/features/markets/MarketsPane";
+import { NotepadPane } from "@/features/notepad/NotepadPane";
 import { SettingsModal } from "@/features/settings/SettingsModal";
 import { StatusLine } from "@/features/shell/StatusLine";
+import { VersePane } from "@/features/verse/VersePane";
 import { ApiError } from "@/lib/api";
 import { useLiveUpdates } from "@/lib/live";
 import { useMe } from "@/lib/queries";
@@ -56,15 +59,15 @@ export function App() {
           <div className="flex flex-col gap-px">
             <Porting title="/calendar" />
             <Porting title="/daily_agenda" />
-            <Porting title="/notepad" />
+            <NotepadPane />
           </div>
           <div className="flex flex-col gap-px">
             <Porting title="/tasks" />
             <BoardsPane />
           </div>
           <div className="flex flex-col gap-px">
-            <Porting title="/markets" />
-            <Porting title="/bible_qotd" />
+            <MarketsPane onOpenSettings={() => setSettingsOpen(true)} />
+            <VersePane onOpenSettings={() => setSettingsOpen(true)} />
           </div>
         </div>
       </main>

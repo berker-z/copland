@@ -1,14 +1,16 @@
 /* ============================================================================
    Settings: everything that used to be hardcoded or in .env, per user.
-   Sections: markets (coins), weather location, API keys (the vault), and,
-   for admins, the instance (invites and users).
+   Sections: markets (Binance coins, CoinGecko ids), weather location (a
+   city search), API keys (the vault), and, for admins, the instance
+   (invites and users).
    ========================================================================== */
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Trash2, X } from "lucide-react";
 import { VAULT_NAMES, type VaultEntry, type VaultName } from "@/domain/settings";
 import type { CreatedInvite, Me } from "@/domain/types";
+import { searchCities, type GeoResult } from "@/features/shell/weather";
 import { send } from "@/lib/api";
 import { KEYS, useAdminInvites, useAdminUsers, useSettings, useVault } from "@/lib/queries";
 import { useUpdateSettings } from "@/lib/settings";
@@ -28,27 +30,47 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   );
 }
 
-function CoinsSection() {
+type ListKey = "coins" | "coingeckoCoins" | "coingeckoNfts";
+
+/**
+ * One list setting as removable chips plus an add box. The server has the
+ * final word on what is valid; `normalize` only saves a round trip for the
+ * obvious (case).
+ */
+function ChipList({
+  setting,
+  label,
+  placeholder,
+  normalize,
+  maxLength,
+}: {
+  setting: ListKey;
+  label?: string;
+  placeholder: string;
+  normalize: (raw: string) => string;
+  maxLength: number;
+}) {
   const { data: settings } = useSettings();
   const update = useUpdateSettings();
   const [draft, setDraft] = useState("");
-  const coins = settings?.coins ?? [];
+  const items = settings?.[setting] ?? [];
 
   const add = () => {
-    const symbol = draft.trim().toUpperCase();
-    if (!symbol || coins.includes(symbol)) return setDraft("");
-    update.mutate({ coins: [...coins, symbol] });
+    const value = normalize(draft.trim());
+    if (!value || items.includes(value)) return setDraft("");
+    update.mutate({ [setting]: [...items, value] });
     setDraft("");
   };
 
   return (
-    <Section title="markets" hint="Binance spot symbols, priced in USDT. No key needed.">
-      <div className="flex flex-wrap gap-2 mb-3">
-        {coins.map((c) => (
+    <div className="mb-4 last:mb-0">
+      {label && <h5 className="text-xs text-muted mb-1.5">{label}</h5>}
+      <div className="flex flex-wrap gap-2 mb-2">
+        {items.map((c) => (
           <span key={c} className="inline-flex items-center gap-1 border border-faint px-2 py-0.5 text-bright">
             {c}
             <button
-              onClick={() => update.mutate({ coins: coins.filter((x) => x !== c) })}
+              onClick={() => update.mutate({ [setting]: items.filter((x) => x !== c) })}
               className="text-muted hover:text-red"
               aria-label={`Remove ${c}`}
             >
@@ -56,7 +78,7 @@ function CoinsSection() {
             </button>
           </span>
         ))}
-        {coins.length === 0 && <span className="text-faint text-sm">no coins</span>}
+        {items.length === 0 && <span className="text-faint text-sm">none</span>}
       </div>
       <form
         className="flex gap-2"
@@ -65,42 +87,132 @@ function CoinsSection() {
           add();
         }}
       >
-        <input className={`${input} flex-1`} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="BTC" maxLength={12} />
+        <input
+          className={`${input} flex-1 min-w-0`}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={placeholder}
+          maxLength={maxLength}
+        />
         <button className={button} type="submit">
           add
         </button>
       </form>
       {update.error && <p className="text-red text-xs mt-2">{update.error.message}</p>}
+    </div>
+  );
+}
+
+function MarketsSection() {
+  const lower = (s: string) => s.toLowerCase();
+  return (
+    <Section
+      title="markets"
+      hint="Binance spot symbols, priced in USDT, need no key. CoinGecko ids (the slug in a coin's or collection's coingecko.com URL) need the coingecko key below."
+    >
+      <ChipList setting="coins" label="binance" placeholder="BTC" normalize={(s) => s.toUpperCase()} maxLength={12} />
+      <ChipList setting="coingeckoCoins" label="coingecko coins, by market cap" placeholder="milady-cult-coin" normalize={lower} maxLength={80} />
+      <ChipList setting="coingeckoNfts" label="coingecko nfts, by floor" placeholder="milady-maker" normalize={lower} maxLength={80} />
     </Section>
   );
 }
 
+/**
+ * Pick the weather's place by name. Open-Meteo's geocoder turns what is
+ * typed into candidates; choosing one saves its name and coordinates.
+ */
 function LocationSection() {
   const { data: settings } = useSettings();
   const update = useUpdateSettings();
   const location = settings?.location;
-  const [name, setName] = useState(location?.name ?? "");
-  const [coords, setCoords] = useState(location ? `${location.latitude}, ${location.longitude}` : "");
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<GeoResult[] | null>(null);
+  const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const save = () => {
-    const [lat, lon] = coords.split(",").map((s) => Number(s.trim()));
-    if (!name.trim() || !Number.isFinite(lat) || !Number.isFinite(lon)) {
-      return setError("A name and 'latitude, longitude' are both needed.");
+  /* Search as you type, once typing pauses; a newer search cancels the one
+     in flight so results never arrive out of order. */
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setResults(null);
+      setSearching(false);
+      return;
     }
-    setError(null);
-    update.mutate({ location: { name: name.trim(), latitude: lat, longitude: lon } });
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      setSearching(true);
+      searchCities(q, controller.signal)
+        .then((found) => {
+          setResults(found);
+          setError(null);
+        })
+        .catch((e: unknown) => {
+          if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "Search failed");
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setSearching(false);
+        });
+    }, 350);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
+
+  const choose = (place: GeoResult) => {
+    update.mutate({ location: { name: place.name, latitude: place.latitude, longitude: place.longitude } });
+    setQuery("");
+    setResults(null);
   };
 
   return (
     <Section title="weather" hint="Where the statusline weather is for. Open-Meteo, no key needed.">
-      <div className="flex flex-col sm:flex-row gap-2">
-        <input className={`${input} sm:w-36`} value={name} onChange={(e) => setName(e.target.value)} placeholder="istanbul" />
-        <input className={`${input} flex-1`} value={coords} onChange={(e) => setCoords(e.target.value)} placeholder="41.0082, 28.9784" />
-        <button className={button} onClick={save}>
-          save
-        </button>
+      <div className="flex items-baseline justify-between gap-2 mb-2 text-sm">
+        {location ? (
+          <span className="text-bright">
+            {location.name}{" "}
+            <span className="text-muted tabular-nums">
+              {location.latitude.toFixed(2)}, {location.longitude.toFixed(2)}
+            </span>
+          </span>
+        ) : (
+          <span className="text-faint">no place set</span>
+        )}
+        {location && (
+          <button onClick={() => update.mutate({ location: null })} className="text-xs text-muted hover:text-red">
+            clear
+          </button>
+        )}
       </div>
+      <input
+        className={`${input} w-full`}
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="search a city"
+        maxLength={80}
+        aria-label="Search a city"
+      />
+      {searching && <p className="text-xs text-muted mt-2 animate-pulse">searching…</p>}
+      {results && !searching && results.length === 0 && <p className="text-xs text-faint mt-2">no match</p>}
+      {results && results.length > 0 && (
+        <ul className="mt-2">
+          {results.map((r) => (
+            <li key={r.id}>
+              <button
+                onClick={() => choose(r)}
+                className="w-full flex items-baseline gap-2 px-2 py-2 text-left border-b border-divider last:border-b-0 hover:bg-raised transition-colors"
+              >
+                <span className="text-bright">{r.name}</span>
+                <span className="text-xs text-muted truncate">{r.detail}</span>
+                <span className="ml-auto text-xs text-faint tabular-nums shrink-0">
+                  {r.latitude.toFixed(2)}, {r.longitude.toFixed(2)}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {(error ?? update.error?.message) && <p className="text-red text-xs mt-2">{error ?? update.error?.message}</p>}
     </Section>
   );
@@ -250,7 +362,7 @@ function InstanceSection({ me }: { me: Me }) {
 export function SettingsModal({ me, onClose }: { me: Me; onClose: () => void }) {
   return (
     <ModalFrame title="settings" onClose={onClose} size="lg">
-      <CoinsSection />
+      <MarketsSection />
       <LocationSection />
       <VaultSection />
       {me.user.isAdmin && <InstanceSection me={me} />}

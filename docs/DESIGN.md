@@ -117,7 +117,23 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   to full-page redirect OAuth.
 - Notepad: autosized textarea in the standard input style; icon-only header
   actions; save icon color reflects state (`text-yellow` dirty, `text-green`
-  saved, `text-blue` saving).
+  saved, `text-blue` saving). The note's name sits left of the icons as a
+  `text-label`-style button that turns into an inline input to rename. The
+  picker is a `sm` modal of flat rows: name, then a muted one-line snippet.
+- Markets rows: label (`text-bright`, tracked) over a muted unit line
+  (`/USDT`, `/MCAP`, `/FLOOR`); value right-aligned and tabular, change below
+  it in green/red with `[^]`/`[v]`. A `LAST_SYNC` / `[REFRESH]` rule line
+  sits above the rows.
+- Missing key or setting: say so quietly where the data would be. A pane
+  that can still show something adds one `text-xs text-faint` line that
+  opens settings on click (`hover:text-accent`); a pane that can show
+  nothing without it explains in `text-muted` and offers `[ OPEN_SETTINGS ]`.
+- Search-and-pick (the weather city search): a standard input; results as
+  flat rows below it (`border-b border-divider`, `hover:bg-raised`), name in
+  `text-bright`, detail in `text-muted`, coordinates `text-faint` tabular on
+  the right. Picking saves at once; there is no separate save button.
+- Verse: the passage is a quote block, `border-l-2 border-yellow` with the
+  reference in `text-yellow` uppercase above it.
 - Typography utilities in `src/styles/index.css` (`@utility`): `text-label`
   so far; the rest of nord-dash's set (`text-nav`, `text-section`, ...) comes
   over with the widgets that use them. Use these instead of inline weights.

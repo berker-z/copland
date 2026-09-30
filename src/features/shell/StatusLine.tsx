@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Cloud, CloudRain, Sun } from "lucide-react";
 import { getMoonPhase } from "@/domain/moon";
+import type { Settings } from "@/domain/settings";
 import { THEMES } from "@/domain/themes";
 import { useSettings } from "@/lib/queries";
 import { useUpdateSettings } from "@/lib/settings";
 import { MoonPhaseIcon } from "@/ui/MoonPhaseIcon";
+import { useWeather } from "./weather";
 
 const Sep = () => (
   <span className="text-faint select-none" aria-hidden>
@@ -44,6 +47,30 @@ function Clock() {
       <Sep />
       <span className="text-ink tabular-nums">{now.toLocaleTimeString("en-GB", { hour12: false })}</span>
     </>
+  );
+}
+
+/* nord-dash's three buckets of WMO codes: clear to overcast, fog, and
+   anything falling. */
+function WeatherIcon({ code }: { code: number }) {
+  if (code <= 3) return <Sun className="text-yellow" size={16} />;
+  if (code <= 48) return <Cloud className="text-cyan" size={16} />;
+  return <CloudRain className="text-blue" size={16} />;
+}
+
+function WeatherReadout({ place }: { place: NonNullable<Settings["location"]> }) {
+  const { data: weather, isError } = useWeather(place);
+  return (
+    <span className="flex items-center gap-1.5 text-ink" title={isError ? "Weather unavailable" : undefined}>
+      {weather ? (
+        <>
+          <WeatherIcon code={weather.weatherCode} />
+          {weather.temperature}°C
+        </>
+      ) : (
+        <span className={isError ? "text-faint" : "text-muted animate-pulse"}>--°C</span>
+      )}
+    </span>
   );
 }
 
@@ -125,10 +152,14 @@ export function StatusLine({ userName, onOpenSettings, onLogout }: StatusLinePro
       <div className="flex items-center gap-2.5">
         <ThemeMenu />
         {settings?.location && (
-          <span className="hidden sm:inline-flex items-center gap-2.5">
+          <>
             <Sep />
-            <span className="text-muted uppercase">{settings.location.name}</span>
-          </span>
+            <WeatherReadout place={settings.location} />
+            <span className="hidden sm:inline-flex items-center gap-2.5">
+              <Sep />
+              <span className="text-muted uppercase">{settings.location.name}</span>
+            </span>
+          </>
         )}
         <Sep />
         <Clock />

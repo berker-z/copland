@@ -15,10 +15,10 @@ The plan, roughly in order. Each phase should leave the app working.
 
 ## 2. Port the nord-dash panes
 
-- [ ] `/markets`: Binance prices for `settings.coins`; CoinGecko extras proxied through the Worker with the user's vault key
-- [ ] Weather in the statusline from `settings.location` (Open-Meteo), refreshed, not fetched once
-- [ ] `/notepad` on the `notes` table, with autosave and live sync across devices
-- [ ] `/bible_qotd` through the Worker with the user's OpenAI key
+- [x] `/markets`: Binance prices for `settings.coins`; CoinGecko extras proxied through the Worker with the user's vault key
+- [x] Weather in the statusline from `settings.location` (Open-Meteo), refreshed, not fetched once
+- [x] `/notepad` on the `notes` table, with autosave and live sync across devices
+- [x] `/bible_qotd` through the Worker with the user's OpenAI key
 - [ ] `/calendar` and `/daily_agenda`: Google Calendar as a separate grant, refresh tokens encrypted server-side, one fetch shared by both panes. Read-only ICS URL as the no-OAuth option.
 - [ ] Layout as a setting (which panes, which column), replacing the hardcoded grid
 
