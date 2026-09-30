@@ -48,9 +48,9 @@ export function LoginScreen() {
         </div>
       </div>
       <p className="mt-6 text-xs text-muted">
-        <a href="/privacy.html" className="hover:text-accent">privacy</a>
+        <a href="/privacy" className="hover:text-accent">privacy</a>
         <span className="text-faint"> · </span>
-        <a href="/terms.html" className="hover:text-accent">terms</a>
+        <a href="/terms" className="hover:text-accent">terms</a>
       </p>
     </div>
   );
