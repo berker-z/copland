@@ -14,7 +14,7 @@ import { isClosing } from "@/domain/tasks";
 import { useBoard, useMe } from "@/lib/queries";
 import { tasksIn, useCreateTask, useUpdateTask } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
-import { isDraft } from "@/ui/tone";
+import { isDraft, todayLocal } from "@/ui/tone";
 import { WidgetFrame } from "@/ui/WidgetFrame";
 import { NewTaskModal } from "../board/NewTaskModal";
 import { TaskModal } from "../board/TaskModal";
@@ -70,7 +70,7 @@ export function TasksPane() {
           event.preventDefault();
           const title = draft.trim();
           if (!title || !detail) return;
-          create.mutate({ title });
+          create.mutate({ title, startDate: todayLocal() });
           setDraft("");
         }}
       >

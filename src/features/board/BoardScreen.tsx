@@ -18,7 +18,7 @@ import { rankBetween } from "@/domain/tasks";
 import type { BoardDetail, Stage } from "@/domain/types";
 import { useBoard, useBoards } from "@/lib/queries";
 import { tasksIn, useCreateTask, useUpdateTask } from "@/lib/tasks";
-import { toneText } from "@/ui/tone";
+import { todayLocal, toneText } from "@/ui/tone";
 import { BoardSettingsModal } from "./BoardSettingsModal";
 import { GanttView } from "./GanttView";
 import { ListView } from "./ListView";
@@ -123,7 +123,7 @@ function Column({ detail, stage, onOpen, onNew }: ColumnProps) {
             event.preventDefault();
             const title = draft.trim();
             if (!title) return;
-            create.mutate({ title, stageId: stage.id });
+            create.mutate({ title, stageId: stage.id, startDate: todayLocal() });
             setDraft("");
           }}
         >
