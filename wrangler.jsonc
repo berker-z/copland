@@ -25,9 +25,10 @@
     {
       "binding": "DB",
       "database_name": "copland",
-      // Placeholder until `wrangler d1 create copland` runs on the account
-      // this instance deploys to. Local dev does not need a real id.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      // The database on the account this instance deploys to. A fork makes
+      // its own with `wrangler d1 create copland` and puts that id here.
+      // Local dev does not use it.
+      "database_id": "5dec8ee3-d0bd-45b4-b269-37fc365ef5a9",
       "migrations_dir": "migrations"
     }
   ],
@@ -48,7 +49,7 @@
     "GOOGLE_CLIENT_ID": "",
     // Comma-separated emails that are always admins. The bootstrap path: on a
     // fresh instance nobody can have been invited yet.
-    "ADMIN_EMAILS": "",
+    "ADMIN_EMAILS": "berker.zor@gmail.com",
     // Who may create an account: "invite" (an admin's invite link), "open"
     // (anyone with a Google account) or "closed" (admins only; a personal
     // instance).
