@@ -50,9 +50,17 @@ this order:
       task and settings modals; the frame's own wrapper already caps height),
       the footer's `bg-bar/60` strip, or Tailwind 4's defaults differing from
       nord-dash's Tailwind 3 in `ModalFrame`. Compare side by side and hunt.
-- [ ] Bring gnaw into Copland. gnaw is the earlier personal project the
-      `*.gnaw.workers.dev` subdomain is named after. Talk through what that
-      means first: a pane, a board, or folding its features in.
+- [ ] Bring gnaw into Copland (`~/Projects/taskblob`; the product is gnaw,
+      the folder stays taskblob). gnaw is a jar of physics creatures, one per
+      task: they grow while they wait, sleep until their deadline, squirm once
+      it passes, float away when set free, and a big one pops into small ones
+      when split. Its task model already maps onto Copland's: deadline to
+      `dueDate`, set free to a done stage, split to subtasks (`parentId`).
+      The likely shape is a `/jar` pane, or a "jar" view next to kanban/list/
+      gantt, that draws a board's tasks (the inbox first) as creatures, reads
+      and writes through Copland's task routes, and drops gnaw's own auth
+      (better-auth) and D1 sync. It is phone-shaped already, so it belongs
+      with the phone work. Read its docs/HANDOFF.md and docs/ROADMAP.md first.
 - [ ] Rotate the OpenAI and CoinGecko keys that nord-dash shipped in its public
       bundle; revoke the old ones.
 - [ ] Turn off `copland.gnaw.workers.dev` (`workers_dev: false`): sign-in does
