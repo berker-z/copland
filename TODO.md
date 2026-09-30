@@ -36,8 +36,11 @@ The plan, roughly in order. Each phase should leave the app working.
 
 ## 4. Integrations
 
-- [ ] MCP server and OAuth for AI assistants (from the work tracker, scoped to the caller's boards)
-- [ ] Personal API tokens
+- [x] MCP server and OAuth for AI assistants (from the work tracker, scoped to the caller's boards)
+- [x] Personal API tokens (settings › integrations)
+- [x] `npm run check`: every API route says what the MCP does with it
+- [ ] More tools from the `not yet` entries in `src/worker/mcpCoverage.ts` (labels, notes, history, creating boards)
+- [ ] A time zone setting, so "today" and "overdue" in the MCP stop meaning UTC
 
 ## 5. Shipping
 
