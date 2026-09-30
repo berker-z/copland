@@ -83,7 +83,12 @@ export async function postBoard(request: Request, env: Env, viewer: Viewer, chan
   return getBoard(env, viewer, id).then((r) => new Response(r.body, { status: 201, headers: r.headers }));
 }
 
-/** PATCH /api/boards/:id { name?, hasPlanning? }: owners only. */
+/**
+ * PATCH /api/boards/:id { name?, key?, hasPlanning? }: owners only. Task keys
+ * are the board key plus the number, computed on read, so a new key renames
+ * every task on the board at once (BERK-1 becomes ME-1); links and notes
+ * that spelled out the old key stop matching.
+ */
 export async function patchBoard(
   request: Request,
   env: Env,
@@ -98,6 +103,16 @@ export async function patchBoard(
   if (body.name !== undefined) {
     sets.push(`name = ?${values.length + 2}`);
     values.push(boardName(body.name));
+  }
+  if (body.key !== undefined) {
+    if (typeof body.key !== "string" || !KEY.test(body.key.toUpperCase())) {
+      throw badRequest("`key` must be 2-6 letters or digits, starting with a letter");
+    }
+    const key = body.key.toUpperCase();
+    const taken = await env.DB.prepare(`SELECT 1 FROM boards WHERE key = ?1 AND id <> ?2`).bind(key, id).first();
+    if (taken) throw conflict(`The key ${key} is taken`);
+    sets.push(`key = ?${values.length + 2}`);
+    values.push(key);
   }
   if (body.hasPlanning !== undefined) {
     if (typeof body.hasPlanning !== "boolean") throw badRequest("`hasPlanning` must be a boolean");

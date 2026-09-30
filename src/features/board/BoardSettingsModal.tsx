@@ -38,6 +38,7 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
   const [role, setRole] = useState<BoardRole>("editor");
   const [invite, setInvite] = useState<CreatedInvite | null>(null);
   const [name, setName] = useState(board.name);
+  const [key, setKey] = useState(board.key);
   const [confirmArchive, setConfirmArchive] = useState(false);
 
   const refresh = () => {
@@ -67,8 +68,19 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
     },
   });
   const patchBoard = useMutation({
-    mutationFn: (patch: { name?: string; hasPlanning?: boolean }) => send("PATCH", `/boards/${board.id}`, patch),
+    mutationFn: (patch: { name?: string; key?: string; hasPlanning?: boolean }) =>
+      send("PATCH", `/boards/${board.id}`, patch),
     onSettled: refresh,
+  });
+  /* The board screen is addressed by key, so a new key needs a new URL, once
+     the boards list knows it. */
+  const changeKey = useMutation({
+    mutationFn: (next: string) => send("PATCH", `/boards/${board.id}`, { key: next }),
+    onSuccess: async (_r, next) => {
+      await queryClient.invalidateQueries({ queryKey: KEYS.boards });
+      void queryClient.invalidateQueries({ queryKey: KEYS.board(board.id) });
+      navigate(`/b/${next}`, { replace: true });
+    },
   });
   const archive = useMutation({
     mutationFn: () => send("DELETE", `/boards/${board.id}`),
@@ -164,6 +176,28 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
           <button className={button} type="submit">
             rename
           </button>
+        </form>
+        <form
+          className="flex flex-wrap items-center gap-2 mb-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const next = key.trim().toUpperCase();
+            if (next && next !== board.key) changeKey.mutate(next);
+          }}
+        >
+          <input
+            className={`${input} w-28 uppercase`}
+            value={key}
+            onChange={(e) => setKey(e.target.value.replace(/[^A-Za-z0-9]/g, "").slice(0, 6))}
+            aria-label="board key"
+          />
+          <button className={button} type="submit" disabled={changeKey.isPending}>
+            change key
+          </button>
+          <span className="text-xs text-muted basis-full">
+            The prefix of task numbers: {(key.trim() || board.key).toUpperCase()}-1. 2-6 letters or digits.
+          </span>
+          {changeKey.error && <span className="text-xs text-red basis-full">{changeKey.error.message}</span>}
         </form>
         <Checkbox
           checked={board.hasPlanning}
