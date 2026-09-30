@@ -29,6 +29,8 @@ The plan, roughly in order. Each phase should leave the app working.
 - [x] `/tasks` pane on the inbox (the old todo list, but instant)
 - [x] Board screen: kanban with drag and drop, task modal; planning fields (level, parent) where `has_planning` is on
 - [x] Board screens: list and gantt (drag to move, drag ends to resize); dependencies UI
+- [x] "New task" form with everything up front (start defaults to today, +1d / +3d / +1w due buttons, also in the task modal)
+- [x] Attachments: images, files and links on tasks (ported from the work tracker), with access checked per board
 - [x] Members UI: add by email (invite link for newcomers), roles, leave, rename, archive
 - [x] Stage editing (rename, category, colour, add, reorder, delete with somewhere for the tasks) and labels
 - [x] Comments (edit and delete your own) and task history

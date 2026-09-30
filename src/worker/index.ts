@@ -46,6 +46,7 @@ import {
   putEvent,
   removeEvent,
 } from "./routes/calendar";
+import { deleteTaskAttachment, getAttachment, postTaskAttachment, postUpload } from "./routes/attachments";
 import { deleteComment, getComments, getTaskEvents, patchComment, postComment } from "./routes/comments";
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
 import { deleteTask, getTask, patchTask, postTask } from "./routes/tasks";
@@ -135,6 +136,18 @@ const api = new Router<Ctx>()
     patchTask(request, env, viewer, id, changes),
   )
   .on("DELETE", "/api/tasks/:id", ({ env, viewer, changes }, { id }) => deleteTask(env, viewer, id, changes))
+  .on("POST", "/api/uploads", ({ request, env, viewer }) => postUpload(request, env, viewer))
+  /* Keys are "attachments/<uuid>": the prefix is part of the key and the route
+     pins it, so only that R2 namespace is reachable here. */
+  .on("GET", "/api/attachments/attachments/:id", ({ env, viewer, url }, { id }) =>
+    getAttachment(env, viewer, `attachments/${id}`, url.searchParams.get("download") === "1"),
+  )
+  .on("POST", "/api/tasks/:id/attachments", ({ request, env, viewer, changes }, { id }) =>
+    postTaskAttachment(request, env, viewer, id, changes),
+  )
+  .on("DELETE", "/api/tasks/:id/attachments/:attachmentId", ({ env, viewer, changes }, p) =>
+    deleteTaskAttachment(env, viewer, p.id, p.attachmentId, changes),
+  )
   .on("GET", "/api/tasks/:id/comments", ({ env, viewer }, { id }) => getComments(env, viewer, id))
   .on("POST", "/api/tasks/:id/comments", ({ request, env, viewer, changes }, { id }) =>
     postComment(request, env, viewer, id, changes),
@@ -195,7 +208,8 @@ function withSecurityHeaders(response: Response): Response {
   if (response.status === 101) return response;
   const out = new Response(response.body, response);
   out.headers.set("x-content-type-options", "nosniff");
-  out.headers.set("x-frame-options", "DENY");
+  /* Attachments set SAMEORIGIN so the task modal can preview a PDF. */
+  if (!out.headers.has("x-frame-options")) out.headers.set("x-frame-options", "DENY");
   out.headers.set("referrer-policy", "strict-origin-when-cross-origin");
   if (!out.headers.has("content-security-policy")) {
     out.headers.set("content-security-policy", "default-src 'none'; frame-ancestors 'none'");

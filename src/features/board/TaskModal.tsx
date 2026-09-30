@@ -11,6 +11,8 @@ import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
 import { ModalFrame } from "@/ui/ModalFrame";
 import { toneText } from "@/ui/tone";
+import { Attachments, useTaskAttachments } from "./Attachments";
+import { DateFields } from "./DateFields";
 import { LabelPicker } from "./LabelPicker";
 import { TaskActivity } from "./TaskActivity";
 
@@ -35,6 +37,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
   const task = detail.tasks.find((t) => t.id === taskId);
   const update = useUpdateTask(detail.board.id);
   const remove = useDeleteTask(detail.board.id);
+  const files = useTaskAttachments(detail.board.id, taskId);
   const canEdit = detail.board.role !== "viewer";
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -139,27 +142,14 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
       </Row>
 
       <Row label="dates">
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            type="date"
-            className={field}
-            disabled={!canEdit}
-            value={task.startDate ?? ""}
-            max={task.dueDate ?? undefined}
-            onChange={(e) => save({ startDate: e.target.value || null })}
-            aria-label="start date"
-          />
-          <span className="text-faint">→</span>
-          <input
-            type="date"
-            className={field}
-            disabled={!canEdit}
-            value={task.dueDate ?? ""}
-            min={task.startDate ?? undefined}
-            onChange={(e) => save({ dueDate: e.target.value || null })}
-            aria-label="due date"
-          />
-        </div>
+        <DateFields
+          start={task.startDate}
+          due={task.dueDate}
+          disabled={!canEdit}
+          onChange={({ start, due }) =>
+            save({ ...(start !== undefined ? { startDate: start } : {}), ...(due !== undefined ? { dueDate: due } : {}) })
+          }
+        />
       </Row>
 
       <Row label="labels">
@@ -263,6 +253,10 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
           }}
           className={`${field} w-full min-h-28 resize-y leading-relaxed`}
         />
+      </Row>
+
+      <Row label="files">
+        <Attachments items={task.attachments} canEdit={canEdit} {...files} />
       </Row>
 
       <TaskActivity detail={detail} taskId={task.id} />

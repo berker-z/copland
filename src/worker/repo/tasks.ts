@@ -3,7 +3,7 @@
    lookups the task routes start from.
    ========================================================================== */
 
-import type { Label, Level, Priority, Stage, StageCategory, Task } from "@/domain/types";
+import type { Attachment, Label, Level, Priority, Stage, StageCategory, Task } from "@/domain/types";
 import { currentVia } from "../tokens";
 
 interface TaskRow {
@@ -52,6 +52,7 @@ function rowToTask(row: TaskRow): Task {
     labelIds: ids(row.label_ids),
     dependsOn: ids(row.depends_on),
     commentCount: row.comment_count,
+    attachments: [],
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -71,7 +72,10 @@ export async function listTasks(db: D1Database, boardId: string): Promise<Task[]
     .prepare(`${TASK_SELECT} WHERE t.board_id = ?1 AND t.deleted_at IS NULL ORDER BY t.rank, t.number`)
     .bind(boardId)
     .all<TaskRow>();
-  return results.map(rowToTask);
+  const tasks = results.map(rowToTask);
+  const byTask = await attachmentsFor(db, `t.board_id = ?1`, boardId);
+  for (const task of tasks) task.attachments = byTask.get(task.id) ?? [];
+  return tasks;
 }
 
 /** A live (not deleted) task, or null. Access is the caller's job. */
@@ -80,7 +84,41 @@ export async function findTask(db: D1Database, id: string): Promise<Task | null>
     .prepare(`${TASK_SELECT} WHERE t.id = ?1 AND t.deleted_at IS NULL`)
     .bind(id)
     .first<TaskRow>();
-  return row ? rowToTask(row) : null;
+  if (!row) return null;
+  const task = rowToTask(row);
+  task.attachments = (await attachmentsFor(db, `a.task_id = ?1`, id)).get(id) ?? [];
+  return task;
+}
+
+interface AttachmentRow {
+  id: string;
+  task_id: string;
+  name: string;
+  mime: string;
+  size: number;
+  kind: Attachment["kind"];
+  key: string | null;
+  url: string | null;
+  created_at: string;
+}
+
+/** Attachments grouped by task, for one board or one task (`where` over a and t). */
+async function attachmentsFor(db: D1Database, where: string, value: string): Promise<Map<string, Attachment[]>> {
+  const { results } = await db
+    .prepare(
+      `SELECT a.id, a.task_id, a.name, a.mime, a.size, a.kind, a.key, a.url, a.created_at
+         FROM attachments a JOIN tasks t ON t.id = a.task_id
+        WHERE ${where} ORDER BY a.created_at`,
+    )
+    .bind(value)
+    .all<AttachmentRow>();
+  const out = new Map<string, Attachment[]>();
+  for (const r of results) {
+    const list = out.get(r.task_id) ?? [];
+    list.push({ id: r.id, name: r.name, type: r.mime, size: r.size, kind: r.kind, key: r.key, url: r.url, createdAt: r.created_at });
+    out.set(r.task_id, list);
+  }
+  return out;
 }
 
 export async function listStages(db: D1Database, boardId: string): Promise<Stage[]> {

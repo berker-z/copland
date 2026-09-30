@@ -9,13 +9,14 @@
 
 import { useState } from "react";
 import { Link } from "react-router";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, Plus } from "lucide-react";
 import { isClosing } from "@/domain/tasks";
 import { useBoard, useMe } from "@/lib/queries";
 import { tasksIn, useCreateTask, useUpdateTask } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
 import { isDraft } from "@/ui/tone";
 import { WidgetFrame } from "@/ui/WidgetFrame";
+import { NewTaskModal } from "../board/NewTaskModal";
 import { TaskModal } from "../board/TaskModal";
 import { TaskRow } from "../board/TaskRow";
 
@@ -28,6 +29,7 @@ export function TasksPane() {
   const [draft, setDraft] = useState("");
   const [showDone, setShowDone] = useState(false);
   const [openTask, setOpenTask] = useState<string | null>(null);
+  const [newTask, setNewTask] = useState(false);
 
   const openStages = detail?.stages.filter((s) => !isClosing(s.category)) ?? [];
   const doneStage = detail?.stages.find((s) => s.category === "done");
@@ -49,9 +51,14 @@ export function TasksPane() {
       meta={detail ? `${open.length} open` : undefined}
       controls={
         detail && (
-          <Link to={`/b/${detail.board.key}`} className="p-1 hover:text-accent transition-colors" title="Open as a board">
-            <ArrowUpRight size={14} />
-          </Link>
+          <>
+            <button onClick={() => setNewTask(true)} className="p-1 hover:text-accent transition-colors" title="New task with details">
+              <Plus size={14} />
+            </button>
+            <Link to={`/b/${detail.board.key}`} className="p-1 hover:text-accent transition-colors" title="Open as a board">
+              <ArrowUpRight size={14} />
+            </Link>
+          </>
         )
       }
       bodyClassName="!p-0"
@@ -128,6 +135,7 @@ export function TasksPane() {
       {(create.error ?? update.error) && (
         <p className="px-4 py-2 text-xs text-red">{(create.error ?? update.error)?.message}</p>
       )}
+      {detail && newTask && <NewTaskModal detail={detail} onClose={() => setNewTask(false)} />}
       {detail && openTask && <TaskModal detail={detail} taskId={openTask} onClose={() => setOpenTask(null)} />}
     </WidgetFrame>
   );

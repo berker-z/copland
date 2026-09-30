@@ -5,6 +5,7 @@
    ========================================================================== */
 
 import type { DragEvent, ReactNode } from "react";
+import { Paperclip } from "lucide-react";
 import type { BoardMember, Label, Task } from "@/domain/types";
 import { dueClass, isDraft, shortDate, toneText } from "@/ui/tone";
 
@@ -72,11 +73,17 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, drag
           {PRIORITY_MARK[task.priority] && <span className="mr-1.5">{PRIORITY_MARK[task.priority]}</span>}
           {task.title}
         </div>
-        {(showKey || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0) && (
+        {(showKey || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0) && (
           <div className="flex flex-wrap items-center gap-x-2 mt-0.5 text-xs">
             {showKey && <span className="text-faint">{task.key}</span>}
             {task.dueDate && <span className={dueClass(task.dueDate, closed)}>{shortDate(task.dueDate)}</span>}
             {task.commentCount > 0 && <span className="text-muted">¶{task.commentCount}</span>}
+            {task.attachments.length > 0 && (
+              <span className="text-muted inline-flex items-center gap-0.5" title={`${task.attachments.length} attachments`}>
+                <Paperclip size={11} />
+                {task.attachments.length}
+              </span>
+            )}
             {taskLabels.map((l) => (
               <span key={l.id} className={toneText(l.tone)}>
                 #{l.name}

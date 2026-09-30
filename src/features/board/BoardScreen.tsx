@@ -13,7 +13,7 @@
 
 import { useState, type DragEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { ArrowLeft, Settings2, Users } from "lucide-react";
+import { ArrowLeft, Plus, Settings2, Users } from "lucide-react";
 import { rankBetween } from "@/domain/tasks";
 import type { BoardDetail, Stage } from "@/domain/types";
 import { useBoard, useBoards } from "@/lib/queries";
@@ -22,6 +22,7 @@ import { toneText } from "@/ui/tone";
 import { BoardSettingsModal } from "./BoardSettingsModal";
 import { GanttView } from "./GanttView";
 import { ListView } from "./ListView";
+import { NewTaskModal } from "./NewTaskModal";
 import { TaskModal } from "./TaskModal";
 import { TASK_DRAG_TYPE, TaskRow } from "./TaskRow";
 
@@ -33,9 +34,10 @@ interface ColumnProps {
   detail: BoardDetail;
   stage: Stage;
   onOpen: (taskId: string) => void;
+  onNew: (stageId: string) => void;
 }
 
-function Column({ detail, stage, onOpen }: ColumnProps) {
+function Column({ detail, stage, onOpen, onNew }: ColumnProps) {
   const tasks = tasksIn(detail, stage.id);
   const update = useUpdateTask(detail.board.id);
   const create = useCreateTask(detail.board.id);
@@ -87,6 +89,15 @@ function Column({ detail, stage, onOpen }: ColumnProps) {
         <span className={`tracking-[0.14em] ${toneText(stage.tone)}`}>{stage.name}</span>
         <span className="text-xs text-muted">{tasks.length}</span>
         <span className="flex-1 border-t border-faint/50" aria-hidden />
+        {canEdit && (
+          <button
+            onClick={() => onNew(stage.id)}
+            className="text-muted hover:text-accent md:opacity-0 md:group-hover/pane:opacity-100 transition-opacity"
+            title={`New task in ${stage.name}`}
+          >
+            <Plus size={14} />
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto min-h-16">
@@ -142,6 +153,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   const board = useBoard(summary?.id ?? null);
   const [openTask, setOpenTask] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [newTask, setNewTask] = useState<{ stageId?: string } | null>(null);
   const [params, setParams] = useSearchParams();
   const view = VIEWS.includes(params.get("view") as View) ? (params.get("view") as View) : "kanban";
 
@@ -171,6 +183,11 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
         <span className="text-faint">{detail.board.key}</span>
         <span className="text-bright truncate">{detail.board.name}</span>
         <span className="flex-1" />
+        {detail.board.role !== "viewer" && (
+          <button onClick={() => setNewTask({})} className="text-muted hover:text-accent flex items-center gap-1 text-sm">
+            <Plus size={14} /> new
+          </button>
+        )}
         <span className="flex items-center gap-px text-sm">
           {VIEWS.map((v) => (
             <button
@@ -198,7 +215,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
       {view === "kanban" && (
         <div className="flex-1 min-h-0 flex items-stretch gap-px overflow-x-auto px-4 md:px-8 py-4">
           {detail.stages.map((stage) => (
-            <Column key={stage.id} detail={detail} stage={stage} onOpen={setOpenTask} />
+            <Column key={stage.id} detail={detail} stage={stage} onOpen={setOpenTask} onNew={(stageId) => setNewTask({ stageId })} />
           ))}
         </div>
       )}
@@ -206,6 +223,9 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
       {view === "gantt" && <GanttView detail={detail} onOpen={setOpenTask} />}
 
       {openTask && <TaskModal detail={detail} taskId={openTask} onClose={() => setOpenTask(null)} />}
+      {newTask && (
+        <NewTaskModal detail={detail} stageId={newTask.stageId} onClose={() => setNewTask(null)} />
+      )}
       {settingsOpen && <BoardSettingsModal detail={detail} onClose={() => setSettingsOpen(false)} />}
     </div>
   );

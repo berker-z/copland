@@ -87,6 +87,11 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /api/calendar/events": { skip: "not yet: creating an event" },
   "PUT /api/calendar/events/:calendarId/:eventId": { skip: "not yet: editing an event" },
   "DELETE /api/calendar/events/:calendarId/:eventId": { skip: "not yet: deleting an event" },
+  /* Attachments. Files are bytes a JSON-RPC tool cannot carry well. */
+  "POST /api/uploads": { skip: "browser: raw file bytes, uploaded from the task screen" },
+  "GET /api/attachments/attachments/:id": { skip: "browser: file downloads" },
+  "POST /api/tasks/:id/attachments": { skip: "not yet: attaching a link to a task" },
+  "DELETE /api/tasks/:id/attachments/:attachmentId": { skip: "not yet: removing an attachment" },
   "GET /api/notes": { skip: "not yet: reading the notepad" },
   "POST /api/notes": { skip: "not yet: writing a note" },
   "PATCH /api/notes/:id": { skip: "not yet: editing a note" },

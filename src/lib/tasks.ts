@@ -105,6 +105,7 @@ export function useCreateTask(boardId: string) {
           labelIds: input.labelIds ?? [],
           dependsOn: input.dependsOn ?? [],
           commentCount: 0,
+          attachments: [],
           createdBy: "",
           createdAt: now,
           updatedAt: now,

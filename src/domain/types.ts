@@ -93,6 +93,7 @@ export interface Task {
   labelIds: string[];
   dependsOn: string[];
   commentCount: number;
+  attachments: Attachment[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -182,4 +183,29 @@ export interface ApiAccess {
   scope: ApiTokenScope;
   /** What the history calls it: "Claude", "Claude Code", or the token's name. */
   via: string;
+}
+
+/* ----------------------------------------------------------- attachments -- */
+
+export interface Attachment {
+  id: string;
+  name: string;
+  /** MIME type; empty for links. */
+  type: string;
+  size: number;
+  kind: "image" | "file" | "link";
+  /** R2 key, for images and files. */
+  key: string | null;
+  /** The address, for links. */
+  url: string | null;
+  createdAt: string;
+}
+
+/** POST /api/uploads answers with this; the task then references the key. */
+export interface UploadedFile {
+  key: string;
+  name: string;
+  type: string;
+  size: number;
+  kind: "image" | "file";
 }
