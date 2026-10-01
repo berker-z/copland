@@ -16,7 +16,7 @@ import { AgendaPane, CalendarPane } from "@/features/calendar/CalendarPanes";
 import { BoardsPane } from "@/features/boards/BoardsPane";
 import { MarketsPane } from "@/features/markets/MarketsPane";
 import { NotepadPane } from "@/features/notepad/NotepadPane";
-import { SettingsModal } from "@/features/settings/SettingsModal";
+import { SettingsModal, type SettingsPage } from "@/features/settings/SettingsModal";
 import { StatusLine } from "@/features/shell/StatusLine";
 import { TasksPane } from "@/features/tasks/TasksPane";
 import { VersePane } from "@/features/verse/VersePane";
@@ -29,7 +29,8 @@ export function App() {
   const me = useMe();
   const signedIn = me.isSuccess;
   const queryClient = useQueryClient();
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  /* Which settings page is open, or "start" for wherever it opens by itself. */
+  const [settings, setSettings] = useState<SettingsPage | "start" | null>(null);
   const boardRoute = useMatch("/b/:key");
 
   useApplyTheme(signedIn);
@@ -49,7 +50,7 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-divider text-ink font-mono flex flex-col">
-      <StatusLine userName={me.data.user.name} onOpenSettings={() => setSettingsOpen(true)} onLogout={logout} />
+      <StatusLine userName={me.data.user.name} onOpenSettings={() => setSettings("start")} onLogout={logout} />
       <main className="flex-1 pt-11">
         {boardRoute?.params.key ? (
           <BoardScreen boardKey={boardRoute.params.key} />
@@ -60,10 +61,10 @@ export function App() {
           <div className="flex flex-col lg:grid lg:grid-cols-3 items-stretch lg:items-start gap-px w-full max-w-[1500px] mx-auto px-0 py-0 sm:px-4 sm:py-4 md:px-8 md:py-6">
             <div className="contents lg:flex lg:flex-col lg:gap-px">
               <div className="order-4 lg:order-none">
-                <CalendarPane onOpenSettings={() => setSettingsOpen(true)} />
+                <CalendarPane onOpenSettings={() => setSettings("calendars")} />
               </div>
               <div className="order-1 lg:order-none">
-                <AgendaPane onOpenSettings={() => setSettingsOpen(true)} />
+                <AgendaPane onOpenSettings={() => setSettings("calendars")} />
               </div>
               <div className="order-5 lg:order-none">
                 <NotepadPane />
@@ -79,16 +80,18 @@ export function App() {
             </div>
             <div className="contents lg:flex lg:flex-col lg:gap-px">
               <div className="order-6 lg:order-none">
-                <MarketsPane onOpenSettings={() => setSettingsOpen(true)} />
+                <MarketsPane onOpenSettings={setSettings} />
               </div>
               <div className="order-7 lg:order-none">
-                <VersePane onOpenSettings={() => setSettingsOpen(true)} />
+                <VersePane onOpenSettings={() => setSettings("keys")} />
               </div>
             </div>
           </div>
         )}
       </main>
-      {settingsOpen && <SettingsModal me={me.data} onClose={() => setSettingsOpen(false)} />}
+      {settings && (
+        <SettingsModal me={me.data} initial={settings === "start" ? undefined : settings} onClose={() => setSettings(null)} />
+      )}
     </div>
   );
 }

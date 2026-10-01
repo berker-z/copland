@@ -400,7 +400,7 @@ ${hidden}
     <label><input type="radio" name="access" value="read"${req.scope === "read" ? " checked" : ""}>
       <span><strong>read only</strong><small>can't change anything</small></span></label>
   </fieldset>
-  <p>Afterwards you go back to <code>${esc(where)}</code>. Disconnect any time in settings › integrations.</p>
+  <p>Afterwards you go back to <code>${esc(where)}</code>. Disconnect any time in settings › access.</p>
 </section>
 <footer>
   <button type="submit" name="decision" value="deny">[ deny ]</button>

@@ -167,7 +167,14 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 - Typography utilities in `src/styles/index.css` (`@utility`): `text-label`
   so far; the rest of nord-dash's set (`text-nav`, `text-section`, ...) comes
   over with the widgets that use them. Use these instead of inline weights.
-- Settings › integrations: copyable values (the MCP URL, a command, a new
+- Settings (`src/features/settings/SettingsModal.tsx`) is pages, not one long
+  scroll: a `w-44` list on the left grouped as dashboard, connections and
+  instance, the open page on the right, `ModalFrame size="xl"` at a fixed
+  height so switching pages does not resize it. On a phone the list is its
+  own screen and a page opens with a back arrow in the title. A page is a
+  `Section` (title, one-line purpose) with `Group`s inside. Panes open
+  settings at the page they need (`initial`).
+- Settings › assistants: copyable values (the MCP URL, a command, a new
   token's secret) are a `bg-raised border-faint` line with the value in
   `text-yellow` and a copy icon. A token's secret shows once in the same
   green-bordered box as a new invite link. Token rows show scope in

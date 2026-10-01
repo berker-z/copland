@@ -7,6 +7,7 @@
    saying where the rest would come from.
    ========================================================================== */
 
+import type { SettingsPage } from "@/features/settings/SettingsModal";
 import { DEFAULT_SETTINGS } from "@/domain/settings";
 import { useMarketExtras, useSettings, useVault } from "@/lib/queries";
 import { WidgetFrame } from "@/ui/WidgetFrame";
@@ -62,7 +63,7 @@ function MarketRow({ row }: { row: Row }) {
   );
 }
 
-export function MarketsPane({ onOpenSettings }: { onOpenSettings: () => void }) {
+export function MarketsPane({ onOpenSettings }: { onOpenSettings: (page: SettingsPage) => void }) {
   const { data: settings = DEFAULT_SETTINGS } = useSettings();
   const { data: vault } = useVault();
   const cgKey = vault?.find((e) => e.name === "coingecko");
@@ -142,13 +143,13 @@ export function MarketsPane({ onOpenSettings }: { onOpenSettings: () => void }) 
         )}
         {wantsExtras && extras.isError && <p className="text-xs text-red mt-2">! COINGECKO: {extras.error.message}</p>}
         {vault && !cgKey && (
-          <button onClick={onOpenSettings} className="text-xs text-faint hover:text-accent text-left mt-2 transition-colors">
+          <button onClick={() => onOpenSettings("keys")} className="text-xs text-faint hover:text-accent text-left mt-2 transition-colors">
             {cgIds.length > 0 ? "coingecko ids need a key: " : "market caps and nft floors: "}
             add a coingecko key in settings
           </button>
         )}
         {cgKey && cgIds.length === 0 && (
-          <button onClick={onOpenSettings} className="text-xs text-faint hover:text-accent text-left mt-2 transition-colors">
+          <button onClick={() => onOpenSettings("markets")} className="text-xs text-faint hover:text-accent text-left mt-2 transition-colors">
             coingecko key saved: add coin or nft ids in settings
           </button>
         )}

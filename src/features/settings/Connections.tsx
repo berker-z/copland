@@ -1,8 +1,10 @@
 /* ============================================================================
-   Settings › integrations: use copland from an AI assistant or a script.
+   Settings › assistants and settings › access: using copland from an AI
+   assistant or a script.
    ----------------------------------------------------------------------------
-   The MCP URL to paste into Claude, how to connect each kind of client, and
-   the user's own tokens and connected apps. Whatever connects acts as this
+   Assistants is the how-to: the MCP URL to paste into Claude and how to
+   connect each kind of client. Access is what is connected: the user's own
+   tokens and the apps they approved, with when each was last used. Whatever connects acts as this
    user with exactly their board roles (worker/tokens.ts), and a task's
    history names it ("via Claude Code").
 
@@ -20,9 +22,7 @@ import type { ApiToken, ApiTokenScope, CreatedToken } from "@/domain/types";
 import { send } from "@/lib/api";
 import { KEYS, useTokens } from "@/lib/queries";
 
-const input =
-  "bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent";
-const button = "px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50";
+import { Group, Section, button, input } from "./Section";
 
 /** A value to paste somewhere, with a copy button. Wraps rather than scrolls on a phone. */
 function CopyLine({ value, label }: { value: string; label: string }) {
@@ -139,84 +139,80 @@ function Tokens() {
 
   return (
     <>
-      <form
-        className="flex flex-wrap gap-2 mb-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (name.trim()) create.mutate();
-        }}
-      >
-        <input
-          className={`${input} flex-1 min-w-[10rem]`}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="token name"
-          maxLength={60}
-          aria-label="Token name"
-        />
-        <select className={input} value={scope} onChange={(e) => setScope(e.target.value as ApiTokenScope)} aria-label="Access">
-          <option value="write">read + write</option>
-          <option value="read">read only</option>
-        </select>
-        <select className={input} value={expiry} onChange={(e) => setExpiry(e.target.value)} aria-label="Expiry">
-          {EXPIRY.map((e) => (
-            <option key={e.value} value={e.value}>
-              {e.label}
-            </option>
-          ))}
-        </select>
-        <button className={button} type="submit" disabled={!name.trim() || create.isPending}>
-          create
-        </button>
-      </form>
-      {(create.error ?? revoke.error) && (
-        <p className="text-red text-xs mb-2">{(create.error ?? revoke.error)?.message}</p>
-      )}
-      {created && (
-        <div className="mb-3 p-2 border border-green/60 bg-green/10 text-xs">
-          <p className="text-green mb-1.5">
-            Token “{created.token.name}” made. Copy it now: it is shown only this once.
-          </p>
-          <CopyLine value={created.secret} label="token" />
-          <button type="button" onClick={() => setCreated(null)} className="tap mt-1.5 text-muted hover:text-accent">
-            [ done ]
+      {revoke.error && <p className="text-red text-xs mb-2">{revoke.error.message}</p>}
+      <Group title="connected apps">
+        {isPending ? (
+          <p className="text-xs text-muted animate-pulse">loading…</p>
+        ) : apps.length === 0 ? (
+          <p className="text-xs text-faint">None. Apps appear here when you connect one from assistants.</p>
+        ) : (
+          <ul className="text-sm">{rows(apps)}</ul>
+        )}
+      </Group>
+
+      <Group title="personal tokens">
+        {!isPending && personal.length === 0 && <p className="text-xs text-faint mb-3">None yet.</p>}
+        {personal.length > 0 && <ul className="text-sm mb-3">{rows(personal)}</ul>}
+        {created && (
+          <div className="mb-3 p-2 border border-green/60 bg-green/10 text-xs">
+            <p className="text-green mb-1.5">
+              Token “{created.token.name}” made. Copy it now: it is shown only this once.
+            </p>
+            <CopyLine value={created.secret} label="token" />
+            <button type="button" onClick={() => setCreated(null)} className="tap mt-1.5 text-muted hover:text-accent">
+              [ done ]
+            </button>
+          </div>
+        )}
+        <form
+          className="flex flex-wrap gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (name.trim()) create.mutate();
+          }}
+        >
+          <input
+            className={`${input} flex-1 min-w-[10rem]`}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="new token name"
+            maxLength={60}
+            aria-label="Token name"
+          />
+          <select className={input} value={scope} onChange={(e) => setScope(e.target.value as ApiTokenScope)} aria-label="Access">
+            <option value="write">read + write</option>
+            <option value="read">read only</option>
+          </select>
+          <select className={input} value={expiry} onChange={(e) => setExpiry(e.target.value)} aria-label="Expiry">
+            {EXPIRY.map((e) => (
+              <option key={e.value} value={e.value}>
+                {e.label}
+              </option>
+            ))}
+          </select>
+          <button className={button} type="submit" disabled={!name.trim() || create.isPending}>
+            create
           </button>
-        </div>
-      )}
-      {isPending ? (
-        <p className="text-xs text-muted animate-pulse">loading…</p>
-      ) : apps.length + personal.length === 0 ? (
-        <p className="text-xs text-faint">Nothing connected yet.</p>
-      ) : (
-        <>
-          {apps.length > 0 && (
-            <>
-              <h5 className="text-xs text-muted mt-2">connected apps</h5>
-              <ul className="text-sm mb-2">{rows(apps)}</ul>
-            </>
-          )}
-          {personal.length > 0 && (
-            <>
-              <h5 className="text-xs text-muted mt-2">personal tokens</h5>
-              <ul className="text-sm">{rows(personal)}</ul>
-            </>
-          )}
-        </>
-      )}
+        </form>
+        {create.error && <p className="text-red text-xs mt-2">{create.error.message}</p>}
+      </Group>
     </>
   );
 }
 
-export function IntegrationsSection() {
+export function AssistantsSection() {
   const mcpUrl = `${window.location.origin}/mcp`;
   return (
-    <section className="py-4 first:pt-0 border-b border-divider last:border-b-0">
-      <h4 className="text-label mb-1">integrations</h4>
-      <p className="text-xs text-muted mb-3">
-        Use copland from Claude or another AI assistant: “what's due this week?”, “move LNCH-4 to done”. Whatever
-        connects acts as you, with your role on each board, and its changes show in a task's history as “via Claude”.
-      </p>
-
+    <Section
+      title="assistants"
+      hint={
+        <>
+          Use copland from Claude or another AI assistant: “what's due this week?”, “move LNCH-4 to done”. Whatever
+          connects acts as you, with your role on each board, and its changes show in a task's history as “via
+          Claude”. What is connected is under access.
+        </>
+      }
+    >
       <Step title="claude.ai and the Claude app">
         <p>Settings › Connectors › add a custom connector, paste this URL, connect, and allow access.</p>
         <CopyLine value={mcpUrl} label="MCP URL" />
@@ -227,13 +223,21 @@ export function IntegrationsSection() {
       </Step>
       <Step title="other clients and scripts">
         <p>
-          Make a token below and send it as <code className="text-ink">Authorization: Bearer &lt;token&gt;</code>, to
-          the MCP URL or to <code className="text-ink">/api</code> itself. A read-only token can look but not change.
+          Make a token under access and send it as <code className="text-ink">Authorization: Bearer &lt;token&gt;</code>,
+          to the MCP URL or to <code className="text-ink">/api</code> itself. A read-only token can look but not change.
         </p>
       </Step>
+    </Section>
+  );
+}
 
-      <h5 className="text-label mt-4 mb-2">tokens and connected apps</h5>
+export function AccessSection() {
+  return (
+    <Section
+      title="access"
+      hint="Everything that can act as you without a browser. Each one has your board roles and nothing more; revoke it and it stops working at once."
+    >
       <Tokens />
-    </section>
+    </Section>
   );
 }

@@ -27,7 +27,7 @@ docs/DESIGN.md under Touch.
 
 - [ ] Calendar events: create, edit, delete an event from the agenda against a
       real Google calendar (the flow works locally and accounts connect).
-- [ ] Connect Claude over MCP (settings › integrations) and try
+- [ ] Connect Claude over MCP (settings › assistants) and try
       "what's on my plate?" and "what's on my calendar this week?".
 - [ ] Verse pane with a new OpenAI key (nord-dash's is revoked).
 
@@ -50,6 +50,9 @@ docs/DESIGN.md under Touch.
 
 ## Later
 
+- [ ] Agents as their own identities: assignable, on boards with their own
+      roles, their own tokens, history in their own name. Undecided; the options
+      are in docs/AGENT-IDENTITIES.md.
 - [ ] GitHub on boards: PRs that mention a task key show up on the task, a
       merge can close it. Undecided; the options are in docs/GITHUB.md.
 - [ ] @mentions and notifications on shared boards
@@ -87,3 +90,6 @@ docs/DESIGN.md under Touch.
   admin, admins promote, demote and disable people in settings, the last one
   can't step down, and `npm run admin` is the way back in. `ADMIN_EMAILS` is
   gone, and with it the owner's email from the config
+- Settings as pages: a list on the left (dashboard, connections, instance), the
+  open page on the right, drill-in on a phone, and panes open it at the page
+  they need

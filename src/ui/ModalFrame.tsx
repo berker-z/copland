@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 type ModalTone = "default" | "info" | "danger";
-type ModalSize = "sm" | "md" | "lg";
+type ModalSize = "sm" | "md" | "lg" | "xl";
 
 interface ModalFrameProps {
   title: React.ReactNode;
@@ -44,6 +44,7 @@ const sizeClasses: Record<ModalSize, string> = {
   sm: "sm:max-w-sm",
   md: "sm:max-w-md",
   lg: "sm:max-w-xl",
+  xl: "sm:max-w-3xl",
 };
 
 export const ModalFrame: React.FC<ModalFrameProps> = ({

@@ -1,14 +1,14 @@
 /* ============================================================================
    Settings: everything that used to be hardcoded or in .env, per user.
-   Sections: markets (Binance coins, CoinGecko ids), weather location (a
-   city search), API keys (the vault), integrations (AI assistants and
-   tokens, IntegrationsSection.tsx) and, for admins, the instance (invites
-   and users).
+   Pages, in PAGES below: the dashboard's panes (calendars, markets, the
+   weather's place), connections (API keys in the vault, how to connect an
+   assistant, and the tokens and apps that act as you, in Connections.tsx),
+   and for admins, the people on the instance.
    ========================================================================== */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Copy, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, Trash2, X } from "lucide-react";
 import { VAULT_NAMES, type VaultEntry, type VaultName } from "@/domain/settings";
 import type { CreatedInvite, Me } from "@/domain/types";
 import { CalendarSettings } from "@/features/calendar/CalendarSettings";
@@ -17,21 +17,10 @@ import { send } from "@/lib/api";
 import { KEYS, useAdminInvites, useAdminUsers, useSettings, useVault } from "@/lib/queries";
 import { useUpdateSettings } from "@/lib/settings";
 import { ModalFrame } from "@/ui/ModalFrame";
-import { IntegrationsSection } from "./IntegrationsSection";
+import { usePhone } from "@/ui/useMediaQuery";
+import { AccessSection, AssistantsSection } from "./Connections";
 
-const input =
-  "bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent";
-const button = "px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50";
-
-function Section({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
-  return (
-    <section className="py-4 first:pt-0 border-b border-divider last:border-b-0">
-      <h4 className="text-label mb-1">{title}</h4>
-      {hint && <p className="text-xs text-muted mb-3">{hint}</p>}
-      {children}
-    </section>
-  );
-}
+import { Group, Section, button, input } from "./Section";
 
 type ListKey = "coins" | "coingeckoCoins" | "coingeckoNfts";
 
@@ -111,7 +100,7 @@ function MarketsSection() {
   return (
     <Section
       title="markets"
-      hint="Binance spot symbols, priced in USDT, need no key. CoinGecko ids (the slug in a coin's or collection's coingecko.com URL) need the coingecko key below."
+      hint="Binance spot symbols, priced in USDT, need no key. CoinGecko ids (the slug in a coin's or collection's coingecko.com URL) need a coingecko key under api keys."
     >
       <ChipList setting="coins" label="binance" placeholder="BTC" normalize={(s) => s.toUpperCase()} maxLength={12} />
       <ChipList setting="coingeckoCoins" label="coingecko coins, by market cap" placeholder="milady-cult-coin" normalize={lower} maxLength={80} />
@@ -275,7 +264,7 @@ function VaultRow({ name, entry }: { name: VaultName; entry: VaultEntry | undefi
 function VaultSection() {
   const { data: entries } = useVault();
   return (
-    <Section title="api keys" hint="Stored encrypted on the server and never sent back to the browser.">
+    <Section title="api keys" hint="Keys for the services copland calls on your behalf. Stored encrypted on the server and never sent back to the browser.">
       {(Object.keys(VAULT_NAMES) as VaultName[]).map((name) => (
         <VaultRow key={name} name={name} entry={entries?.find((e) => e.name === name)} />
       ))}
@@ -315,91 +304,207 @@ function InstanceSection({ me }: { me: Me }) {
   const open = (invites ?? []).filter((i) => !i.usedAt && i.expiresAt > new Date().toISOString());
 
   return (
-    <Section title="instance" hint={`Sign-up is ${me.signup}. Invite links work once and expire in 14 days.`}>
-      {me.signup !== "closed" && (
-        <form
-          className="flex gap-2 mb-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            invite.mutate();
-          }}
-        >
-          <input className={`${input} flex-1`} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email (optional: lock the link to it)" />
-          <button className={button} type="submit" disabled={invite.isPending}>
-            invite
-          </button>
-        </form>
-      )}
-      {invite.error && <p className="text-red text-xs mb-2">{invite.error.message}</p>}
-      {created && (
-        <div className="mb-3 p-2 border border-green/60 bg-green/10 text-xs">
-          <p className="text-green mb-1">Link made. It is shown only now:</p>
-          <div className="flex items-center gap-2">
-            <code className="text-yellow truncate flex-1">{created.url}</code>
-            <button onClick={() => navigator.clipboard.writeText(created.url)} className="tap text-ink hover:text-accent p-1" title="Copy">
-              <Copy size={14} />
-            </button>
-          </div>
-        </div>
-      )}
-      {open.length > 0 && (
-        <ul className="mb-3 text-sm">
-          {open.map((i) => (
-            <li key={i.id} className="flex items-center justify-between gap-2 py-1">
-              <span className="text-muted truncate">
-                {i.email ?? "anyone with the link"} · until {i.expiresAt.slice(0, 10)}
-              </span>
-              <button onClick={() => revoke.mutate(i.id)} className="tap text-muted hover:text-red text-xs">
-                revoke
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <h5 className="text-label mt-2 mb-1">users</h5>
-      {patch.error && <p className="text-red text-xs mb-2">{patch.error.message}</p>}
-      <ul className="text-sm">
-        {(users ?? []).map((u) => {
-          const self = u.id === me.user.id;
-          return (
-            <li key={u.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1">
-              <span className={`min-w-0 flex-1 truncate ${u.disabledAt ? "text-faint line-through" : "text-ink"}`}>
-                {u.name} <span className="text-muted">{u.email}</span>
-              </span>
-              <button
-                onClick={() => patch.mutate({ id: u.id, body: { admin: !u.isAdmin } })}
-                className={`tap text-xs ${u.isAdmin ? "text-accent hover:text-red" : "text-faint hover:text-accent"}`}
-                title={u.isAdmin ? (self ? "Stop being an admin" : "Remove admin") : "Make admin"}
-              >
-                {u.isAdmin ? "admin" : "make admin"}
-              </button>
-              {!self && (
+    <Section
+      title="people"
+      hint={
+        <>
+          Who has an account on this copland. Sign-up is <span className="text-ink">{me.signup}</span>. Admins let people
+          in and can make others admins; it gives no access to anyone&apos;s boards or notes.
+        </>
+      }
+    >
+      <Group title="accounts">
+        {patch.error && <p className="text-red text-xs mb-2">{patch.error.message}</p>}
+        <ul className="text-sm">
+          {(users ?? []).map((u) => {
+            const self = u.id === me.user.id;
+            return (
+              <li key={u.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 border-b border-divider last:border-b-0">
+                <span className={`min-w-0 flex-1 truncate ${u.disabledAt ? "text-faint line-through" : "text-ink"}`}>
+                  {u.name} <span className="text-muted">{u.email}</span>
+                </span>
                 <button
-                  onClick={() => patch.mutate({ id: u.id, body: { disabled: !u.disabledAt } })}
-                  className="tap text-xs text-muted hover:text-red"
+                  onClick={() => patch.mutate({ id: u.id, body: { admin: !u.isAdmin } })}
+                  className={`tap text-xs ${u.isAdmin ? "text-accent hover:text-red" : "text-faint hover:text-accent"}`}
+                  title={u.isAdmin ? (self ? "Stop being an admin" : "Remove admin") : "Make admin"}
                 >
-                  {u.disabledAt ? "enable" : "disable"}
+                  {u.isAdmin ? "admin" : "make admin"}
                 </button>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+                {!self && (
+                  <button
+                    onClick={() => patch.mutate({ id: u.id, body: { disabled: !u.disabledAt } })}
+                    className="tap text-xs text-muted hover:text-red"
+                  >
+                    {u.disabledAt ? "enable" : "disable"}
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </Group>
+
+      <Group title="invites">
+        {me.signup === "closed" ? (
+          <p className="text-xs text-faint">Sign-up is closed, so there is nobody to invite.</p>
+        ) : (
+          <>
+            <p className="text-xs text-muted mb-2">A link works once and expires in 14 days.</p>
+            <form
+              className="flex gap-2 mb-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                invite.mutate();
+              }}
+            >
+              <input
+                className={`${input} flex-1 min-w-0`}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="email (optional: lock the link to it)"
+              />
+              <button className={button} type="submit" disabled={invite.isPending}>
+                invite
+              </button>
+            </form>
+          </>
+        )}
+        {invite.error && <p className="text-red text-xs mb-2">{invite.error.message}</p>}
+        {created && (
+          <div className="mb-3 p-2 border border-green/60 bg-green/10 text-xs">
+            <p className="text-green mb-1">Link made. It is shown only now:</p>
+            <div className="flex items-center gap-2">
+              <code className="text-yellow truncate flex-1">{created.url}</code>
+              <button onClick={() => navigator.clipboard.writeText(created.url)} className="tap text-ink hover:text-accent p-1" title="Copy">
+                <Copy size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+        {open.length > 0 && (
+          <ul className="text-sm">
+            {open.map((i) => (
+              <li key={i.id} className="flex items-center justify-between gap-2 py-1">
+                <span className="text-muted truncate">
+                  {i.email ?? "anyone with the link"} · until {i.expiresAt.slice(0, 10)}
+                </span>
+                <button onClick={() => revoke.mutate(i.id)} className="tap text-muted hover:text-red text-xs">
+                  revoke
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Group>
     </Section>
   );
 }
 
-export function SettingsModal({ me, onClose }: { me: Me; onClose: () => void }) {
+export type SettingsPage = "calendars" | "markets" | "weather" | "keys" | "assistants" | "access" | "people";
+
+interface Page {
+  id: SettingsPage;
+  label: string;
+  group: string;
+  adminOnly?: boolean;
+}
+
+/* Grouped by what they are for: the panes on the dashboard, the things
+   copland talks to, and (for admins) the instance itself. */
+const PAGES: Page[] = [
+  { id: "calendars", label: "calendars", group: "dashboard" },
+  { id: "markets", label: "markets", group: "dashboard" },
+  { id: "weather", label: "weather", group: "dashboard" },
+  { id: "keys", label: "api keys", group: "connections" },
+  { id: "assistants", label: "assistants", group: "connections" },
+  { id: "access", label: "access", group: "connections" },
+  { id: "people", label: "people", group: "instance", adminOnly: true },
+];
+
+function PageBody({ page, me }: { page: SettingsPage; me: Me }) {
+  switch (page) {
+    case "calendars":
+      return (
+        <Section title="calendars" hint="Google accounts and ICS links. What is ticked shows in the calendar and agenda panes.">
+          <CalendarSettings />
+        </Section>
+      );
+    case "markets":
+      return <MarketsSection />;
+    case "weather":
+      return <LocationSection />;
+    case "keys":
+      return <VaultSection />;
+    case "assistants":
+      return <AssistantsSection />;
+    case "access":
+      return <AccessSection />;
+    case "people":
+      return <InstanceSection me={me} />;
+  }
+}
+
+/**
+ * Settings: a list of pages on the left and the open one on the right. On a
+ * phone the list is a screen of its own and a page opens over it, with a
+ * way back, like a phone's own settings.
+ */
+export function SettingsModal({ me, initial, onClose }: { me: Me; initial?: SettingsPage; onClose: () => void }) {
+  const phone = usePhone();
+  const pages = PAGES.filter((p) => !p.adminOnly || me.user.isAdmin);
+  const [picked, setPicked] = useState<SettingsPage | null>(initial ?? null);
+  /* On a wide screen something is always open; on a phone nothing is until tapped. */
+  const page = picked ?? (phone ? null : pages[0].id);
+  const groups = [...new Set(pages.map((p) => p.group))];
+
+  const nav = (
+    <nav className="w-full sm:w-44 shrink-0 sm:border-r border-divider overflow-y-auto py-2 sm:py-3" aria-label="Settings">
+      {groups.map((group) => (
+        <div key={group} className="mb-3 last:mb-0">
+          <div className="text-label px-5 sm:px-4 pb-1">{group}</div>
+          {pages
+            .filter((p) => p.group === group)
+            .map((p) => (
+              <button
+                key={p.id}
+                onClick={() => setPicked(p.id)}
+                aria-current={p.id === page ? "page" : undefined}
+                className={`w-full flex items-center justify-between text-left px-5 sm:px-4 py-1.5 pointer-coarse:py-3 transition-colors ${
+                  p.id === page ? "bg-raised text-accent" : "text-ink hover:bg-raised"
+                }`}
+              >
+                {p.label}
+                <ChevronRight size={14} className="sm:hidden text-faint" />
+              </button>
+            ))}
+        </div>
+      ))}
+    </nav>
+  );
+
   return (
-    <ModalFrame title="settings" onClose={onClose} size="lg">
-      <Section title="calendars">
-        <CalendarSettings />
-      </Section>
-      <MarketsSection />
-      <LocationSection />
-      <VaultSection />
-      <IntegrationsSection />
-      {me.user.isAdmin && <InstanceSection me={me} />}
+    <ModalFrame
+      title={
+        phone && page ? (
+          <button onClick={() => setPicked(null)} className="flex items-center gap-1.5 hover:text-accent">
+            <ChevronLeft size={16} /> settings
+          </button>
+        ) : (
+          "settings"
+        )
+      }
+      onClose={onClose}
+      size="xl"
+      bodyClassName="!p-0"
+    >
+      <div className="flex h-full sm:h-[min(80vh,42rem)]">
+        {(!phone || !page) && nav}
+        {page && (
+          <div className="flex-1 min-w-0 overflow-y-auto p-5">
+            <PageBody page={page} me={me} />
+          </div>
+        )}
+      </div>
     </ModalFrame>
   );
 }
