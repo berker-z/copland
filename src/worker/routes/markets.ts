@@ -10,12 +10,13 @@
    asks "my extras", and cannot make the Worker spend someone's key on
    arbitrary paths.
 
-   CoinGecko's demo plan allows a few thousand calls a month, and nord-dash
-   polled every ten minutes. Answers are cached for CACHE_SECONDS, keyed by
-   the path without the key: this is public market data, so two users
-   watching the same coin share one call. Two layers, because the Cache API
-   does nothing on a workers.dev hostname: the isolate's memory (lost
-   whenever the isolate is), then caches.default (per colo, where it works).
+   CoinGecko's demo plan allows 10k calls a month, and nord-dash polling
+   every ten minutes used most of it. Answers are cached for CACHE_SECONDS,
+   keyed by the path without the key: this is public market data, so two
+   users watching the same coin share one call. Two layers, because the
+   Cache API does nothing on a workers.dev hostname: the isolate's memory
+   (lost whenever the isolate is), then caches.default (per colo, where it
+   works).
    ========================================================================== */
 
 import type { MarketCoin, MarketExtras, MarketNft } from "@/domain/panes";
@@ -27,7 +28,7 @@ import { openVault } from "../vault";
 
 const API = "https://api.coingecko.com/api/v3/";
 const USER_AGENT = "copland/0.1 (+https://github.com/berker-z/copland)";
-const CACHE_SECONDS = 600;
+const CACHE_SECONDS = 15 * 60;
 /* Not an address anything answers on; only a key for caches.default. */
 const CACHE_ORIGIN = "https://coingecko.cache.copland.invalid/";
 const MEMORY_MAX = 200;

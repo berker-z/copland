@@ -5,10 +5,10 @@
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
 
-  // The Worker authenticates its own requests (worker/auth.ts), so the
-  // workers.dev hostname can be public: an anonymous request gets the login
-  // screen and a 401 from /api.
-  "workers_dev": true,
+  // Off: sign-in works only on the custom domain below, the one redirect URI
+  // Google knows. A fork without a domain turns it on and registers
+  // <its workers.dev host>/auth/callback with Google instead.
+  "workers_dev": false,
 
   // This instance's address. Cloudflare creates the DNS record and the
   // certificate; the zone must be on the same account. A fork changes or

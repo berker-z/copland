@@ -68,9 +68,9 @@ export const useTokens = () => useQuery({ queryKey: KEYS.tokens, queryFn: () => 
 export const useNotes = () =>
   useQuery({ queryKey: KEYS.notes, queryFn: () => api<Note[]>("/notes"), refetchInterval: fallbackPoll(60_000) });
 
-/* CoinGecko's demo plan is rate limited and the Worker caches for ten
-   minutes, so asking more often than that would only get the same answer. */
-const MARKET_EXTRAS_MS = 10 * 60_000;
+/* CoinGecko's demo plan is rate limited and the Worker caches for
+   fifteen minutes, so asking more often would only get the same answer. */
+const MARKET_EXTRAS_MS = 15 * 60_000;
 
 export const useMarketExtras = (ids: unknown[], enabled: boolean) =>
   useQuery({

@@ -1,7 +1,7 @@
 /* ============================================================================
    The markets pane, from nord-dash's CryptoWidget: Binance prices for the
    coins in settings every 15 seconds, then the CoinGecko extras (market caps,
-   NFT floors) the Worker fetches with the user's key every ten minutes.
+   NFT floors) the Worker fetches with the user's key every fifteen minutes.
 
    Without a coingecko key the pane is just Binance, with one quiet line
    saying where the rest would come from.
@@ -103,7 +103,7 @@ export function MarketsPane({ onOpenSettings }: { onOpenSettings: () => void }) 
   const syncing = binance.isFetching || extras.isFetching;
   const refresh = () => {
     void binance.refetch();
-    /* The Worker answers from its cache inside ten minutes, so this costs
+    /* The Worker answers from its cache inside fifteen minutes, so this costs
        no CoinGecko call. */
     if (wantsExtras) void extras.refetch();
   };

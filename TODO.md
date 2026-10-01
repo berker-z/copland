@@ -41,7 +41,7 @@ this order:
       real Google calendar (the flow works locally and accounts connect).
 - [ ] Connect Claude over MCP (settings › integrations) and try
       "what's on my plate?" and "what's on my calendar this week?".
-- [ ] Verse pane with the (rotated) OpenAI key.
+- [ ] Verse pane with a new OpenAI key (nord-dash's is revoked).
 
 ### Small things noticed
 
@@ -61,10 +61,6 @@ this order:
       and writes through Copland's task routes, and drops gnaw's own auth
       (better-auth) and D1 sync. It is phone-shaped already, so it belongs
       with the phone work. Read its docs/HANDOFF.md and docs/ROADMAP.md first.
-- [ ] Rotate the OpenAI and CoinGecko keys that nord-dash shipped in its public
-      bundle; revoke the old ones.
-- [ ] Turn off `copland.gnaw.workers.dev` (`workers_dev: false`): sign-in does
-      not work there anyway, since Google only knows copland.berkerz.dev.
 - [ ] The `/tasks` pane shows only the inbox. Decide whether it should also show
       tasks assigned to you on shared boards (like the MCP's `my_work`).
 - [ ] Old test data in the local dev database (LNCH board and such); harmless.
