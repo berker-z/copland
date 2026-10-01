@@ -39,9 +39,9 @@ const toneStyles: Record<ModalTone, { border: string; accent: string }> = {
 };
 
 const sizeClasses: Record<ModalSize, string> = {
-  sm: "max-w-sm",
-  md: "max-w-md",
-  lg: "max-w-xl",
+  sm: "sm:max-w-sm",
+  md: "sm:max-w-md",
+  lg: "sm:max-w-xl",
 };
 
 export const ModalFrame: React.FC<ModalFrameProps> = ({
@@ -60,9 +60,10 @@ export const ModalFrame: React.FC<ModalFrameProps> = ({
   hideHeader = false,
 }) => {
   const toneClass = toneStyles[tone];
-  const containerClasses = className
-    ? `relative bg-surface border flex flex-col overflow-hidden ${toneClass.border} ${className}`
-    : `relative bg-surface border flex flex-col overflow-hidden ${toneClass.border}`;
+  /* max-h-full against the wrapper's cap, so a long body scrolls inside the
+     frame instead of the frame running past it. */
+  const base = `relative bg-surface sm:border flex flex-col overflow-hidden h-full sm:h-auto max-h-full ${toneClass.border}`;
+  const containerClasses = className ? `${base} ${className}` : base;
   const bodyClasses = bodyClassName
     ? `p-5 text-ink ${bodyClassName}`
     : "p-5 text-ink";
@@ -83,16 +84,18 @@ export const ModalFrame: React.FC<ModalFrameProps> = ({
     return null;
   }
 
+  /* A full-screen sheet below sm, where a centred box would leave a sliver
+     of backdrop around a cramped form; the floating pane from sm up. */
   const modalContent = (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4"
+      className="fixed inset-0 z-[60] flex sm:items-center sm:justify-center bg-black/70 sm:p-4"
       onClick={() => onClose?.()}
       role="dialog"
       aria-modal="true"
       aria-label={typeof title === "string" ? title : undefined}
     >
       <div
-        className={`w-full ${sizeClasses[size]} max-h-[90vh]`}
+        className={`w-full ${sizeClasses[size]} h-full sm:h-auto sm:max-h-[90vh] flex flex-col`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className={containerClasses}>
@@ -121,7 +124,7 @@ export const ModalFrame: React.FC<ModalFrameProps> = ({
                 {onClose && (
                   <button
                     onClick={onClose}
-                    className="p-2 hover:bg-raised hover:text-yellow transition-colors"
+                    className="tap p-2 hover:bg-raised hover:text-yellow transition-colors"
                     title="Close"
                   >
                     <X size={18} />

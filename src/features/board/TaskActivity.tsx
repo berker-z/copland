@@ -105,12 +105,12 @@ export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: 
                 </span>
                 <span className="flex-1" />
                 {c.authorId === me.data?.user.id && editing?.id !== c.id && (
-                  <button onClick={() => setEditing({ id: c.id, text: c.text })} className="text-faint hover:text-accent opacity-0 group-hover/comment:opacity-100">
+                  <button onClick={() => setEditing({ id: c.id, text: c.text })} className="tap text-faint hover:text-accent pointer-fine:opacity-0 pointer-fine:group-hover/comment:opacity-100">
                     edit
                   </button>
                 )}
                 {(c.authorId === me.data?.user.id || isOwner) && (
-                  <button onClick={() => edits.remove.mutate(c.id)} className="text-faint hover:text-red opacity-0 group-hover/comment:opacity-100">
+                  <button onClick={() => edits.remove.mutate(c.id)} className="tap text-faint hover:text-red pointer-fine:opacity-0 pointer-fine:group-hover/comment:opacity-100">
                     delete
                   </button>
                 )}
@@ -150,7 +150,7 @@ export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: 
             <button
               onClick={post}
               disabled={!draft.trim() || edits.add.isPending}
-              className="px-3 py-1 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
+              className="px-3 py-1 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
             >
               post
             </button>

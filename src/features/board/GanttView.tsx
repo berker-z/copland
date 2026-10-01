@@ -228,7 +228,7 @@ export function GanttView({ detail, onOpen }: { detail: BoardDetail; onOpen: (ta
             <button
               key={task.id}
               onClick={() => !isDraft(task.id) && onOpen(task.id)}
-              className="block w-full text-left px-3 py-1.5 border-b border-divider hover:bg-raised text-sm"
+              className="block w-full text-left px-3 py-1.5 pointer-coarse:py-2.5 border-b border-divider hover:bg-raised text-sm"
             >
               <span className="text-faint mr-2">{task.key}</span>
               <span className="text-ink">{task.title}</span>

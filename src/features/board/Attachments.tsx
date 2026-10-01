@@ -47,7 +47,7 @@ function Viewer({ attachment, onClose }: { attachment: Attachment; onClose: () =
             <a href={attachmentHref(attachment, true)} download={attachment.name} className="p-2 hover:text-accent" title="Download">
               <Download size={16} />
             </a>
-            <button onClick={onClose} className="p-2 hover:text-yellow" title="Close">
+            <button onClick={onClose} className="tap p-2 hover:text-yellow" title="Close">
               <X size={16} />
             </button>
           </span>
@@ -85,7 +85,7 @@ export function Attachments({ items, canEdit, busy, error, onFiles, onLink, onRe
 
   const removeButton = (item: Attachment, className: string) =>
     canEdit && (
-      <button onClick={() => onRemove(item)} className={`text-muted hover:text-red ${className}`} aria-label={`Remove ${item.name}`}>
+      <button onClick={() => onRemove(item)} className={`tap text-muted hover:text-red ${className}`} aria-label={`Remove ${item.name}`}>
         <X size={13} />
       </button>
     );
@@ -121,7 +121,7 @@ export function Attachments({ items, canEdit, busy, error, onFiles, onLink, onRe
         >
           <input autoFocus className={`${input} flex-[2] min-w-0`} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" />
           <input className={`${input} flex-1 min-w-0`} value={name} onChange={(e) => setName(e.target.value)} placeholder="name (optional)" />
-          <button type="submit" className="px-3 py-1 border border-faint text-ink hover:border-accent hover:text-accent">
+          <button type="submit" className="px-3 py-1 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent">
             add
           </button>
         </form>
@@ -135,7 +135,7 @@ export function Attachments({ items, canEdit, busy, error, onFiles, onLink, onRe
               <button onClick={() => setViewing(file)} className="block cursor-zoom-in border border-faint" aria-label={`${file.name}, enlarge`}>
                 <img src={attachmentHref(file)} alt={file.name} className="block h-20 w-auto max-w-36 object-cover" />
               </button>
-              {removeButton(file, "absolute right-0.5 top-0.5 bg-surface/90 p-0.5 opacity-0 group-hover/img:opacity-100 [@media(hover:none)]:opacity-100")}
+              {removeButton(file, "absolute right-0.5 top-0.5 bg-surface/90 p-0.5 pointer-fine:opacity-0 pointer-fine:group-hover/img:opacity-100")}
             </span>
           ))}
         </div>

@@ -55,13 +55,16 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 
 - `App.tsx` renders a `grid lg:grid-cols-3 gap-px` on a `bg-divider` page
   ground; columns are `flex flex-col gap-px`; every pane is `bg-surface` so
-  the 1px gaps read as tmux splits. Each column ends with a `bg-surface`
-  filler div so it reads as one continuous surface.
-- The statusline (`components/ui/StatusLine.tsx`) is fixed to the top,
+  the 1px gaps read as tmux splits. Below `lg` the columns are `contents`
+  and the panes stack edge to edge in one column, ordered with `order-*`
+  for a phone: agenda, tasks, boards, calendar, notepad, markets, verse.
+- The statusline (`src/features/shell/StatusLine.tsx`) is fixed to the top,
   `h-11 bg-bar text-base`, `z-[55]` (above the login overlay z-50, below
-  modals z-[60]); `main` gets `pt-11` to clear it. Left: `[thewired]` + user.
-  Right: theme switcher (menu opens downward), weather, city, moon phase,
-  date, clock, logout/locked.
+  modals z-[60]); `main` gets `pt-11` to clear it. Left: the pole mark,
+  `copland`, user. Right: theme switcher (menu opens downward), weather,
+  city, moon phase, date, clock, settings, logout. Below `sm` it keeps the
+  mark, weather, clock and settings, and a `⋯` menu holds date, moon,
+  themes and logout.
 - Moon phase glyph (`components/ui/MoonPhaseIcon.tsx`): 16px SVG, dark disc
   `fill-bar stroke-faint`, lit region in `currentColor` (`text-ink`). The lit
   shape is limb arc + half-ellipse terminator so it morphs continuously
@@ -74,15 +77,27 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 - `components/ui/WidgetFrame.tsx` — the pane. Header is a rule line:
   `── /title ────────` with the slash-title embedded (`text-blue`, accent on
   pane hover, matching rule color shift). Controls (resize, collapse) sit at
-  the rule's right end and appear on hover (always visible on mobile).
+  the rule's right end and appear on hover (always visible on touch).
   Body is `p-4 text-ink`. `bodyStyle`/`bodyClassName` for sizing tweaks.
-- `components/ui/ModalFrame.tsx` — square floating pane, `bg-surface` with a
+- `components/ui/ModalFrame.tsx` — square floating pane from `sm` up,
+  a full-screen sheet below it. `bg-surface` with a
   1px tone border (`default` faint / `info` blue / `danger` red), plain
   backdrop `bg-black/70` (no blur), footer on `bg-bar/60`. ESC + overlay
   click to close.
-- `components/ui/StatusLine.tsx` — statusline + theme menu (opens upward).
+- `src/features/shell/StatusLine.tsx` — statusline, theme menu, phone menu.
 - `components/ui/Checkbox.tsx` — shared checkbox (checked green, unchecked
   muted, `focus-visible:ring-accent`).
+
+## Touch
+
+- `pointer-coarse:` is a touch screen, `pointer-fine:` a mouse. Size by
+  pointer, layout by width: a tablet is wide and still needs big targets.
+- `tap` (in `index.css`) gives an icon button a 40px hit area on touch and
+  changes nothing under a mouse. Bordered buttons add `pointer-coarse:py-2.5`.
+- Inputs, textareas and selects are 16px on touch (an unlayered rule in
+  `index.css`, so it beats `text-xs`); smaller makes iOS zoom on focus.
+- Controls that appear on hover are `pointer-fine:opacity-0
+  pointer-fine:group-hover:opacity-100`: always visible on touch.
 
 ## Usage Patterns
 

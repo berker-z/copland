@@ -113,7 +113,7 @@ export function CalendarPane({ onOpenSettings }: { onOpenSettings: () => void })
     <WidgetFrame
       title="/calendar"
       controls={
-        <button onClick={onOpenSettings} className="p-1 hover:text-accent transition-colors" title="Calendars">
+        <button onClick={onOpenSettings} className="tap p-1 hover:text-accent transition-colors" title="Calendars">
           <Settings size={14} />
         </button>
       }
@@ -125,7 +125,7 @@ export function CalendarPane({ onOpenSettings }: { onOpenSettings: () => void })
         <>
           <Errors errors={events.data?.errors ?? []} />
           <div className="flex justify-between items-center mb-3 pb-2 border-b border-divider">
-            <button onClick={() => shift(-1)} className="p-1 text-muted hover:text-accent" aria-label="Previous month">
+            <button onClick={() => shift(-1)} className="tap p-1 text-muted hover:text-accent" aria-label="Previous month">
               <ChevronLeft size={16} />
             </button>
             <button
@@ -135,7 +135,7 @@ export function CalendarPane({ onOpenSettings }: { onOpenSettings: () => void })
             >
               {new Date(cursor.year, cursor.month, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" })}
             </button>
-            <button onClick={() => shift(1)} className="p-1 text-muted hover:text-accent" aria-label="Next month">
+            <button onClick={() => shift(1)} className="tap p-1 text-muted hover:text-accent" aria-label="Next month">
               <ChevronRight size={16} />
             </button>
           </div>
@@ -179,11 +179,10 @@ export function CalendarPane({ onOpenSettings }: { onOpenSettings: () => void })
           title={selected.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }).toLowerCase()}
           onClose={() => setSelected(null)}
           headerActions={
-            <button onClick={() => setOpen({ event: null, day: selected })} className="p-2 hover:bg-raised hover:text-green transition-colors" title="Add event">
+            <button onClick={() => setOpen({ event: null, day: selected })} className="tap p-2 hover:bg-raised hover:text-green transition-colors" title="Add event">
               <Plus size={16} />
             </button>
           }
-          className="max-h-[90vh]"
         >
           {selectedEvents.length === 0 && <p className="text-faint text-sm">nothing on</p>}
           {selectedEvents.map((e) => (
@@ -220,7 +219,7 @@ export function AgendaPane({ onOpenSettings }: { onOpenSettings: () => void }) {
       meta={today.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }).toLowerCase()}
       controls={
         hasCalendars && (
-          <button onClick={() => setOpen({ event: null, day: today })} className="p-1 hover:text-green transition-colors" title="Add event">
+          <button onClick={() => setOpen({ event: null, day: today })} className="tap p-1 hover:text-green transition-colors" title="Add event">
             <Plus size={14} />
           </button>
         )

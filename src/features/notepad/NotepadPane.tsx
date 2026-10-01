@@ -104,7 +104,7 @@ export function NotepadPane() {
             </button>
             <button
               onClick={() => void pad.flush()}
-              className={`p-1.5 hover:text-accent transition-colors ${SAVE_COLOR[pad.saveState]}`}
+              className={`tap p-1.5 hover:text-accent transition-colors ${SAVE_COLOR[pad.saveState]}`}
               title={SAVE_TITLE[pad.saveState]}
             >
               <Save size={16} />
@@ -154,7 +154,7 @@ export function NotepadPane() {
                   </button>
                   <button
                     onClick={() => confirmDelete(note)}
-                    className="md:opacity-0 md:group-hover:opacity-100 text-red hover:bg-surface p-1.5 transition-all"
+                    className="tap pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100 text-red hover:bg-surface p-1.5 transition-all"
                     title="Delete note"
                   >
                     <Trash2 size={15} />

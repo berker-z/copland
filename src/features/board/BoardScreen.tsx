@@ -92,7 +92,7 @@ function Column({ detail, stage, onOpen, onNew }: ColumnProps) {
         {canEdit && (
           <button
             onClick={() => onNew(stage.id)}
-            className="text-muted hover:text-accent md:opacity-0 md:group-hover/pane:opacity-100 transition-opacity"
+            className="tap text-muted hover:text-accent pointer-fine:opacity-0 pointer-fine:group-hover/pane:opacity-100 transition-opacity"
             title={`New task in ${stage.name}`}
           >
             <Plus size={14} />
@@ -177,14 +177,14 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   return (
     <div className="flex flex-col h-[calc(100vh-2.75rem)]">
       <div className="flex items-center gap-3 px-4 md:px-8 py-3 bg-surface border-b border-divider whitespace-nowrap">
-        <button onClick={() => navigate("/")} className="text-muted hover:text-accent" title="Dashboard">
+        <button onClick={() => navigate("/")} className="tap text-muted hover:text-accent" title="Dashboard">
           <ArrowLeft size={16} />
         </button>
         <span className="text-faint">{detail.board.key}</span>
         <span className="text-bright truncate">{detail.board.name}</span>
         <span className="flex-1" />
         {detail.board.role !== "viewer" && (
-          <button onClick={() => setNewTask({})} className="text-muted hover:text-accent flex items-center gap-1 text-sm">
+          <button onClick={() => setNewTask({})} className="tap text-muted hover:text-accent flex items-center gap-1 text-sm">
             <Plus size={14} /> new
           </button>
         )}
@@ -193,7 +193,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
             <button
               key={v}
               onClick={() => setParams(v === "kanban" ? {} : { view: v }, { replace: true })}
-              className={`px-2 py-0.5 transition-colors ${view === v ? "text-accent bg-raised" : "text-muted hover:text-ink"}`}
+              className={`tap px-2 py-0.5 transition-colors ${view === v ? "text-accent bg-raised" : "text-muted hover:text-ink"}`}
             >
               {v}
             </button>
@@ -205,7 +205,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
           </span>
         )}
         {detail.board.role === "owner" && (
-          <button onClick={() => setSettingsOpen(true)} className="text-muted hover:text-accent flex items-center gap-1.5">
+          <button onClick={() => setSettingsOpen(true)} className="tap text-muted hover:text-accent flex items-center gap-1.5">
             <Settings2 size={14} /> {detail.board.isInbox ? "settings" : "share"}
           </button>
         )}

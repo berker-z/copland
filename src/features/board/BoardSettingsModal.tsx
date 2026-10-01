@@ -18,7 +18,7 @@ import { ModalFrame } from "@/ui/ModalFrame";
 import { LabelEditor, StageEditor } from "./StageEditor";
 
 const input = "bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent";
-const button = "px-3 py-1.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50";
+const button = "px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -93,7 +93,7 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
   const error = add.error ?? changeRole.error ?? removeMember.error ?? patchBoard.error ?? archive.error;
 
   return (
-    <ModalFrame title={`${board.key} · settings`} onClose={onClose} size="lg" className="max-h-[90vh]">
+    <ModalFrame title={`${board.key} · settings`} onClose={onClose} size="lg">
       {error && <p className="text-red text-xs mb-3">{error.message}</p>}
 
       {!board.isInbox && (
@@ -115,7 +115,7 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
                     </option>
                   ))}
                 </select>
-                <button onClick={() => removeMember.mutate(m.user.id)} className="text-muted hover:text-red text-xs">
+                <button onClick={() => removeMember.mutate(m.user.id)} className="tap text-muted hover:text-red text-xs">
                   {m.user.id === me.data?.user.id ? "leave" : "remove"}
                 </button>
               </li>
@@ -147,7 +147,7 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
               </p>
               <div className="flex items-center gap-2">
                 <code className="text-yellow truncate flex-1">{invite.url}</code>
-                <button onClick={() => navigator.clipboard.writeText(invite.url)} className="text-ink hover:text-accent p-1" title="Copy">
+                <button onClick={() => navigator.clipboard.writeText(invite.url)} className="tap text-ink hover:text-accent p-1" title="Copy">
                   <Copy size={14} />
                 </button>
               </div>
@@ -212,7 +212,7 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
           <button
             onClick={() => (confirmArchive ? archive.mutate() : setConfirmArchive(true))}
             onBlur={() => setConfirmArchive(false)}
-            className={`px-3 py-1.5 border transition-colors ${
+            className={`px-3 py-1.5 pointer-coarse:py-2.5 border transition-colors ${
               confirmArchive ? "border-red text-red" : "border-faint text-muted hover:border-red hover:text-red"
             }`}
           >

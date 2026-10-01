@@ -54,19 +54,36 @@ export function App() {
         {boardRoute?.params.key ? (
           <BoardScreen boardKey={boardRoute.params.key} />
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-3 items-start gap-px w-full max-w-[1500px] mx-auto px-4 py-4 md:px-8 md:py-6">
-            <div className="flex flex-col gap-px">
-              <CalendarPane onOpenSettings={() => setSettingsOpen(true)} />
-              <AgendaPane onOpenSettings={() => setSettingsOpen(true)} />
-              <NotepadPane />
+          /* Below lg the three columns dissolve (`contents`) into one, and
+             `order` puts what a phone is opened for first: today's agenda
+             and tasks, then the rest, markets and verse last. */
+          <div className="flex flex-col lg:grid lg:grid-cols-3 items-stretch lg:items-start gap-px w-full max-w-[1500px] mx-auto px-0 py-0 sm:px-4 sm:py-4 md:px-8 md:py-6">
+            <div className="contents lg:flex lg:flex-col lg:gap-px">
+              <div className="order-4 lg:order-none">
+                <CalendarPane onOpenSettings={() => setSettingsOpen(true)} />
+              </div>
+              <div className="order-1 lg:order-none">
+                <AgendaPane onOpenSettings={() => setSettingsOpen(true)} />
+              </div>
+              <div className="order-5 lg:order-none">
+                <NotepadPane />
+              </div>
             </div>
-            <div className="flex flex-col gap-px">
-              <TasksPane />
-              <BoardsPane />
+            <div className="contents lg:flex lg:flex-col lg:gap-px">
+              <div className="order-2 lg:order-none">
+                <TasksPane />
+              </div>
+              <div className="order-3 lg:order-none">
+                <BoardsPane />
+              </div>
             </div>
-            <div className="flex flex-col gap-px">
-              <MarketsPane onOpenSettings={() => setSettingsOpen(true)} />
-              <VersePane onOpenSettings={() => setSettingsOpen(true)} />
+            <div className="contents lg:flex lg:flex-col lg:gap-px">
+              <div className="order-6 lg:order-none">
+                <MarketsPane onOpenSettings={() => setSettingsOpen(true)} />
+              </div>
+              <div className="order-7 lg:order-none">
+                <VersePane onOpenSettings={() => setSettingsOpen(true)} />
+              </div>
             </div>
           </div>
         )}

@@ -16,12 +16,14 @@ import { DateFields } from "./DateFields";
 import { LabelPicker } from "./LabelPicker";
 import { TaskActivity } from "./TaskActivity";
 
-const field = "bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent disabled:opacity-60";
+const field = "max-w-full bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent disabled:opacity-60";
 
+/* Label beside the field from sm up; above it on a phone, where 6.5rem of
+   label column leaves the field too little room. */
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[6.5rem_1fr] items-start gap-3 py-1.5">
-      <span className="text-label pt-2">{label}</span>
+    <div className="grid grid-cols-1 sm:grid-cols-[6.5rem_minmax(0,1fr)] items-start gap-1 sm:gap-3 py-1.5">
+      <span className="text-label sm:pt-2">{label}</span>
       <div className="min-w-0">{children}</div>
     </div>
   );
@@ -73,7 +75,6 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
       }
       onClose={onClose}
       size="lg"
-      className="max-h-[90vh]"
       footer={
         canEdit && (
           <>
@@ -83,7 +84,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
             <button
               onClick={() => (confirmDelete ? remove.mutate(task.id) : setConfirmDelete(true))}
               onBlur={() => setConfirmDelete(false)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 border transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 pointer-coarse:py-2.5 border transition-colors ${
                 confirmDelete ? "border-red text-red" : "border-faint text-muted hover:border-red hover:text-red"
               }`}
             >
@@ -212,7 +213,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
                   <span key={id} className={`inline-flex items-center gap-1 border border-faint px-1.5 py-0.5 text-sm ${dep?.completedAt ? "text-green" : "text-ink"}`}>
                     {dep ? `${dep.key} ${dep.title}` : "(deleted)"}
                     {canEdit && (
-                      <button onClick={() => save({ dependsOn: task.dependsOn.filter((x) => x !== id) })} className="text-muted hover:text-red" aria-label="Remove dependency">
+                      <button onClick={() => save({ dependsOn: task.dependsOn.filter((x) => x !== id) })} className="tap text-muted hover:text-red" aria-label="Remove dependency">
                         ×
                       </button>
                     )}

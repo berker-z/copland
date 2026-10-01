@@ -21,7 +21,7 @@ import { IntegrationsSection } from "./IntegrationsSection";
 
 const input =
   "bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent";
-const button = "px-3 py-1.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50";
+const button = "px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50";
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
   return (
@@ -74,7 +74,7 @@ function ChipList({
             {c}
             <button
               onClick={() => update.mutate({ [setting]: items.filter((x) => x !== c) })}
-              className="text-muted hover:text-red"
+              className="tap text-muted hover:text-red"
               aria-label={`Remove ${c}`}
             >
               <X size={12} />
@@ -183,7 +183,7 @@ function LocationSection() {
           <span className="text-faint">no place set</span>
         )}
         {location && (
-          <button onClick={() => update.mutate({ location: null })} className="text-xs text-muted hover:text-red">
+          <button onClick={() => update.mutate({ location: null })} className="tap text-xs text-muted hover:text-red">
             clear
           </button>
         )}
@@ -327,7 +327,7 @@ function InstanceSection({ me }: { me: Me }) {
           <p className="text-green mb-1">Link made. It is shown only now:</p>
           <div className="flex items-center gap-2">
             <code className="text-yellow truncate flex-1">{created.url}</code>
-            <button onClick={() => navigator.clipboard.writeText(created.url)} className="text-ink hover:text-accent p-1" title="Copy">
+            <button onClick={() => navigator.clipboard.writeText(created.url)} className="tap text-ink hover:text-accent p-1" title="Copy">
               <Copy size={14} />
             </button>
           </div>
@@ -340,7 +340,7 @@ function InstanceSection({ me }: { me: Me }) {
               <span className="text-muted truncate">
                 {i.email ?? "anyone with the link"} · until {i.expiresAt.slice(0, 10)}
               </span>
-              <button onClick={() => revoke.mutate(i.id)} className="text-muted hover:text-red text-xs">
+              <button onClick={() => revoke.mutate(i.id)} className="tap text-muted hover:text-red text-xs">
                 revoke
               </button>
             </li>
@@ -364,7 +364,7 @@ function InstanceSection({ me }: { me: Me }) {
 
 export function SettingsModal({ me, onClose }: { me: Me; onClose: () => void }) {
   return (
-    <ModalFrame title="settings" onClose={onClose} size="lg" className="max-h-[90vh]">
+    <ModalFrame title="settings" onClose={onClose} size="lg">
       <Section title="calendars">
         <CalendarSettings />
       </Section>

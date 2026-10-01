@@ -22,7 +22,7 @@ import { KEYS, useTokens } from "@/lib/queries";
 
 const input =
   "bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent";
-const button = "px-3 py-1.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50";
+const button = "px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50";
 
 /** A value to paste somewhere, with a copy button. Wraps rather than scrolls on a phone. */
 function CopyLine({ value, label }: { value: string; label: string }) {
@@ -44,7 +44,7 @@ function CopyLine({ value, label }: { value: string; label: string }) {
       <button
         type="button"
         onClick={() => void copy()}
-        className={`shrink-0 p-0.5 transition-colors ${copied ? "text-green" : "text-muted hover:text-accent"}`}
+        className={`tap shrink-0 p-0.5 transition-colors ${copied ? "text-green" : "text-muted hover:text-accent"}`}
         title={`Copy ${label}`}
       >
         {copied ? <Check size={14} /> : <Copy size={14} />}
@@ -178,7 +178,7 @@ function Tokens() {
             Token “{created.token.name}” made. Copy it now: it is shown only this once.
           </p>
           <CopyLine value={created.secret} label="token" />
-          <button type="button" onClick={() => setCreated(null)} className="mt-1.5 text-muted hover:text-accent">
+          <button type="button" onClick={() => setCreated(null)} className="tap mt-1.5 text-muted hover:text-accent">
             [ done ]
           </button>
         </div>

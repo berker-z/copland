@@ -25,12 +25,14 @@ import { todayLocal, toneText } from "@/ui/tone";
 import { Attachments } from "./Attachments";
 import { DateFields } from "./DateFields";
 
-const field = "bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent";
+const field = "max-w-full bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent";
 
+/* Label beside the field from sm up; above it on a phone, where 6.5rem of
+   label column leaves the field too little room. */
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[6.5rem_1fr] items-start gap-3 py-1.5">
-      <span className="text-label pt-2">{label}</span>
+    <div className="grid grid-cols-1 sm:grid-cols-[6.5rem_minmax(0,1fr)] items-start gap-1 sm:gap-3 py-1.5">
+      <span className="text-label sm:pt-2">{label}</span>
       <div className="min-w-0">{children}</div>
     </div>
   );
@@ -120,7 +122,6 @@ export function NewTaskModal({ detail, stageId, onClose, onCreated }: NewTaskMod
       title={`new task · ${detail.board.name}`}
       onClose={onClose}
       size="lg"
-      className="max-h-[90vh]"
       footer={
         <>
           {error && <span className="text-red text-xs mr-auto">{error}</span>}
@@ -128,7 +129,7 @@ export function NewTaskModal({ detail, stageId, onClose, onCreated }: NewTaskMod
           <button
             onClick={() => void submit()}
             disabled={!title.trim() || saving || uploading > 0}
-            className="px-3 py-1.5 border border-faint text-ink hover:border-accent hover:text-accent disabled:opacity-50"
+            className="px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent disabled:opacity-50"
           >
             {saving ? "creating…" : uploading > 0 ? "uploading…" : "create"}
           </button>

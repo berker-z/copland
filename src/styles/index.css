@@ -70,6 +70,29 @@
   }
 }
 
+/* Touch screens. Outside any layer on purpose: unlayered rules beat
+   Tailwind's utilities, so a `text-xs` input still gets 16px, the size
+   below which iOS zooms the page on focus. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* A 40px hit area for an icon button on a touch screen, where a 14px icon
+   with p-1 is hard to land on. Nothing changes under a mouse. */
+@utility tap {
+  @media (pointer: coarse) {
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
 @utility text-label {
   font-size: var(--text-xs);
   line-height: var(--text-xs--line-height);

@@ -36,7 +36,7 @@ export function BoardsPane() {
       title="/boards"
       meta={boards ? `${boards.length}` : undefined}
       controls={
-        <button onClick={() => setAdding((a) => !a)} className="p-1 hover:text-accent transition-colors" title="New board">
+        <button onClick={() => setAdding((a) => !a)} className="tap p-1 hover:text-accent transition-colors" title="New board">
           <Plus size={14} />
         </button>
       }

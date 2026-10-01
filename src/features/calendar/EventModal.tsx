@@ -120,7 +120,6 @@ export function EventModal({ event, day, onClose }: EventModalProps) {
         }
         onClose={onClose}
         size="lg"
-        className="max-h-[90vh]"
         footer={
           event.canEdit && event.sourceId ? (
             <>
@@ -132,13 +131,13 @@ export function EventModal({ event, day, onClose }: EventModalProps) {
                     : setConfirmDelete(true)
                 }
                 onBlur={() => setConfirmDelete(false)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 border transition-colors ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 pointer-coarse:py-2.5 border transition-colors ${
                   confirmDelete ? "border-red text-red" : "border-faint text-muted hover:border-red hover:text-red"
                 }`}
               >
                 <Trash2 size={14} /> {confirmDelete ? "really delete" : "delete"}
               </button>
-              <button onClick={() => setEditing(true)} className="px-3 py-1.5 border border-faint text-ink hover:border-accent hover:text-accent">
+              <button onClick={() => setEditing(true)} className="px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent">
                 edit
               </button>
             </>
@@ -178,14 +177,13 @@ export function EventModal({ event, day, onClose }: EventModalProps) {
       title={event ? "edit event" : "new event"}
       onClose={onClose}
       size="lg"
-      className="max-h-[90vh]"
       footer={
         <>
           {error && <span className="text-red text-xs mr-auto">{error.message}</span>}
           <button
             onClick={save}
             disabled={!valid || edits.create.isPending || edits.update.isPending}
-            className="px-3 py-1.5 border border-faint text-ink hover:border-accent hover:text-accent disabled:opacity-50"
+            className="px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent disabled:opacity-50"
           >
             save
           </button>

@@ -48,7 +48,7 @@ export function VersePane({ onOpenSettings }: { onOpenSettings: () => void }) {
           <p className="text-muted text-sm max-w-xs">
             This pane asks OpenAI for a passage, with your own key. Add an OpenAI key under api keys in settings.
           </p>
-          <button onClick={onOpenSettings} className="text-xs text-muted hover:text-accent uppercase tracking-widest transition-colors">
+          <button onClick={onOpenSettings} className="tap text-xs text-muted hover:text-accent uppercase tracking-widest transition-colors">
             [ OPEN_SETTINGS ]
           </button>
         </div>

@@ -89,18 +89,18 @@ function StageRow({ detail, stage, index }: { detail: BoardDetail; stage: Stage;
       <TonePicker tone={stage.tone} onPick={(tone) => edits.patch.mutate({ id: stage.id, tone })} />
       <span className="text-xs text-faint w-10 text-right">{count}</span>
       <span className="flex-1" />
-      <button disabled={index === 0} onClick={() => move(-1)} className="p-1 text-muted hover:text-accent disabled:opacity-30" aria-label="Move left">
+      <button disabled={index === 0} onClick={() => move(-1)} className="tap p-1 text-muted hover:text-accent disabled:opacity-30" aria-label="Move left">
         <ArrowLeft size={13} />
       </button>
       <button
         disabled={index === detail.stages.length - 1}
         onClick={() => move(1)}
-        className="p-1 text-muted hover:text-accent disabled:opacity-30"
+        className="tap p-1 text-muted hover:text-accent disabled:opacity-30"
         aria-label="Move right"
       >
         <ArrowRight size={13} />
       </button>
-      <button onClick={() => setDeleting((d) => !d)} className="p-1 text-muted hover:text-red" aria-label="Delete stage">
+      <button onClick={() => setDeleting((d) => !d)} className="tap p-1 text-muted hover:text-red" aria-label="Delete stage">
         <Trash2 size={13} />
       </button>
       {deleting && (
@@ -161,7 +161,7 @@ export function StageEditor({ detail }: { detail: BoardDetail }) {
             </option>
           ))}
         </select>
-        <button type="submit" className="px-3 py-1 border border-faint text-ink hover:border-accent hover:text-accent">
+        <button type="submit" className="px-3 py-1 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent">
           add
         </button>
       </form>
@@ -177,7 +177,7 @@ function LabelRow({ boardId, label }: { boardId: string; label: Label }) {
       <NameField value={label.name} maxLength={24} onSave={(name) => edits.patch.mutate({ id: label.id, name })} />
       <TonePicker tone={label.tone} onPick={(tone) => edits.patch.mutate({ id: label.id, tone })} />
       <span className="flex-1" />
-      <button onClick={() => edits.remove.mutate(label.id)} className="p-1 text-muted hover:text-red" aria-label={`Delete ${label.name}`}>
+      <button onClick={() => edits.remove.mutate(label.id)} className="tap p-1 text-muted hover:text-red" aria-label={`Delete ${label.name}`}>
         <Trash2 size={13} />
       </button>
       {(edits.patch.error ?? edits.remove.error) && (

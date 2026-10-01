@@ -52,10 +52,10 @@ export function TasksPane() {
       controls={
         detail && (
           <>
-            <button onClick={() => setNewTask(true)} className="p-1 hover:text-accent transition-colors" title="New task with details">
+            <button onClick={() => setNewTask(true)} className="tap p-1 hover:text-accent transition-colors" title="New task with details">
               <Plus size={14} />
             </button>
-            <Link to={`/b/${detail.board.key}`} className="p-1 hover:text-accent transition-colors" title="Open as a board">
+            <Link to={`/b/${detail.board.key}`} className="tap p-1 hover:text-accent transition-colors" title="Open as a board">
               <ArrowUpRight size={14} />
             </Link>
           </>

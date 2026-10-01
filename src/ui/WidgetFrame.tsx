@@ -68,12 +68,12 @@ export const WidgetFrame: React.FC<WidgetFrameProps> = ({
           className="flex-1 min-w-[1rem] border-t border-faint/50 group-hover/pane:border-accent/40 transition-colors"
           aria-hidden
         />
-        <div className="flex items-center gap-1 text-muted md:opacity-0 md:group-hover/pane:opacity-100 transition-opacity">
+        <div className="flex items-center gap-1 text-muted pointer-fine:opacity-0 pointer-fine:group-hover/pane:opacity-100 transition-opacity">
           {controls}
           {onToggleCollapse && (
             <button
               onClick={onToggleCollapse}
-              className="p-1 hover:text-accent transition-colors"
+              className="tap p-1 hover:text-accent transition-colors"
               title={collapsed ? "Expand" : "Collapse"}
             >
               <ChevronDown

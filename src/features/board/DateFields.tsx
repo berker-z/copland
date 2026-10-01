@@ -70,7 +70,7 @@ export function DateFields({ start, due, disabled, onChange }: DateFieldsProps) 
             );
           })}
           {due && (
-            <button type="button" onClick={() => onChange({ due: null })} className="px-2 py-0.5 text-faint hover:text-red">
+            <button type="button" onClick={() => onChange({ due: null })} className="tap px-2 py-0.5 text-faint hover:text-red">
               clear
             </button>
           )}

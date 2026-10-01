@@ -12,7 +12,7 @@ import { Checkbox } from "@/ui/Checkbox";
 import { toneBg } from "@/ui/tone";
 
 const input = "bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent";
-const button = "px-3 py-1.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50";
+const button = "px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50";
 
 function CalendarRow({ calendar, trailing }: { calendar: CalendarInfo; trailing?: ReactNode }) {
   const edits = useCalendarSetupEdits();
@@ -63,10 +63,10 @@ export function CalendarSettings() {
               </a>
             )}
             <span className="flex-1" />
-            <button onClick={() => edits.sync.mutate(account.id)} className="p-1 text-muted hover:text-accent" title="Refresh the calendar list">
+            <button onClick={() => edits.sync.mutate(account.id)} className="tap p-1 text-muted hover:text-accent" title="Refresh the calendar list">
               <RefreshCw size={13} className={edits.sync.isPending ? "animate-spin" : ""} />
             </button>
-            <button onClick={() => edits.disconnect.mutate(account.id)} className="text-xs text-muted hover:text-red">
+            <button onClick={() => edits.disconnect.mutate(account.id)} className="tap text-xs text-muted hover:text-red">
               disconnect
             </button>
           </div>
@@ -91,7 +91,7 @@ export function CalendarSettings() {
               key={c.id}
               calendar={c}
               trailing={
-                <button onClick={() => edits.removeFeed.mutate(c.id)} className="p-1 text-muted hover:text-red" aria-label={`Remove ${c.name}`}>
+                <button onClick={() => edits.removeFeed.mutate(c.id)} className="tap p-1 text-muted hover:text-red" aria-label={`Remove ${c.name}`}>
                   <Trash2 size={13} />
                 </button>
               }

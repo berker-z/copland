@@ -117,7 +117,7 @@ export function MarketsPane({ onOpenSettings }: { onOpenSettings: () => void }) 
           <button
             onClick={refresh}
             disabled={syncing}
-            className="hover:text-accent transition-colors disabled:opacity-50 uppercase text-xs"
+            className="tap hover:text-accent transition-colors disabled:opacity-50 uppercase text-xs"
           >
             [{syncing ? "SYNCING..." : "REFRESH"}]
           </button>

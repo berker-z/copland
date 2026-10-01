@@ -9,29 +9,28 @@ repo `berker-z/copland`, private for now). `npm run deploy` or
 
 ### Phones and small screens
 
-Nothing has been designed for a phone yet; the Splits layout was built for a
-desktop. Test on a real phone (and Chrome's device mode) and fix, roughly in
-this order:
+Nothing was designed for a phone; the Splits layout was built for a desktop.
+Checked at 390px in a desktop browser so far, not yet on a real phone (try
+`npm run dev -- --host` and the LAN address, or the live site). The rules
+are in docs/DESIGN.md under Touch.
 
-- [ ] Statusline: too many items for a phone. Collapse theme, moon, date and
-      logout into a menu; keep the mark, clock, and settings.
-- [ ] Dashboard grid: one column on phones is already the fallback, but the
-      order should be deliberate (agenda and tasks first, markets last) and
-      panes probably collapsible.
-- [ ] Board screen: columns side by side do not fit. Options: swipe between
-      stages (one column per screen with a stage switcher), or open on the
-      list view on narrow screens. Pick one.
-- [ ] Moving tasks on touch: HTML5 drag does not fire on phones. The task
-      modal's stage buttons work; consider a long-press menu on a card
-      ("move to…") and up/down arrows for order.
-- [ ] Gantt on touch: pointer events work, but the bars are small targets and
-      the page scrolls under the finger. Probably read-only on phones.
-- [ ] Modals: full-screen sheets on phones instead of centred boxes; the task
-      modal is long.
-- [ ] Tap targets: most buttons are desktop-small (icons at 14px). 40px+ on
-      touch (`pointer-coarse:` variants).
+- [x] Statusline: mark, weather, clock and settings; date, moon, themes and
+      logout in a `⋯` menu below `sm`.
+- [x] Dashboard: one column below `lg`, agenda and tasks first, markets and
+      verse last, edge to edge on a phone.
+- [ ] Collapsible panes, remembered per pane, if the long phone column wants it.
+- [ ] Board screen: kanban columns as a horizontal scroll-snap strip, each
+      about 85% of the screen wide so the next one peeks in, with stage chips
+      on top to jump. Swiping for free, still the kanban; list view a tap away.
+- [ ] Moving tasks on touch: HTML5 drag does not fire on phones. A long-press
+      on a card opens a "move to…" sheet of stages. Reordering can wait.
+- [ ] Gantt on touch: read-only on phones; bars are small targets and the page
+      scrolls under the finger.
+- [x] Modals: full-screen sheets below `sm`; the task and new-task forms put
+      labels above fields there.
+- [x] Tap targets: `tap` on icon buttons, taller bordered buttons on touch.
 - [ ] Calendar month grid: day cells are cramped; tap a day works, check it.
-- [ ] Inputs: iOS zooms on focus when font-size < 16px; set 16px on touch.
+- [x] Inputs: 16px on touch so iOS does not zoom on focus.
 - [ ] PWA: a manifest (name, the pole icon, theme colour) so "add to home
       screen" opens it like an app. The work tracker has one to borrow.
 
@@ -45,10 +44,10 @@ this order:
 
 ### Small things noticed
 
-- [ ] Modals have an odd bottom margin nord-dash's did not. Suspects: the
-      `max-h-[90vh]` passed to `ModalFrame` as `className` (added for the long
-      task and settings modals; the frame's own wrapper already caps height),
-      the footer's `bg-bar/60` strip, or Tailwind 4's defaults differing from
+- [ ] Modals have an odd bottom margin nord-dash's did not. Recheck: the
+      frame now caps itself at the wrapper (`max-h-full`) and the callers'
+      `max-h-[90vh]` is gone, which may have been it. Other suspects: the
+      footer's `bg-bar/60` strip, or Tailwind 4's defaults differing from
       nord-dash's Tailwind 3 in `ModalFrame`. Compare side by side and hunt.
 - [ ] Bring gnaw into Copland (`~/Projects/taskblob`; the product is gnaw,
       the folder stays taskblob). gnaw is a jar of physics creatures, one per
