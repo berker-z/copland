@@ -1,9 +1,13 @@
 # TODO
 
 Live at https://copland.berkerz.dev (Cloudflare account `berker.zor@gmail.com`,
-repo `berker-z/copland`, public). `npm run deploy` or
-`npx wrangler deploy` after `npm run build`; migrations with
-`npm run db:migrate:remote`.
+repo `berker-z/copland`, public). A push to main deploys
+(`.github/workflows/deploy.yml`, which runs `npm run deploy`: check, build,
+remote migrations, Worker). By hand: `npm run deploy`.
+
+- [ ] Add the repo secrets the deploy workflow needs: `CLOUDFLARE_API_TOKEN`
+      (Cloudflare › API tokens › "Edit Cloudflare Workers" template, plus
+      Account › D1 › Edit) and `CLOUDFLARE_ACCOUNT_ID`.
 
 ## Next session
 

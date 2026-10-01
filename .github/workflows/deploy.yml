@@ -1,0 +1,39 @@
+# Deploys copland.berkerz.dev on every push to main: the MCP check, the
+# build (which typechecks), remote D1 migrations, then the Worker. The same
+# steps as `npm run deploy` on a laptop.
+#
+# Needs two repo secrets: CLOUDFLARE_API_TOKEN (the "Edit Cloudflare
+# Workers" template plus D1 Edit) and CLOUDFLARE_ACCOUNT_ID. A fork without
+# them gets a failed run here and nothing else.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time; a newer push waits rather than racing the migrations.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # The check runs TypeScript through node's type stripping (22.18+).
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

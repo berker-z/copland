@@ -69,6 +69,7 @@ You need a Cloudflare account and a Google Cloud project for the sign-in client.
    ```
    Keep a copy of the vault key. Lose it and every saved API key has to be entered again.
 6. `npm run deploy`, which builds, applies migrations to the remote database and deploys.
+7. Optional: deploy on every push to main. `.github/workflows/deploy.yml` runs the same `npm run deploy`. Make a Cloudflare API token from the "Edit Cloudflare Workers" template, add Account › D1 › Edit, and save it in the GitHub repo as the `CLOUDFLARE_API_TOKEN` secret, with your account id (`npx wrangler whoami`) as `CLOUDFLARE_ACCOUNT_ID`.
 
 Both sign-in and the calendar connection come back to the same `/auth/callback`, so the OAuth client needs one redirect URI per host. For calendars, enable the Google Calendar API in the same Google Cloud project. Sign-in only asks for name and email, which needs no verification from Google. The calendar scopes are "sensitive": until the app is verified, people see an "unverified app" warning and click through it, and there is a 100-user cap, which is fine for friends. Publish the consent screen (In production) either way; while it is in Testing, Google expires refresh tokens after 7 days.
 
