@@ -5,10 +5,6 @@ repo `berker-z/copland`, public). A push to main deploys
 (`.github/workflows/deploy.yml`, which runs `npm run deploy`: check, build,
 remote migrations, Worker). By hand: `npm run deploy`.
 
-- [ ] Add the repo secrets the deploy workflow needs: `CLOUDFLARE_API_TOKEN`
-      (Cloudflare › API tokens › "Edit Cloudflare Workers" template, plus
-      Account › D1 › Edit) and `CLOUDFLARE_ACCOUNT_ID`.
-
 ## Next session
 
 ### Phones and small screens
