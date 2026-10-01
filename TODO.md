@@ -37,11 +37,6 @@ docs/DESIGN.md under Touch.
 
 ### Small things noticed
 
-- [ ] Modals have an odd bottom margin nord-dash's did not. Recheck: the
-      frame now caps itself at the wrapper (`max-h-full`) and the callers'
-      `max-h-[90vh]` is gone, which may have been it. Other suspects: the
-      footer's `bg-bar/60` strip, or Tailwind 4's defaults differing from
-      nord-dash's Tailwind 3 in `ModalFrame`. Compare side by side and hunt.
 - [ ] Bring gnaw into Copland (`~/Projects/taskblob`; the product is gnaw,
       the folder stays taskblob). gnaw is a jar of physics creatures, one per
       task: they grow while they wait, sleep until their deadline, squirm once

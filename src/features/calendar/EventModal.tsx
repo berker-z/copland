@@ -11,11 +11,13 @@
    ========================================================================== */
 
 import { useMemo, useState } from "react";
-import { Clock, ExternalLink, MapPin, Trash2, Video } from "lucide-react";
+import { Clock, ExternalLink, MapPin, Pencil, Video } from "lucide-react";
 import type { CalendarEvent, CalendarInfo } from "@/domain/calendar";
 import { addDays } from "@/domain/tasks";
 import { localDate, localTime, useCalendarSetup, useEventEdits } from "@/lib/calendar";
 import { Checkbox } from "@/ui/Checkbox";
+import { DeleteButton } from "@/ui/DeleteButton";
+import { FormActions } from "@/ui/FormActions";
 import { ModalFrame } from "@/ui/ModalFrame";
 import { toneBg } from "@/ui/tone";
 
@@ -83,7 +85,6 @@ export function EventModal({ event, day, onClose }: EventModalProps) {
   const writable = calendars.filter((c) => c.writable && c.visible);
   const edits = useEventEdits();
   const [editing, setEditing] = useState(event === null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const initial = useMemo(() => draftFrom(event, day, calendars), [event, day, calendars]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const d = draft ?? initial;
@@ -120,30 +121,20 @@ export function EventModal({ event, day, onClose }: EventModalProps) {
         }
         onClose={onClose}
         size="lg"
-        footer={
+        headerActions={
           event.canEdit && event.sourceId ? (
             <>
-              {error && <span className="text-red text-xs mr-auto">{error.message}</span>}
-              <button
-                onClick={() =>
-                  confirmDelete
-                    ? edits.remove.mutate({ calendarId: event.calendarId, sourceId: event.sourceId as string }, { onSuccess: onClose })
-                    : setConfirmDelete(true)
-                }
-                onBlur={() => setConfirmDelete(false)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 pointer-coarse:py-2.5 border transition-colors ${
-                  confirmDelete ? "border-red text-red" : "border-faint text-muted hover:border-red hover:text-red"
-                }`}
-              >
-                <Trash2 size={14} /> {confirmDelete ? "really delete" : "delete"}
+              <button onClick={() => setEditing(true)} className="tap p-2 hover:bg-raised hover:text-accent transition-colors" title="Edit">
+                <Pencil size={18} />
               </button>
-              <button onClick={() => setEditing(true)} className="px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent">
-                edit
-              </button>
+              <DeleteButton
+                onDelete={() => edits.remove.mutate({ calendarId: event.calendarId, sourceId: event.sourceId as string }, { onSuccess: onClose })}
+              />
             </>
           ) : undefined
         }
       >
+        {error && <p className="text-red text-xs mb-3">{error.message}</p>}
         <h2 className="text-bright text-lg mb-3 break-words">{event.title}</h2>
         <div className="space-y-2 text-sm">
           <p className="flex items-center gap-2 text-yellow">
@@ -177,18 +168,6 @@ export function EventModal({ event, day, onClose }: EventModalProps) {
       title={event ? "edit event" : "new event"}
       onClose={onClose}
       size="lg"
-      footer={
-        <>
-          {error && <span className="text-red text-xs mr-auto">{error.message}</span>}
-          <button
-            onClick={save}
-            disabled={!valid || edits.create.isPending || edits.update.isPending}
-            className="px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent disabled:opacity-50"
-          >
-            save
-          </button>
-        </>
-      }
     >
       {writable.length === 0 ? (
         <p className="text-muted text-sm">
@@ -229,6 +208,15 @@ export function EventModal({ event, day, onClose }: EventModalProps) {
           {!event?.videoLink && (
             <Checkbox checked={d.addMeet} onChange={(addMeet) => set({ addMeet })} label={<span className="text-ink">add a Google Meet link</span>} size={15} />
           )}
+          <FormActions error={error?.message} onCancel={onClose}>
+            <button
+              onClick={save}
+              disabled={!valid || edits.create.isPending || edits.update.isPending}
+              className="px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent disabled:opacity-50"
+            >
+              save
+            </button>
+          </FormActions>
         </div>
       )}
     </ModalFrame>

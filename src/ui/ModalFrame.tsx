@@ -14,7 +14,6 @@ interface ModalFrameProps {
   children: React.ReactNode;
   onClose?: () => void;
   headerActions?: React.ReactNode;
-  footer?: React.ReactNode;
   className?: string;
   bodyClassName?: string;
   bodyStyle?: React.CSSProperties;
@@ -56,7 +55,6 @@ export const ModalFrame: React.FC<ModalFrameProps> = ({
   children,
   onClose,
   headerActions,
-  footer,
   className,
   bodyClassName,
   bodyStyle,
@@ -143,12 +141,6 @@ export const ModalFrame: React.FC<ModalFrameProps> = ({
           <div className={`flex-1 overflow-auto ${bodyClasses}`} style={bodyStyle}>
             {children}
           </div>
-
-          {footer && (
-            <div className="border-t border-divider bg-bar/60 px-5 py-3 flex items-center justify-end gap-3">
-              {footer}
-            </div>
-          )}
         </div>
       </div>
     </div>

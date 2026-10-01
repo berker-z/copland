@@ -20,6 +20,7 @@ import { KEYS } from "@/lib/queries";
 import { useCreateTask } from "@/lib/tasks";
 import { uploadFile } from "@/lib/uploads";
 import { Checkbox } from "@/ui/Checkbox";
+import { FormActions } from "@/ui/FormActions";
 import { ModalFrame } from "@/ui/ModalFrame";
 import { todayLocal, toneText } from "@/ui/tone";
 import { Attachments } from "./Attachments";
@@ -122,19 +123,6 @@ export function NewTaskModal({ detail, stageId, onClose, onCreated }: NewTaskMod
       title={`new task · ${detail.board.name}`}
       onClose={onClose}
       size="lg"
-      footer={
-        <>
-          {error && <span className="text-red text-xs mr-auto">{error}</span>}
-          <span className="text-xs text-faint mr-auto hidden sm:inline">ctrl+enter creates</span>
-          <button
-            onClick={() => void submit()}
-            disabled={!title.trim() || saving || uploading > 0}
-            className="px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent disabled:opacity-50"
-          >
-            {saving ? "creating…" : uploading > 0 ? "uploading…" : "create"}
-          </button>
-        </>
-      }
     >
       <div
         onKeyDown={(e) => {
@@ -255,6 +243,16 @@ export function NewTaskModal({ detail, stageId, onClose, onCreated }: NewTaskMod
             onRemove={(item) => setPending((p) => p.filter((x) => x.id !== item.id))}
           />
         </Row>
+
+        <FormActions error={error} onCancel={onClose} hint={<span className="hidden sm:inline">ctrl+enter creates</span>}>
+          <button
+            onClick={() => void submit()}
+            disabled={!title.trim() || saving || uploading > 0}
+            className="px-3 py-1.5 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent disabled:opacity-50"
+          >
+            {saving ? "creating…" : uploading > 0 ? "uploading…" : "create"}
+          </button>
+        </FormActions>
       </div>
     </ModalFrame>
   );

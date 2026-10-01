@@ -83,8 +83,10 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 - `components/ui/ModalFrame.tsx` — square floating pane from `sm` up,
   a full-screen sheet below it. `bg-surface` with a
   1px tone border (`default` faint / `info` blue / `danger` red), plain
-  backdrop `bg-black/70` (no blur), footer on `bg-bar/60`. ESC + overlay
-  click to close.
+  backdrop `bg-black/70` (no blur). ESC + overlay click to close. No footer:
+  a view's actions (edit, `DeleteButton`) are icons in `headerActions` beside
+  the X, and a form ends with `FormActions` (cancel, then the action) inside
+  the body, as nord-dash did.
 - `src/features/shell/StatusLine.tsx` — statusline, theme menu, phone menu.
 - `components/ui/Checkbox.tsx` — shared checkbox (checked green, unchecked
   muted, `focus-visible:ring-accent`).

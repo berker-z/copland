@@ -5,10 +5,10 @@
    ========================================================================== */
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Trash2 } from "lucide-react";
 import { LEVELS, PRIORITIES, type BoardDetail, type Task } from "@/domain/types";
 import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
+import { DeleteButton } from "@/ui/DeleteButton";
 import { ModalFrame } from "@/ui/ModalFrame";
 import { toneText } from "@/ui/tone";
 import { Attachments, useTaskAttachments } from "./Attachments";
@@ -41,7 +41,6 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
   const remove = useDeleteTask(detail.board.id);
   const files = useTaskAttachments(detail.board.id, taskId);
   const canEdit = detail.board.role !== "viewer";
-  const [confirmDelete, setConfirmDelete] = useState(false);
 
   /* Text fields keep a local draft and save on blur; a live update from
      someone else replaces the draft only while this field is not focused. */
@@ -75,25 +74,11 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
       }
       onClose={onClose}
       size="lg"
-      footer={
-        canEdit && (
-          <>
-            {(update.error ?? remove.error) && (
-              <span className="text-red text-xs mr-auto">{(update.error ?? remove.error)?.message}</span>
-            )}
-            <button
-              onClick={() => (confirmDelete ? remove.mutate(task.id) : setConfirmDelete(true))}
-              onBlur={() => setConfirmDelete(false)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 pointer-coarse:py-2.5 border transition-colors ${
-                confirmDelete ? "border-red text-red" : "border-faint text-muted hover:border-red hover:text-red"
-              }`}
-            >
-              <Trash2 size={14} /> {confirmDelete ? "really delete" : "delete"}
-            </button>
-          </>
-        )
-      }
+      headerActions={canEdit && <DeleteButton onDelete={() => remove.mutate(task.id)} />}
     >
+      {(update.error ?? remove.error) && (
+        <p className="text-red text-xs mb-3">{(update.error ?? remove.error)?.message}</p>
+      )}
       <textarea
         value={title}
         disabled={!canEdit}
