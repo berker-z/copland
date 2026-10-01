@@ -54,6 +54,8 @@ docs/DESIGN.md under Touch.
 
 ## Later
 
+- [ ] GitHub on boards: PRs that mention a task key show up on the task, a
+      merge can close it. Undecided; the options are in docs/GITHUB.md.
 - [ ] @mentions and notifications on shared boards
 - [ ] Invite a friend for real and share a board; watch live updates between two people
 - [ ] Layout as a setting (which panes, which column) instead of the fixed grid
