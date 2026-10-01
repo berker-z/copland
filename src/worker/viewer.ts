@@ -6,7 +6,7 @@ import type { Viewer } from "@/domain/types";
 import { sessionUser } from "./auth";
 import type { Env } from "./env";
 import { UnauthenticatedError } from "./http";
-import { adminEmails, createUser, findUserByEmail, rowToUser, type UserRow } from "./repo/users";
+import { createUser, findUserByEmail, rowToUser, type UserRow } from "./repo/users";
 import { bearerFrom, tokenAccess } from "./tokens";
 
 /**
@@ -20,11 +20,11 @@ export async function resolveViewer(request: Request, env: Env): Promise<Viewer>
   if (secret !== null || request.headers.has("authorization")) {
     const viaToken = secret ? await tokenAccess(env.DB, secret) : null;
     if (!viaToken) throw new UnauthenticatedError("Invalid, expired or revoked token");
-    return { user: rowToUser(viaToken.user, adminEmails(env)), access: viaToken.access };
+    return { user: rowToUser(viaToken.user), access: viaToken.access };
   }
   const row = await browserUser(request, env);
   if (!row) throw new UnauthenticatedError();
-  return { user: rowToUser(row, adminEmails(env)) };
+  return { user: rowToUser(row) };
 }
 
 /**

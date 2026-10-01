@@ -73,7 +73,7 @@ export async function listMembers(db: D1Database, boardId: string): Promise<Boar
     )
     .bind(boardId)
     .all<UserRow & { member_role: BoardRole }>();
-  return results.map((row) => ({ user: rowToUser(row, new Set()), role: row.member_role }));
+  return results.map((row) => ({ user: rowToUser(row), role: row.member_role }));
 }
 
 /** Who hears about a write to this board: its members. */

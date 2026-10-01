@@ -30,7 +30,8 @@ const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
   vault: [KEYS.vault],
   notes: [KEYS.notes],
   calendar: [["calendar"]],
-  admin: [KEYS.admin],
+  /* /me too: being made or unmade an admin arrives on this topic. */
+  admin: [KEYS.admin, KEYS.me],
   tokens: [KEYS.tokens],
 };
 

@@ -303,6 +303,15 @@ function InstanceSection({ me }: { me: Me }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: KEYS.adminInvites }),
   });
 
+  const patch = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: { admin?: boolean; disabled?: boolean } }) =>
+      send("PATCH", `/admin/users/${id}`, body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: KEYS.adminUsers });
+      void queryClient.invalidateQueries({ queryKey: KEYS.me });
+    },
+  });
+
   const open = (invites ?? []).filter((i) => !i.usedAt && i.expiresAt > new Date().toISOString());
 
   return (
@@ -348,15 +357,33 @@ function InstanceSection({ me }: { me: Me }) {
         </ul>
       )}
       <h5 className="text-label mt-2 mb-1">users</h5>
+      {patch.error && <p className="text-red text-xs mb-2">{patch.error.message}</p>}
       <ul className="text-sm">
-        {(users ?? []).map((u) => (
-          <li key={u.id} className="flex items-center justify-between gap-2 py-1">
-            <span className={u.disabledAt ? "text-faint line-through" : "text-ink"}>
-              {u.name} <span className="text-muted">{u.email}</span>
-            </span>
-            {u.isAdmin && <span className="text-xs text-accent">admin</span>}
-          </li>
-        ))}
+        {(users ?? []).map((u) => {
+          const self = u.id === me.user.id;
+          return (
+            <li key={u.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1">
+              <span className={`min-w-0 flex-1 truncate ${u.disabledAt ? "text-faint line-through" : "text-ink"}`}>
+                {u.name} <span className="text-muted">{u.email}</span>
+              </span>
+              <button
+                onClick={() => patch.mutate({ id: u.id, body: { admin: !u.isAdmin } })}
+                className={`tap text-xs ${u.isAdmin ? "text-accent hover:text-red" : "text-faint hover:text-accent"}`}
+                title={u.isAdmin ? (self ? "Stop being an admin" : "Remove admin") : "Make admin"}
+              >
+                {u.isAdmin ? "admin" : "make admin"}
+              </button>
+              {!self && (
+                <button
+                  onClick={() => patch.mutate({ id: u.id, body: { disabled: !u.disabledAt } })}
+                  className="tap text-xs text-muted hover:text-red"
+                >
+                  {u.disabledAt ? "enable" : "disable"}
+                </button>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </Section>
   );

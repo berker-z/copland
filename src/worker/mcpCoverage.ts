@@ -101,7 +101,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
 
   /* The instance. */
   "GET /api/admin/users": { skip: "admin: the instance's users" },
-  "PATCH /api/admin/users/:id": { skip: "admin: disabling users" },
+  "PATCH /api/admin/users/:id": { skip: "admin: disabling users, making admins" },
   "GET /api/admin/invites": { skip: "admin: invite links" },
   "POST /api/admin/invites": { skip: "admin: invite links" },
   "DELETE /api/admin/invites/:id": { skip: "admin: invite links" },

@@ -35,13 +35,15 @@ The OAuth side (`src/worker/oauth.ts`) is the minimum MCP clients need: protecte
 
 ## One instance, several people
 
-The `SIGNUP` var decides who gets an account:
+The first person to sign in on a fresh instance gets in without an invite and is its admin. After that, the `SIGNUP` var decides who gets an account:
 
 - `invite` (default): admins make invite links in settings. A board owner adding someone who isn't here yet gets a link too, which brings them straight onto that board.
 - `open`: anyone with a Google account.
-- `closed`: only the emails in `ADMIN_EMAILS`. This is the setting for a copy that's just for you.
+- `closed`: nobody new. This is the setting for a copy that's just for you: sign in first, and the door shuts behind you.
 
-`ADMIN_EMAILS` are always admins and can always sign in. That's how the first person gets in on a fresh instance.
+Admins make other people admins (or stop them being one) and disable accounts in settings › instance. There is always at least one admin; the last one can't step down. Being an admin is about the instance, not your data: it doesn't let anyone read other people's boards or notes.
+
+If you lock yourself out anyway, `npm run admin -- you@example.com` makes an existing account an admin directly in D1. It needs Wrangler logged in to the instance's Cloudflare account, which is the real proof that it's yours.
 
 ## Running it locally
 
@@ -61,14 +63,14 @@ You need a Cloudflare account and a Google Cloud project for the sign-in client.
 1. `npx wrangler login`, into the account you want this on.
 2. `npx wrangler d1 create copland` and put the `database_id` it prints into `wrangler.jsonc`.
 3. In Google Cloud, create an OAuth client (type "Web application") with the redirect URI `https://<your-worker-host>/auth/callback`. Put its client id in `GOOGLE_CLIENT_ID` in `wrangler.jsonc`.
-4. Set `ADMIN_EMAILS` and `SIGNUP` in `wrangler.jsonc`.
+4. Set `SIGNUP` in `wrangler.jsonc`.
 5. Secrets:
    ```sh
    npx wrangler secret put GOOGLE_CLIENT_SECRET
    openssl rand -base64 32 | npx wrangler secret put VAULT_KEY
    ```
    Keep a copy of the vault key. Lose it and every saved API key has to be entered again.
-6. `npm run deploy`, which builds, applies migrations to the remote database and deploys.
+6. `npm run deploy`, which builds, applies migrations to the remote database and deploys. Then sign in straight away: the first account is the admin.
 7. Optional: deploy on every push to main. `.github/workflows/deploy.yml` runs the same `npm run deploy`. Make a Cloudflare API token from the "Edit Cloudflare Workers" template, add Account › D1 › Edit, and save it in the GitHub repo as the `CLOUDFLARE_API_TOKEN` secret, with your account id (`npx wrangler whoami`) as `CLOUDFLARE_ACCOUNT_ID`.
 
 Both sign-in and the calendar connection come back to the same `/auth/callback`, so the OAuth client needs one redirect URI per host. For calendars, enable the Google Calendar API in the same Google Cloud project. Sign-in only asks for name and email, which needs no verification from Google. The calendar scopes are "sensitive": until the app is verified, people see an "unverified app" warning and click through it, and there is a 100-user cap, which is fine for friends. Publish the consent screen (In production) either way; while it is in Testing, Google expires refresh tokens after 7 days.

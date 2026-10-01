@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "check": "node checks/mcp.check.ts",
+    "admin": "node scripts/admin.ts",
     "cf-typegen": "wrangler types",
     "db:migrate": "wrangler d1 migrations apply copland --local",
     "db:migrate:remote": "wrangler d1 migrations apply copland --remote",

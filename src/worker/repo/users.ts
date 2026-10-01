@@ -6,12 +6,16 @@
      - An address with a user row signs in, unless the row is disabled or
        belongs to a different Google account.
      - A new address gets a row when one of these holds:
-         it is listed in ADMIN_EMAILS (the bootstrap path),
+         there are no users yet (the first person in becomes the admin),
          SIGNUP is "open",
          it arrived through an unused, unexpired invite (locked to that
          address, if the invite names one).
-       Otherwise it is refused, which on SIGNUP=closed means everyone but the
-       admins: a personal instance.
+       Otherwise it is refused, which on SIGNUP=closed means everyone after
+       the first: a personal instance.
+
+   Being an admin is the is_admin column and nothing else. Admins promote
+   and demote each other in settings (routes/admin.ts), and `npm run admin`
+   sets it from the command line for when nobody can.
 
    A new user gets their inbox board in the same batch, and joins the
    invite's board if it carries one.
@@ -32,23 +36,14 @@ export interface UserRow {
   disabled_at: string | null;
 }
 
-export function rowToUser(row: UserRow, admins: Set<string>): User {
+export function rowToUser(row: UserRow): User {
   return {
     id: row.id,
     email: row.email,
     name: row.name,
     picture: row.picture,
-    isAdmin: row.is_admin === 1 || admins.has(row.email),
+    isAdmin: row.is_admin === 1,
   };
-}
-
-export function adminEmails(env: Env): Set<string> {
-  return new Set(
-    (env.ADMIN_EMAILS ?? "")
-      .split(",")
-      .map((e) => e.trim().toLowerCase())
-      .filter(Boolean),
-  );
 }
 
 export function signupMode(env: Env): SignupMode {
@@ -110,9 +105,9 @@ export async function signIn(env: Env, profile: GoogleProfile, inviteHash: strin
     return { ...existing, google_sub: profile.sub, picture: profile.picture };
   }
 
-  const isAdmin = adminEmails(env).has(profile.email);
+  const first = !(await db.prepare(`SELECT 1 FROM users LIMIT 1`).first());
   let invite: InviteRow | null = null;
-  if (!isAdmin && signupMode(env) !== "open") {
+  if (!first && signupMode(env) !== "open") {
     if (signupMode(env) === "closed" || !inviteHash) throw new SignInRefused("not_invited");
     invite = await db
       .prepare(`SELECT id, email, board_id, expires_at, used_at FROM invites WHERE code_hash = ?1`)
@@ -128,7 +123,7 @@ export async function signIn(env: Env, profile: GoogleProfile, inviteHash: strin
     googleSub: profile.sub,
     name: profile.name?.trim() || profile.email.split("@")[0],
     picture: profile.picture,
-    isAdmin,
+    isAdmin: false,
     invite,
   });
 }
@@ -153,7 +148,12 @@ export async function createUser(
 
   await db.batch([
     db
-      .prepare(`INSERT INTO users (id, email, google_sub, name, picture, is_admin) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`)
+      /* The first user is the admin, decided in the INSERT itself so two
+         first sign-ins racing cannot both get it. */
+      .prepare(
+        `INSERT INTO users (id, email, google_sub, name, picture, is_admin)
+         VALUES (?1, ?2, ?3, ?4, ?5, CASE WHEN EXISTS (SELECT 1 FROM users) THEN ?6 ELSE 1 END)`,
+      )
       .bind(id, input.email, input.googleSub, input.name, input.picture, input.isAdmin ? 1 : 0),
     ...createBoardStatements(db, {
       id: inboxId,

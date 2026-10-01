@@ -17,7 +17,7 @@ import { requireAdmin } from "../access";
 import type { Env } from "../env";
 import { badRequest, forbidden, json, notFound, nowIso, randomToken, readJson, sha256Hex } from "../http";
 import type { Changes } from "../live";
-import { adminEmails, rowToUser, signupMode, type UserRow } from "../repo/users";
+import { rowToUser, signupMode, type UserRow } from "../repo/users";
 
 const INVITE_DAYS = 14;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -48,21 +48,15 @@ function rowToInvite(row: InviteRow): Invite {
 
 /** The admins' audience for admin-screen refreshes. */
 async function adminIds(env: Env): Promise<string[]> {
-  const admins = [...adminEmails(env)];
-  const { results } = await env.DB.prepare(
-    `SELECT id FROM users WHERE is_admin = 1 OR email IN (SELECT value FROM json_each(?1))`,
-  )
-    .bind(JSON.stringify(admins))
-    .all<{ id: string }>();
+  const { results } = await env.DB.prepare(`SELECT id FROM users WHERE is_admin = 1`).all<{ id: string }>();
   return results.map((r) => r.id);
 }
 
 export async function getUsers(env: Env, viewer: Viewer): Promise<Response> {
   requireAdmin(viewer);
   const { results } = await env.DB.prepare(`SELECT * FROM users ORDER BY created_at`).all<UserRow>();
-  const admins = adminEmails(env);
   return json(
-    results.map((row) => ({ ...rowToUser(row, admins), disabledAt: row.disabled_at })) satisfies (User & {
+    results.map((row) => ({ ...rowToUser(row), disabledAt: row.disabled_at })) satisfies (User & {
       disabledAt: string | null;
     })[],
   );
@@ -129,7 +123,12 @@ export async function deleteInvite(env: Env, viewer: Viewer, id: string, changes
   return json({ ok: true });
 }
 
-/** Disable or re-enable a user. Disabling ends their sessions at once. */
+/**
+ * Disable or re-enable a user (`disabled`), or make them an admin or not
+ * (`admin`). Disabling ends their sessions at once. Nobody disables
+ * themselves, and the last active admin cannot stop being one, so an
+ * instance always has someone who can let people in.
+ */
 export async function patchUser(
   request: Request,
   env: Env,
@@ -138,14 +137,35 @@ export async function patchUser(
   changes: Changes,
 ): Promise<Response> {
   requireAdmin(viewer);
-  const { disabled } = await readJson(request);
-  if (typeof disabled !== "boolean") throw badRequest("`disabled` must be a boolean");
-  if (id === viewer.user.id) throw badRequest("You cannot disable yourself");
-  const result = await env.DB.batch([
-    env.DB.prepare(`UPDATE users SET disabled_at = ?2 WHERE id = ?1`).bind(id, disabled ? nowIso() : null),
-    ...(disabled ? [env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?1`).bind(id)] : []),
-  ]);
-  if (result[0].meta.changes === 0) throw notFound("No such user");
-  changes.notify(await adminIds(env), "admin");
+  const { disabled, admin } = await readJson(request);
+  if (disabled === undefined && admin === undefined) throw badRequest("Send `disabled` or `admin`");
+  if (disabled !== undefined && typeof disabled !== "boolean") throw badRequest("`disabled` must be a boolean");
+  if (admin !== undefined && typeof admin !== "boolean") throw badRequest("`admin` must be a boolean");
+  if (disabled === true && id === viewer.user.id) throw badRequest("You cannot disable yourself");
+
+  const target = await env.DB.prepare(`SELECT id FROM users WHERE id = ?1`).bind(id).first();
+  if (!target) throw notFound("No such user");
+
+  if (admin === false) {
+    /* The check and the change in one statement, so two admins demoting
+       each other at once cannot leave nobody. */
+    const result = await env.DB.prepare(
+      `UPDATE users SET is_admin = 0 WHERE id = ?1 AND EXISTS
+         (SELECT 1 FROM users WHERE is_admin = 1 AND disabled_at IS NULL AND id != ?1)`,
+    )
+      .bind(id)
+      .run();
+    if (result.meta.changes === 0) throw badRequest("Copland needs at least one admin");
+  }
+  if (admin === true) await env.DB.prepare(`UPDATE users SET is_admin = 1 WHERE id = ?1`).bind(id).run();
+  if (disabled !== undefined) {
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE users SET disabled_at = ?2 WHERE id = ?1`).bind(id, disabled ? nowIso() : null),
+      ...(disabled ? [env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?1`).bind(id)] : []),
+    ]);
+  }
+
+  /* The person too: their own /me says whether they are an admin. */
+  changes.notify([...new Set([...(await adminIds(env)), id])], "admin");
   return json({ ok: true });
 }

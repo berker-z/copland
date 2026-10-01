@@ -16,12 +16,6 @@ export interface Env {
   /* --- vars (public identifiers, not secrets) --- */
   /** The OAuth client id from Google Cloud ("….apps.googleusercontent.com"). */
   GOOGLE_CLIENT_ID: string;
-  /**
-   * Comma-separated emails that are always admins, resolved without the
-   * database. On a fresh instance this is the only way in, since nobody can
-   * have been invited yet.
-   */
-  ADMIN_EMAILS: string;
   /** "invite" | "open" | "closed". Anything else reads as "invite". */
   SIGNUP: string;
 

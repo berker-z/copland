@@ -1,6 +1,6 @@
 # TODO
 
-Live at https://copland.berkerz.dev (Cloudflare account `berker.zor@gmail.com`,
+Live at https://copland.berkerz.dev (berker-z's personal Cloudflare account,
 repo `berker-z/copland`, public). A push to main deploys
 (`.github/workflows/deploy.yml`, which runs `npm run deploy`: check, build,
 remote migrations, Worker). By hand: `npm run deploy`.
@@ -83,3 +83,7 @@ docs/DESIGN.md under Touch.
   swipeable kanban with stage chips, long-press "move to…", a read-only
   Gantt on touch, 40px tap targets and 16px inputs on touch, and a manifest
   so it installs like an app
+- Admins live in the database: the first account on a fresh instance is the
+  admin, admins promote, demote and disable people in settings, the last one
+  can't step down, and `npm run admin` is the way back in. `ADMIN_EMAILS` is
+  gone, and with it the owner's email from the config
