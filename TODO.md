@@ -1,7 +1,7 @@
 # TODO
 
 Live at https://copland.berkerz.dev (Cloudflare account `berker.zor@gmail.com`,
-repo `berker-z/copland`, private for now). `npm run deploy` or
+repo `berker-z/copland`, public). `npm run deploy` or
 `npx wrangler deploy` after `npm run build`; migrations with
 `npm run db:migrate:remote`.
 
@@ -62,7 +62,7 @@ docs/DESIGN.md under Touch.
 - [ ] More MCP tools from the `not yet` entries in `src/worker/mcpCoverage.ts`
       (attaching links, labels, notes, history, creating boards, calendar writes)
 - [ ] Portfolio at the root of berkerz.dev
-- [ ] Open source it: make the repo public, a "Deploy to Cloudflare" button if it
+- [ ] Open source it (the repo is public now): a "Deploy to Cloudflare" button if it
       can provision D1, R2 and the Durable Object, and a README pass for people
       who are not me
 
