@@ -28,12 +28,16 @@ export function cachedTheme(): string {
   return DEFAULT_SETTINGS.theme;
 }
 
-/** Keep <html data-theme> in step with the user's setting. */
+/** Keep <html data-theme> in step with the user's setting, and the browser
+    chrome (a phone's status bar, an installed app's title bar) on its bar
+    colour. */
 export function useApplyTheme(enabled: boolean): void {
   const { data } = useSettings(enabled);
   const theme = data?.theme ?? cachedTheme();
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    const bar = getComputedStyle(document.documentElement).getPropertyValue("--bar").trim();
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", `rgb(${bar.split(/\s+/).join(", ")})`);
     try {
       localStorage.setItem(THEME_CACHE, theme);
     } catch {

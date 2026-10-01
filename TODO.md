@@ -9,30 +9,19 @@ repo `berker-z/copland`, private for now). `npm run deploy` or
 
 ### Phones and small screens
 
-Nothing was designed for a phone; the Splits layout was built for a desktop.
-Checked at 390px in a desktop browser so far, not yet on a real phone (try
-`npm run dev -- --host` and the LAN address, or the live site). The rules
-are in docs/DESIGN.md under Touch.
+Built and checked at 390px in a desktop browser, which is not a touchscreen:
+the touch-only parts (tap sizes, 16px inputs, long press, read-only Gantt)
+have only been exercised with synthetic events. The rules are in
+docs/DESIGN.md under Touch.
 
-- [x] Statusline: mark, weather, clock and settings; date, moon, themes and
-      logout in a `⋯` menu below `sm`.
-- [x] Dashboard: one column below `lg`, agenda and tasks first, markets and
-      verse last, edge to edge on a phone.
-- [ ] Collapsible panes, remembered per pane, if the long phone column wants it.
-- [ ] Board screen: kanban columns as a horizontal scroll-snap strip, each
-      about 85% of the screen wide so the next one peeks in, with stage chips
-      on top to jump. Swiping for free, still the kanban; list view a tap away.
-- [ ] Moving tasks on touch: HTML5 drag does not fire on phones. A long-press
-      on a card opens a "move to…" sheet of stages. Reordering can wait.
-- [ ] Gantt on touch: read-only on phones; bars are small targets and the page
-      scrolls under the finger.
-- [x] Modals: full-screen sheets below `sm`; the task and new-task forms put
-      labels above fields there.
-- [x] Tap targets: `tap` on icon buttons, taller bordered buttons on touch.
-- [ ] Calendar month grid: day cells are cramped; tap a day works, check it.
-- [x] Inputs: 16px on touch so iOS does not zoom on focus.
-- [ ] PWA: a manifest (name, the pole icon, theme colour) so "add to home
-      screen" opens it like an app. The work tracker has one to borrow.
+- [ ] Try it on a real phone: `npm run dev -- --host` and the LAN address,
+      or the live site after a deploy. Long-press a card, swipe the board,
+      open the task sheet with the keyboard up.
+- [ ] Install it to the home screen (Android: install app; iOS: share › add
+      to home screen) and check sign-in survives the trip to Google and back
+      in standalone mode. iOS has been known to open the OAuth page in a
+      separate browser and keep the cookie there.
+- [ ] Reorder within a stage on touch (the move sheet only changes stage).
 
 ### Still unverified on the live site
 
@@ -58,8 +47,8 @@ are in docs/DESIGN.md under Touch.
       The likely shape is a `/jar` pane, or a "jar" view next to kanban/list/
       gantt, that draws a board's tasks (the inbox first) as creatures, reads
       and writes through Copland's task routes, and drops gnaw's own auth
-      (better-auth) and D1 sync. It is phone-shaped already, so it belongs
-      with the phone work. Read its docs/HANDOFF.md and docs/ROADMAP.md first.
+      (better-auth) and D1 sync. It is phone-shaped already, and the phone
+      groundwork (sheets, long press, touch sizing) is in. Read its docs/HANDOFF.md and docs/ROADMAP.md first.
 - [ ] The `/tasks` pane shows only the inbox. Decide whether it should also show
       tasks assigned to you on shared boards (like the MCP's `my_work`).
 - [ ] Old test data in the local dev database (LNCH board and such); harmless.
@@ -92,3 +81,8 @@ are in docs/DESIGN.md under Touch.
 - MCP server with OAuth and personal tokens, 13 tools, a coverage check
 - Deployed at copland.berkerz.dev with a published Google consent screen,
   privacy and terms pages, the pole mark and favicon
+- Phones: full-screen sheets and bottom sheets, a statusline menu, the
+  dashboard in one column with agenda and tasks first, collapsible panes, a
+  swipeable kanban with stage chips, long-press "move to…", a read-only
+  Gantt on touch, 40px tap targets and 16px inputs on touch, and a manifest
+  so it installs like an app

@@ -178,6 +178,7 @@ export function CalendarPane({ onOpenSettings }: { onOpenSettings: () => void })
         <ModalFrame
           title={selected.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }).toLowerCase()}
           onClose={() => setSelected(null)}
+          fit
           headerActions={
             <button onClick={() => setOpen({ event: null, day: selected })} className="tap p-2 hover:bg-raised hover:text-green transition-colors" title="Add event">
               <Plus size={16} />

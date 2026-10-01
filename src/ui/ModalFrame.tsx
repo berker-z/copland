@@ -19,6 +19,9 @@ interface ModalFrameProps {
   bodyClassName?: string;
   bodyStyle?: React.CSSProperties;
   hideHeader?: boolean;
+  /** Below sm, a bottom sheet as tall as its content instead of the full
+      screen: for short menus. */
+  fit?: boolean;
 }
 
 // Splits modal: a square floating pane. 1px border carries the tone;
@@ -58,11 +61,13 @@ export const ModalFrame: React.FC<ModalFrameProps> = ({
   bodyClassName,
   bodyStyle,
   hideHeader = false,
+  fit = false,
 }) => {
   const toneClass = toneStyles[tone];
   /* max-h-full against the wrapper's cap, so a long body scrolls inside the
      frame instead of the frame running past it. */
-  const base = `relative bg-surface sm:border flex flex-col overflow-hidden h-full sm:h-auto max-h-full ${toneClass.border}`;
+  const phone = fit ? "border-t" : "h-full";
+  const base = `relative bg-surface ${phone} sm:border flex flex-col overflow-hidden sm:h-auto max-h-full ${toneClass.border}`;
   const containerClasses = className ? `${base} ${className}` : base;
   const bodyClasses = bodyClassName
     ? `p-5 text-ink ${bodyClassName}`
@@ -85,17 +90,18 @@ export const ModalFrame: React.FC<ModalFrameProps> = ({
   }
 
   /* A full-screen sheet below sm, where a centred box would leave a sliver
-     of backdrop around a cramped form; the floating pane from sm up. */
+     of backdrop around a cramped form (a bottom sheet with `fit`); the
+     floating pane from sm up. */
   const modalContent = (
     <div
-      className="fixed inset-0 z-[60] flex sm:items-center sm:justify-center bg-black/70 sm:p-4"
+      className={`fixed inset-0 z-[60] flex ${fit ? "items-end" : ""} sm:items-center sm:justify-center bg-black/70 sm:p-4`}
       onClick={() => onClose?.()}
       role="dialog"
       aria-modal="true"
       aria-label={typeof title === "string" ? title : undefined}
     >
       <div
-        className={`w-full ${sizeClasses[size]} h-full sm:h-auto sm:max-h-[90vh] flex flex-col`}
+        className={`w-full ${sizeClasses[size]} ${fit ? "max-h-[85dvh]" : "h-full"} sm:h-auto sm:max-h-[90vh] flex flex-col`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className={containerClasses}>

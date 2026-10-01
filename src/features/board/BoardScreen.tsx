@@ -9,9 +9,12 @@
    The URL carries the board key (/b/CPL), which people can read and share;
    the id comes from the boards list. ?view=list and ?view=gantt switch to
    the other two views (ListView, GanttView) over the same data.
+
+   On a touchscreen there is no HTML5 drag: a long press on a card opens
+   MoveSheet instead, and on a phone the columns become a swipeable strip.
    ========================================================================== */
 
-import { useState, type DragEvent } from "react";
+import { useRef, useState, type DragEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { ArrowLeft, Plus, Settings2, Users } from "lucide-react";
 import { rankBetween } from "@/domain/tasks";
@@ -22,6 +25,7 @@ import { todayLocal, toneText } from "@/ui/tone";
 import { BoardSettingsModal } from "./BoardSettingsModal";
 import { GanttView } from "./GanttView";
 import { ListView } from "./ListView";
+import { MoveSheet } from "./MoveSheet";
 import { NewTaskModal } from "./NewTaskModal";
 import { TaskModal } from "./TaskModal";
 import { TASK_DRAG_TYPE, TaskRow } from "./TaskRow";
@@ -35,9 +39,10 @@ interface ColumnProps {
   stage: Stage;
   onOpen: (taskId: string) => void;
   onNew: (stageId: string) => void;
+  onMoveMenu: (taskId: string) => void;
 }
 
-function Column({ detail, stage, onOpen, onNew }: ColumnProps) {
+function Column({ detail, stage, onOpen, onNew, onMoveMenu }: ColumnProps) {
   const tasks = tasksIn(detail, stage.id);
   const update = useUpdateTask(detail.board.id);
   const create = useCreateTask(detail.board.id);
@@ -76,7 +81,7 @@ function Column({ detail, stage, onOpen, onNew }: ColumnProps) {
 
   return (
     <section
-      className={`group/pane flex flex-col bg-surface w-[19rem] shrink-0 max-h-full ${over ? "bg-raised/40" : ""}`}
+      className={`group/pane flex flex-col bg-surface w-[85vw] sm:w-[19rem] snap-start shrink-0 max-h-full ${over ? "bg-raised/40" : ""}`}
       onDragLeave={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node)) setOver(null);
       }}
@@ -110,6 +115,7 @@ function Column({ detail, stage, onOpen, onNew }: ColumnProps) {
             draggable={canEdit}
             dropMarker={over === task.id}
             onOpen={() => onOpen(task.id)}
+            onLongPress={canEdit ? () => onMoveMenu(task.id) : undefined}
             {...dropHandlers(task.id)}
           />
         ))}
@@ -143,6 +149,55 @@ function Column({ detail, stage, onOpen, onNew }: ColumnProps) {
   );
 }
 
+interface KanbanProps {
+  detail: BoardDetail;
+  onOpen: (taskId: string) => void;
+  onNew: (stageId: string) => void;
+  onMoveMenu: (taskId: string) => void;
+}
+
+/**
+ * The columns side by side. On a phone they are a scroll-snap strip, each
+ * column most of the screen wide with the next peeking in, and a row of
+ * stage chips above that shows where you are and jumps.
+ */
+function Kanban({ detail, onOpen, onNew, onMoveMenu }: KanbanProps) {
+  const strip = useRef<HTMLDivElement | null>(null);
+  const [active, setActive] = useState(0);
+
+  /** One column plus its 1px gap. */
+  const step = () => ((strip.current?.firstElementChild as HTMLElement | null)?.offsetWidth ?? 0) + 1;
+  const onScroll = () => {
+    if (strip.current) setActive(Math.round(strip.current.scrollLeft / step()));
+  };
+  const jump = (index: number) => strip.current?.scrollTo({ left: index * step(), behavior: "smooth" });
+
+  return (
+    <>
+      <div className="sm:hidden flex gap-px overflow-x-auto bg-divider border-b border-divider">
+        {detail.stages.map((stage, i) => (
+          <button
+            key={stage.id}
+            onClick={() => jump(i)}
+            className={`shrink-0 px-4 py-2.5 whitespace-nowrap ${i === active ? `bg-raised ${toneText(stage.tone)}` : "bg-surface text-muted"}`}
+          >
+            {stage.name} <span className="text-xs text-faint">{tasksIn(detail, stage.id).length}</span>
+          </button>
+        ))}
+      </div>
+      <div
+        ref={strip}
+        onScroll={onScroll}
+        className="flex-1 min-h-0 flex items-stretch gap-px overflow-x-auto snap-x snap-mandatory sm:snap-none sm:px-4 md:px-8 sm:py-4"
+      >
+        {detail.stages.map((stage) => (
+          <Column key={stage.id} detail={detail} stage={stage} onOpen={onOpen} onNew={onNew} onMoveMenu={onMoveMenu} />
+        ))}
+      </div>
+    </>
+  );
+}
+
 const VIEWS = ["kanban", "list", "gantt"] as const;
 type View = (typeof VIEWS)[number];
 
@@ -152,6 +207,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   const summary = boards.data?.find((b) => b.key === boardKey.toUpperCase());
   const board = useBoard(summary?.id ?? null);
   const [openTask, setOpenTask] = useState<string | null>(null);
+  const [moving, setMoving] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newTask, setNewTask] = useState<{ stageId?: string } | null>(null);
   const [params, setParams] = useSearchParams();
@@ -175,53 +231,65 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   if (!detail) return null;
 
   return (
-    <div className="flex flex-col h-[calc(100vh-2.75rem)]">
-      <div className="flex items-center gap-3 px-4 md:px-8 py-3 bg-surface border-b border-divider whitespace-nowrap">
+    <div className="flex flex-col h-[calc(100dvh-2.75rem)]">
+      {/* On a phone the view switch wraps onto its own full-width row. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 md:px-8 py-2 sm:py-3 bg-surface border-b border-divider whitespace-nowrap">
         <button onClick={() => navigate("/")} className="tap text-muted hover:text-accent" title="Dashboard">
           <ArrowLeft size={16} />
         </button>
         <span className="text-faint">{detail.board.key}</span>
-        <span className="text-bright truncate">{detail.board.name}</span>
-        <span className="flex-1" />
+        <span className="text-bright truncate min-w-0 flex-1 sm:flex-none">{detail.board.name}</span>
+        <span className="hidden sm:block flex-1" />
         {detail.board.role !== "viewer" && (
-          <button onClick={() => setNewTask({})} className="tap text-muted hover:text-accent flex items-center gap-1 text-sm">
-            <Plus size={14} /> new
+          <button onClick={() => setNewTask({})} className="tap text-muted hover:text-accent flex items-center gap-1 text-sm" title="New task">
+            <Plus size={14} /> <span className="hidden sm:inline">new</span>
           </button>
         )}
-        <span className="flex items-center gap-px text-sm">
+        <span className="order-last sm:order-none basis-full sm:basis-auto flex items-center gap-px text-sm">
           {VIEWS.map((v) => (
             <button
               key={v}
               onClick={() => setParams(v === "kanban" ? {} : { view: v }, { replace: true })}
-              className={`tap px-2 py-0.5 transition-colors ${view === v ? "text-accent bg-raised" : "text-muted hover:text-ink"}`}
+              className={`tap flex-1 sm:flex-none px-2 py-0.5 transition-colors ${view === v ? "text-accent bg-raised" : "text-muted hover:text-ink"}`}
             >
               {v}
             </button>
           ))}
         </span>
         {detail.members.length > 1 && (
-          <span className="flex items-center gap-1.5 text-muted text-sm" title={detail.members.map((m) => m.user.name).join(", ")}>
+          <span className="hidden sm:flex items-center gap-1.5 text-muted text-sm" title={detail.members.map((m) => m.user.name).join(", ")}>
             <Users size={14} /> {detail.members.length}
           </span>
         )}
         {detail.board.role === "owner" && (
-          <button onClick={() => setSettingsOpen(true)} className="tap text-muted hover:text-accent flex items-center gap-1.5">
-            <Settings2 size={14} /> {detail.board.isInbox ? "settings" : "share"}
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="tap text-muted hover:text-accent flex items-center gap-1.5"
+            title={detail.board.isInbox ? "Settings" : "Share"}
+          >
+            <Settings2 size={14} /> <span className="hidden sm:inline">{detail.board.isInbox ? "settings" : "share"}</span>
           </button>
         )}
         {detail.board.role === "viewer" && <span className="text-xs text-yellow">view only</span>}
       </div>
 
       {view === "kanban" && (
-        <div className="flex-1 min-h-0 flex items-stretch gap-px overflow-x-auto px-4 md:px-8 py-4">
-          {detail.stages.map((stage) => (
-            <Column key={stage.id} detail={detail} stage={stage} onOpen={setOpenTask} onNew={(stageId) => setNewTask({ stageId })} />
-          ))}
-        </div>
+        <Kanban detail={detail} onOpen={setOpenTask} onNew={(stageId) => setNewTask({ stageId })} onMoveMenu={setMoving} />
       )}
       {view === "list" && <ListView detail={detail} onOpen={setOpenTask} />}
       {view === "gantt" && <GanttView detail={detail} onOpen={setOpenTask} />}
 
+      {moving && (
+        <MoveSheet
+          detail={detail}
+          taskId={moving}
+          onClose={() => setMoving(null)}
+          onOpen={() => {
+            setMoving(null);
+            setOpenTask(moving);
+          }}
+        />
+      )}
       {openTask && <TaskModal detail={detail} taskId={openTask} onClose={() => setOpenTask(null)} />}
       {newTask && (
         <NewTaskModal detail={detail} stageId={newTask.stageId} onClose={() => setNewTask(null)} />

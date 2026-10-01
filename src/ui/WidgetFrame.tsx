@@ -20,6 +20,37 @@ interface WidgetFrameProps {
 // Splits pane: a flat region on the shared surface. No card chrome — the
 // title lives inside a horizontal rule, controls surface on hover, and
 // separation from neighbours comes from the 1px divider grid outside.
+// A pane with a string title can be collapsed to its header; that is
+// remembered per browser (a convenience, not a setting), for the long
+// one-column dashboard on a phone.
+const storageKey = (title: string) => `copland.collapsed.${title}`;
+
+function readCollapsed(title: string | null): boolean {
+  if (!title) return false;
+  try {
+    return localStorage.getItem(storageKey(title)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function useRemembered(title: string | null) {
+  const [collapsed, setCollapsed] = React.useState(() => readCollapsed(title));
+  const toggle = title
+    ? () =>
+        setCollapsed((was) => {
+          try {
+            if (was) localStorage.removeItem(storageKey(title));
+            else localStorage.setItem(storageKey(title), "1");
+          } catch {
+            /* private mode: collapse for this visit only */
+          }
+          return !was;
+        })
+    : undefined;
+  return { collapsed, toggle };
+}
+
 const baseContainer = "group/pane flex flex-col bg-surface min-h-0";
 
 export const WidgetFrame: React.FC<WidgetFrameProps> = ({
@@ -30,13 +61,17 @@ export const WidgetFrame: React.FC<WidgetFrameProps> = ({
   badge,
   controls,
   children,
-  collapsed = false,
-  onToggleCollapse,
+  collapsed: collapsedProp,
+  onToggleCollapse: onToggleProp,
   className,
   bodyClassName,
   bodyStyle,
   style,
 }) => {
+  const remembered = useRemembered(typeof title === "string" ? title : null);
+  const collapsed = collapsedProp ?? remembered.collapsed;
+  const onToggleCollapse = onToggleProp ?? remembered.toggle;
+
   const containerClasses = className
     ? `${baseContainer} ${className}`
     : baseContainer;
@@ -46,7 +81,7 @@ export const WidgetFrame: React.FC<WidgetFrameProps> = ({
 
   return (
     <section className={containerClasses} style={style}>
-      <div className="flex items-center gap-2.5 px-4 pt-3 select-none whitespace-nowrap">
+      <div className={`flex items-center gap-2.5 px-4 pt-3 ${collapsed ? "pb-3" : ""} select-none whitespace-nowrap`}>
         <span className="text-faint" aria-hidden>
           ──
         </span>

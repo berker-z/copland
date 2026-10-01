@@ -10,6 +10,10 @@
    Rows follow the board's order: by stage, then rank. With planning on,
    children sit under their parent, indented. Undated tasks are listed under
    the chart so they can be opened and given dates.
+
+   On a touchscreen the chart is read-only: bars are small targets and a
+   drag would fight the page scrolling under the finger. Dates are edited in
+   the task, which a tap opens.
    ========================================================================== */
 
 import { useMemo, useRef, useState, type PointerEvent } from "react";
@@ -17,10 +21,12 @@ import { addDays, daysBetween } from "@/domain/tasks";
 import type { BoardDetail, Task } from "@/domain/types";
 import { tasksIn, useUpdateTask } from "@/lib/tasks";
 import { isDraft, todayLocal, toneBg } from "@/ui/tone";
+import { usePhone, useTouch } from "@/ui/useMediaQuery";
 
 const DAY_PX = 28;
 const ROW_PX = 30;
 const LABEL_PX = 260;
+const PHONE_LABEL_PX = 140;
 
 type DragMode = "move" | "start" | "end";
 
@@ -56,7 +62,9 @@ function ordered(detail: BoardDetail): { task: Task; depth: number }[] {
 
 export function GanttView({ detail, onOpen }: { detail: BoardDetail; onOpen: (taskId: string) => void }) {
   const update = useUpdateTask(detail.board.id);
-  const canEdit = detail.board.role !== "viewer";
+  const touch = useTouch();
+  const labelPx = usePhone() ? PHONE_LABEL_PX : LABEL_PX;
+  const canDrag = detail.board.role !== "viewer" && !touch;
   const [drag, setDrag] = useState<Drag | null>(null);
   const moved = useRef(false);
   const today = todayLocal();
@@ -95,7 +103,7 @@ export function GanttView({ detail, onOpen }: { detail: BoardDetail; onOpen: (ta
   };
 
   const begin = (event: PointerEvent, task: Task, mode: DragMode) => {
-    if (!canEdit || isDraft(task.id)) return;
+    if (!canDrag || isDraft(task.id)) return;
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     moved.current = false;
@@ -136,7 +144,7 @@ export function GanttView({ detail, onOpen }: { detail: BoardDetail; onOpen: (ta
       <div className="bg-surface inline-block min-w-full">
         {/* Header: months over days. */}
         <div className="flex sticky top-0 z-10 bg-surface border-b border-divider">
-          <div className="shrink-0 sticky left-0 z-20 bg-surface border-r border-divider" style={{ width: LABEL_PX }} />
+          <div className="shrink-0 sticky left-0 z-20 bg-surface border-r border-divider" style={{ width: labelPx }} />
           <div className="flex">
             {dayList.map((day) => {
               const d = new Date(`${day}T00:00:00Z`);
@@ -170,7 +178,7 @@ export function GanttView({ detail, onOpen }: { detail: BoardDetail; onOpen: (ta
               <button
                 onClick={() => !isDraft(task.id) && onOpen(task.id)}
                 className="shrink-0 sticky left-0 z-[5] bg-surface group-hover/row:bg-raised border-r border-divider text-left px-3 truncate text-sm"
-                style={{ width: LABEL_PX, paddingLeft: 12 + depth * 14 }}
+                style={{ width: labelPx, paddingLeft: 12 + depth * 14 }}
                 title={task.title}
               >
                 <span className="text-faint mr-2">{task.key}</span>
@@ -185,7 +193,7 @@ export function GanttView({ detail, onOpen }: { detail: BoardDetail; onOpen: (ta
                     onPointerMove={onMove}
                     onPointerUp={() => end(task)}
                     onClick={() => !moved.current && onOpen(task.id)}
-                    className={`absolute top-1/2 w-3.5 h-3.5 rotate-45 ${toneBg(stage?.tone ?? 0)} ${closed ? "opacity-40" : ""} ${canEdit ? "cursor-grab" : "cursor-pointer"}`}
+                    className={`absolute top-1/2 w-3.5 h-3.5 rotate-45 ${toneBg(stage?.tone ?? 0)} ${closed ? "opacity-40" : ""} ${canDrag ? "cursor-grab" : "cursor-pointer"}`}
                     style={{ left: daysBetween(from, e) * DAY_PX + DAY_PX / 2 - 7, marginTop: -7 }}
                     title={`${task.title} · ${e}`}
                   />
@@ -196,12 +204,12 @@ export function GanttView({ detail, onOpen }: { detail: BoardDetail; onOpen: (ta
                     onPointerUp={() => end(task)}
                     onClick={() => !moved.current && onOpen(task.id)}
                     className={`absolute top-1.5 bottom-1.5 ${toneBg(stage?.tone ?? 0)} ${closed ? "opacity-35" : "opacity-80"} ${
-                      canEdit ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
-                    } select-none touch-none`}
+                      canDrag ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
+                    } select-none ${canDrag ? "touch-none" : ""}`}
                     style={{ left: left + 2, width: width - 4 }}
                     title={`${task.title} · ${s} → ${e}`}
                   >
-                    {canEdit && (
+                    {canDrag && (
                       <>
                         <span
                           onPointerDown={(ev) => begin(ev, task, "start")}

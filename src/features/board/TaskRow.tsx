@@ -8,6 +8,7 @@ import type { DragEvent, ReactNode } from "react";
 import { Paperclip } from "lucide-react";
 import type { BoardMember, Label, Task } from "@/domain/types";
 import { dueClass, isDraft, shortDate, toneText } from "@/ui/tone";
+import { useLongPress } from "@/ui/useLongPress";
 
 export const TASK_DRAG_TYPE = "application/x-copland-task";
 
@@ -33,13 +34,16 @@ interface TaskRowProps {
   draggable?: boolean;
   dropMarker?: boolean;
   onOpen: () => void;
+  /** A long press on touch, where there is no drag: the board's move menu. */
+  onLongPress?: () => void;
   onDragOver?: (event: DragEvent) => void;
   onDrop?: (event: DragEvent) => void;
 }
 
-export function TaskRow({ task, members, labels = [], lead, showKey = true, draggable, dropMarker, onOpen, onDragOver, onDrop }: TaskRowProps) {
+export function TaskRow({ task, members, labels = [], lead, showKey = true, draggable, dropMarker, onOpen, onLongPress, onDragOver, onDrop }: TaskRowProps) {
   const closed = task.completedAt !== null;
   const draft = isDraft(task.id);
+  const press = useLongPress(draft ? undefined : onLongPress);
   const assignees = task.assigneeIds
     .map((id) => members.find((m) => m.user.id === id)?.user)
     .filter((u): u is NonNullable<typeof u> => u !== undefined);
@@ -56,7 +60,8 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, drag
       }}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      onClick={() => !draft && onOpen()}
+      {...press.handlers}
+      onClick={() => !press.swallowClick() && !draft && onOpen()}
       onKeyDown={(event) => {
         if ((event.key === "Enter" || event.key === " ") && !draft) {
           event.preventDefault();
@@ -64,6 +69,8 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, drag
         }
       }}
       className={`group/task flex items-start gap-2.5 px-3 py-2 border-b border-divider hover:bg-raised focus:outline-none focus-visible:bg-raised transition-colors cursor-pointer ${
+        onLongPress ? "pointer-coarse:select-none [-webkit-touch-callout:none]" : ""
+      } ${
         dropMarker ? "border-t-2 border-t-accent" : ""
       } ${draft ? "opacity-60" : ""}`}
     >

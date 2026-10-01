@@ -77,7 +77,8 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 - `components/ui/WidgetFrame.tsx` — the pane. Header is a rule line:
   `── /title ────────` with the slash-title embedded (`text-blue`, accent on
   pane hover, matching rule color shift). Controls (resize, collapse) sit at
-  the rule's right end and appear on hover (always visible on touch).
+  the rule's right end and appear on hover (always visible on touch). A
+  string title makes the pane collapsible, remembered in localStorage.
   Body is `p-4 text-ink`. `bodyStyle`/`bodyClassName` for sizing tweaks.
 - `components/ui/ModalFrame.tsx` — square floating pane from `sm` up,
   a full-screen sheet below it. `bg-surface` with a
@@ -98,6 +99,18 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   `index.css`, so it beats `text-xs`); smaller makes iOS zoom on focus.
 - Controls that appear on hover are `pointer-fine:opacity-0
   pointer-fine:group-hover:opacity-100`: always visible on touch.
+- In code, `useTouch()` and `usePhone()` (`src/ui/useMediaQuery.ts`) are the
+  same two questions.
+- No HTML5 drag on a touchscreen. A long press (`src/ui/useLongPress.ts`,
+  touch pointers only) stands in for it: on a board card it opens MoveSheet,
+  a "move to…" list of stages. The Gantt is read-only on touch; a tap opens
+  the task.
+- Short menus pass `fit` to `ModalFrame`: a bottom sheet on a phone instead
+  of the full screen.
+- The board on a phone: kanban columns are an `85vw` scroll-snap strip with
+  stage chips above it; the view switch wraps onto its own row.
+- An installed app (`public/manifest.webmanifest`, standalone) takes its
+  title bar colour from `theme-color`, which follows the theme's `--bar`.
 
 ## Usage Patterns
 
