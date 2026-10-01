@@ -17,7 +17,7 @@ export function LogoMark({ size = 16, className }: { size?: 16 | 32; className?:
         fill="none"
         strokeWidth={1}
         style={{ stroke: "var(--mark-2, currentColor)" }}
-        d="M9 4.5Q13 8.5 16 7.5M7.5 8.5Q11.5 12.5 16 11.5"
+        d="M8.4 4.51A22.97 22.97 0 0 0 17.5 8.53M0.39 4.68A28.56 28.56 0 0 0 17.5 14.21"
       />
     </svg>
   );
