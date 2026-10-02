@@ -25,6 +25,7 @@ import {
   MAX_BOARD_NOTES,
   PRIORITIES,
   STAGE_CATEGORIES,
+  type AlsoMoved,
   type BoardDetail,
   type BoardDoc,
   type BoardDocContent,
@@ -40,6 +41,7 @@ import {
   type Stage,
   type StageCategory,
   type Task,
+  type TaskWrite,
   type Viewer,
 } from "@/domain/types";
 import { CORS_HEADERS } from "./oauth";
@@ -446,6 +448,12 @@ function summarize(detail: BoardDetail, task: Task, origin: string) {
   };
 }
 
+/** Parents a write moved along with it (parents follow their children), by key and stage name; nothing when none did. */
+function alsoMoved(detail: BoardDetail, moved: AlsoMoved[] | undefined) {
+  if (!moved?.length) return {};
+  return { also_moved: moved.map((m) => ({ key: m.key, stage: detail.stages.find((s) => s.id === m.stageId)?.name ?? m.stageId })) };
+}
+
 /** Markdown quoted line by line, so it reads as someone's words, not the guide's. */
 const quote = (text: string) => `> ${text.replace(/\n/g, "\n> ")}`;
 
@@ -541,7 +549,7 @@ ${who} Today is ${today()} (UTC).${
 - **Boards.** A board is a set of tasks moving through stages, left to right. Everyone has an **inbox**: a private board only they see, where their own todos live. Other boards can be shared.
 - **Roles.** On each board the user is an owner (everything, including members and stages), an editor (tasks, labels, comments) or a viewer (reads and comments only). A tool refuses what the role does not allow.
 - **Stages and categories.** Every stage has a category, in the order work flows: backlog (parked, not committed to), todo (ready to be picked up), active (someone is on it), blocked (waiting on a person), done, cancelled. The first four are open; a task in a done or cancelled stage is closed, and moving it back to an open stage reopens it. Stage names are the board's own; the category is what they mean. A new task without a stage lands in the board's first todo stage (without one, its first open stage that is not backlog); pass stage: "backlog" to park it.
-- **Taking work.** Work from todo stages, or what is assigned to you (my_work); never pick up a backlog task unless asked to. Work agreed in conversation goes on the board as tasks before you build it, not only into your reply. Move a task to an active stage when you start it and to done when it is delivered (shipped, sent, live; not merely drafted), so the board stays true without anyone tidying it; a parent moves with its children (active while any of them is, done when the work it was opened for is delivered). An idea parked in backlog does not hold its parent open: when the rest is done, take the parked task out from under it (parent: "none") and close the parent.
+- **Taking work.** Work from todo stages, or what is assigned to you (my_work); never pick up a backlog task unless asked to. Work agreed in conversation goes on the board as tasks before you build it, not only into your reply. Move a task to an active stage when you start it and to done when it is delivered (shipped, sent, live; not merely drafted), so the board stays true without anyone tidying it. Move the tasks you work on, not their parents: a parent follows its children by itself. When a child goes active or blocked, a parent in backlog, todo or a closed stage moves to the board's first active stage; when every child not parked in backlog is closed and at least one is done, an open parent moves to the first done stage; a child back in todo reopens a closed parent to todo. It carries up the tree (a task can move its story, and the story its epic), and the tool's response lists those parents under also_moved. A child parked in backlog does not hold its parent open and is left where it is. Children that are all cancelled leave the parent alone, and a parent already active or blocked is not moved back. Move a parent by hand only to correct it; it stays there until one of its children changes again.
 - **Waiting on someone.** When you need an answer or a decision, comment with an @mention of the person who can give it (a question only in a brief, or only in your reply to the user, reaches nobody), and move the task to the board's blocked stage (move_task { stage: "blocked" }). Once answered, move it back to an active stage and carry on. On a board without a blocked stage, just comment.
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
 - **Planning.** Any task can have a level (epic > story > task, plus milestone), a parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). All three are optional: a task without them is an ordinary task. Breaking work down means creating the pieces as tasks with parent set, never writing them as a list in the parent's brief: the board shows a task's children, and a list in a brief goes stale the moment one moves. An epic's brief says what it is for and why; its stories are its children. list_tasks with parent lists a task's children, with under its whole subtree.
@@ -838,7 +846,7 @@ const TOOLS: Tool[] = [
     name: "create_task",
     title: "Create a task",
     description:
-      "Open a task. Without board it goes in your inbox (for an agent, its owner's inbox, once the owner has added it there). It starts in the board's first todo stage (without one, its first open stage that is not backlog) unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on are optional planning fields on any board; parent and depends_on must be tasks on the same board. To break work down, create each piece with parent set rather than listing the pieces in the parent's brief. Dates must be real YYYY-MM-DD days, start on or before due; leave start out and it is today (UTC), which is right unless the user says otherwise; pass start: null only when the user explicitly asks for no start date. Returns { created: summary }.",
+      "Open a task. Without board it goes in your inbox (for an agent, its owner's inbox, once the owner has added it there). It starts in the board's first todo stage (without one, its first open stage that is not backlog) unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on are optional planning fields on any board; parent and depends_on must be tasks on the same board. To break work down, create each piece with parent set rather than listing the pieces in the parent's brief. Dates must be real YYYY-MM-DD days, start on or before due; leave start out and it is today (UTC), which is right unless the user says otherwise; pass start: null only when the user explicitly asks for no start date. A parent follows its children (see the guide): a new child under way, or ready under a closed parent, can move its parent and that parent's parent. Returns { created: summary }, plus also_moved: [{ key, stage }] for any parents that moved with it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -878,7 +886,8 @@ const TOOLS: Tool[] = [
           ? list(args.depends_on).map((k) => (resolveSameBoardTask(detail, k, "depends_on") as Task).id)
           : [];
 
-      let task = await ctx.call<Task>("POST", `/api/boards/${detail.board.id}/tasks`, body);
+      const { alsoMoved: moved, ...created } = await ctx.call<TaskWrite>("POST", `/api/boards/${detail.board.id}/tasks`, body);
+      let task: Task = created;
       /* Creation takes no dependencies; they are a second write on the new task. */
       if (dependsOn.length) {
         try {
@@ -890,14 +899,14 @@ const TOOLS: Tool[] = [
         }
       }
       /* The summary names parents and dependencies by key: read them against a board that includes the new task. */
-      return { created: summarize({ ...detail, tasks: [...detail.tasks, task] }, task, ctx.origin) };
+      return { created: summarize({ ...detail, tasks: [...detail.tasks, task] }, task, ctx.origin), ...alsoMoved(detail, moved) };
     },
   },
   {
     name: "update_task",
     title: "Update a task",
     description:
-      "Change a task. Only what you pass changes; lists (assignees, labels, depends_on) replace the whole list, [] clears. stage moves it (the same as move_task). \"none\" clears start, due, level or parent. parent and depends_on must be tasks on the same board. Needs the editor role. Everything you pass is saved in one write: all of it, or (on an error) none of it. Returns { updated: summary }.",
+      "Change a task. Only what you pass changes; lists (assignees, labels, depends_on) replace the whole list, [] clears. stage moves it (the same as move_task). \"none\" clears start, due, level or parent. parent and depends_on must be tasks on the same board. Needs the editor role. Everything you pass is saved in one write: all of it, or (on an error) none of it. A new stage or parent can move parents in the same write, the old parent's and the new one's (parents follow their children, see the guide; don't move them yourself). Returns { updated: summary }, plus also_moved: [{ key, stage }] for any parents that moved with it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -937,15 +946,15 @@ const TOOLS: Tool[] = [
         fields.dependsOn = list(args.depends_on).map((k) => (resolveSameBoardTask(detail, k, "depends_on") as Task).id);
       }
       if (!Object.keys(fields).length) return "Nothing to change.";
-      const updated = await ctx.call<Task>("PATCH", `/api/tasks/${task.id}`, fields);
-      return { updated: summarize(detail, updated, ctx.origin) };
+      const updated = await ctx.call<TaskWrite>("PATCH", `/api/tasks/${task.id}`, fields);
+      return { updated: summarize(detail, updated, ctx.origin), ...alsoMoved(detail, updated.alsoMoved) };
     },
   },
   {
     name: "move_task",
     title: "Move a task to a stage",
     description:
-      "Move a task to another stage of its board, to the bottom of that column. Moving into a done or cancelled stage closes it; moving back to an open stage (backlog, todo, active, blocked) reopens it. Stage by name, position number, or category (\"done\" finds the board's done stage, \"blocked\" its blocked stage; a board without a stage of that category refuses and lists its stages). When you need someone's input, comment with an @mention and move the task to \"blocked\"; move it back to \"active\" once answered. Needs the editor role. Returns { moved: summary }.",
+      "Move a task to another stage of its board, to the bottom of that column. Moving into a done or cancelled stage closes it; moving back to an open stage (backlog, todo, active, blocked) reopens it. Stage by name, position number, or category (\"done\" finds the board's done stage, \"blocked\" its blocked stage; a board without a stage of that category refuses and lists its stages). When you need someone's input, comment with an @mention and move the task to \"blocked\"; move it back to \"active\" once answered. Parents follow their children in the same write: moving a task can move its parent, and that parent's parent, to an active or done stage, or reopen a closed one (see the guide; don't move them yourself). Needs the editor role. Returns { moved: summary }, plus also_moved: [{ key, stage }] for any parents that moved with it.",
     inputSchema: {
       type: "object",
       properties: { task: TASK, stage: STAGE },
@@ -956,8 +965,8 @@ const TOOLS: Tool[] = [
     async run(args, ctx) {
       const { detail, task } = await loadTask(ctx, args.task);
       const stage = resolveStage(detail.stages, args.stage);
-      const moved = await ctx.call<Task>("PATCH", `/api/tasks/${task.id}`, { stageId: stage.id });
-      return { moved: summarize(detail, moved, ctx.origin) };
+      const moved = await ctx.call<TaskWrite>("PATCH", `/api/tasks/${task.id}`, { stageId: stage.id });
+      return { moved: summarize(detail, moved, ctx.origin), ...alsoMoved(detail, moved.alsoMoved) };
     },
   },
   {
@@ -984,13 +993,14 @@ const TOOLS: Tool[] = [
     name: "delete_task",
     title: "Delete a task",
     description:
-      "Delete a task (needs the editor role). It disappears from its board and every list; tasks under it lose their parent and dependencies on it are dropped. Confirm with the user first unless they asked for it explicitly.",
+      "Delete a task (needs the editor role). It disappears from its board and every list; tasks under it lose their parent and dependencies on it are dropped. Its own parent follows what is left under it (it closes when the rest is done), and the reply names any parent that moved. Confirm with the user first unless they asked for it explicitly.",
     inputSchema: { type: "object", properties: { task: TASK }, required: ["task"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: true },
     async run(args, ctx) {
-      const { task } = await loadTask(ctx, args.task);
-      await ctx.call("DELETE", `/api/tasks/${task.id}`);
-      return `Deleted ${task.key} “${task.title}”.`;
+      const { detail, task } = await loadTask(ctx, args.task);
+      const { alsoMoved: moved } = await ctx.call<{ alsoMoved?: AlsoMoved[] }>("DELETE", `/api/tasks/${task.id}`);
+      const parents = alsoMoved(detail, moved).also_moved;
+      return `Deleted ${task.key} “${task.title}”.${parents ? ` Its parents followed: ${parents.map((p) => `${p.key} to ${p.stage}`).join(", ")}.` : ""}`;
     },
   },
   {

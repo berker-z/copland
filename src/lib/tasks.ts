@@ -8,14 +8,14 @@
    truth. This is the fix for nord-dash's todo list, which waited for a
    Firestore transaction before anything moved.
 
-   The rules the server applies (completed_at follows the stage) are applied
-   here too, from domain/tasks.ts, so the optimistic state and the response
-   agree and nothing flickers.
+   The rules the server applies (completed_at follows the stage, parents
+   follow their children) are applied here too, from domain/tasks.ts, so the
+   optimistic state and the response agree and nothing flickers.
    ========================================================================== */
 
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { defaultStage, isClosing } from "@/domain/tasks";
-import type { BoardDetail, Task } from "@/domain/types";
+import { defaultStage, followUp, isClosing } from "@/domain/tasks";
+import type { BoardDetail, Task, TaskWrite } from "@/domain/types";
 import { send } from "./api";
 import { KEYS } from "./queries";
 
@@ -55,6 +55,22 @@ function applyPatch(detail: BoardDetail, task: Task, patch: TaskPatch): Task {
   return next;
 }
 
+/**
+ * Move parents the way the server will once `tasks` (the board after a
+ * change) is written: `parents` are the ones to look at again.
+ */
+function follow(detail: BoardDetail, tasks: Task[], parents: Array<string | null>): Task[] {
+  const starts = [...new Set(parents)].map((parentId) => ({ parentId, childId: "" }));
+  const moves = followUp(tasks, detail.stages, starts);
+  if (moves.length === 0) return tasks;
+  const out = [...tasks];
+  for (const move of moves) {
+    const i = out.findIndex((t) => t.id === move.id);
+    if (i >= 0) out[i] = applyPatch({ ...detail, tasks: out }, out[i], { stageId: move.to });
+  }
+  return out;
+}
+
 /** Snapshot, then edit, the cached board. Returns the snapshot for rollback. */
 async function editBoard(
   queryClient: QueryClient,
@@ -80,7 +96,7 @@ function settle(queryClient: QueryClient, boardId: string) {
 export function useCreateTask(boardId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: NewTask) => send<Task>("POST", `/boards/${boardId}/tasks`, input),
+    mutationFn: (input: NewTask) => send<TaskWrite>("POST", `/boards/${boardId}/tasks`, input),
     onMutate: async (input) => {
       const tempId = `temp-${crypto.randomUUID()}`;
       const previous = await editBoard(queryClient, boardId, (detail) => {
@@ -112,11 +128,11 @@ export function useCreateTask(boardId: string) {
           createdAt: now,
           updatedAt: now,
         };
-        return { ...detail, tasks: [...detail.tasks, draft] };
+        return { ...detail, tasks: follow(detail, [...detail.tasks, draft], [draft.parentId]) };
       });
       return { previous, tempId };
     },
-    onSuccess: (task, _input, context) => {
+    onSuccess: ({ alsoMoved: _moved, ...task }, _input, context) => {
       /* Swap the draft for the real row so its key and number show at once. */
       queryClient.setQueryData<BoardDetail>(KEYS.board(boardId), (detail) =>
         detail ? { ...detail, tasks: detail.tasks.map((t) => (t.id === context?.tempId ? task : t)) } : detail,
@@ -138,13 +154,19 @@ export function useUpdateTask(boardId?: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: TaskPatch; boardId?: string }) =>
-      send<Task>("PATCH", `/tasks/${id}`, patch),
+      send<TaskWrite>("PATCH", `/tasks/${id}`, patch),
     onMutate: async ({ id, patch, boardId: on }) => {
       const board = on ?? boardId ?? "";
-      const previous = await editBoard(queryClient, board, (detail) => ({
-        ...detail,
-        tasks: detail.tasks.map((t) => (t.id === id ? applyPatch(detail, t, patch) : t)),
-      }));
+      const previous = await editBoard(queryClient, board, (detail) => {
+        const before = detail.tasks.find((t) => t.id === id);
+        const tasks = detail.tasks.map((t) => (t.id === id ? applyPatch(detail, t, patch) : t));
+        /* A new stage or parent moves parents, as on the server. */
+        const moves = before && (patch.stageId !== undefined || patch.parentId !== undefined);
+        return {
+          ...detail,
+          tasks: moves ? follow(detail, tasks, [before.parentId, patch.parentId ?? null]) : tasks,
+        };
+      });
       return { previous, board };
     },
     onError: (_error, _vars, context) => {
@@ -159,10 +181,14 @@ export function useDeleteTask(boardId: string) {
   return useMutation({
     mutationFn: (id: string) => send("DELETE", `/tasks/${id}`),
     onMutate: async (id) => {
-      const previous = await editBoard(queryClient, boardId, (detail) => ({
-        ...detail,
-        tasks: detail.tasks.filter((t) => t.id !== id),
-      }));
+      const previous = await editBoard(queryClient, boardId, (detail) => {
+        const parentId = detail.tasks.find((t) => t.id === id)?.parentId ?? null;
+        /* Its children lose their parent, as on the server, and its own parent may close. */
+        const tasks = detail.tasks
+          .filter((t) => t.id !== id)
+          .map((t) => (t.parentId === id ? { ...t, parentId: null } : t));
+        return { ...detail, tasks: follow(detail, tasks, [parentId]) };
+      });
       return { previous };
     },
     onError: (_error, _id, context) => {

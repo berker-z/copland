@@ -126,6 +126,19 @@ export interface Task {
   updatedAt: string;
 }
 
+/**
+ * A parent the change moved along with it (parents follow their children,
+ * domain/tasks.ts followChildren), in the order they moved.
+ */
+export interface AlsoMoved {
+  id: string;
+  key: string;
+  stageId: string;
+}
+
+/** What creating or changing a task returns: the task, and any parents that followed it. */
+export type TaskWrite = Task & { alsoMoved?: AlsoMoved[] };
+
 /** GET /api/tasks/mine: which tasks are yours and which you handed to your agents (routes/work.ts). */
 export interface MyWork {
   mine: { taskId: string; boardId: string }[];

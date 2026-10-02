@@ -42,7 +42,9 @@ function describe(event: TaskEvent, detail: BoardDetail): string {
       const after = event.after ?? {};
       if (typeof after.stageId === "string") {
         const stage = detail.stages.find((s) => s.id === after.stageId);
-        return `moved it to ${stage?.name ?? "another stage"}`;
+        const to = `moved it to ${stage?.name ?? "another stage"}`;
+        /* A parent the board moved because a child changed (parents follow their children). */
+        return typeof after.followed === "string" ? `${to}, following ${after.followed}` : to;
       }
       const fields = Object.keys(after)
         .filter((k) => k !== "rank" && k !== "completedAt")

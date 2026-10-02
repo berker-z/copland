@@ -161,3 +161,11 @@ docs/DESIGN.md under Touch.
   filtered board is a link. Scope to a task's subtree from a picker or a
   card's `↑ KEY`; closed tasks show only from the last 14 days unless asked.
   The MCP's `list_tasks` takes `under` for a whole subtree
+- Parents follow their children (COPL-40): a child under way moves its
+  parent to active, everything not parked in backlog closed with something
+  done moves it to done, a child back in todo reopens a closed parent, and
+  it carries up to the epic. Done in the Worker in the same batch as the
+  change, logged as "following KEY", mirrored in the browser's optimistic
+  cache, and reported to agents as `also_moved`; the guide no longer tells
+  them to move parents by hand. Stage edits (recategorising or deleting a
+  stage) don't re-check parents

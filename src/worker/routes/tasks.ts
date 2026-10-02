@@ -11,11 +11,18 @@
    The stage decides completed_at: entering a done or cancelled stage stamps
    it, leaving one clears it. Planning fields (parentId, level, dependsOn)
    work on every board.
+
+   Parents follow their children (domain/tasks.ts followChildren): a write
+   that gives a task a new stage or a new parent, creates one under a parent,
+   or deletes one moves the parents above it in the same batch, logged on
+   each parent as the same principal's change, with `followed` naming the
+   child. The response lists them under alsoMoved.
    ========================================================================== */
 
 import {
   BRIEF_MAX,
   defaultStage,
+  followUp,
   isClosing,
   isDate,
   TITLE_MAX,
@@ -23,11 +30,13 @@ import {
 import {
   LEVELS,
   PRIORITIES,
+  type AlsoMoved,
   type BoardSummary,
   type Level,
   type Priority,
   type Stage,
   type Task,
+  type TaskWrite,
   type Viewer,
 } from "@/domain/types";
 import { personOf, requireBoard } from "../access";
@@ -159,6 +168,100 @@ async function checkDependencies(db: D1Database, board: BoardSummary, taskId: st
   }
 }
 
+/* ---------------------------------------------- parents follow children -- */
+
+interface FollowRow {
+  id: string;
+  parent_id: string | null;
+  stage_id: string;
+  rank: number;
+  number: number;
+  completed_at: string | null;
+}
+
+/**
+ * The writes that move parents along with a change to one task (domain/
+ * tasks.ts followUp), to go in the same batch as the change itself, so the
+ * browser and the MCP get it the same way. `change` says what the board looks
+ * like once the triggering write lands: the task's new stage or parent, a
+ * task about to be created, or one about to be deleted. `parents` are the
+ * parents to look at again (old and new on a reparent).
+ *
+ * Each move is logged as a task.updated event on the parent, by whoever made
+ * the change, with `followed` naming the child it followed, which is what
+ * the history shows as automatic.
+ */
+async function followStatements(
+  db: D1Database,
+  viewer: Viewer,
+  board: BoardSummary,
+  stages: Stage[],
+  child: { id: string; number: number },
+  change: { stageId?: string; parentId?: string | null; rank?: number; created?: boolean; deleted?: boolean },
+  parents: Array<string | null>,
+): Promise<{ statements: D1PreparedStatement[]; moved: AlsoMoved[] }> {
+  const starts = [...new Set(parents.filter((p): p is string => !!p))].map((parentId) => ({ parentId, childId: child.id }));
+  if (starts.length === 0) return { statements: [], moved: [] };
+  const { results } = await db
+    .prepare(
+      `SELECT id, parent_id, stage_id, rank, number, completed_at FROM tasks WHERE board_id = ?1 AND deleted_at IS NULL`,
+    )
+    .bind(board.id)
+    .all<FollowRow>();
+  let rows = results.map((r) => ({ ...r }));
+  if (change.deleted) rows = rows.filter((r) => r.id !== child.id);
+  if (change.created) {
+    rows.push({ id: child.id, parent_id: change.parentId ?? null, stage_id: change.stageId ?? "", rank: change.rank ?? 0, number: child.number, completed_at: null });
+  }
+  const self = rows.find((r) => r.id === child.id);
+  if (self && change.stageId !== undefined) self.stage_id = change.stageId;
+  if (self && change.parentId !== undefined) self.parent_id = change.parentId;
+
+  const moves = followUp(
+    rows.map((r) => ({ id: r.id, parentId: r.parent_id, stageId: r.stage_id })),
+    stages,
+    starts,
+  );
+  if (moves.length === 0) return { statements: [], moved: [] };
+
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const keyOf = (number: number) => `${board.key}-${number}`;
+  const now = nowIso();
+  const statements: D1PreparedStatement[] = [];
+  const moved = new Map<string, AlsoMoved>();
+  for (const move of moves) {
+    const row = byId.get(move.id)!;
+    const stage = stages.find((s) => s.id === move.to)!;
+    /* The bottom of the new column, as for any move without a place. */
+    const rank = Math.max(-1, ...rows.filter((r) => r.stage_id === move.to).map((r) => r.rank)) + 1;
+    const completedAt = isClosing(stage.category) ? (row.completed_at ?? now) : null;
+    const causeNumber = move.childId === child.id ? child.number : (byId.get(move.childId)?.number ?? 0);
+    statements.push(
+      db
+        .prepare(`UPDATE tasks SET stage_id = ?2, rank = ?3, completed_at = ?4, updated_at = ?5 WHERE id = ?1`)
+        .bind(move.id, move.to, rank, completedAt, now),
+      eventStatement(db, {
+        boardId: board.id,
+        taskId: move.id,
+        actorId: viewer.user.id,
+        kind: "task.updated",
+        before: { stageId: row.stage_id, rank: row.rank, completedAt: row.completed_at },
+        after: { stageId: move.to, rank, completedAt, followed: keyOf(causeNumber) },
+      }),
+    );
+    row.stage_id = move.to;
+    row.rank = rank;
+    row.completed_at = completedAt;
+    moved.delete(move.id);
+    moved.set(move.id, { id: move.id, key: keyOf(row.number), stageId: move.to });
+  }
+  return { statements, moved: [...moved.values()] };
+}
+
+/** A write's response: the task, and the parents that followed it when any did. */
+const written = (task: Task | null, moved: AlsoMoved[]): TaskWrite | null =>
+  task && moved.length ? { ...task, alsoMoved: moved } : task;
+
 /* ------------------------------------------------------------- routes ---- */
 
 /** POST /api/boards/:id/tasks { title, stageId?, brief?, priority?, dates, assigneeIds?, ... } */
@@ -212,6 +315,20 @@ export async function postTask(
   const rank = typeof body.rank === "number" && Number.isFinite(body.rank) ? body.rank : await bottomRank(db, stage.id);
   const id = crypto.randomUUID();
   const now = nowIso();
+  /* The number the new task will get, for the log of any parent it moves. */
+  const next = parentId
+    ? ((await db.prepare(`SELECT next_number FROM boards WHERE id = ?1`).bind(board.id).first<{ next_number: number }>())
+        ?.next_number ?? 0)
+    : 0;
+  const follow = await followStatements(
+    db,
+    viewer,
+    board,
+    stages,
+    { id, number: next },
+    { created: true, stageId: stage.id, parentId, rank },
+    [parentId],
+  );
   const assigned: NewInboxItem[] = assigneeIds.map((userId) => ({
     userId,
     kind: "assigned",
@@ -252,12 +369,13 @@ export async function postTask(
     ),
     ...labelIds.map((lid) => db.prepare(`INSERT INTO task_labels (task_id, label_id) VALUES (?1, ?2)`).bind(id, lid)),
     eventStatement(db, { boardId: board.id, taskId: id, actorId: viewer.user.id, kind: "task.created", after: { title } }),
+    ...follow.statements,
     ...inboxStatements(db, assigned),
   ]);
 
   changes.notify(await boardAudience(db, board.id), "board");
   changes.notify(inboxAudience(assigned), "inbox");
-  return json(await findTask(db, id), { status: 201 });
+  return json(written(await findTask(db, id), follow.moved), { status: 201 });
 }
 
 /** The task and its board, checked for the role the action needs. */
@@ -334,8 +452,9 @@ export async function patchTask(
   set("start_date", "startDate", startDate);
   set("due_date", "dueDate", dueDate);
 
+  const stages = await listStages(db, board.id);
   if (body.stageId !== undefined) {
-    const stage = stageIn(await listStages(db, board.id), body.stageId);
+    const stage = stageIn(stages, body.stageId);
     if (stage.id !== task.stageId) {
       set("stage_id", "stageId", stage.id);
       const closing = isClosing(stage.category);
@@ -400,24 +519,46 @@ export async function patchTask(
 
   if (sets.length === 0 && extra.length === 0) return json(task);
 
+  /* A new stage or a new parent can move parents: the one it had and the one it has now. */
+  const follow =
+    "stageId" in after || "parentId" in after
+      ? await followStatements(
+          db,
+          viewer,
+          board,
+          stages,
+          task,
+          {
+            ...("stageId" in after ? { stageId: after.stageId as string } : {}),
+            ...("parentId" in after ? { parentId: after.parentId as string | null } : {}),
+          },
+          [task.parentId, "parentId" in after ? (after.parentId as string | null) : null],
+        )
+      : { statements: [], moved: [] };
+
   sets.push(`updated_at = ?${values.length + 2}`);
   values.push(nowIso());
   await db.batch([
     db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?1`).bind(id, ...values),
     ...extra,
     eventStatement(db, { boardId: board.id, taskId: id, actorId: viewer.user.id, kind: "task.updated", before, after }),
+    ...follow.statements,
     ...inboxStatements(db, assigned),
   ]);
 
   changes.notify(await boardAudience(db, board.id), "board");
   changes.notify(inboxAudience(assigned), "inbox");
-  return json(await findTask(db, id));
+  return json(written(await findTask(db, id), follow.moved));
 }
 
 /** DELETE /api/tasks/:id: soft, so the log still has something to point at. */
 export async function deleteTask(env: Env, viewer: Viewer, id: string, changes: Changes): Promise<Response> {
   const db = env.DB;
   const { task, board } = await taskFor(env, viewer, id, "editor");
+  /* Its parent may be left with nothing open under it. */
+  const follow = await followStatements(db, viewer, board, await listStages(db, board.id), task, { deleted: true }, [
+    task.parentId,
+  ]);
   await db.batch([
     db.prepare(`UPDATE tasks SET deleted_at = ?2 WHERE id = ?1`).bind(id, nowIso()),
     /* Nothing should hang off a task that is gone. */
@@ -430,7 +571,8 @@ export async function deleteTask(env: Env, viewer: Viewer, id: string, changes: 
       kind: "task.deleted",
       before: { title: task.title },
     }),
+    ...follow.statements,
   ]);
   changes.notify(await boardAudience(db, board.id), "board");
-  return json({ ok: true });
+  return json(follow.moved.length ? { ok: true, alsoMoved: follow.moved } : { ok: true });
 }
