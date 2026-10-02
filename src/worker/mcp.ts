@@ -19,7 +19,7 @@
    ========================================================================== */
 
 import type { CalendarEvents, CalendarSetup } from "@/domain/calendar";
-import { addDays, isDate } from "@/domain/tasks";
+import { addDays, descendantIds, isDate } from "@/domain/tasks";
 import {
   LEVELS,
   MAX_BOARD_NOTES,
@@ -541,10 +541,10 @@ ${who} Today is ${today()} (UTC).${
 - **Boards.** A board is a set of tasks moving through stages, left to right. Everyone has an **inbox**: a private board only they see, where their own todos live. Other boards can be shared.
 - **Roles.** On each board the user is an owner (everything, including members and stages), an editor (tasks, labels, comments) or a viewer (reads and comments only). A tool refuses what the role does not allow.
 - **Stages and categories.** Every stage has a category, in the order work flows: backlog (parked, not committed to), todo (ready to be picked up), active (someone is on it), blocked (waiting on a person), done, cancelled. The first four are open; a task in a done or cancelled stage is closed, and moving it back to an open stage reopens it. Stage names are the board's own; the category is what they mean. A new task without a stage lands in the board's first todo stage (without one, its first open stage that is not backlog); pass stage: "backlog" to park it.
-- **Taking work.** Work from todo stages, or what is assigned to you (my_work); never pick up a backlog task unless asked to. Move a task to an active stage when you start it.
-- **Waiting on someone.** When you need an answer or a decision, comment with an @mention of the person who can give it, and move the task to the board's blocked stage (move_task { stage: "blocked" }). Once answered, move it back to an active stage and carry on. On a board without a blocked stage, just comment.
+- **Taking work.** Work from todo stages, or what is assigned to you (my_work); never pick up a backlog task unless asked to. Move a task to an active stage when you start it and to done when it is finished, so the board stays true without anyone tidying it; a parent moves with its children (active while any of them is).
+- **Waiting on someone.** When you need an answer or a decision, comment with an @mention of the person who can give it (a question only in a brief, or only in your reply to the user, reaches nobody), and move the task to the board's blocked stage (move_task { stage: "blocked" }). Once answered, move it back to an active stage and carry on. On a board without a blocked stage, just comment.
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
-- **Planning.** Any task can have a level (epic > story > task, plus milestone), a parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). All three are optional: a task without them is an ordinary task. Breaking work down means creating the pieces as tasks with parent set, never writing them as a list in the parent's brief: the board shows a task's children, and a list in a brief goes stale the moment one moves. An epic's brief says what it is for and why; its stories are its children.
+- **Planning.** Any task can have a level (epic > story > task, plus milestone), a parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). All three are optional: a task without them is an ordinary task. Breaking work down means creating the pieces as tasks with parent set, never writing them as a list in the parent's brief: the board shows a task's children, and a list in a brief goes stale the moment one moves. An epic's brief says what it is for and why; its stories are its children. list_tasks with parent lists a task's children, with under its whole subtree.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
 - **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, being @mentioned in a comment, and a new comment on a task they take part in (created, are assigned to, have commented on or been mentioned on) land there; someone a comment mentions gets only the mention. Read it with inbox, then mark_read what you have dealt with (or dismiss it). A task's notes describe the work; questions, decisions you need from someone, and status updates always go in comments, never only in your own reply or a brief. Replying in the thread reaches whoever asked; a mention is how to hand something to someone or ask a person who is not yet taking part: "@sam can you check this". A handle inside \`code\`, a \`\`\` block or a > quoted line notifies nobody.
 - **Labels** (tags like #frontend) belong to a board and are given by name; create_label adds one, update_label renames or recolours it. Priority is low, normal, high or urgent.
@@ -593,6 +593,7 @@ ${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_
 - "Ask the reviewer to look at LNCH-4" → comment_on_task { task: "LNCH-4", text: "@berker-z/reviewer can you look at this?" }
 - You need Sam to choose between two designs on LNCH-4 → comment_on_task { task: "LNCH-4", text: "@sam A or B?" }, then move_task { task: "LNCH-4", stage: "blocked" }
 - "What can I pick up on the launch board?" → list_tasks { board: "launch", stage: "todo" }
+- "What's left of the LNCH-2 epic?" → list_tasks { under: "LNCH-2" }
 - "Anything for me?" → inbox
 - "Check LNCH-4 against the spec" → read_doc { board: "LNCH", doc: "spec" }, then get_task { task: "LNCH-4" }
 - "Add to the launch board's rules: no merges on Fridays" → get_board { board: "launch" }, then set_board_notes { board: "launch", notes: the old notes plus the new line }`);
@@ -719,7 +720,7 @@ const TOOLS: Tool[] = [
     name: "list_tasks",
     title: "List tasks",
     description:
-      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, category (the stage's: backlog|todo|active|blocked|done|cancelled), status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields (level, parent, depends_on, children: a count) when set, comment count and the board's url. Filters combine.",
+      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, category (the stage's: backlog|todo|active|blocked|done|cancelled), status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields (level, parent, depends_on, children: a count) when set, comment count and the board's url. Filters combine. parent lists a task's direct children; under lists everything below it at any depth (its children, their children and so on, not the task itself), which is how to see what is left of an epic. Both refuse a key that is on none of your boards. status still applies, so pass status: \"all\" to include closed work under a task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -734,6 +735,7 @@ const TOOLS: Tool[] = [
         priority: PRIORITY,
         level: { type: "string", enum: [...LEVELS], description: "Only tasks at this level" },
         parent: { type: "string", description: "Only direct children of this task key" },
+        under: { type: "string", description: "Only tasks below this task key at any depth (its whole subtree, without the task itself)" },
         query: { type: "string", description: "Text in the title or brief" },
         limit: { type: "number", description: "Default 50, at most 200" },
       },
@@ -755,6 +757,7 @@ const TOOLS: Tool[] = [
       const day = today();
       const assignee = args.assignee;
       const parentKey = args.parent !== undefined ? String(args.parent).trim().toUpperCase() : null;
+      const underKey = args.under !== undefined ? String(args.under).trim().toUpperCase() : null;
 
       const rows = details.flatMap((d) => {
         /* A person is resolved per board, since members differ; a board they are not on has none of their tasks. */
@@ -771,6 +774,10 @@ const TOOLS: Tool[] = [
         }
         const parent = parentKey ? d.tasks.find((t) => t.key === parentKey || t.id === args.parent) : undefined;
         if (parentKey && !parent) return [];
+        /* A subtree is on one board (parents are same-board); boards without the key have none of it. */
+        const root = underKey ? d.tasks.find((t) => t.key === underKey || t.id === args.under) : undefined;
+        if (underKey && !root) return [];
+        const below = root ? descendantIds(d.tasks, root.id) : null;
         return d.tasks
           .filter((t) => {
             const s = statusOf(d, t);
@@ -785,11 +792,15 @@ const TOOLS: Tool[] = [
           .filter((t) => !priority || t.priority === priority)
           .filter((t) => level === undefined || t.level === level)
           .filter((t) => !parent || t.parentId === parent.id)
+          .filter((t) => !below || below.has(t.id))
           .filter((t) => !needle || fold(`${t.title} ${t.brief}`).includes(needle))
           .map((t) => ({ d, t }));
       });
       if (parentKey && !rows.length && !details.some((d) => d.tasks.some((t) => t.key === parentKey))) {
         throw new Error(`No task ${String(args.parent)} to list the children of.`);
+      }
+      if (underKey && !rows.length && !details.some((d) => d.tasks.some((t) => t.key === underKey))) {
+        throw new Error(`No task ${String(args.under)} to list the tasks under.`);
       }
       rows.sort((a, b) => byDue(a.t, b.t));
       const limit = typeof args.limit === "number" && args.limit > 0 ? Math.min(Math.floor(args.limit), 200) : 50;

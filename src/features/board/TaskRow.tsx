@@ -13,6 +13,29 @@ import { useLongPress } from "@/ui/useLongPress";
 
 export const TASK_DRAG_TYPE = "application/x-copland-task";
 
+/**
+ * `↑ CPL-5`: a task's parent, on a card, a list row or a Gantt label. A
+ * click scopes the board to the parent's subtree and does not open the task
+ * it sits in, so it stops the click (and Enter) from reaching the row.
+ */
+export function ParentLink({ parentKey, onClick }: { parentKey: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      onKeyDown={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+      className="text-muted hover:text-accent whitespace-nowrap"
+      title={`Show only what is under ${parentKey}`}
+    >
+      ↑ {parentKey}
+    </button>
+  );
+}
+
 const PRIORITY_MARK: Record<Task["priority"], ReactNode> = {
   urgent: <span className="text-red">!!</span>,
   high: <span className="text-orange">!</span>,
@@ -27,6 +50,10 @@ interface TaskRowProps {
   /** Left of the title: the tasks pane puts a checkbox here. */
   lead?: ReactNode;
   showKey?: boolean;
+  /** The parent's key, shown as `↑ KEY` when onParent is given too. */
+  parentKey?: string | null;
+  /** Clicking `↑ KEY`: on a board, show only what is under the parent. */
+  onParent?: () => void;
   draggable?: boolean;
   dropMarker?: boolean;
   onOpen: () => void;
@@ -36,7 +63,8 @@ interface TaskRowProps {
   onDrop?: (event: DragEvent) => void;
 }
 
-export function TaskRow({ task, members, labels = [], lead, showKey = true, draggable, dropMarker, onOpen, onLongPress, onDragOver, onDrop }: TaskRowProps) {
+export function TaskRow({ task, members, labels = [], lead, showKey = true, parentKey, onParent, draggable, dropMarker, onOpen, onLongPress, onDragOver, onDrop }: TaskRowProps) {
+  const parent = parentKey && onParent ? parentKey : null;
   const closed = task.completedAt !== null;
   const draft = isDraft(task.id);
   const press = useLongPress(draft ? undefined : onLongPress);
@@ -76,9 +104,10 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, drag
           {PRIORITY_MARK[task.priority] && <span className="mr-1.5">{PRIORITY_MARK[task.priority]}</span>}
           {task.title}
         </div>
-        {(showKey || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0) && (
+        {(showKey || parent || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0) && (
           <div className="flex flex-wrap items-center gap-x-2 mt-0.5 text-xs">
             {showKey && <span className="text-faint">{task.key}</span>}
+            {parent && <ParentLink parentKey={parent} onClick={onParent as () => void} />}
             {task.dueDate && <span className={dueClass(task.dueDate, closed)}>{shortDate(task.dueDate)}</span>}
             {task.commentCount > 0 && <span className="text-muted">¶{task.commentCount}</span>}
             {task.attachments.length > 0 && (

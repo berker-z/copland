@@ -8,7 +8,9 @@
 
    The URL carries the board key (/b/CPL), which people can read and share;
    the id comes from the boards list. ?view=list and ?view=gantt switch to
-   the other two views (ListView, GanttView) over the same data.
+   the other two views (ListView, GanttView) over the same data. The filter
+   bar (FilterBar, filters.ts) sits over all three; its state is more of the
+   query string, and each view draws the filtered board.
 
    On a touchscreen there is no HTML5 drag: a long press on a card opens
    MoveSheet instead, and on a phone the columns become a swipeable strip.
@@ -24,12 +26,14 @@ import { useRef, useState, type DragEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { ArrowLeft, BookOpen, Plus, Settings2, UserPlus, Users } from "lucide-react";
 import { rankBetween } from "@/domain/tasks";
-import type { BoardDetail, Stage } from "@/domain/types";
-import { useBoard, useBoards } from "@/lib/queries";
+import type { BoardDetail, Stage, Task } from "@/domain/types";
+import { useBoard, useBoards, useMe } from "@/lib/queries";
 import { tasksIn, useCreateTask, useUpdateTask } from "@/lib/tasks";
 import { todayLocal, toneText } from "@/ui/tone";
 import { BoardDocsModal } from "./BoardDocsModal";
 import { BoardSettingsModal } from "./BoardSettingsModal";
+import { FilterBar } from "./FilterBar";
+import { applyFilters, readFilters, writeFilters } from "./filters";
 import { GanttView } from "./GanttView";
 import { ListView } from "./ListView";
 import { MoveSheet } from "./MoveSheet";
@@ -42,15 +46,22 @@ function hasTask(event: DragEvent): boolean {
   return event.dataTransfer.types.includes(TASK_DRAG_TYPE);
 }
 
+/** A task's parent, by key, and scoping the board to it: what `↑ KEY` needs. */
+export interface Hierarchy {
+  parentKey: (task: Task) => string | null;
+  onScope: (parentKey: string) => void;
+}
+
 interface ColumnProps {
   detail: BoardDetail;
   stage: Stage;
+  hierarchy: Hierarchy;
   onOpen: (taskId: string) => void;
   onNew: (stageId: string) => void;
   onMoveMenu: (taskId: string) => void;
 }
 
-function Column({ detail, stage, onOpen, onNew, onMoveMenu }: ColumnProps) {
+function Column({ detail, stage, hierarchy, onOpen, onNew, onMoveMenu }: ColumnProps) {
   const tasks = tasksIn(detail, stage.id);
   const update = useUpdateTask(detail.board.id);
   const create = useCreateTask(detail.board.id);
@@ -120,6 +131,11 @@ function Column({ detail, stage, onOpen, onNew, onMoveMenu }: ColumnProps) {
             task={task}
             members={detail.members}
             labels={detail.labels}
+            parentKey={hierarchy.parentKey(task)}
+            onParent={() => {
+              const key = hierarchy.parentKey(task);
+              if (key) hierarchy.onScope(key);
+            }}
             draggable={canEdit}
             dropMarker={over === task.id}
             onOpen={() => onOpen(task.id)}
@@ -159,6 +175,7 @@ function Column({ detail, stage, onOpen, onNew, onMoveMenu }: ColumnProps) {
 
 interface KanbanProps {
   detail: BoardDetail;
+  hierarchy: Hierarchy;
   onOpen: (taskId: string) => void;
   onNew: (stageId: string) => void;
   onMoveMenu: (taskId: string) => void;
@@ -169,7 +186,7 @@ interface KanbanProps {
  * column most of the screen wide with the next peeking in, and a row of
  * stage chips above that shows where you are and jumps.
  */
-function Kanban({ detail, onOpen, onNew, onMoveMenu }: KanbanProps) {
+function Kanban({ detail, hierarchy, onOpen, onNew, onMoveMenu }: KanbanProps) {
   const strip = useRef<HTMLDivElement | null>(null);
   const [active, setActive] = useState(0);
 
@@ -199,7 +216,7 @@ function Kanban({ detail, onOpen, onNew, onMoveMenu }: KanbanProps) {
         className="flex-1 min-h-0 flex items-stretch gap-px overflow-x-auto snap-x snap-mandatory sm:snap-none sm:px-4 md:px-8 sm:py-4"
       >
         {detail.stages.map((stage) => (
-          <Column key={stage.id} detail={detail} stage={stage} onOpen={onOpen} onNew={onNew} onMoveMenu={onMoveMenu} />
+          <Column key={stage.id} detail={detail} stage={stage} hierarchy={hierarchy} onOpen={onOpen} onNew={onNew} onMoveMenu={onMoveMenu} />
         ))}
       </div>
     </>
@@ -222,6 +239,8 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   const [newTask, setNewTask] = useState<{ stageId?: string } | null>(null);
   const [params, setParams] = useSearchParams();
   const view = VIEWS.includes(params.get("view") as View) ? (params.get("view") as View) : "kanban";
+  const filters = readFilters(params);
+  const me = useMe();
 
   if (boards.isPending || (summary && board.isPending)) {
     return <p className="p-8 text-muted animate-pulse">loading…</p>;
@@ -239,6 +258,16 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   if (board.error) return <p className="p-8 text-red">{board.error.message}</p>;
   const detail = board.data;
   if (!detail) return null;
+
+  /* Every view draws the filtered board; modals and the move sheet get the whole one. */
+  const result = applyFilters(detail, filters, me.data?.user.id);
+  const shown: BoardDetail = { ...detail, tasks: result.tasks };
+  const setFilters = (next: typeof filters) => setParams((prev) => writeFilters(prev, next), { replace: true });
+  const byId = new Map(detail.tasks.map((t) => [t.id, t]));
+  const hierarchy: Hierarchy = {
+    parentKey: (task) => (task.parentId ? (byId.get(task.parentId)?.key ?? null) : null),
+    onScope: (key) => setFilters({ ...filters, under: key }),
+  };
 
   return (
     <div className="flex flex-col h-[calc(100dvh-2.75rem)]">
@@ -259,7 +288,17 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
           {VIEWS.map((v) => (
             <button
               key={v}
-              onClick={() => setParams(v === "kanban" ? {} : { view: v }, { replace: true })}
+              onClick={() =>
+                setParams(
+                  (prev) => {
+                    const next = new URLSearchParams(prev);
+                    if (v === "kanban") next.delete("view");
+                    else next.set("view", v);
+                    return next;
+                  },
+                  { replace: true },
+                )
+              }
               className={`tap flex-1 sm:flex-none px-2 py-0.5 transition-colors ${view === v ? "text-accent bg-raised" : "text-muted hover:text-ink"}`}
             >
               {v}
@@ -296,11 +335,13 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
         {detail.board.role === "viewer" && <span className="text-xs text-yellow">view only</span>}
       </div>
 
+      <FilterBar detail={detail} filters={filters} result={result} onChange={setFilters} />
+
       {view === "kanban" && (
-        <Kanban detail={detail} onOpen={setOpenTask} onNew={(stageId) => setNewTask({ stageId })} onMoveMenu={setMoving} />
+        <Kanban detail={shown} hierarchy={hierarchy} onOpen={setOpenTask} onNew={(stageId) => setNewTask({ stageId })} onMoveMenu={setMoving} />
       )}
-      {view === "list" && <ListView detail={detail} onOpen={setOpenTask} />}
-      {view === "gantt" && <GanttView detail={detail} onOpen={setOpenTask} />}
+      {view === "list" && <ListView detail={shown} hierarchy={hierarchy} onOpen={setOpenTask} />}
+      {view === "gantt" && <GanttView detail={shown} hierarchy={hierarchy} onOpen={setOpenTask} />}
 
       {moving && (
         <MoveSheet

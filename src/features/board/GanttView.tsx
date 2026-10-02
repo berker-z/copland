@@ -11,6 +11,10 @@
    their parent, indented. Undated tasks are listed under
    the chart so they can be opened and given dates.
 
+   It draws the filtered board (FilterBar). A task that matches when its
+   parent does not is drawn at the top level with `↑ KEY` naming the
+   parent, rather than with dimmed ancestors that the filter asked to hide.
+
    On a touchscreen the chart is read-only: bars are small targets and a
    drag would fight the page scrolling under the finger. Dates are edited in
    the task, which a tap opens.
@@ -22,6 +26,8 @@ import type { BoardDetail, Task } from "@/domain/types";
 import { tasksIn, useUpdateTask } from "@/lib/tasks";
 import { isDraft, todayLocal, toneBg } from "@/ui/tone";
 import { usePhone, useTouch } from "@/ui/useMediaQuery";
+import type { Hierarchy } from "./BoardScreen";
+import { ParentLink } from "./TaskRow";
 
 const DAY_PX = 28;
 const ROW_PX = 30;
@@ -51,15 +57,20 @@ function ordered(detail: BoardDetail): { task: Task; depth: number }[] {
   const children = new Map<string, Task[]>();
   for (const t of flat) if (t.parentId && ids.has(t.parentId)) children.set(t.parentId, [...(children.get(t.parentId) ?? []), t]);
   const out: { task: Task; depth: number }[] = [];
+  const seen = new Set<string>();
   const walk = (t: Task, depth: number) => {
+    if (seen.has(t.id)) return;
+    seen.add(t.id);
     out.push({ task: t, depth });
     for (const c of children.get(t.id) ?? []) walk(c, depth + 1);
   };
   for (const t of flat) if (!t.parentId || !ids.has(t.parentId)) walk(t, 0);
+  /* Tasks in a parent loop have no root to hang from: start them at the top, once each. */
+  for (const t of flat) walk(t, 0);
   return out;
 }
 
-export function GanttView({ detail, onOpen }: { detail: BoardDetail; onOpen: (taskId: string) => void }) {
+export function GanttView({ detail, hierarchy, onOpen }: { detail: BoardDetail; hierarchy: Hierarchy; onOpen: (taskId: string) => void }) {
   const update = useUpdateTask(detail.board.id);
   const touch = useTouch();
   const labelPx = usePhone() ? PHONE_LABEL_PX : LABEL_PX;
@@ -163,7 +174,7 @@ export function GanttView({ detail, onOpen }: { detail: BoardDetail; onOpen: (ta
           </div>
         </div>
 
-        {dated.length === 0 && <p className="px-4 py-6 text-faint text-sm">No task on this board has dates yet.</p>}
+        {dated.length === 0 && <p className="px-4 py-6 text-faint text-sm">No task shown here has dates.</p>}
 
         {dated.map(({ task, depth }) => {
           const [s, e] = shifted(task);
@@ -172,17 +183,24 @@ export function GanttView({ detail, onOpen }: { detail: BoardDetail; onOpen: (ta
           const stage = stageOf(task);
           const closed = task.completedAt !== null;
           const milestone = task.level === "milestone";
+          /* A child whose parent the filters hid sits at the top level and names its parent. */
+          const lostParent = depth === 0 ? hierarchy.parentKey(task) : null;
           return (
             <div key={task.id} className="flex border-b border-divider group/row hover:bg-raised/40" style={{ height: ROW_PX }}>
-              <button
-                onClick={() => !isDraft(task.id) && onOpen(task.id)}
-                className="shrink-0 sticky left-0 z-[5] bg-surface group-hover/row:bg-raised border-r border-divider text-left px-3 truncate text-sm"
+              <div
+                className="shrink-0 sticky left-0 z-[5] flex items-center gap-2 bg-surface group-hover/row:bg-raised border-r border-divider pr-3 text-sm"
                 style={{ width: labelPx, paddingLeft: 12 + depth * 14 }}
-                title={task.title}
               >
-                <span className="text-faint mr-2">{task.key}</span>
-                <span className={closed ? "text-muted line-through decoration-faint" : "text-ink"}>{task.title}</span>
-              </button>
+                <button onClick={() => !isDraft(task.id) && onOpen(task.id)} className="min-w-0 flex-1 text-left truncate" title={task.title}>
+                  <span className="text-faint mr-2">{task.key}</span>
+                  <span className={closed ? "text-muted line-through decoration-faint" : "text-ink"}>{task.title}</span>
+                </button>
+                {lostParent && (
+                  <span className="shrink-0 text-xs">
+                    <ParentLink parentKey={lostParent} onClick={() => hierarchy.onScope(lostParent)} />
+                  </span>
+                )}
+              </div>
               <div className="relative" style={{ width: days * DAY_PX }}>
                 {/* Today. */}
                 <div className="absolute inset-y-0 w-px bg-accent/40" style={{ left: daysBetween(from, today) * DAY_PX + DAY_PX / 2 }} />

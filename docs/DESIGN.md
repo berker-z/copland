@@ -131,6 +131,18 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   are fixed columns: avatar, handle, a fixed-width role, and a fixed
   right-aligned slot for leave/remove that stays even when empty, so every
   row lines up. Inviting by email sits behind a quiet link at the bottom.
+- `src/features/board/FilterBar.tsx`: one `bg-surface` row under the board
+  header, over every view. A search input in the standard style (`/`
+  focuses it, Escape clears it), then chips that read like the view switch
+  (`text-accent bg-raised` on, `text-muted` off): levels, labels (in their
+  tone when on, `text-faint` off), an assignee select, `under…` (a
+  search-and-pick dropdown of tasks, those with children first) which
+  becomes an `under KEY ×` chip in `text-accent` (`text-red` when the key is
+  not on the board), and `+n closed before 14d`. When anything is hidden,
+  `n of m shown` and `clear` sit at the right in `text-xs`. On a phone the
+  search and a `filters n` toggle stay; the rest folds under them. A card's
+  or list row's parent is a `↑ KEY` in `text-muted` (accent on hover) that
+  scopes the board to that parent instead of opening the task.
 - `src/features/board/BoardDocsModal.tsx`: a board's notes and docs, behind
   the book icon in the board header, which everyone on the board sees (the
   gear is owners only, and editors write these). Notes read as plain

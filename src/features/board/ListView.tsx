@@ -7,9 +7,10 @@
 import type { BoardDetail } from "@/domain/types";
 import { tasksIn } from "@/lib/tasks";
 import { dueClass, isDraft, PRIORITY_CLASS, shortDate, toneText } from "@/ui/tone";
+import type { Hierarchy } from "./BoardScreen";
+import { ParentLink } from "./TaskRow";
 
-
-export function ListView({ detail, onOpen }: { detail: BoardDetail; onOpen: (taskId: string) => void }) {
+export function ListView({ detail, hierarchy, onOpen }: { detail: BoardDetail; hierarchy: Hierarchy; onOpen: (taskId: string) => void }) {
   const name = (id: string) => detail.members.find((m) => m.user.id === id)?.user.handle ?? "?";
 
   return (
@@ -38,6 +39,7 @@ export function ListView({ detail, onOpen }: { detail: BoardDetail; onOpen: (tas
               </tr>
               {tasks.map((task) => {
                 const closed = task.completedAt !== null;
+                const parentKey = hierarchy.parentKey(task);
                 return (
                   <tr
                     key={task.id}
@@ -48,6 +50,11 @@ export function ListView({ detail, onOpen }: { detail: BoardDetail; onOpen: (tas
                     <td className={`px-3 py-1.5 ${closed ? "text-muted line-through decoration-faint" : "text-ink"}`}>
                       {task.level && <span className="text-faint mr-1.5">[{task.level}]</span>}
                       {task.title}
+                      {parentKey && (
+                        <span className="ml-2 text-xs no-underline inline-block">
+                          <ParentLink parentKey={parentKey} onClick={() => hierarchy.onScope(parentKey)} />
+                        </span>
+                      )}
                     </td>
                     <td className={`px-3 py-1.5 ${PRIORITY_CLASS[task.priority]}`}>{task.priority}</td>
                     <td className="px-3 py-1.5 text-muted hidden md:table-cell">{task.startDate ? shortDate(task.startDate) : ""}</td>

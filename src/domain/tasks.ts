@@ -64,3 +64,25 @@ export function addDays(date: string, n: number): string {
 export function daysBetween(a: string, b: string): number {
   return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DAY_MS);
 }
+
+/* ------------------------------------------------------------- hierarchy -- */
+
+/**
+ * Every task under `rootId` at any depth, by parent links, not the root
+ * itself. A parent chain that loops (the Worker refuses one, but old rows or
+ * a race could leave it) is walked once: a task already seen is not walked
+ * again.
+ */
+export function descendantIds<T extends { id: string; parentId: string | null }>(tasks: T[], rootId: string): Set<string> {
+  const children = new Map<string, string[]>();
+  for (const t of tasks) if (t.parentId) children.set(t.parentId, [...(children.get(t.parentId) ?? []), t.id]);
+  const out = new Set<string>();
+  const queue = [...(children.get(rootId) ?? [])];
+  while (queue.length) {
+    const id = queue.pop() as string;
+    if (id === rootId || out.has(id)) continue;
+    out.add(id);
+    queue.push(...(children.get(id) ?? []));
+  }
+  return out;
+}
