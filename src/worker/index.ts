@@ -60,10 +60,11 @@ import { deleteComment, getComments, getTaskEvents, patchComment, postComment } 
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
 import { deleteTask, getTask, patchTask, postTask } from "./routes/tasks";
 import { getMyWork } from "./routes/work";
+import { deleteClaim, getRun, postClaim, postRun, postRunFinish } from "./routes/runs";
 import { getInbox, postInboxDismiss, postInboxRead } from "./routes/inbox";
 import { deleteToken, getTokens, postToken } from "./routes/tokens";
 import { handleIntegration, isIntegrationPath } from "./integrations";
-import { bearerFrom, requireWriteScope, touchStatement, viaContext } from "./tokens";
+import { asAccess, bearerFrom, requireWriteScope, touchStatements } from "./tokens";
 import { getMarketExtras } from "./routes/markets";
 import { deleteNote, getNotes, patchNote, postNote } from "./routes/notes";
 import { deleteAvatar, getAvatar, patchMe, putAvatar } from "./routes/profile";
@@ -257,6 +258,16 @@ const api = new Router<Ctx>()
   .on("DELETE", "/api/comments/:id", ({ env, viewer, changes }, { id }) => deleteComment(env, viewer, id, changes))
   .on("GET", "/api/tasks/:id/events", ({ env, viewer }, { id }) => getTaskEvents(env, viewer, id))
 
+  /* Runs and claims (routes/runs.ts). Not mine(grant): a run is its principal's
+     own, an agent's included, and claims are board work, checked by requireBoard. */
+  .on("POST", "/api/runs", ({ request, env, viewer, changes }) => postRun(request, env, viewer, changes))
+  .on("GET", "/api/runs/:id", ({ env, viewer }, { id }) => getRun(env, viewer, id))
+  .on("POST", "/api/runs/:id/finish", ({ request, env, viewer, changes }, { id }) =>
+    postRunFinish(request, env, viewer, id, changes),
+  )
+  .on("POST", "/api/tasks/:id/claim", ({ env, viewer, changes }, { id }) => postClaim(env, viewer, id, changes))
+  .on("DELETE", "/api/tasks/:id/claim", ({ env, viewer, changes }, { id }) => deleteClaim(env, viewer, id, changes))
+
   .on("POST", "/api/boards/:id/stages", ({ request, env, viewer, changes }, { id }) =>
     postStage(request, env, viewer, id, changes),
   )
@@ -358,8 +369,8 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext, url:
   const viewer = await resolveViewer(request, env);
   const run = () => runApi(env, ctx, request, url, viewer, request.headers.get(TAB_HEADER));
   if (!viewer.access) return run();
-  ctx.waitUntil(touchStatement(env.DB, viewer.access.tokenId).run());
-  return viaContext.run({ via: viewer.access.via }, run);
+  ctx.waitUntil(env.DB.batch(touchStatements(env.DB, viewer.access)));
+  return asAccess(viewer.access, run);
 }
 
 export default {

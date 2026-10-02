@@ -38,6 +38,12 @@ function describe(event: TaskEvent, detail: BoardDetail): string {
       return "deleted it";
     case "comment.added":
       return "commented";
+    case "task.claimed": {
+      /* A run took it (claim_task): maybe assigning it and moving it to an active stage. */
+      const stageId = event.after?.stageId;
+      const stage = typeof stageId === "string" ? detail.stages.find((s) => s.id === stageId) : undefined;
+      return stage ? `claimed it, moving it to ${stage.name}` : "claimed it";
+    }
     case "task.updated": {
       const after = event.after ?? {};
       if (typeof after.stageId === "string") {
@@ -169,7 +175,8 @@ export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: 
               <span className="text-faint w-14 shrink-0">{when(e.createdAt)}</span>
               <span className="text-muted">
                 <span className="text-ink">{e.actorHandle ?? "someone"}</span>
-                {e.via && <span className="text-faint"> via {e.via}</span>} {describe(e, detail)}
+                {e.via && <span className="text-faint"> via {e.via}</span>}
+                {e.run && <span className="text-faint"> · run {e.run}</span>} {describe(e, detail)}
               </span>
             </li>
           ))}

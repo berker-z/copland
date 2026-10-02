@@ -14,6 +14,7 @@
    handle joined in, newest first.
    ========================================================================== */
 
+import { shortRunId } from "@/domain/runs";
 import type { Comment, TaskEvent, Viewer } from "@/domain/types";
 import { requireBoard } from "../access";
 import type { Env } from "../env";
@@ -186,7 +187,7 @@ export async function deleteComment(env: Env, viewer: Viewer, id: string, change
 export async function getTaskEvents(env: Env, viewer: Viewer, taskId: string) {
   await boardOfTask(env.DB, viewer, taskId);
   const { results } = await env.DB.prepare(
-    `SELECT e.id, e.kind, u.handle AS actor_handle, e.before, e.after, e.via, e.created_at
+    `SELECT e.id, e.kind, u.handle AS actor_handle, e.before, e.after, e.via, e.run_id, e.created_at
        FROM events e LEFT JOIN users u ON u.id = e.actor_id
       WHERE e.task_id = ?1 ORDER BY e.created_at DESC LIMIT 100`,
   )
@@ -198,6 +199,7 @@ export async function getTaskEvents(env: Env, viewer: Viewer, taskId: string) {
       before: string | null;
       after: string | null;
       via: string | null;
+      run_id: string | null;
       created_at: string;
     }>();
   const events: TaskEvent[] = results.map((r) => ({
@@ -207,6 +209,7 @@ export async function getTaskEvents(env: Env, viewer: Viewer, taskId: string) {
     before: r.before ? (JSON.parse(r.before) as Record<string, unknown>) : null,
     after: r.after ? (JSON.parse(r.after) as Record<string, unknown>) : null,
     via: r.via,
+    run: r.run_id ? shortRunId(r.run_id) : null,
     createdAt: r.created_at,
   }));
   return json(events);

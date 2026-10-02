@@ -15,25 +15,45 @@
    The history label rides in an AsyncLocalStorage for the length of the
    request (viaContext), so repo/tasks.ts eventStatement can stamp every
    event the request writes without each route passing it along.
+
+   A run's secret ("cplr_", routes/runs.ts) is a token too: it resolves
+   through the token that started the run, so it has exactly that token's
+   principal and scope, plus the run, which rides along in viaContext the
+   same way and lands on every event as run_id. It stops resolving the
+   moment the run ends, or that token is revoked or expires.
    ========================================================================== */
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { clientLabel } from "@/domain/clients";
+import { RUN_LEASE_MS } from "@/domain/runs";
 import type { ApiAccess, ApiToken, ApiTokenScope, Viewer } from "@/domain/types";
 import { HttpError, nowIso, randomToken, sha256Hex } from "./http";
+import { runTouchStatements } from "./repo/runs";
 import { findUserById, type UserRow } from "./repo/users";
 
 export const TOKEN_PREFIX = "cpl_";
+/** A run's secret. Not "cpl_…", so a lookup knows which table to ask. */
+export const RUN_PREFIX = "cplr_";
 
 /** OAuth access tokens are short-ish; the refresh token keeps the connection. */
 export const OAUTH_ACCESS_SECONDS = 7 * 24 * 3600;
 export const OAUTH_REFRESH_SECONDS = 90 * 24 * 3600;
 
-export const viaContext = new AsyncLocalStorage<{ via: string }>();
+const viaContext = new AsyncLocalStorage<{ via: string; runId: string | null }>();
+
+/** Run fn as a token's request: its events say what made them, and which run. */
+export function asAccess<T>(access: ApiAccess, fn: () => T): T {
+  return viaContext.run({ via: access.via, runId: access.runId ?? null }, fn);
+}
 
 /** What made the current request's changes, when it was not the web app. */
 export function currentVia(): string | null {
   return viaContext.getStore()?.via ?? null;
+}
+
+/** The run the current request came through, if any. */
+export function currentRun(): string | null {
+  return viaContext.getStore()?.runId ?? null;
 }
 
 const inSeconds = (s: number) => new Date(Date.now() + s * 1000).toISOString();
@@ -84,11 +104,12 @@ function viaLabel(row: Pick<TokenRow, "client" | "name">): string {
   return row.client ? clientLabel(row.client) : row.name;
 }
 
-/** A presented secret → its live, unexpired token and a live user, or null. */
+/** A presented secret → its live, unexpired token (or running run) and a live user, or null. */
 export async function tokenAccess(
   db: D1Database,
   secret: string,
 ): Promise<{ user: UserRow; access: ApiAccess } | null> {
+  if (secret.startsWith(RUN_PREFIX)) return runAccess(db, secret);
   if (!secret.startsWith(TOKEN_PREFIX)) return null;
   const row = await db
     .prepare(
@@ -104,23 +125,72 @@ export async function tokenAccess(
   return { user, access: { tokenId: row.id, kind: row.kind, scope: row.scope, via: viaLabel(row) } };
 }
 
-/** last_used_at, at most every five minutes: a busy agent should not write per call. */
-export function touchStatement(db: D1Database, tokenId: string): D1PreparedStatement {
-  return db
+/**
+ * A run's secret: the run must be running and heard from within the lease
+ * (a stale run's secret is dead, so a run that is never finished does not
+ * leave a live credential behind), and the token that started it
+ * still good (not revoked, not expired, its user live). What it resolves to
+ * is that token's, with the run added.
+ */
+async function runAccess(db: D1Database, secret: string): Promise<{ user: UserRow; access: ApiAccess } | null> {
+  const row = await db
     .prepare(
-      `UPDATE api_tokens SET last_used_at = ?2
-        WHERE id = ?1 AND (last_used_at IS NULL OR last_used_at < ?3)`,
+      `SELECT ${TOKEN_COLUMNS}, r.id AS run_id, r.client AS run_client
+         FROM runs r
+         JOIN api_tokens t ON t.id = r.token_id AND t.user_id = r.user_id
+         JOIN users u ON u.id = r.user_id AND u.disabled_at IS NULL
+        WHERE r.token_hash = ?1 AND r.status = 'running' AND r.last_seen_at > ?3
+          AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?2)`,
     )
-    .bind(tokenId, nowIso(), inSeconds(-5 * 60));
+    .bind(await sha256Hex(secret), nowIso(), new Date(Date.now() - RUN_LEASE_MS).toISOString())
+    .first<TokenRow & { run_id: string; run_client: string | null }>();
+  if (!row) return null;
+  const user = await findUserById(db, row.user_id);
+  if (!user) return null;
+  return {
+    user,
+    access: {
+      tokenId: row.id,
+      kind: row.kind,
+      scope: row.scope,
+      via: row.run_client ? clientLabel(row.run_client) : viaLabel(row),
+      runId: row.run_id,
+    },
+  };
 }
 
-/** The MCP client's own name ("claude-code"), from its initialize call. */
-export async function setClient(db: D1Database, tokenId: string, client: string): Promise<void> {
-  await db.prepare(`UPDATE api_tokens SET client = ?2 WHERE id = ?1`).bind(tokenId, client.trim().slice(0, 60)).run();
+/**
+ * What a request with a token keeps fresh, to run under waitUntil:
+ * last_used_at at most every five minutes (a busy agent should not write per
+ * call), and for a run its last_seen_at and its claims (repo/runs.ts).
+ */
+export function touchStatements(db: D1Database, access: ApiAccess): D1PreparedStatement[] {
+  return [
+    db
+      .prepare(
+        `UPDATE api_tokens SET last_used_at = ?2
+          WHERE id = ?1 AND (last_used_at IS NULL OR last_used_at < ?3)`,
+      )
+      .bind(access.tokenId, nowIso(), inSeconds(-5 * 60)),
+    ...(access.runId ? runTouchStatements(db, access.runId) : []),
+  ];
 }
 
-async function mint(): Promise<{ secret: string; hash: string }> {
-  const secret = TOKEN_PREFIX + randomToken();
+/**
+ * The MCP client's own name ("claude-code"), from its initialize call. A
+ * run's goes on the run, and only when whoever started it did not say.
+ */
+export async function setClient(db: D1Database, access: ApiAccess, client: string): Promise<void> {
+  const name = client.trim().slice(0, 60);
+  if (access.runId) {
+    await db.prepare(`UPDATE runs SET client = ?2 WHERE id = ?1 AND client IS NULL`).bind(access.runId, name).run();
+    return;
+  }
+  await db.prepare(`UPDATE api_tokens SET client = ?2 WHERE id = ?1`).bind(access.tokenId, name).run();
+}
+
+export async function mint(prefix = TOKEN_PREFIX): Promise<{ secret: string; hash: string }> {
+  const secret = prefix + randomToken();
   return { secret, hash: await sha256Hex(secret) };
 }
 

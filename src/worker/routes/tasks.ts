@@ -17,6 +17,10 @@
    or deletes one moves the parents above it in the same batch, logged on
    each parent as the same principal's change, with `followed` naming the
    child. The response lists them under alsoMoved.
+
+   A run's claim on a task (routes/runs.ts) does not survive the task
+   closing, being deleted, or the claimer coming off its assignees: every
+   write here ends with releaseClaimsStatement for the board.
    ========================================================================== */
 
 import {
@@ -46,6 +50,7 @@ import type { Changes } from "../live";
 import { agentsAmong } from "../repo/agents";
 import { inboxAudience, inboxStatements, type NewInboxItem } from "../repo/inbox";
 import { boardAudience } from "../repo/boards";
+import { releaseClaimsStatement } from "../repo/runs";
 import { bottomRank, eventStatement, findTask, listStages } from "../repo/tasks";
 
 /* ------------------------------------------------------------ parsing ---- */
@@ -95,7 +100,7 @@ function stageIn(stages: Stage[], id: unknown): Stage {
  * other agents), unless the owner opened it to the board's members.
  * Unassigning, or keeping an assignment someone else made, needs nothing.
  */
-async function requireAssignable(
+export async function requireAssignable(
   db: D1Database,
   viewer: Viewer,
   boardId: string,
@@ -191,7 +196,7 @@ interface FollowRow {
  * the change, with `followed` naming the child it followed, which is what
  * the history shows as automatic.
  */
-async function followStatements(
+export async function followStatements(
   db: D1Database,
   viewer: Viewer,
   board: BoardSummary,
@@ -259,7 +264,7 @@ async function followStatements(
 }
 
 /** A write's response: the task, and the parents that followed it when any did. */
-const written = (task: Task | null, moved: AlsoMoved[]): TaskWrite | null =>
+export const written = (task: Task | null, moved: AlsoMoved[]): TaskWrite | null =>
   task && moved.length ? { ...task, alsoMoved: moved } : task;
 
 /* ------------------------------------------------------------- routes ---- */
@@ -379,7 +384,7 @@ export async function postTask(
 }
 
 /** The task and its board, checked for the role the action needs. */
-async function taskFor(env: Env, viewer: Viewer, id: string, role: "viewer" | "editor") {
+export async function taskFor(env: Env, viewer: Viewer, id: string, role: "viewer" | "editor") {
   const task = await findTask(env.DB, id);
   if (!task) throw notFound("No such task");
   /* Not a member reads as not found, same as for boards. */
@@ -544,6 +549,7 @@ export async function patchTask(
     eventStatement(db, { boardId: board.id, taskId: id, actorId: viewer.user.id, kind: "task.updated", before, after }),
     ...follow.statements,
     ...inboxStatements(db, assigned),
+    releaseClaimsStatement(db, board.id),
   ]);
 
   changes.notify(await boardAudience(db, board.id), "board");
@@ -572,6 +578,7 @@ export async function deleteTask(env: Env, viewer: Viewer, id: string, changes: 
       before: { title: task.title },
     }),
     ...follow.statements,
+    releaseClaimsStatement(db, board.id),
   ]);
   changes.notify(await boardAudience(db, board.id), "board");
   return json(follow.moved.length ? { ok: true, alsoMoved: follow.moved } : { ok: true });

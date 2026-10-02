@@ -57,6 +57,9 @@ docs/DESIGN.md under Touch.
       not in a browser: open the book icon on a board, write notes, drop a
       .md and a PDF, open both, describe one, delete one, and look at it as
       a viewer.
+- [ ] Runs and claims (COPL-7, COPL-8) were tested through the API and `/mcp`;
+      in the browser only the card marker and the history line were looked
+      at. The runs list on an agent's settings page hasn't been seen.
 - [ ] Boards from before migration 0012 got a backlog stage but no blocked
       one, so agents there can only comment when they need an answer. Add a
       blocked stage by hand in board settings where agents work.
@@ -64,7 +67,8 @@ docs/DESIGN.md under Touch.
 ## Later
 
 - [ ] Agents, step 5: the daemon that watches an agent's inbox and starts its
-      runtime, with runs and claims. Order and reasons: docs/DIRECTION.md.
+      runtime. Runs and claims are in (COPL-7, COPL-8); it starts a run,
+      claims, launches, finishes. Order and reasons: docs/DIRECTION.md.
 - [ ] Data export: everything a person has, as one download from settings.
 - [ ] Mail (v0.2): IMAP/JMAP first, narrow read-only grants for agents.
 - [ ] GitHub on boards: PRs that mention a task key show up on the task, a
@@ -199,3 +203,11 @@ docs/DESIGN.md under Touch.
   Gantt label and lane header say where a task sits (task `··●`, story
   `·●●`, epic `●●●`, a diamond for a milestone, nothing without a level);
   the level filter chips carry it too. `src/ui/LevelPill.tsx`
+- Runs and claims (COPL-7, COPL-8): `POST /api/runs` with a token gives a
+  run and its own secret, which acts as the same principal and scope and
+  stamps `run_id` on events ("via Codex · run 8f31"). One ten-minute lease,
+  nothing sweeps: a quiet run reads as stale and its claims lapse. One live
+  claim per task (`claim_task`): assigns an unassigned task, moves it to
+  active, parents follow, and two racing runs can't both win. Released by
+  finishing, closing, unassigning, pausing. MCP: `claim_task`,
+  `release_task`, `finish_run`, `whoami` shows the run. Migration 0015

@@ -4,6 +4,8 @@
    rules.
    ========================================================================== */
 
+import type { RunStatus } from "./runs";
+
 export interface User {
   id: string;
   /** A person, or an agent acting for one (docs/AGENT-IDENTITIES.md). */
@@ -121,9 +123,20 @@ export interface Task {
   dependsOn: string[];
   commentCount: number;
   attachments: Attachment[];
+  /** A run working on it right now (routes/runs.ts), or null. Only live claims are sent. */
+  claim: TaskClaim | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** A run's live hold on a task: whose run, which run, and until when unless renewed. */
+export interface TaskClaim {
+  userId: string;
+  runId: string;
+  /** "8f31": how the run is named to people. */
+  run: string;
+  until: string;
 }
 
 /**
@@ -233,6 +246,8 @@ export interface TaskEvent {
   after: Record<string, unknown> | null;
   /** What made the change when it was not the web app ("Claude"). */
   via: string | null;
+  /** The run it came from ("8f31"), when it came through a run's credential. */
+  run: string | null;
   createdAt: string;
 }
 
@@ -268,7 +283,31 @@ export interface Agent {
   /** The boards it is on, at the role it was given (it acts at most at yours). */
   boards: { boardId: string; role: BoardRole }[];
   tokens: ApiToken[];
+  /** Its latest runs, newest first. */
+  runs: Run[];
   createdAt: string;
+}
+
+/** One working session of a principal (routes/runs.ts). */
+export interface Run {
+  id: string;
+  /** "8f31". */
+  short: string;
+  /** The program doing the work, as people say it ("Codex"), when known. */
+  client: string | null;
+  /** stale: still running on paper, but not heard from for longer than the lease. */
+  status: RunStatus;
+  startedAt: string;
+  lastSeenAt: string;
+  endedAt: string | null;
+  /** Keys of the tasks it holds a live claim on. */
+  claims: string[];
+}
+
+/** POST /api/runs answers with the run's secret once; only its hash is kept. */
+export interface StartedRun {
+  run: Run;
+  secret: string;
 }
 
 /** POST /api/tokens answers with the secret once; only its hash is kept. */
@@ -284,6 +323,8 @@ export interface ApiAccess {
   scope: ApiTokenScope;
   /** What the history calls it: "Claude", "Claude Code", or the token's name. */
   via: string;
+  /** Set when the secret was a run's (routes/runs.ts); the token above is the one that started it. */
+  runId?: string;
 }
 
 /* ----------------------------------------------------------- attachments -- */

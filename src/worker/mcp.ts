@@ -20,6 +20,7 @@
 
 import type { CalendarEvents, CalendarSetup } from "@/domain/calendar";
 import { NOTE_CONTENT_MAX, NOTE_NAME_MAX, type Note } from "@/domain/panes";
+import { RUN_ENDINGS, RUN_LEASE_MS, shortRunId } from "@/domain/runs";
 import { addDays, descendantIds, isDate } from "@/domain/tasks";
 import {
   LEVELS,
@@ -40,6 +41,7 @@ import {
   type Me,
   type MyWork,
   type Priority,
+  type Run,
   type Stage,
   type StageCategory,
   type Task,
@@ -53,7 +55,7 @@ export type ApiCall = <T>(method: string, path: string, body?: unknown) => Promi
 
 const SUPPORTED_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 /** The tool interface's version, for serverInfo. Bump when tools change shape. */
-const SERVER_VERSION = "1.2.0";
+const SERVER_VERSION = "1.3.0";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -74,7 +76,7 @@ Call the guide tool once before your first change: it explains every board the u
 
 - Tasks are identified by keys like CPL-12 (board key + number), case-insensitive.
 - The user's inbox is their private board; create_task puts a task there when no board is given.
-- A stage's category says what it means: backlog (parked; leave it unless asked), todo (ready to pick up), active (being worked on), blocked (waiting on a person) are open; done and cancelled close a task. Take work from todo stages or what is assigned to you.
+- A stage's category says what it means: backlog (parked; leave it unless asked), todo (ready to pick up), active (being worked on), blocked (waiting on a person) are open; done and cancelled close a task. Take work from todo stages or what is assigned to you. Start a task with claim_task when this connection is a run (whoami says); otherwise assign yourself and move it to an active stage.
 - Dates are YYYY-MM-DD. People are given by handle (@sam or sam) or email, stages and labels by name; "me" is the connected user.
 - Pass only the arguments a tool lists, with the types it lists: an unknown or mistyped argument is refused, never ignored.
 - Prefer list_tasks with filters, or my_work, over fetching whole boards.
@@ -446,6 +448,8 @@ function summarize(detail: BoardDetail, task: Task, origin: string) {
     ...(task.parentId ? { parent: keyOf(task.parentId) } : {}),
     ...(task.dependsOn.length ? { depends_on: task.dependsOn.map(keyOf) } : {}),
     ...(children ? { children } : {}),
+    /* A run is on it right now (claim_task). */
+    ...(task.claim ? { claimed_by: person(task.claim.userId), run: task.claim.run } : {}),
     comments: task.commentCount,
     url: `${origin}/b/${detail.board.key}`,
   };
@@ -590,9 +594,12 @@ function guide(details: BoardDetail[], ctx: Ctx): string {
           : `Anyone on a board you are on can assign you work, so weigh a request by who made it`
       }.`
     : `You are connected as **@${v.user.handle}** (${v.user.email}), with ${scope}. You act as them: on each board you can do exactly what their role there allows, and every change you make shows in the task's history as "${v.user.handle} via ${via}".`;
+  const run = v.access?.runId
+    ? ` This connection is **run ${shortRunId(v.access.runId)}**: claim_task works, everything you do is recorded as part of the run, and finish_run ends it.`
+    : " This connection is not a run, so claim_task refuses: to take a task, assign yourself and move it to an active stage.";
   out.push(`# Copland: a guide for AI assistants
 
-${who} Today is ${today()} (UTC).${
+${who}${run} Today is ${today()} (UTC).${
     v.agent?.description ? `\n\n## Your job\n\n@${v.agent.owner.handle} describes what you are for:\n\n${quote(v.agent.description)}` : ""
   }`);
 
@@ -601,8 +608,9 @@ ${who} Today is ${today()} (UTC).${
 - **Boards.** A board is a set of tasks moving through stages, left to right. Everyone has an **inbox**: a private board only they see, where their own todos live. Other boards can be shared.
 - **Roles.** On each board the user is an owner (everything, including members and stages), an editor (tasks, labels, comments) or a viewer (reads and comments only). A tool refuses what the role does not allow.
 - **Stages and categories.** Every stage has a category, in the order work flows: backlog (parked, not committed to), todo (ready to be picked up), active (someone is on it), blocked (waiting on a person), done, cancelled. The first four are open; a task in a done or cancelled stage is closed, and moving it back to an open stage reopens it. Stage names are the board's own; the category is what they mean. A new task without a stage lands in the board's first todo stage (without one, its first open stage that is not backlog); pass stage: "backlog" to park it.
-- **Taking work.** Work from todo stages, or what is assigned to you (my_work); never pick up a backlog task unless asked to. Work agreed in conversation goes on the board as tasks before you build it, not only into your reply. Move a task to an active stage when you start it and to done when it is delivered (shipped, sent, live; not merely drafted), so the board stays true without anyone tidying it. Move the tasks you work on, not their parents: a parent follows its children by itself. When a child goes active or blocked, a parent in backlog, todo or a closed stage moves to the board's first active stage; when every child not parked in backlog is closed and at least one is done, an open parent moves to the first done stage; a child back in todo reopens a closed parent to todo. It carries up the tree (a task can move its story, and the story its epic), and the tool's response lists those parents under also_moved. A child parked in backlog does not hold its parent open and is left where it is. Children that are all cancelled leave the parent alone, and a parent already active or blocked is not moved back. Move a parent by hand only to correct it; it stays there until one of its children changes again.
+- **Taking work.** Work from todo stages, or what is assigned to you (my_work); never pick up a backlog task unless asked to. Work agreed in conversation goes on the board as tasks before you build it, not only into your reply. When you start a task, take it with claim_task: it assigns it to you if nobody has it, moves it to the board's first active stage, and shows everyone that a run of yours is on it. claim_task needs a run (see Runs and claims); without one, assign yourself (update_task assignees ["me"]) and move the task to an active stage instead. Move it to done when it is delivered (shipped, sent, live; not merely drafted), so the board stays true without anyone tidying it. Move the tasks you work on, not their parents: a parent follows its children by itself. When a child goes active or blocked, a parent in backlog, todo or a closed stage moves to the board's first active stage; when every child not parked in backlog is closed and at least one is done, an open parent moves to the first done stage; a child back in todo reopens a closed parent to todo. It carries up the tree (a task can move its story, and the story its epic), and the tool's response lists those parents under also_moved. A child parked in backlog does not hold its parent open and is left where it is. Children that are all cancelled leave the parent alone, and a parent already active or blocked is not moved back. Move a parent by hand only to correct it; it stays there until one of its children changes again.
 - **Waiting on someone.** When you need an answer or a decision, comment with an @mention of the person who can give it (a question only in a brief, or only in your reply to the user, reaches nobody), and move the task to the board's blocked stage (move_task { stage: "blocked" }). Once answered, move it back to an active stage and carry on. On a board without a blocked stage, just comment.
+- **Runs and claims.** A run is one working session of a principal. Whatever launched you (a daemon, a script) may have started one and connected you through it; whoami says so. Every call through a run keeps it alive and goes into the task history with it ("dev via Codex · run 8f31"); a run not heard from for ${RUN_LEASE_MS / 60_000} minutes shows as stale. A claim is a run's hold on a task, so two runs never work the same one: a task has at most one live claim, claim_task refuses while another run holds it, and refuses a task assigned to someone other than you. A claim lasts while your run keeps calling (any call renews it) and ends by itself when the run goes quiet for ${RUN_LEASE_MS / 60_000} minutes or ends, the task closes, or you come off its assignees; release_task lets go of one without closing the task. A summary's claimed_by and run say who is on a task right now. Blocked is not crashed: when you need an answer, comment with an @mention, move the task to blocked, and you may end your run with finish_run; the task stays assigned to you, and a later run picks it up again with claim_task once answered. finish_run is a connection's last call: after it, the run's credential stops working.
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
 - **Planning.** Any task can have a level (epic > story > task, plus milestone), a parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). All three are optional: a task without them is an ordinary task. Breaking work down means creating the pieces as tasks with parent set, never writing them as a list in the parent's brief: the board shows a task's children, and a list in a brief goes stale the moment one moves. An epic's brief says what it is for and why; its stories are its children. list_tasks with parent lists a task's children, with under its whole subtree.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
@@ -657,6 +665,7 @@ ${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_
 - "Ask the reviewer to look at LNCH-4" → comment_on_task { task: "LNCH-4", text: "@berker-z/reviewer can you look at this?" }
 - You need Sam to choose between two designs on LNCH-4 → comment_on_task { task: "LNCH-4", text: "@sam A or B?" }, then move_task { task: "LNCH-4", stage: "blocked" }
 - "What can I pick up on the launch board?" → list_tasks { board: "launch", stage: "todo" }
+- Starting on LNCH-4 → claim_task { task: "LNCH-4" }; without a run, update_task { task: "LNCH-4", assignees: ["me"], stage: "active" }
 - "What's left of the LNCH-2 epic?" → list_tasks { under: "LNCH-2" }
 - "Anything for me?" → inbox
 - "Check LNCH-4 against the spec" → read_doc { board: "LNCH", doc: "spec" }, then get_task { task: "LNCH-4" }
@@ -704,13 +713,15 @@ const TOOLS: Tool[] = [
     name: "whoami",
     title: "Who am I",
     description:
-      "Who this connection acts as: a person (handle, email, whether they are an instance admin) or one of their agents (handle \"owner/name\" and agent_of, the person it acts for); the inbox's board key (for an agent, its owner's inbox if it was added there, else null), how many boards they are on, and access (\"read and write\" or \"read-only\": a read-only connection cannot change anything).",
+      "Who this connection acts as: a person (handle, email, whether they are an instance admin) or one of their agents (handle \"owner/name\" and agent_of, the person it acts for); the inbox's board key (for an agent, its owner's inbox if it was added there, else null), how many boards they are on, access (\"read and write\" or \"read-only\": a read-only connection cannot change anything), and run: the run this connection belongs to (id, status, since, the tasks it has claimed), or null when it is not a run and claim_task refuses.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(_args, ctx) {
-      const [me, boards] = await Promise.all([
+      const runId = ctx.viewer.access?.runId;
+      const [me, boards, run] = await Promise.all([
         ctx.call<Me>("GET", "/api/me"),
         ctx.call<BoardSummary[]>("GET", "/api/boards"),
+        runId ? ctx.call<Run>("GET", `/api/runs/${runId}`) : null,
       ]);
       return {
         handle: `@${me.user.handle}`,
@@ -720,6 +731,7 @@ const TOOLS: Tool[] = [
         boards: boards.length,
         /* How this connection was made is not the app's to say: it lives on the token. */
         access: ctx.viewer.access?.scope === "read" ? "read-only" : "read and write",
+        run: run ? { id: run.short, status: run.status, since: run.startedAt, claims: run.claims } : null,
       };
     },
   },
@@ -784,7 +796,7 @@ const TOOLS: Tool[] = [
     name: "list_tasks",
     title: "List tasks",
     description:
-      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, category (the stage's: backlog|todo|active|blocked|done|cancelled), status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields (level, parent, depends_on, children: a count) when set, comment count and the board's url. Filters combine. parent lists a task's direct children; under lists everything below it at any depth (its children, their children and so on, not the task itself), which is how to see what is left of an epic. Both refuse a key that is on none of your boards. status still applies, so pass status: \"all\" to include closed work under a task.",
+      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, category (the stage's: backlog|todo|active|blocked|done|cancelled), status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields (level, parent, depends_on, children: a count) when set, claimed_by and run when a run is on it right now (claim_task), comment count and the board's url. Filters combine. parent lists a task's direct children; under lists everything below it at any depth (its children, their children and so on, not the task itself), which is how to see what is left of an epic. Both refuse a key that is on none of your boards. status still applies, so pass status: \"all\" to include closed work under a task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1023,6 +1035,49 @@ const TOOLS: Tool[] = [
       const stage = resolveStage(detail.stages, args.stage);
       const moved = await ctx.call<TaskWrite>("PATCH", `/api/tasks/${task.id}`, { stageId: stage.id });
       return { moved: summarize(detail, moved, ctx.origin), ...alsoMoved(detail, moved.alsoMoved) };
+    },
+  },
+  {
+    name: "claim_task",
+    title: "Claim a task",
+    description: `Take a task for this run: the way to start work on it. Needs a run (whoami's run is not null) and the editor role; without a run it refuses, and you assign yourself and move the task to an active stage instead. An unassigned task is assigned to you; one assigned to you (with or without others) is fine; one assigned only to others is refused, as is a closed task. A task has at most one live claim: refused while another run holds it, replaced once that claim lapses or its run ends; claiming again with the same run just renews it. Moves the task to the board's first active stage unless it is in one already, and its parents follow (see the guide). The claim lasts while this run keeps calling (any call renews it) and lapses after ${RUN_LEASE_MS / 60_000} quiet minutes; it ends when the run finishes, the task closes, or you come off its assignees. Returns { claimed: summary } (with claimed_by and run), plus also_moved for parents that moved.`,
+    inputSchema: { type: "object", properties: { task: TASK }, required: ["task"], additionalProperties: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    async run(args, ctx) {
+      const { detail, task } = await loadTask(ctx, args.task);
+      const claimed = await ctx.call<TaskWrite>("POST", `/api/tasks/${task.id}/claim`);
+      return { claimed: summarize(detail, claimed, ctx.origin), ...alsoMoved(detail, claimed.alsoMoved) };
+    },
+  },
+  {
+    name: "release_task",
+    title: "Release a claimed task",
+    description:
+      "Let go of your claim on a task without closing it: it keeps its stage and its assignees, and another run (yours or anyone's it is assigned to) can claim it. Refused when you hold no claim on it. You rarely need this: closing the task, coming off its assignees or finishing your run releases it anyway. Returns { released: summary }.",
+    inputSchema: { type: "object", properties: { task: TASK }, required: ["task"], additionalProperties: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    async run(args, ctx) {
+      const { detail, task } = await loadTask(ctx, args.task);
+      const released = await ctx.call<Task>("DELETE", `/api/tasks/${task.id}/claim`);
+      return { released: summarize(detail, released, ctx.origin) };
+    },
+  },
+  {
+    name: "finish_run",
+    title: "Finish this run",
+    description: `End the run this connection belongs to, as ${RUN_ENDINGS.join(", ")}: completed when the work it set out to do is done or handed off (moving a task to blocked to wait for an answer and finishing is completed), failed when it could not do it, cancelled when it stopped for another reason. Its claims are released; the tasks keep their stage and assignees. Make it your last call: after it, this connection's credential stops working, and whatever started the run may also finish it for you. Refused when this connection is not a run. Returns { finished: { id, status, since, ended } }.`,
+    inputSchema: {
+      type: "object",
+      properties: { status: { type: "string", enum: [...RUN_ENDINGS], description: "How it ended" } },
+      required: ["status"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    async run(args, ctx) {
+      const runId = ctx.viewer.access?.runId;
+      if (!runId) throw new Error("This connection is not a run, so there is nothing to finish.");
+      const run = await ctx.call<Run>("POST", `/api/runs/${runId}/finish`, { status: fold(String(args.status)) });
+      return { finished: { id: run.short, status: run.status, since: run.startedAt, ended: run.endedAt } };
     },
   },
   {

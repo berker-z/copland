@@ -176,6 +176,14 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   title's first line (the title wraps beside it, never under it), the last
   column of a list row, the right end of a Gantt label, a lane header and
   the `under…` picker, after the stage in the task modal's title.
+- A card a run is working on right now (a live claim, routes/runs.ts) says
+  so at the right of its meta line, before the avatars: `dev is on this`
+  in `text-muted`, the agent's name without the owner, with the full handle
+  and the run in `title`. Nothing for a lapsed claim or a closed task. A
+  task's history adds `· run 8f31` in `text-faint` after "via", and an
+  agent's settings page lists its latest runs with the status in a hue:
+  running `text-ink`, stale `text-yellow`, failed `text-red`, completed
+  `text-muted`, cancelled `text-faint`.
 - `src/ui/Avatar.tsx` — someone's picture, or their initials in a
   `border-faint text-muted` square when they have none. Square like
   everything else, sized in px to sit on a text line (16 in rows, 18 in

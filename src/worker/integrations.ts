@@ -10,8 +10,8 @@
 
    The tools reach the app through runApi, the same function /api requests
    go through (index.ts), so access checks, validation, the event log and
-   live updates are the routes', once. What made a change rides along in
-   viaContext for the history.
+   live updates are the routes', once. What made a change, and through which
+   run, rides along in asAccess for the history.
    ========================================================================== */
 
 import type { Viewer } from "@/domain/types";
@@ -27,7 +27,7 @@ import {
   register,
   token,
 } from "./oauth";
-import { bearerFrom, setClient, touchStatement, viaContext } from "./tokens";
+import { asAccess, bearerFrom, setClient, touchStatements } from "./tokens";
 import { resolveViewer } from "./viewer";
 
 /** One API request as a viewer: scope check, route, live updates on success (index.ts). */
@@ -128,13 +128,13 @@ export async function handleIntegration(
       }
       const access = viewer.access;
       if (!access) return mcpUnauthorized(url, true);
-      ctx.waitUntil(touchStatement(env.DB, access.tokenId).run());
-      return await viaContext.run({ via: access.via }, () =>
+      ctx.waitUntil(env.DB.batch(touchStatements(env.DB, access)));
+      return await asAccess(access, () =>
         handleMcp(
           request,
           viewer,
           apiCaller(viewer, url, runApi),
-          (name) => setClient(env.DB, access.tokenId, name),
+          (name) => setClient(env.DB, access, name),
           url.origin,
         ),
       );

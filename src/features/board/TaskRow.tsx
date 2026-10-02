@@ -73,6 +73,11 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
     .map((id) => members.find((m) => m.user.id === id)?.user)
     .filter((u): u is NonNullable<typeof u> => u !== undefined);
   const taskLabels = labels.filter((l) => task.labelIds.includes(l.id));
+  /* A run on it right now (claim_task). The server sends only live claims; one that lapsed since the last fetch is hidden here too. */
+  const claimer =
+    task.claim && !closed && Date.parse(task.claim.until) > Date.now()
+      ? members.find((m) => m.user.id === task.claim?.userId)?.user
+      : undefined;
 
   return (
     <div
@@ -109,7 +114,7 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
           </div>
           <LevelPill level={task.level} className="h-[1lh]" />
         </div>
-        {(showKey || parent || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0) && (
+        {(showKey || parent || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0 || claimer) && (
           <div className="flex flex-wrap items-center gap-x-2 mt-0.5 text-xs">
             {showKey && <span className="text-faint">{task.key}</span>}
             {parent && <ParentLink parentKey={parent} onClick={onParent as () => void} />}
@@ -127,6 +132,11 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
               </span>
             ))}
             <span className="flex-1" />
+            {claimer && task.claim && (
+              <span className="text-muted whitespace-nowrap" title={`${claimer.handle}, run ${task.claim.run}, working on it now`}>
+                {claimer.handle.split("/").pop()} is on this
+              </span>
+            )}
             {assignees.map((u) => (
               <Avatar key={u.id} user={u} />
             ))}

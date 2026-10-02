@@ -22,6 +22,9 @@
    them: it is disabled, loses its tokens, grants, boards and assignments,
    and is renamed "you/codex (deleted 1a2b)", which frees "codex" for a new
    agent that inherits nothing.
+
+   Pausing or deleting an agent ends its runs (cancelled) and releases their
+   claims (repo/runs.ts), and the list shows each agent's latest runs.
    ========================================================================== */
 
 import { handleProblem, normalizeHandle } from "@/domain/handle";
@@ -32,6 +35,7 @@ import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } fro
 import type { Changes } from "../live";
 import { boardAudience } from "../repo/boards";
 import { createAgent } from "../repo/agents";
+import { claimedBoards, endRunsStatements, listRuns } from "../repo/runs";
 import { findUserById, peopleAudience, rowToUser, type UserRow } from "../repo/users";
 import { listTokens } from "../tokens";
 import { replaceAvatar, storeAvatar } from "./profile";
@@ -95,6 +99,7 @@ async function listAgents(db: D1Database, ownerId: string): Promise<Agent[]> {
       grants: grants.results.filter((g) => g.agent_id === row.id).map((g) => g.name),
       boards: boards.results.filter((b) => b.user_id === row.id).map((b) => ({ boardId: b.board_id, role: b.role })),
       tokens: await listTokens(db, row.id),
+      runs: await listRuns(db, row.id),
       createdAt: row.agent_created_at,
     })),
   );
@@ -166,9 +171,15 @@ export async function patchAgent(request: Request, env: Env, viewer: Viewer, id:
     if (body.workFrom !== "owner" && body.workFrom !== "members") throw badRequest("`workFrom` must be owner or members");
     statements.push(db.prepare(`UPDATE agents SET work_from = ?2 WHERE user_id = ?1`).bind(id, body.workFrom));
   }
+  /* Pausing ends whatever it has running, and its claims with it. */
+  let released: string[] = [];
   if (body.paused !== undefined) {
     if (typeof body.paused !== "boolean") throw badRequest("`paused` must be true or false");
     statements.push(db.prepare(`UPDATE agents SET paused_at = ?2 WHERE user_id = ?1`).bind(id, body.paused ? nowIso() : null));
+    if (body.paused) {
+      released = await claimedBoards(db, id);
+      statements.push(...endRunsStatements(db, id));
+    }
   }
   if (body.grants !== undefined) {
     if (!Array.isArray(body.grants) || body.grants.some((g) => !(AGENT_GRANTS as readonly unknown[]).includes(g))) {
@@ -190,6 +201,7 @@ export async function patchAgent(request: Request, env: Env, viewer: Viewer, id:
   }
   changes.notify([viewer.user.id], "agents");
   if (renamed) changes.notify(await peopleAudience(db, id), "people");
+  for (const boardId of released) changes.notify(await boardAudience(db, boardId), "board");
   return json((await listAgents(db, viewer.user.id)).find((a) => a.user.id === id));
 }
 
@@ -211,6 +223,7 @@ export async function deleteAgent(env: Env, viewer: Viewer, id: string, changes:
     db.prepare(`DELETE FROM agent_grants WHERE agent_id = ?1`).bind(id),
     db.prepare(`DELETE FROM task_assignees WHERE user_id = ?1`).bind(id),
     db.prepare(`DELETE FROM board_members WHERE user_id = ?1`).bind(id),
+    ...endRunsStatements(db, id),
   ]);
   if (agent.avatar_key) await replaceAvatar(env, id, null);
   changes.notify([viewer.user.id], "agents");

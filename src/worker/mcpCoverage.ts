@@ -69,6 +69,8 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
       "create_task",
       "update_task",
       "move_task",
+      "claim_task",
+      "release_task",
       "comment_on_task",
       "delete_task",
       "my_work",
@@ -86,7 +88,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /api/inbox": { tools: ["inbox", "mark_read"] },
   "POST /api/inbox/read": { tools: ["mark_read"] },
   "POST /api/inbox/dismiss": { tools: ["mark_read"] },
-  "GET /api/tasks/:id": { tools: ["get_task", "update_task", "move_task", "comment_on_task", "delete_task"] },
+  "GET /api/tasks/:id": {
+    tools: ["get_task", "update_task", "move_task", "claim_task", "release_task", "comment_on_task", "delete_task"],
+  },
   "POST /api/boards/:id/tasks": { tools: ["create_task"] },
   /* create_task sets dependencies with a second write: creation takes none. */
   "PATCH /api/tasks/:id": { tools: ["create_task", "update_task", "move_task"] },
@@ -96,6 +100,18 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PATCH /api/comments/:id": { skip: "not yet: editing a comment" },
   "DELETE /api/comments/:id": { skip: "not yet: deleting a comment" },
   "GET /api/tasks/:id/events": { skip: "not yet: a task's history" },
+
+  /* Runs and claims. A run is started over HTTP by whatever launches the
+     runtime, which hands the runtime the run's secret: the model works inside
+     a run, it does not mint one (a session cannot switch its own credential
+     anyway). whoami reads the current run; finish_run ends it. */
+  "POST /api/runs": {
+    skip: "private: starting a run mints a credential; whoever launches the runtime (a daemon, a script) calls it with the principal's token and hands the runtime the secret, so no model holds a token that makes more",
+  },
+  "GET /api/runs/:id": { tools: ["whoami"] },
+  "POST /api/runs/:id/finish": { tools: ["finish_run"] },
+  "POST /api/tasks/:id/claim": { tools: ["claim_task"] },
+  "DELETE /api/tasks/:id/claim": { tools: ["release_task"] },
 
   /* A board's notes and docs. The doc list rides on GET /api/boards/:id;
      write_doc creates a text doc or rewrites one by name. Uploading a file's

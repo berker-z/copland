@@ -11,12 +11,14 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { HANDLE_MAX, handleProblem, normalizeHandle } from "@/domain/handle";
+import type { RunStatus } from "@/domain/runs";
 import { AGENT_GRANTS, type Agent, type AgentGrant, type BoardRole, type Me } from "@/domain/types";
 import { send } from "@/lib/api";
 import { uploadAvatar } from "@/lib/avatar";
 import { refresh } from "@/lib/live";
 import { KEYS, useBoards } from "@/lib/queries";
 import { Checkbox } from "@/ui/Checkbox";
+import { when } from "@/ui/tone";
 import { ConnectSteps, Tokens } from "./Connections";
 import { PictureEditor } from "./Profile";
 import { Group, Section, button, input } from "./Section";
@@ -259,6 +261,42 @@ function AccessGroups({ agent }: { agent: Agent }) {
   );
 }
 
+const RUN_CLASS: Record<RunStatus, string> = {
+  running: "text-ink",
+  stale: "text-yellow",
+  completed: "text-muted",
+  failed: "text-red",
+  cancelled: "text-faint",
+};
+
+/** Its latest runs: declared by whatever starts it (POST /api/runs), stale once it goes quiet. */
+function RunsGroup({ agent }: { agent: Agent }) {
+  return (
+    <Group title="runs">
+      {agent.runs.length === 0 ? (
+        <p className="text-xs text-muted">
+          None yet. A run is one working session, started by whatever launches it; its changes show in history with the run.
+        </p>
+      ) : (
+        <ul className="text-sm">
+          {agent.runs.map((r) => (
+            <li key={r.id} className="flex flex-wrap gap-x-2 py-0.5">
+              <span className="text-faint">{r.short}</span>
+              <span className={RUN_CLASS[r.status]}>{r.status}</span>
+              {r.client && <span className="text-muted">{r.client}</span>}
+              {r.claims.length > 0 && <span className="text-muted">on {r.claims.join(", ")}</span>}
+              <span className="flex-1" />
+              <span className="text-faint">
+                {r.endedAt ? `ended ${when(r.endedAt)}` : `heard ${when(r.lastSeenAt)}`}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Group>
+  );
+}
+
 function DangerGroup({ agent, onDeleted }: { agent: Agent; onDeleted: () => void }) {
   const queryClient = useQueryClient();
   const [armed, setArmed] = useState(false);
@@ -275,7 +313,7 @@ function DangerGroup({ agent, onDeleted }: { agent: Agent; onDeleted: () => void
   return (
     <Group title="pause or delete">
       <p className="text-xs text-muted mb-2">
-        Paused, its tokens stop working until you resume it. Deleted, it is gone for good: tokens, boards and assignments.
+        Paused, its tokens stop working until you resume it, and its runs end. Deleted, it is gone for good: tokens, boards and assignments.
         Its comments and history stay, marked deleted, and its name is free again.
       </p>
       <div className="flex flex-wrap gap-2">
@@ -325,6 +363,7 @@ export function AgentSection({ me, agent, onDeleted }: { me: Me; agent: Agent; o
       <AccessGroups agent={agent} />
       <ConnectSteps as={agent.user.handle} />
       <Tokens tokens={agent.tokens} isPending={false} agentId={agent.user.id} />
+      <RunsGroup agent={agent} />
       <DangerGroup agent={agent} onDeleted={onDeleted} />
     </Section>
   );

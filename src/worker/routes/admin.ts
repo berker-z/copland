@@ -17,6 +17,8 @@ import { requireAdmin } from "../access";
 import type { Env } from "../env";
 import { badRequest, forbidden, json, notFound, nowIso, randomToken, readJson, sha256Hex } from "../http";
 import type { Changes } from "../live";
+import { boardAudience } from "../repo/boards";
+import { claimedBoards, endRunsStatements } from "../repo/runs";
 import { rowToUser, signupMode, type UserRow } from "../repo/users";
 
 const INVITE_DAYS = 14;
@@ -161,10 +163,13 @@ export async function patchUser(
   }
   if (admin === true) await env.DB.prepare(`UPDATE users SET is_admin = 1 WHERE id = ?1`).bind(id).run();
   if (disabled !== undefined) {
+    /* Their runs, and their agents', end with them: the boards they held claims on hear of it. */
+    const claimed = disabled ? await claimedBoards(env.DB, id) : [];
     await env.DB.batch([
       env.DB.prepare(`UPDATE users SET disabled_at = ?2 WHERE id = ?1`).bind(id, disabled ? nowIso() : null),
-      ...(disabled ? [env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?1`).bind(id)] : []),
+      ...(disabled ? [env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?1`).bind(id), ...endRunsStatements(env.DB, id)] : []),
     ]);
+    for (const boardId of claimed) changes.notify(await boardAudience(env.DB, boardId), "board");
   }
 
   /* The person too: their own /me says whether they are an admin. */
