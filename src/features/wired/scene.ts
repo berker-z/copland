@@ -4,13 +4,20 @@
    pixel stays square. The design is docs/research/wired-prototype.html,
    with its tuned values fixed below.
 
-     todo ── doing ─┬─ done     (upper branch, runs off the edge)
-                    └─ blocked  (lower branch, waits for you)
+     todo ──── doing ── blocked    done ──  (off the edge)
+                    ╲_____________╱
+                     (deep span, under blocked's arms)
+
+   All four poles stand on one ground line, blocked half a span past doing
+   and done a whole span past it. Doing forks by span, not by height: a
+   short wire from its upper arm to blocked, and a long one from its lower
+   arm that sags deep, passes under blocked's arms and rises to done.
 
    Work is a bead on the wires, in its stage hue. Waiting ones queue on the
    wire into doing; a live run's sits at the doing pole while current pulses
-   along its wire; finished ones climb to done and fade off the edge;
-   blocked ones drop to the blocked pole and blink. When the data changes,
+   along its wire; finished ones ride the deep span to done and fade off the
+   edge; blocked ones take the short wire and wait by the blocked pole,
+   blinking. When the data changes,
    setData diffs it by task id and slides each bead that changed pole along
    the wires to its new place. Anything it has no route for is simply put
    where it now belongs.
@@ -24,7 +31,7 @@
 /* ---------------------------------------------------------------- tuning -- */
 
 /** The prototype's defaults, kept as they were chosen. */
-const SPACING = 54;
+export const SPACING = 64;
 const SAG = 0.08;
 const SWAY_AMP = 0.12;
 const SWAY_HZ = 0.3;
@@ -45,14 +52,17 @@ const MAX_BEADS = 4;
 /* -------------------------------------------------------------- geometry -- */
 
 export const POLE_H = 16;
-/** Pole tops: done (upper), the middle row (todo, doing), blocked (lower). */
-export const TOPD = 4;
-export const TOPM = 21;
-export const TOPB = 38;
+/** Every pole's top: one ground line, with room above for the lamps. */
+export const TOP = 4;
+/** Pole left edges, left to right: todo, doing, blocked (half a span on), done (a whole span on). */
+export const X = [10, 10 + SPACING, 10 + SPACING + SPACING / 2, 10 + 2 * SPACING] as const;
+/** Past the done pole: room for its wires to run off the edge. */
+export const TAIL = 22;
 /** The scene's size in logo pixels. */
-export const BH = TOPB + POLE_H + 2;
-export const X = [10, 10 + SPACING, 10 + 2 * SPACING] as const;
-export const BW = X[2] + 10 + Math.round(SPACING * 0.45);
+export const BW = X[3] + 10 + TAIL;
+export const BH = TOP + POLE_H + 2;
+/** How much deeper than SAG the doing-to-done span hangs: under blocked's lower arm, above its foot. */
+const DEEP = 1.1;
 
 /* ---------------------------------------------------------------- colour -- */
 
@@ -77,7 +87,7 @@ const css = (c: RGB, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
 
 /* ----------------------------------------------------------------- wires -- */
 
-type WireName = "in1" | "in2" | "ab1" | "ab2" | "bd" | "bb" | "done1" | "done2" | "blk1" | "blk2";
+type WireName = "in1" | "in2" | "ab1" | "ab2" | "bd" | "bb" | "done1" | "done2";
 interface Wire {
   x0: number;
   y0: number;
@@ -102,19 +112,19 @@ function buildWires(clock: number): Record<WireName, Wire> {
     dip: SAG * Math.abs(x1 - x0) * k * sway(ph),
     len: Math.hypot(x1 - x0, y1 - y0),
   });
-  const [a, b, c] = X;
+  const [a, b, k, c] = X;
   const E = BW + 8;
   return {
-    in1: mk(-8, TOPM + 6, a, TOPM + 3, 0.4),
-    in2: mk(-8, TOPM + 12, a + 2, TOPM + 8, 1.1, 1.2),
-    ab1: mk(a + 9, TOPM + 3, b, TOPM + 3, 2.0),
-    ab2: mk(a + 7, TOPM + 8, b + 2, TOPM + 8, 2.7, 1.25),
-    bd: mk(b + 9, TOPM + 3, c, TOPD + 3, 3.3, 0.8),
-    bb: mk(b + 7, TOPM + 8, c, TOPB + 3, 4.1, 0.8),
-    done1: mk(c + 9, TOPD + 3, E, TOPD + 8, 5.0),
-    done2: mk(c + 7, TOPD + 8, E, TOPD + 13, 5.4, 1.2),
-    blk1: mk(c + 9, TOPB + 3, E, TOPB + 8, 5.7),
-    blk2: mk(c + 7, TOPB + 8, E, TOPB + 12, 6.1, 1.2),
+    in1: mk(-8, TOP + 6, a, TOP + 3, 0.4),
+    in2: mk(-8, TOP + 12, a + 2, TOP + 8, 1.1, 1.2),
+    ab1: mk(a + 9, TOP + 3, b, TOP + 3, 2.0),
+    ab2: mk(a + 7, TOP + 8, b + 2, TOP + 8, 2.7, 1.25),
+    /* The short span, upper arm to upper arm: doing to blocked. */
+    bb: mk(b + 9, TOP + 3, k, TOP + 3, 4.1),
+    /* The long span, lower arm to lower arm, hanging under blocked: doing to done. */
+    bd: mk(b + 7, TOP + 8, c + 2, TOP + 8, 3.3, DEEP),
+    done1: mk(c + 9, TOP + 3, E, TOP + 8, 5.0),
+    done2: mk(c + 7, TOP + 8, E, TOP + 13, 5.4, 1.2),
   };
 }
 
@@ -164,7 +174,8 @@ function restFor(pole: Pole, i: number): { wire: WireName; t: number } | null {
   if (i >= MAX_BEADS) return null;
   if (pole === "todo") return { wire: "ab1", t: Math.max(0.12, 0.7 - i * 0.2) };
   if (pole === "doing") return { wire: slotWire(i), t: 1 - 0.08 * Math.floor(i / 2) };
-  if (pole === "blocked") return { wire: "blk1", t: Math.min(0.85, 0.35 + 0.17 * i) };
+  /* Queued back along the short span from the blocked pole. */
+  if (pole === "blocked") return { wire: "bb", t: 0.85 - 0.18 * i };
   return null;
 }
 
@@ -241,7 +252,7 @@ export class WiredScene {
         continue;
       }
       if (bead && !bead.leaving) this.depart(bead, "done");
-      else if (!bead) this.beads.set(id, this.fresh(id, "done", [["done1", 0, 1]]));
+      else if (!bead) this.beads.set(id, this.fresh(id, "done", [["done2", 0, 1]]));
     }
     for (const id of [...this.knownDone]) if (!data.done.includes(id) && !want.has(id)) this.knownDone.delete(id);
 
@@ -307,7 +318,7 @@ export class WiredScene {
     };
   }
 
-  /** Off it goes, up to done or down to blocked, from wherever it is. */
+  /** Off it goes along the deep span to done, from wherever it is. */
   private depart(bead: Bead, to: "done") {
     /* Mid-trip: finish it at once, then leave from there. */
     if (bead.route.length && bead.rest) {
@@ -320,7 +331,7 @@ export class WiredScene {
     bead.rest = null;
     bead.flashes = true;
     const lead: Seg[] = this.toDoingPole(bead, from) ?? [];
-    bead.route = [...lead, ["bd", 0, 1], ["done1", 0, 1]];
+    bead.route = [...lead, ["bd", 0, 1], ["done2", 0, 1]];
     bead.seg = 0;
     bead.p = 0;
   }
@@ -330,7 +341,7 @@ export class WiredScene {
     if (bead.route.length) return null;
     if (from === "doing") return [];
     if (from === "todo") return [[bead.wire, bead.t, 1]];
-    if (from === "blocked") return [["blk1", bead.t, 0], ["bb", 1, 0]];
+    if (from === "blocked") return [["bb", bead.t, 0]];
     return null;
   }
 
@@ -339,7 +350,7 @@ export class WiredScene {
     const to = bead.pole;
     if (from === "todo" && to === "todo") return null;
     if (to === "todo" && from === "doing") return [["ab1", bead.wire === "ab1" ? bead.t : 1, rest.t]];
-    if (to === "todo" && from === "blocked") return [["blk1", bead.t, 0], ["bb", 1, 0], ["ab1", 1, rest.t]];
+    if (to === "todo" && from === "blocked") return [["bb", bead.t, 0], ["ab1", 1, rest.t]];
     const lead = this.toDoingPole(bead, from);
     if (!lead) return null;
     if (to === "doing") {
@@ -349,7 +360,7 @@ export class WiredScene {
       if (from === "todo") return [[rest.wire, last[1], rest.t]];
       return [...lead, [rest.wire, 1, rest.t]];
     }
-    if (to === "blocked") return [...lead, ["bb", 0, 1], ["blk1", 0, rest.t]];
+    if (to === "blocked") return [...lead, ["bb", 0, rest.t]];
     return null;
   }
 
@@ -420,7 +431,7 @@ export class WiredScene {
         if (this.advance(bead, dt)) {
           bead.route = [];
           if (bead.pole === "done") this.beads.delete(bead.id);
-        } else if (bead.pole === "done" && bead.wire === "done1") {
+        } else if (bead.pole === "done" && bead.wire === "done2") {
           if (bead.flashes) {
             bead.flashes = false;
             this.flashDone = 1;
@@ -523,17 +534,15 @@ export class WiredScene {
     this.drawWire(W.bb, tinted("red"));
     this.drawWire(W.done1, tinted("green"));
     this.drawWire(W.done2, tinted("green"));
-    this.drawWire(W.blk1, tinted("red"));
-    this.drawWire(W.blk2, tinted("red"));
 
     const bl = this.blinkLevel();
     const has = (pole: Pole) => beads.some((b) => b.pole === pole && !b.leaving);
     const anyIdle = beads.some((b) => b.pole === "doing" && b.idle && !b.leaving);
     const doingLamp = working.length ? (this.motion ? 0.85 + 0.15 * Math.sin(this.clock * 7) : 1) : anyIdle ? 0.4 : 0;
-    this.drawPole(X[0], TOPM, C.blue, has("todo") ? 1 : 0);
-    this.drawPole(X[1], TOPM, C.yellow, doingLamp);
-    this.drawPole(X[2], TOPD, C.green, this.flashDone);
-    this.drawPole(X[2], TOPB, C.red, has("blocked") ? bl : 0);
+    this.drawPole(X[0], TOP, C.blue, has("todo") ? 1 : 0);
+    this.drawPole(X[1], TOP, C.yellow, doingLamp);
+    this.drawPole(X[2], TOP, C.red, has("blocked") ? bl : 0);
+    this.drawPole(X[3], TOP, C.green, this.flashDone);
 
     for (const b of beads) {
       const [x, y] = at(W[b.wire], b.t);

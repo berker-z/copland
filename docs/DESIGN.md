@@ -193,9 +193,14 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   pixel art. `scene.ts` draws on a canvas in logo pixels (LogoMark's
   16-unit grid: the same rectangles, a 2×2 lamp on each head) and the
   canvas is scaled by a whole number with `image-rendering: pixelated`:
-  the largest of 2 to 4 that fits the column with the done and blocked
-  lists beside it, else the largest that fits alone with those lists under
-  it. Colours are the role variables, read with `getComputedStyle` and
+  the largest of 2 to 4 that fits the column. The four poles stand on one
+  ground line (blocked half a span past doing, done a whole span past it;
+  doing's short wire goes to blocked, its long one sags under blocked's
+  arms to done) and every list hangs under its pole on one row: todo
+  centred, doing flush right with its pole, blocked centred, done flush
+  left. Each list has a width from the scale and shows the longest line
+  form all its lines fit: doing drops its timer, then its agent; blocked
+  its agent, then the ▲; done its ✓. Colours are the role variables, read with `getComputedStyle` and
   re-read when `<html>` changes theme; nothing is hard-coded. Wires are
   `muted` mixed into `surface`, tinted 30% toward the hue of where they
   lead; poles are `ink` at 55%. Beads (2×2) and lamps take the stage hues:

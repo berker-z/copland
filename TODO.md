@@ -238,6 +238,8 @@ docs/DESIGN.md under Touch.
   the left column, showing your agents' work from `GET /api/wired`:
   todo, doing (a live claim, or active with no run on it, dimmer), blocked,
   and done in the last 24 hours. Beads slide between poles when the data
-  changes; reduced motion gets a still picture. The default layout is now
+  changes; reduced motion gets a still picture. The poles stand in one
+  row, blocked half a span past doing and done a span past it, every list
+  under its pole and trimmed to fit its width. The default layout is now
   three columns: wired; boards, tasks, inbox; agenda, calendar, notepad.
   Saved layouts are left alone

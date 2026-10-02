@@ -1,14 +1,20 @@
 /* ============================================================================
    The /wired pane: your agents' work as the pole scene (scene.ts), with each
-   pole's tickets beside it. Off by default; settings › widgets turns it on.
+   pole's tickets under it. Off by default; settings › widgets turns it on.
    ----------------------------------------------------------------------------
    The data is GET /api/wired (routes/wired.ts), which says which pole each
-   task is on. The canvas is the picture, the lists are DOM text: todo and
-   doing under their poles, done and blocked to the right of theirs, or under
-   the scene when the column is too narrow for them beside it. The canvas is
-   scaled by the largest whole number (2 to 4) that fits the column, so its
-   pixels stay square. A ticket opens its task over the dashboard, as the
-   inbox does.
+   task is on. The canvas is the picture, the lists are DOM text, one row of
+   them under the poles. The canvas is scaled by the largest whole number
+   (2 to 4) that fits the column, so its pixels stay square, and a ticket
+   opens its task over the dashboard, as the inbox does.
+
+   Blocked stands only half a span from doing and from done, so the lists
+   share the row by rule (budgets below): todo is centred under its pole,
+   doing hangs flush right with its pole, done flush left with its pole, and
+   blocked is centred in what is left between them. Each list has a width
+   in characters from the scale, and each line shows the longest form that
+   fits it, dropping the timer first and then the agent (the status strip
+   under the scene keeps both).
    ========================================================================== */
 
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -18,17 +24,54 @@ import { useWired } from "@/lib/queries";
 import { useMediaQuery } from "@/ui/useMediaQuery";
 import { WidgetFrame } from "@/ui/WidgetFrame";
 import { OpenTask, type InboxTarget } from "../inbox/InboxPane";
-import { BH, BW, POLE_H, readColors, TOPB, TOPD, TOPM, WiredScene, X, type SceneData } from "./scene";
+import { BH, BW, POLE_H, readColors, SPACING, TOP, WiredScene, X, type SceneData } from "./scene";
 
-/** Room for the done and blocked lists right of the canvas, in px. */
-const TEXT_W = 112;
 const MAX_SCALE = 4;
-/** Lines under todo and doing, and beside done and blocked, a "+n more" included. */
+/** Lines under todo and doing, and under done and blocked, a "+n more" included. */
 const LINES = 4;
-const SIDE_LINES = 3;
+const SHORT_LINES = 3;
 const LINE_H = 15;
 /** The body's padding each side (p-4). */
 const PAD = 16;
+/** One character of the lists (11px JetBrains Mono, 0.03em tracking is 6.93px), rounded up. */
+const CH = 7;
+/** Space kept between two lists, in px. */
+const GAP = 8;
+/** Half the todo list's width at most: room for "+12 more" and keys like COPL-123. */
+const TODO_HALF = 28;
+
+/**
+ * Each list's width in px at a scale, from where the poles stand (s is the
+ * scale, S the span; a pole is 10 logo pixels wide, so its centre is 5 in):
+ *   todo     centred on its pole: 2·min(TODO_HALF, its centre + PAD − 2)
+ *   doing    right edge at its pole's right edge, left edge clear of todo:
+ *            (S + 5)·s − TODO_HALF − GAP
+ *   blocked  centred, clear of doing's right edge and done's left edge,
+ *            each S/2 − 5 from its centre: (S − 10)·s − 2·GAP
+ *   done     left edge at its pole's left edge, out to the canvas edge and
+ *            the padding: (BW − X[3])·s + PAD − 2
+ */
+function budgets(s: number) {
+  return {
+    todo: 2 * Math.min(TODO_HALF, (X[0] + 5) * s + PAD - 2),
+    doing: (SPACING + 5) * s - TODO_HALF - GAP,
+    blocked: (SPACING - 10) * s - 2 * GAP,
+    done: (BW - X[3]) * s + PAD - 2,
+  };
+}
+
+/**
+ * Which form a list shows, its lines' forms given longest first: the first
+ * that every line fits in `width` px, so the list reads alike; the shortest
+ * when none does (a ticket truncates rather than overlap).
+ */
+function formFor(lines: string[][], width: number): number {
+  const chars = Math.floor(width / CH);
+  const forms = Math.max(0, ...lines.map((l) => l.length));
+  for (let f = 0; f < forms; f++) if (lines.every((l) => (l[Math.min(f, l.length - 1)] ?? "").length <= chars)) return f;
+  return Math.max(0, forms - 1);
+}
+
 /** A done header stays lit this long after the last one. */
 const DONE_LIT_MS = 15 * 60_000;
 
@@ -47,13 +90,8 @@ const toScene = (w: Wired): SceneData => ({
   done: w.done.map((t) => t.id),
 });
 
-/** The largest whole scale that fits, and whether the side lists fit beside the canvas at it. */
-function fit(width: number): { scale: number; wide: boolean } {
-  const room = width - 2 * PAD;
-  const wide = Math.min(MAX_SCALE, Math.floor((room - TEXT_W) / BW));
-  if (wide >= 2) return { scale: wide, wide: true };
-  return { scale: Math.max(2, Math.min(MAX_SCALE, Math.floor(room / BW))), wide: false };
-}
+/** The largest whole scale that fits the column, 2 at the least. */
+const fit = (width: number) => Math.max(2, Math.min(MAX_SCALE, Math.floor((width - 2 * PAD) / BW)));
 
 function Head({ pole, lit }: { pole: string; lit: boolean }) {
   const on: Record<string, string> = { todo: "text-blue", doing: "text-yellow", done: "text-green", blocked: "text-red" };
@@ -78,6 +116,22 @@ function Ticket({ task, onOpen, className, children, style }: {
     </button>
   );
 }
+
+type Part = [text: string, className?: string];
+
+/** Each line of a list in the form formFor picks, its parts spaced and coloured. */
+function fitted(lines: Part[][][], width: number): ReactNode[] {
+  const f = formFor(lines.map((forms) => forms.map((parts) => parts.map(([text]) => text).join(" "))), width);
+  return lines.map((forms) =>
+    forms[Math.min(f, forms.length - 1)].flatMap(([text, className], i) => [
+      i ? " " : "",
+      className ? <span key={i} className={className}>{text}</span> : text,
+    ]),
+  );
+}
+
+/** How many of `n` lines capped shows as tickets. */
+const shown = (n: number, max: number) => (n > max ? max - 1 : n);
 
 /** At most `max` lines; the last says how many more when they do not fit. */
 function capped(lines: ReactNode[], max: number): ReactNode[] {
@@ -136,10 +190,11 @@ function Scene({ data, onOpen, instead }: { data: Wired; onOpen: (t: InboxTarget
     return () => clearInterval(id);
   }, [ticking]);
 
-  const { scale, wide } = fit(width);
+  const scale = fit(width);
+  const room = budgets(scale);
   const canvasW = BW * scale;
   const canvasH = BH * scale;
-  const listTop = (TOPM + POLE_H) * scale + 2;
+  const listTop = (TOP + POLE_H) * scale + 2;
   const height = instead ? canvasH + 6 : Math.max(canvasH + 6, listTop + 20 + LINES * LINE_H);
   const handle = (id: string) => data.agents.find((a) => a.id === id)?.name ?? "?";
   const live = data.doing.filter((t) => t.live);
@@ -151,18 +206,34 @@ function Scene({ data, onOpen, instead }: { data: Wired; onOpen: (t: InboxTarget
       {t.key}
     </Ticket>
   ));
-  const doing = data.doing.map((t) => (
+  /* Each line's forms, longest first: the timer drops first, then the agent, then the mark. */
+  const doingText = fitted(
+    data.doing.slice(0, shown(data.doing.length, LINES)).map((t) => {
+      const agent: Part = [handle(t.agentId), t.live ? "text-yellow" : undefined];
+      const full: Part[] = t.live ? [[t.key], agent, [elapsed(t.since, now), "text-muted"]] : [[t.key], agent];
+      return [full, [[t.key], agent], [[t.key]]];
+    }),
+    room.doing,
+  );
+  const doing = data.doing.map((t, i) => (
     <Ticket key={t.id} task={t} onOpen={onOpen} className={t.live ? "text-ink" : "text-muted"}>
-      {t.key} <span className={t.live ? "text-yellow" : ""}>{handle(t.agentId)}</span>
-      {t.live && <span className="text-muted"> {elapsed(t.since, now)}</span>}
+      {doingText[i]}
     </Ticket>
   ));
-  const blocked = data.blocked.map((t) => (
+  const blockedText = fitted(
+    data.blocked.slice(0, shown(data.blocked.length, SHORT_LINES)).map((t) => [[["▲"], [t.key], [handle(t.agentId), "text-muted"]], [["▲"], [t.key]], [[t.key]]]),
+    room.blocked,
+  );
+  const blocked = data.blocked.map((t, i) => (
     <Ticket key={t.id} task={t} onOpen={onOpen} className="text-red">
-      ▲ {t.key} <span className="text-muted">{handle(t.agentId)}</span>
+      {blockedText[i]}
     </Ticket>
   ));
-  const done = data.done.map((t) => (
+  const doneText = fitted(
+    data.done.slice(0, shown(data.done.length, SHORT_LINES)).map((t) => [[["✓"], [t.key]], [[t.key]]]),
+    room.done,
+  );
+  const done = data.done.map((t, i) => (
     <Ticket
       key={t.id}
       task={t}
@@ -170,14 +241,17 @@ function Scene({ data, onOpen, instead }: { data: Wired; onOpen: (t: InboxTarget
       className="text-green"
       style={{ opacity: Math.max(0.3, 1 - (now - Date.parse(t.since ?? "")) / windowMs) || 0.3 }}
     >
-      ✓ {t.key}
+      {doneText[i]}
     </Ticket>
   ));
-  const sides = [
-    { pole: "done", lit: now - latestDone < DONE_LIT_MS, lines: capped(done, SIDE_LINES), top: TOPD },
-    { pole: "blocked", lit: blocked.length > 0, lines: capped(blocked, SIDE_LINES), top: TOPB },
-  ];
-  const col = "absolute flex flex-col gap-px whitespace-nowrap";
+  /* Where each list hangs: `left` is its anchor in px, `align` which of its edges (or its centre) sits there. */
+  const cols = [
+    { pole: "todo", lit: todo.length > 0, lines: capped(todo, LINES), left: (X[0] + 5) * scale, align: "center", width: room.todo },
+    { pole: "doing", lit: live.length > 0, lines: capped(doing, LINES), left: (X[1] + 10) * scale, align: "end", width: room.doing },
+    { pole: "blocked", lit: blocked.length > 0, lines: capped(blocked, SHORT_LINES), left: (X[2] + 5) * scale, align: "center", width: room.blocked },
+    { pole: "done", lit: now - latestDone < DONE_LIT_MS, lines: capped(done, SHORT_LINES), left: X[3] * scale, align: "start", width: room.done },
+  ] as const;
+  const anchor = { center: "items-center -translate-x-1/2", end: "items-end -translate-x-full text-right", start: "items-start" };
 
   const sep = <span className="text-faint">│</span>;
   const status: ReactNode[] = data.agents.map((a) => {
@@ -202,7 +276,7 @@ function Scene({ data, onOpen, instead }: { data: Wired; onOpen: (t: InboxTarget
   return (
     <div ref={wrap} className="w-full [contain:inline-size] overflow-hidden text-[11px] leading-[1.35] tracking-[0.03em]">
       <div className="flex justify-center p-4 pb-2">
-        <div className="relative shrink-0" style={{ width: wide ? canvasW + TEXT_W : canvasW, height }}>
+        <div className="relative shrink-0" style={{ width: canvasW, height }}>
           <canvas
             ref={canvas}
             className="block [image-rendering:pixelated]"
@@ -210,39 +284,19 @@ function Scene({ data, onOpen, instead }: { data: Wired; onOpen: (t: InboxTarget
             role="img"
             aria-label={`${data.todo.length} todo, ${live.length} doing, ${data.blocked.length} blocked, ${data.doneCount} done in the last ${data.doneWindowHours} hours`}
           />
-          {!instead && [
-            { pole: "todo", x: X[0], lit: todo.length > 0, lines: capped(todo, LINES) },
-            { pole: "doing", x: X[1], lit: live.length > 0, lines: capped(doing, LINES) },
-          ].map((c) => (
-            <div
-              key={c.pole}
-              className={`${col} items-center -translate-x-1/2 max-w-[160px]`}
-              style={{ left: (c.x + 5) * scale, top: listTop }}
-            >
-              <Head pole={c.pole} lit={c.lit} />
-              {c.lines}
-            </div>
-          ))}
-          {wide &&
-            !instead &&
-            sides.map((c) => (
-              <div key={c.pole} className={`${col} items-start`} style={{ left: canvasW + 8, top: c.top * scale - 2, maxWidth: TEXT_W - 8 }}>
+          {!instead &&
+            cols.map((c) => (
+              <div
+                key={c.pole}
+                className={`absolute flex flex-col gap-px whitespace-nowrap ${anchor[c.align]}`}
+                style={{ left: c.left, top: listTop, maxWidth: c.width }}
+              >
                 <Head pole={c.pole} lit={c.lit} />
                 {c.lines}
               </div>
             ))}
         </div>
       </div>
-      {!wide && !instead && (
-        <div className="flex justify-center gap-8 px-4 pb-3">
-          {sides.map((c) => (
-            <div key={c.pole} className="flex flex-col gap-px whitespace-nowrap min-w-0">
-              <Head pole={c.pole} lit={c.lit} />
-              {c.lines}
-            </div>
-          ))}
-        </div>
-      )}
       {instead ?? (
         <div className="flex gap-2.5 items-center px-4 py-1.5 bg-bar text-muted whitespace-nowrap overflow-hidden">
           {status.flatMap((s, i) => (i ? [<span key={`sep${i}`}>{sep}</span>, s] : [s]))}

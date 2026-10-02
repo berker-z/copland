@@ -62,7 +62,9 @@ body { font-size: 13px; line-height: 1.5; padding-inline: 16px; padding-block: 2
 .col .t-head.on-done { color: rgb(var(--green)); }
 .col .t-head.on-blocked { color: rgb(var(--red)); }
 .col .t-blocked em { color: rgb(var(--muted)); font-style: normal; }
-.col.side { transform: none; align-items: flex-start; }
+.col.start { transform: none; align-items: flex-start; }
+.col.end { transform: translate(-100%, 0); align-items: flex-end; }
+.col > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .box-status { display: flex; gap: 10px; align-items: center; font-size: 11px; padding: 4px 10px 6px; margin-top: 4px; background: rgb(var(--bar)); color: rgb(var(--muted)); white-space: nowrap; overflow: hidden; }
 .box-status .sep { color: rgb(var(--faint)); }
 .box-status .y { color: rgb(var(--yellow)); }
@@ -93,7 +95,7 @@ textarea { width: 100%; height: 110px; resize: vertical; font-size: 11px; margin
 <div class="page">
   <section class="pane">
     <div class="ptitle">wired <small>box prototype</small></div>
-    <p class="lede">The box shows what the daemon picked up from your boards. Items wait on the wire into <b>todo</b>, get picked up at <b>doing</b>, where a run holds them while current flows in, and leave doing by one of two branches: the upper wire climbs to <b>done</b> and runs off the edge, the lower wire drops to <b>blocked</b>, where it waits for you. Each pole lists its tickets; lamps and beads take the stage colours.</p>
+    <p class="lede">The box shows what the daemon picked up from your boards. Items wait on the wire into <b>todo</b>, get picked up at <b>doing</b>, where a run holds them while current flows in, and leave doing by one of two spans: the short one to <b>blocked</b>, half a span on, where it waits for you, or the long one that sags deep under blocked's arms and rises to <b>done</b>, then runs off the edge. All four poles stand on one ground line, each with its tickets underneath; lamps and beads take the stage colours.</p>
     <div class="desk">
       <div class="box">
         <div class="box-title">wired <span class="count" id="count"></span><span class="close">×</span></div>
@@ -108,7 +110,7 @@ textarea { width: 100%; height: 110px; resize: vertical; font-size: 11px; margin
       <span><b style="color:rgb(var(--blue))">todo</b> waiting to be picked up</span>
       <span><b style="color:rgb(var(--yellow))">doing</b> claimed by a run</span>
       <span><b style="color:rgb(var(--red))">blocked</b> waiting on you</span>
-      <span><b style="color:rgb(var(--green))">done</b> upper branch, off the edge</span>
+      <span><b style="color:rgb(var(--green))">done</b> the deep span, off the edge</span>
     </div>
   </section>
 
@@ -140,7 +142,7 @@ const THEMES = {"nord":{"surface":"38,43,53","raised":"49,56,71","bar":"30,42,58
 const SLIDERS = [
   ["scene"],
   ["scale", "pixel size", 2, 5, 1, 3, "×"],
-  ["spacing", "pole spacing", 34, 80, 1, 54, "u"],
+  ["spacing", "pole spacing", 34, 80, 2, 64, "u"],
   ["sag", "sag", 0.02, 0.3, 0.01, 0.08, ""],
   ["swayAmp", "sway", 0, 0.5, 0.01, 0.12, ""],
   ["swaySpeed", "sway speed", 0.05, 2, 0.05, 0.3, "Hz"],
@@ -220,38 +222,51 @@ document.getElementById("copy").onclick = () => {
 document.getElementById("reset").onclick = () => { V = defaults(); theme = "nord"; currentRole = "yellow"; themeSel.value = theme; currentSel.value = currentRole; applyTheme(); buildSliders(); save(); layout(); };
 
 /* ---------- geometry (units = logo pixels) ----------
-   The doing pole forks: its upper wire climbs to the done pole, its lower
-   wire drops to the blocked pole. Two outcomes, two branches. */
-const POLE_H = 16, TOPD = 4, TOPM = 21, TOPB = 38, BH = TOPB + POLE_H + 2;
+   One ground line: todo, doing, blocked half a span past doing, done a
+   whole span past it. Doing forks by span, not height: a short wire from
+   its upper arm to blocked, and a long one from its lower arm that sags deep
+   under blocked's arms and rises to done. */
+const POLE_H = 16, TOP = 4, BH = TOP + POLE_H + 2, TAIL = 22, DEEP = 1.1;
 let BW = 0, X = [];
 const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
 const overlay = document.getElementById("overlay");
-const LINES = 4; let colHtml = ["", "", "", ""]; const doneLog = [{ key: "COPL-46", at: performance.now() - 4000 }];
-const TEXT_W = 150;
+const LINES = 4, SHORT_LINES = 3; let colHtml = ["", "", "", ""]; const doneLog = [{ key: "COPL-46", at: performance.now() - 4000 }];
+/* The lists share one row under the poles (as src/features/wired/WiredPane.tsx):
+   todo centred, doing flush right with its pole, blocked centred, done flush
+   left with its pole, each with a width in px (budgets) and every line in
+   the longest form that fits it. */
+const PAD = 10, CH = 7, GAP = 8, TODO_HALF = 28;
+let ROOM = {};
+function budgets(s, sp) {
+  return { todo: 2 * Math.min(TODO_HALF, (X[0] + 5) * s + PAD - 2), doing: (sp + 5) * s - TODO_HALF - GAP,
+           blocked: (sp - 10) * s - 2 * GAP, done: (BW - X[3]) * s + PAD - 2 };
+}
 function layout() {
-  const sp = V.spacing;
-  X = [10, 10 + sp, 10 + 2 * sp];
-  BW = X[2] + 10 + Math.round(sp * 0.45);
+  const sp = V.spacing, s = V.scale;
+  X = [10, 10 + sp, 10 + sp + sp / 2, 10 + 2 * sp];
+  BW = X[3] + 10 + TAIL;
+  ROOM = budgets(s, sp);
   cv.width = BW; cv.height = BH;
-  cv.style.width = BW * V.scale + "px"; cv.style.height = BH * V.scale + "px";
+  cv.style.width = BW * s + "px"; cv.style.height = BH * s + "px";
   const scene = document.getElementById("scene");
-  scene.style.width = BW * V.scale + TEXT_W + "px";
-  const listTop = (TOPM + POLE_H) * V.scale + 2;
-  scene.style.height = Math.max(BH * V.scale + 6, listTop + 20 + LINES * 15) + "px";
+  scene.style.width = BW * s + "px";
+  const listTop = (TOP + POLE_H) * s + 2;
+  scene.style.height = Math.max(BH * s + 6, listTop + 20 + LINES * 15) + "px";
   overlay.innerHTML = "";
-  [["todo", 0], ["doing", 1]].forEach(([s, i]) => {
-    const c = document.createElement("div"); c.className = "col"; c.id = "col-" + i;
-    c.style.left = (X[i] + 5) * V.scale + "px"; c.style.top = listTop + "px";
-    c.dataset.head = s;
-    overlay.append(c);
-  });
-  [["done", 2, TOPD], ["blocked", 3, TOPB]].forEach(([s, i, top]) => {
-    const c = document.createElement("div"); c.className = "col side"; c.id = "col-" + i;
-    c.style.left = BW * V.scale + 8 + "px"; c.style.top = top * V.scale - 2 + "px";
-    c.dataset.head = s;
+  [["todo", 0, (X[0] + 5) * s, "col"], ["doing", 1, (X[1] + 10) * s, "col end"],
+   ["done", 2, X[3] * s, "col start"], ["blocked", 3, (X[2] + 5) * s, "col"]].forEach(([name, i, left, cls]) => {
+    const c = document.createElement("div"); c.className = cls; c.id = "col-" + i;
+    c.style.left = left + "px"; c.style.top = listTop + "px"; c.style.maxWidth = ROOM[name] + "px";
+    c.dataset.head = name;
     overlay.append(c);
   });
   colHtml = ["", "", "", ""];
+}
+/* Which form every line of a list shows: the first, longest first, that all of them fit. */
+function fitForms(lines, width) {
+  const chars = Math.floor(width / CH), n = Math.max(0, ...lines.map(l => l.length));
+  for (let f = 0; f < n; f++) if (lines.every(l => l[Math.min(f, l.length - 1)].replace(/<[^>]+>/g, "").length <= chars)) return lines.map(l => l[Math.min(f, l.length - 1)]);
+  return lines.map(l => l[l.length - 1]);
 }
 const K = 1.3, CK = Math.cosh(K);
 const dipShape = t => (CK - Math.cosh(K * (2 * t - 1))) / (CK - 1);
@@ -259,13 +274,12 @@ let W = {};
 function buildWires(clock) {
   const sway = ph => 1 + V.swayAmp * Math.sin(clock * V.swaySpeed * 6.283 + ph);
   const mk = (x0, y0, x1, y1, ph, k = 1) => ({ x0, y0, x1, y1, dip: V.sag * Math.abs(x1 - x0) * k * sway(ph), len: Math.hypot(x1 - x0, y1 - y0) });
-  const [a, b, c] = X, E = BW + 8;
+  const [a, b, k, c] = X, E = BW + 8;
   W = {
-    in1: mk(-8, TOPM + 6, a, TOPM + 3, 0.4), in2: mk(-8, TOPM + 12, a + 2, TOPM + 8, 1.1, 1.2),
-    ab1: mk(a + 9, TOPM + 3, b, TOPM + 3, 2.0), ab2: mk(a + 7, TOPM + 8, b + 2, TOPM + 8, 2.7, 1.25),
-    bd: mk(b + 9, TOPM + 3, c, TOPD + 3, 3.3, 0.8), bb: mk(b + 7, TOPM + 8, c, TOPB + 3, 4.1, 0.8),
-    done1: mk(c + 9, TOPD + 3, E, TOPD + 8, 5.0), done2: mk(c + 7, TOPD + 8, E, TOPD + 13, 5.4, 1.2),
-    blk1: mk(c + 9, TOPB + 3, E, TOPB + 8, 5.7), blk2: mk(c + 7, TOPB + 8, E, TOPB + 12, 6.1, 1.2),
+    in1: mk(-8, TOP + 6, a, TOP + 3, 0.4), in2: mk(-8, TOP + 12, a + 2, TOP + 8, 1.1, 1.2),
+    ab1: mk(a + 9, TOP + 3, b, TOP + 3, 2.0), ab2: mk(a + 7, TOP + 8, b + 2, TOP + 8, 2.7, 1.25),
+    bb: mk(b + 9, TOP + 3, k, TOP + 3, 4.1), bd: mk(b + 7, TOP + 8, c + 2, TOP + 8, 3.3, DEEP),
+    done1: mk(c + 9, TOP + 3, E, TOP + 8, 5.0), done2: mk(c + 7, TOP + 8, E, TOP + 13, 5.4, 1.2),
   };
 }
 const at = (w, t) => [w.x0 + (w.x1 - w.x0) * t, w.y0 + (w.y1 - w.y0) * t + w.dip * dipShape(t)];
@@ -283,20 +297,20 @@ function seed() {
   const w = spawn("COPL-33", "working"); w.agent = "dev"; w.slot = 0; w.wire = "ab1"; w.t = 1; w.started = performance.now() - 134000; w.until = performance.now() + 6000;
   const q1 = spawn("COPL-31", "queued"); q1.wire = "ab1"; q1.t = 0.55;
   const q2 = spawn("COPL-44", "queued"); q2.wire = "ab1"; q2.t = 0.3;
-  const bl = spawn("COPL-48", "blocked"); bl.wire = "blk1"; bl.t = 0.35; bl.agent = "review";
+  const bl = spawn("COPL-48", "blocked"); bl.wire = "bb"; bl.t = 0.85; bl.agent = "review";
 }
 function queueTargets() { const q = items.filter(i => i.state === "queued"); q.forEach((it, i) => (it.qt = Math.max(0.12, 0.7 - i * 0.2))); return q; }
 function freeSlot() { const used = items.filter(i => i.state === "working" || i.state === "picking").map(i => i.slot); return [0, 1].find(s => !used.includes(s)); }
 function freeAgent() { const busy = items.filter(i => i.state === "working" || i.state === "picking").map(i => i.agent); return AGENTS.find(a => !busy.includes(a)); }
 function finish(it, outcome) {
   it.state = "leaving"; it.outcome = outcome;
-  it.route = outcome === "done" ? [["bd", 0, 1], ["done1", 0, 1]] : [["bb", 0, 1], ["blk1", 0, Math.min(0.85, 0.35 + 0.17 * items.filter(i => i.state === "blocked").length)]];
+  it.route = outcome === "done" ? [["bd", 0, 1], ["done2", 0, 1]] : [["bb", 0, Math.max(0.2, 0.85 - 0.18 * items.filter(i => i.state === "blocked").length)]];
   it.seg = 0; it.p = 0;
 }
 document.getElementById("add").onclick = () => spawn(nextKey());
 document.getElementById("answer").onclick = () => {
   const b = items.find(i => i.state === "blocked"); if (!b) return;
-  b.state = "returning"; b.route = [["blk1", b.t, 0], ["bb", 1, 0]]; b.seg = 0; b.p = 0;
+  b.state = "returning"; b.route = [["bb", b.t, 0]]; b.seg = 0; b.p = 0;
 };
 document.getElementById("finish").onclick = () => { const w = items.find(i => i.state === "working"); if (w) finish(w, Math.random() < V.blockedChance ? "blocked" : "done"); };
 
@@ -351,7 +365,7 @@ function frame(now) {
     else if (it.state === "picking" && advance(it, sdt)) { it.state = "working"; it.started = now; it.until = now + V.work * 1000 * (0.6 + Math.random() * 0.8); }
     else if (it.state === "working" && moving && now > it.until) finish(it, Math.random() < V.blockedChance ? "blocked" : "done");
     else if (it.state === "leaving" && advance(it, sdt)) { if (it.outcome === "done") { it.state = "gone"; doneCount++; doneLog.unshift({ key: it.key, at: now }); doneLog.length = Math.min(doneLog.length, 6); } else it.state = "blocked"; }
-    else if (it.state === "leaving" && it.outcome === "done" && it.wire === "done1") { if (!it.flashed) { it.flashed = true; flashDone = 1; } it.alpha = 1 - Math.max(0, (it.t - 0.5) / 0.5); }
+    else if (it.state === "leaving" && it.outcome === "done" && it.wire === "done2") { if (!it.flashed) { it.flashed = true; flashDone = 1; } it.alpha = 1 - Math.max(0, (it.t - 0.5) / 0.5); }
     else if (it.state === "returning" && advance(it, sdt)) { it.state = "queued"; it.wire = "ab1"; it.t = 0.9; it.qt = 0.9; items.splice(items.indexOf(it), 1); items.unshift(it); break; }
   }
   items = items.filter(i => i.state !== "gone");
@@ -372,15 +386,14 @@ function frame(now) {
   drawWire(W.ab1, base, pulse(0)); drawWire(W.ab2, base, pulse(1));
   drawWire(W.bd, tinted("green")); drawWire(W.bb, tinted("red"));
   drawWire(W.done1, tinted("green")); drawWire(W.done2, tinted("green"));
-  drawWire(W.blk1, tinted("red")); drawWire(W.blk2, tinted("red"));
 
   const bl = blinkLevel();
   const blockedN = items.filter(i => i.state === "blocked").length;
   const queuedN = items.filter(i => i.state === "queued" || i.state === "arriving").length;
-  drawPole(X[0], TOPM, C.blue, queuedN ? 1 : 0);
-  drawPole(X[1], TOPM, C.yellow, working.length ? 0.85 + 0.15 * Math.sin(clock * 7) : 0);
-  drawPole(X[2], TOPD, C.green, flashDone);
-  drawPole(X[2], TOPB, C.red, blockedN ? bl : 0);
+  drawPole(X[0], TOP, C.blue, queuedN ? 1 : 0);
+  drawPole(X[1], TOP, C.yellow, working.length ? 0.85 + 0.15 * Math.sin(clock * 7) : 0);
+  drawPole(X[2], TOP, C.red, blockedN ? bl : 0);
+  drawPole(X[3], TOP, C.green, flashDone);
 
   const beadCol = it => it.state === "working" || it.state === "picking" || it.state === "returning" ? C.yellow
     : it.state === "blocked" || (it.state === "leaving" && it.outcome === "blocked") ? C.red
@@ -402,16 +415,21 @@ function frame(now) {
 function renderCols(now, lit) {
   const cap = (arr, max) => arr.length > max ? arr.slice(0, max - 1).concat([`<span class="t-more">+${arr.length - max + 1} more</span>`]) : arr;
   const head = (s, on) => `<span class="t-head${on ? " on-" + s : ""}">${s}</span>`;
+  /* Each line's forms, longest first; a list shows the first that all its shown lines fit. */
+  const fitted = (lines, max, width, wrap) => fitForms(lines.slice(0, lines.length > max ? max - 1 : lines.length), width).map(wrap).concat(lines.slice(lines.length > max ? max - 1 : lines.length).map(() => ""));
   const todo = items.filter(i => i.state === "queued" || i.state === "arriving").map(i => `<span class="t-todo">${i.key}</span>`);
-  const doing = items.filter(i => i.state === "working" || i.state === "picking").sort((a, b) => a.slot - b.slot)
-    .map(i => `<span class="t-doing">${i.key} <i>${i.agent}</i> <em>${i.state === "working" ? fmt(Math.floor((now - i.started) / 1000)) : "…"}</em></span>`);
-  const blocked = items.filter(i => i.state === "blocked" || (i.state === "leaving" && i.outcome === "blocked")).map(i => `<span class="t-blocked">▲ ${i.key} <em>${i.agent ?? ""}</em></span>`);
-  const done = doneLog.filter(d => now - d.at < 30000).map(d => `<span class="t-done" style="opacity:${Math.max(0.3, 1 - (now - d.at) / 30000).toFixed(2)}">✓ ${d.key}</span>`);
+  const doingItems = items.filter(i => i.state === "working" || i.state === "picking").sort((a, b) => a.slot - b.slot);
+  const doing = fitted(doingItems.map(i => [`${i.key} <i>${i.agent}</i> <em>${i.state === "working" ? fmt(Math.floor((now - i.started) / 1000)) : "…"}</em>`, `${i.key} <i>${i.agent}</i>`, i.key]),
+    LINES, ROOM.doing, h => `<span class="t-doing">${h}</span>`);
+  const blockedItems = items.filter(i => i.state === "blocked" || (i.state === "leaving" && i.outcome === "blocked"));
+  const blocked = fitted(blockedItems.map(i => [`▲ ${i.key} <em>${i.agent ?? ""}</em>`, `▲ ${i.key}`, i.key]), SHORT_LINES, ROOM.blocked, h => `<span class="t-blocked">${h}</span>`);
+  const doneItems = doneLog.filter(d => now - d.at < 30000);
+  const done = fitted(doneItems.map(d => [`✓ ${d.key}`, d.key]), SHORT_LINES, ROOM.done, (h, j) => `<span class="t-done" style="opacity:${Math.max(0.3, 1 - (now - doneItems[j].at) / 30000).toFixed(2)}">${h}</span>`);
   const cols = [
     [head("todo", lit.queuedN), ...cap(todo, LINES)],
     [head("doing", lit.working), ...cap(doing, LINES)],
-    [head("done", flashDone > 0.2), ...cap(done, 3)],
-    [head("blocked", lit.blockedN), ...cap(blocked, 3)],
+    [head("done", flashDone > 0.2), ...cap(done, SHORT_LINES)],
+    [head("blocked", lit.blockedN), ...cap(blocked, SHORT_LINES)],
   ];
   cols.forEach((c, i) => { const h = c.join(""); if (h !== colHtml[i]) { colHtml[i] = h; const el = document.getElementById("col-" + i); if (el) el.innerHTML = h; } });
 }
