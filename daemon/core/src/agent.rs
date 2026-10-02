@@ -9,10 +9,10 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Result, anyhow};
 use tokio::sync::watch;
 
-use crate::api::{Api, ApiError, Ending, InboxItem};
+use crate::api::{Api, ApiError, Ending, InboxItem, Me};
 use crate::config::AgentConfig;
-use crate::guard::{Check, Plan, Wake, WakeGuard, plan};
-use crate::runner::{self, Exit, Launch};
+use crate::guard::{Check, Identity, Plan, Refused, Wake, WakeGuard, plan, refused};
+use crate::runner::{self, Brief, Exit, Launch};
 use crate::state::{AgentState, DaemonState, Phase, RunSummary};
 
 const PAGE: u32 = 100;
@@ -24,6 +24,45 @@ pub struct Paths {
     pub runtime_dir: PathBuf,
 }
 
+/// A token the daemon cannot work with however often it asks: read-only, or a run's own secret.
+#[derive(Debug)]
+pub struct Unusable(pub String);
+
+impl std::fmt::Display for Unusable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unusable {}
+
+/// Who the agent's token is, from the server, refusing one the daemon can't use: a read-only
+/// token can't start runs or claim anything, and a run's secret can't start another run.
+/// What `--check` and each agent's loop ask first.
+pub async fn whoami(api: &Api, agent: &AgentConfig) -> Result<Me> {
+    let me = api
+        .me(&agent.token)
+        .await
+        .map_err(|e| anyhow!("asking who the token is: {e}"))?;
+    if let Some(access) = &me.access {
+        if access.scope == "read" {
+            return Err(Unusable(format!(
+                "the token for @{} is read-only; the daemon needs a read and write token to start runs and claim tasks. Make one on the agent's page in settings",
+                me.user.handle
+            ))
+            .into());
+        }
+        if access.run_id.is_some() {
+            return Err(Unusable(format!(
+                "the token for {} is a run's secret (cplr_…), not an API token; give the daemon the agent's own token (cpl_…)",
+                agent.handle
+            ))
+            .into());
+        }
+    }
+    Ok(me)
+}
+
 pub struct AgentLoop {
     index: usize,
     agent: AgentConfig,
@@ -32,8 +71,8 @@ pub struct AgentLoop {
     paths: Arc<Paths>,
     state: watch::Sender<DaemonState>,
     shutdown: watch::Receiver<bool>,
-    /// The handle the server gave, once asked.
-    handle: Option<String>,
+    /// Who the token is, once the server has said.
+    me: Option<Identity>,
     guard: WakeGuard,
     /// Task-less items already logged, so each is said once.
     noted: std::collections::HashSet<String>,
@@ -63,7 +102,7 @@ impl AgentLoop {
             paths,
             state,
             shutdown,
-            handle: None,
+            me: None,
             guard: WakeGuard::default(),
             noted: Default::default(),
         })
@@ -78,7 +117,7 @@ impl AgentLoop {
     }
 
     pub async fn run(mut self) {
-        /* The same failure every poll (server down, a read-only token) is said once, until it changes. */
+        /* The same failure every poll (server down) is said once, until it changes. */
         let mut last_error: Option<String> = None;
         while !self.stopping() {
             let launched = match self.tick().await {
@@ -91,6 +130,12 @@ impl AgentLoop {
                 }
                 Err(e) => {
                     let message = format!("{e:#}");
+                    if e.downcast_ref::<Unusable>().is_some() {
+                        /* Asking again won't change the token: this agent stops, the others go on. */
+                        tracing::error!("{message}; not watching this agent");
+                        self.update(|s| s.last_error = Some(message));
+                        break;
+                    }
                     if last_error.as_deref() == Some(message.as_str()) {
                         tracing::debug!("{message}");
                     } else {
@@ -119,15 +164,11 @@ impl AgentLoop {
     }
 
     /// Who the token is, from the server. The config's handle is only a label.
-    async fn handle(&mut self) -> Result<String> {
-        if let Some(h) = &self.handle {
-            return Ok(h.clone());
+    async fn identity(&mut self) -> Result<Identity> {
+        if let Some(me) = &self.me {
+            return Ok(me.clone());
         }
-        let me = self
-            .api
-            .me(&self.agent.token)
-            .await
-            .map_err(|e| anyhow!("asking who the token is: {e}"))?;
+        let me = whoami(&self.api, &self.agent).await?;
         if me.user.kind != "agent" {
             tracing::warn!(
                 "the token for {} acts as @{}, a person, not an agent; it works, but runs will be the person's",
@@ -143,13 +184,17 @@ impl AgentLoop {
             );
         }
         tracing::info!(url = %self.agent.url, "watching @{}'s inbox", me.user.handle);
-        let handle = me.user.handle.clone();
+        let identity = Identity {
+            id: me.user.id,
+            handle: me.user.handle,
+        };
+        let handle = identity.handle.clone();
         self.update(|s| {
-            s.handle = handle.clone();
+            s.handle = handle;
             s.phase = Phase::Idle;
         });
-        self.handle = Some(handle.clone());
-        Ok(handle)
+        self.me = Some(identity.clone());
+        Ok(identity)
     }
 
     /// Everything unread, a page at a time.
@@ -175,7 +220,7 @@ impl AgentLoop {
 
     /// One poll. True when a run was launched (or tried), so the caller looks again at once.
     async fn tick(&mut self) -> Result<bool> {
-        let me = self.handle().await?;
+        let me = self.identity().await?;
         let (unread, items) = self.unread().await?;
         self.update(|s| {
             s.last_poll = Some(SystemTime::now());
@@ -195,19 +240,28 @@ impl AgentLoop {
             if self.stopping() {
                 return Ok(false);
             }
-            if let Check::Seen { updated_at } = self.guard.check(wake) {
+            if let Check::Seen { updated_at, held } = self.guard.check(wake) {
                 let current = match self.api.task(&self.agent.token, &wake.task_id).await {
-                    Ok(t) => Some(t.updated_at),
+                    Ok(t) => Some((t.updated_at, t.claim.is_some())),
                     Err(e) if e.is_refusal() => None,
                     Err(e) => return Err(anyhow!("reading {}: {e}", wake.task_key)),
                 };
-                if !WakeGuard::changed(&updated_at, current.as_deref()) {
-                    tracing::debug!(task = %wake.task_key, "already handled these {} item(s); waiting for something new", wake.items.len());
+                let now = current.as_ref().map(|(at, claimed)| (at.as_str(), *claimed));
+                if !WakeGuard::again(&updated_at, held, now) {
+                    if held {
+                        tracing::debug!(task = %wake.task_key, "another run still holds it; waiting for that run to end");
+                    } else {
+                        tracing::debug!(task = %wake.task_key, "already handled these {} item(s); waiting for something new", wake.items.len());
+                    }
                     continue;
                 }
-                tracing::info!(task = %wake.task_key, "changed since the last run; waking");
+                if held {
+                    tracing::info!(task = %wake.task_key, "the run that held it has ended; trying again");
+                } else {
+                    tracing::info!(task = %wake.task_key, "changed since the last run; waking");
+                }
             }
-            match self.work(&me, wake).await? {
+            match self.work(&me.handle, wake).await? {
                 Outcome::Ran => return Ok(true),
                 Outcome::Skipped => continue,
             }
@@ -252,24 +306,38 @@ impl AgentLoop {
             }
         });
 
-        match self.api.claim(&started.secret, &wake.task_id).await {
-            Ok(task) => tracing::info!(run = %short, task = %task.key, "claimed"),
-            Err(e) => {
-                let ending = self.finish(&run_id, Ending::Cancelled).await;
-                self.update(|s| s.phase = Phase::Idle);
-                return match e {
-                    ApiError::Status { .. } if e.is_refusal() => {
-                        /* Someone else's run holds it, it is closed, or it is someone else's: leave it. */
-                        tracing::info!(run = %short, task = %key, "claim refused, skipping: {e}");
-                        let updated = self.updated_at(&wake.task_id).await;
-                        self.guard.remember(wake, updated);
-                        self.summary(&short, &key, format!("skipped ({ending}): {e}"));
-                        Ok(Outcome::Skipped)
-                    }
-                    _ => Err(anyhow!("claiming {key}: {e}")),
-                };
+        let brief = match self.api.claim(&started.secret, &wake.task_id).await {
+            Ok(task) => {
+                tracing::info!(run = %short, task = %task.key, "claimed");
+                Brief::Work
             }
-        }
+            Err(e @ ApiError::Status { .. }) if e.is_refusal() => match refused(e.code(), wake) {
+                Refused::Answer(brief) => {
+                    /* Not the agent's to take, but something was said to it there: answer, without a claim. */
+                    tracing::info!(run = %short, task = %key, "not claimed ({e}); launching to answer, without a claim");
+                    brief
+                }
+                why => {
+                    let ending = self.finish(&run_id, Ending::Cancelled).await;
+                    self.update(|s| s.phase = Phase::Idle);
+                    let held = why == Refused::Hold;
+                    if held {
+                        tracing::info!(run = %short, task = %key, "another run holds it; coming back when that run ends: {e}");
+                    } else {
+                        tracing::info!(run = %short, task = %key, "claim refused, skipping: {e}");
+                    }
+                    let updated = self.updated_at(&wake.task_id).await;
+                    self.guard.remember(wake, updated, held);
+                    self.summary(&short, &key, format!("skipped ({ending}): {e}"));
+                    return Ok(Outcome::Skipped);
+                }
+            },
+            Err(e) => {
+                self.finish(&run_id, Ending::Cancelled).await;
+                self.update(|s| s.phase = Phase::Idle);
+                return Err(anyhow!("claiming {key}: {e}"));
+            }
+        };
 
         let exit = runner::run(
             Launch {
@@ -279,6 +347,7 @@ impl AgentLoop {
                 run_id: &run_id,
                 secret: &started.secret,
                 task_key: &key,
+                brief,
                 state_dir: &self.paths.state_dir,
                 runtime_dir: &self.paths.runtime_dir,
             },
@@ -298,9 +367,15 @@ impl AgentLoop {
             /* The runtime finished it first (finish_run), and its word stands. */
             tracing::info!(run = %short, task = %key, "runtime {exit}; run {status} (finished by the runtime)");
         }
+        /* Remembered whatever the ending, a ceiling included, so it isn't launched again for the same items. */
         let updated = self.updated_at(&wake.task_id).await;
-        self.guard.remember(wake, updated);
-        self.summary(&short, &key, status);
+        self.guard.remember(wake, updated, false);
+        let outcome = if exit == Exit::TimedOut {
+            format!("{status} (stopped at the {} ceiling)", runner::span(runner::CEILING))
+        } else {
+            status
+        };
+        self.summary(&short, &key, outcome);
         self.update(|s| s.phase = Phase::Idle);
         Ok(Outcome::Ran)
     }

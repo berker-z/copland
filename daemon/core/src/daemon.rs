@@ -65,8 +65,8 @@ impl Daemon {
         let _ = self.shutdown.send(true);
     }
 
-    /// Wait for every loop to end.
-    pub async fn join(mut self) {
+    /// Wait for every loop to end: after `shutdown`, or when none is left (each one's token was unusable).
+    pub async fn join(&mut self) {
         while let Some(result) = self.loops.join_next().await {
             if let Err(e) = result {
                 tracing::error!("an agent loop crashed: {e}");

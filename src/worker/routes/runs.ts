@@ -26,14 +26,15 @@
    stage unless it is in one already, and its parents follow in the same
    batch. The claim, the assignment, the move and the log go in one batch
    whose second statement fails unless this run holds the claim, so two runs
-   racing for a task cannot both win.
+   racing for a task cannot both win. A refusal is a 409 whose `code` says
+   why: closed, assigned_elsewhere or claimed (domain/runs.ts).
 
    A claim ends with its run (finish, or the principal paused, deleted or
    disabled), with an explicit release, when its task closes or is deleted,
    and when the claimer comes off the task's assignees (routes/tasks.ts).
    ========================================================================== */
 
-import { RUN_ENDINGS, shortRunId, type RunEnding } from "@/domain/runs";
+import { RUN_ENDINGS, shortRunId, type ClaimRefusal, type RunEnding } from "@/domain/runs";
 import type { StartedRun, Viewer } from "@/domain/types";
 import { personOf } from "../access";
 import type { Env } from "../env";
@@ -129,6 +130,9 @@ async function currentClaim(db: D1Database, taskId: string): Promise<ClaimRow | 
     .first<ClaimRow>();
 }
 
+/** A claim refused, with the reason a program reads (domain/runs.ts CLAIM_REFUSALS). */
+const refused = (message: string, code: ClaimRefusal) => conflict(message, code);
+
 const heldBy = (c: ClaimRow) => `@${c.handle}'s run ${shortRunId(c.run_id)}, until ${c.claimed_until}`;
 
 /** POST /api/tasks/:id/claim. See the header for every rule. */
@@ -141,19 +145,20 @@ export async function postClaim(env: Env, viewer: Viewer, id: string, changes: C
   const stages = await listStages(db, board.id);
   const stage = stages.find((s) => s.id === task.stageId);
   if (task.completedAt !== null || stage?.category === "done" || stage?.category === "cancelled") {
-    throw conflict(`${task.key} is closed; move it back to an open stage before claiming it`);
+    throw refused(`${task.key} is closed; move it back to an open stage before claiming it`, "closed");
   }
   if (task.assigneeIds.length > 0 && !task.assigneeIds.includes(me)) {
     const { results } = await db
       .prepare(`SELECT handle FROM users WHERE id IN (${task.assigneeIds.map((_, i) => `?${i + 1}`).join(",")})`)
       .bind(...task.assigneeIds)
       .all<{ handle: string }>();
-    throw conflict(
+    throw refused(
       `${task.key} is assigned to ${results.map((r) => `@${r.handle}`).join(", ")}, not you; only an assignee, or anyone on an unassigned task, can claim it`,
+      "assigned_elsewhere",
     );
   }
   const existing = await currentClaim(db, task.id);
-  if (existing?.live && existing.run_id !== runId) throw conflict(`${task.key} is already claimed by ${heldBy(existing)}`);
+  if (existing?.live && existing.run_id !== runId) throw refused(`${task.key} is already claimed by ${heldBy(existing)}`, "claimed");
 
   const assigning = task.assigneeIds.length === 0;
   if (assigning) await requireAssignable(db, viewer, board.id, [me]);
@@ -215,7 +220,7 @@ export async function postClaim(env: Env, viewer: Viewer, id: string, changes: C
     ]);
   } catch (error) {
     const held = await currentClaim(db, task.id);
-    if (held?.live && held.run_id !== runId) throw conflict(`${task.key} was just claimed by ${heldBy(held)}`);
+    if (held?.live && held.run_id !== runId) throw refused(`${task.key} was just claimed by ${heldBy(held)}`, "claimed");
     throw error;
   }
 

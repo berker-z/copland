@@ -14,21 +14,34 @@ import { listVault, removeVault, sealVault } from "../vault";
 
 /**
  * GET /api/me. An agent has no inbox of its own; its "inbox" is its owner's,
- * when the owner has added it there.
+ * when the owner has added it there. A request with a token also says what
+ * that token may do (`access`), so a client can refuse a read-only one up
+ * front; never its id or secret.
  */
 export async function getMe(env: Env, viewer: Viewer): Promise<Response> {
+  const a = viewer.access;
+  const access: Pick<Me, "access"> = a
+    ? { access: { kind: a.kind, scope: a.scope, via: a.via, runId: a.runId ?? null } }
+    : {};
   if (viewer.agent) {
     const inbox = await inboxIdFor(env.DB, viewer.agent.owner.id);
     const onIt = await env.DB.prepare(`SELECT 1 FROM board_members WHERE board_id = ?1 AND user_id = ?2`)
       .bind(inbox, viewer.user.id)
       .first();
-    const me: Me = { user: viewer.user, inboxId: onIt ? inbox : null, signup: signupMode(env), owner: viewer.agent.owner };
+    const me: Me = {
+      user: viewer.user,
+      inboxId: onIt ? inbox : null,
+      signup: signupMode(env),
+      owner: viewer.agent.owner,
+      ...access,
+    };
     return json(me);
   }
   const me: Me = {
     user: viewer.user,
     inboxId: await inboxIdFor(env.DB, viewer.user.id),
     signup: signupMode(env),
+    ...access,
   };
   return json(me);
 }

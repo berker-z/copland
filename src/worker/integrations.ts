@@ -18,7 +18,7 @@ import type { Viewer } from "@/domain/types";
 import type { Env } from "./env";
 import { errorResponse, HttpError, notFound, UnauthenticatedError } from "./http";
 import { Changes } from "./live";
-import { handleMcp, type ApiCall } from "./mcp";
+import { CallError, handleMcp, type ApiCall } from "./mcp";
 import {
   authorizationServerMetadata,
   authorize,
@@ -61,8 +61,10 @@ function apiCaller(viewer: Viewer, url: URL, runApi: RunApi): ApiCall {
     } catch (error) {
       response = errorResponse(error);
     }
-    const data = (await response.json().catch(() => null)) as { message?: string } | null;
-    if (!response.ok) throw new Error(data?.message ?? `Request failed (${response.status})`);
+    const data = (await response.json().catch(() => null)) as { message?: string; code?: string } | null;
+    if (!response.ok) {
+      throw new CallError(data?.message ?? `Request failed (${response.status})`, response.status, data?.code ?? null);
+    }
     return data as T;
   };
 }

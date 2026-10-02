@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use copland_daemon_core::agent::whoami;
+use copland_daemon_core::api::Api;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
 use copland_daemon_core::{Config, Daemon, Paths};
 use tokio::signal::unix::{SignalKind, signal};
@@ -20,7 +22,7 @@ struct Args {
     /// The config file [default: $XDG_CONFIG_HOME/copland/daemon.toml]
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
-    /// Read the config, check it, and exit.
+    /// Read the config, check it and each token with its instance, and exit.
     #[arg(long)]
     check: bool,
 }
@@ -38,14 +40,26 @@ async fn main() -> Result<()> {
     let path = args.config.unwrap_or_else(default_config_path);
     let config = Config::load(&path).with_context(|| "loading the config")?;
     if args.check {
+        /* Ask each instance who the token is, so a bad or read-only token shows now, not at the first poll. */
+        let mut failed = 0;
         for a in &config.agents {
             println!("@{} at {}: {:?} in {}", a.handle, a.url, a.command, a.workdir.display());
+            match whoami(&Api::new(&a.url)?, a).await {
+                Ok(me) => println!("  token: @{} ({}), read and write", me.user.handle, me.user.kind),
+                Err(e) => {
+                    println!("  token: {e:#}");
+                    failed += 1;
+                }
+            }
+        }
+        if failed > 0 {
+            anyhow::bail!("{failed} agent(s) can't run as configured");
         }
         return Ok(());
     }
     tracing::info!(config = %path.display(), agents = config.agents.len(), poll = ?config.poll_interval, "starting");
 
-    let daemon = Daemon::start(
+    let mut daemon = Daemon::start(
         config,
         Paths {
             state_dir: default_state_dir(),
@@ -57,6 +71,8 @@ async fn main() -> Result<()> {
     tokio::select! {
         _ = term.recv() => tracing::info!("SIGTERM: stopping"),
         _ = int.recv() => tracing::info!("SIGINT: stopping"),
+        /* Every agent's loop ended by itself: each had a token it can't use (read-only, or a run's secret). */
+        _ = daemon.join() => anyhow::bail!("no agent left to watch"),
     }
     daemon.shutdown();
     /* A second signal means now: runs left behind go stale and their claims lapse within the lease. */

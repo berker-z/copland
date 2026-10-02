@@ -1,5 +1,7 @@
 /* ============================================================================
-   HTTP helpers. Uniform JSON shapes so the client has one error contract.
+   HTTP helpers. Uniform JSON shapes so the client has one error contract:
+   { error, message }, plus `code` where a refusal has reasons a program
+   tells apart (the claim route's closed, assigned_elsewhere and claimed).
    ========================================================================== */
 
 export function json(data: unknown, init: ResponseInit = {}): Response {
@@ -18,6 +20,8 @@ export class HttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** Why, for a program to act on ("claimed"); the message is for people. Sent as `code`. */
+    readonly code?: string,
   ) {
     super(message);
     this.name = "HttpError";
@@ -35,8 +39,8 @@ export class UnauthenticatedError extends Error {
 export const badRequest = (m: string) => new HttpError(400, m);
 export const forbidden = (m: string) => new HttpError(403, m);
 export const notFound = (m = "Not found") => new HttpError(404, m);
-/** The row changed under the caller; refetch and try again. */
-export const conflict = (m: string) => new HttpError(409, m);
+/** The row changed under the caller, or its state refuses this; `code` says which when a program needs to tell. */
+export const conflict = (m: string, code?: string) => new HttpError(409, m, code);
 
 /**
  * A request body that is a JSON object, or a 400. `null`, a bare string or
@@ -63,7 +67,10 @@ export function errorResponse(error: unknown): Response {
     return json({ error: "unauthenticated", message: error.message }, { status: 401 });
   }
   if (error instanceof HttpError) {
-    return json({ error: "request_failed", message: error.message }, { status: error.status });
+    return json(
+      { error: "request_failed", ...(error.code ? { code: error.code } : {}), message: error.message },
+      { status: error.status },
+    );
   }
   console.error("Unhandled worker error:", error);
   return json({ error: "internal", message: "Something went wrong" }, { status: 500 });

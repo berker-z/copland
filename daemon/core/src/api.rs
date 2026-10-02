@@ -19,10 +19,23 @@ pub struct User {
     pub handle: String,
 }
 
+/// What the credential may do, when it is a token (or a run's secret).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Access {
+    /// "read" or "write".
+    pub scope: String,
+    pub via: String,
+    pub run_id: Option<String>,
+}
+
 /// GET /api/me
 #[derive(Debug, Clone, Deserialize)]
 pub struct Me {
     pub user: User,
+    /// Missing from a server older than COPL-53.
+    #[serde(default)]
+    pub access: Option<Access>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -35,6 +48,9 @@ pub struct TaskRef {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Actor {
+    /// Missing from a server older than COPL-52; the handle is the fallback then.
+    #[serde(default)]
+    pub id: Option<String>,
     pub handle: String,
 }
 
@@ -67,6 +83,17 @@ pub struct Task {
     pub key: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    /// A run on it right now; only live claims are sent.
+    #[serde(default)]
+    pub claim: Option<Claim>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Claim {
+    pub run_id: String,
+    /// "8f31".
+    pub run: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -106,7 +133,12 @@ impl Ending {
 #[derive(Debug)]
 pub enum ApiError {
     /// The server answered, and said no. `message` is its own words.
-    Status { status: u16, message: String },
+    Status {
+        status: u16,
+        /// Why, when the server gave a reason a program can act on (a claim's "claimed").
+        code: Option<String>,
+        message: String,
+    },
     /// No usable answer: the network, a timeout, or a body that was not what we expected.
     Transport(String),
 }
@@ -115,6 +147,12 @@ impl ApiError {
     pub fn status(&self) -> Option<u16> {
         match self {
             ApiError::Status { status, .. } => Some(*status),
+            ApiError::Transport(_) => None,
+        }
+    }
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            ApiError::Status { code, .. } => code.as_deref(),
             ApiError::Transport(_) => None,
         }
     }
@@ -127,7 +165,7 @@ impl ApiError {
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ApiError::Status { status, message } => write!(f, "{status}: {message}"),
+            ApiError::Status { status, message, .. } => write!(f, "{status}: {message}"),
             ApiError::Transport(e) => write!(f, "{e}"),
         }
     }
@@ -139,6 +177,7 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 #[derive(Deserialize)]
 struct ErrorBody {
+    code: Option<String>,
     message: Option<String>,
     error: Option<String>,
 }
@@ -188,12 +227,14 @@ impl Api {
                 .map_err(|e| ApiError::Transport(format!("unexpected answer: {e}")));
         }
         let text = res.text().await.unwrap_or_default();
-        let message = serde_json::from_str::<ErrorBody>(&text)
-            .ok()
+        let body = serde_json::from_str::<ErrorBody>(&text).ok();
+        let code = body.as_ref().and_then(|b| b.code.clone());
+        let message = body
             .and_then(|b| b.message.or(b.error))
             .unwrap_or_else(|| text.chars().take(200).collect());
         Err(ApiError::Status {
             status: status.as_u16(),
+            code,
             message,
         })
     }

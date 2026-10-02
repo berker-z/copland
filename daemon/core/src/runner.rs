@@ -21,11 +21,38 @@ pub const KEEPALIVE: Duration = Duration::from_secs(120);
 /// How long a runtime gets between SIGTERM and SIGKILL.
 pub const GRACE: Duration = Duration::from_secs(10);
 
+/// How long a runtime may run before the daemon stops it and fails the run. Fixed, on purpose.
+pub const CEILING: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// What the runtime is launched to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Brief {
+    /// Its run claimed the task: work on it.
+    Work,
+    /// No claim (the task is someone else's); it was mentioned there.
+    Mentioned,
+    /// No claim (the task is someone else's); there are comments for it there.
+    Commented,
+    /// No claim (the task is closed); it was mentioned there.
+    Closed,
+}
+
 /// The prompt the runtime starts with. Short: the MCP guide carries the rest.
-pub fn prompt(handle: &str, task_key: &str) -> String {
-    format!(
-        "You are @{handle} working on {task_key}. Read it with get_task, check your inbox, and work as the copland guide says. When you stop, leave the task in the right stage."
-    )
+pub fn prompt(handle: &str, task_key: &str, brief: Brief) -> String {
+    match brief {
+        Brief::Work => format!(
+            "You are @{handle} working on {task_key}. Read it with get_task, check your inbox, and work as the copland guide says. When you stop, leave the task in the right stage."
+        ),
+        Brief::Mentioned => format!(
+            "You are @{handle}. You were mentioned on {task_key}, which isn't yours. Read it with get_task, answer in its comments, and don't take it over."
+        ),
+        Brief::Commented => format!(
+            "You are @{handle}. There are new comments for you on {task_key}, which isn't yours. Read it with get_task, answer in its comments if they need you, and don't take it over."
+        ),
+        Brief::Closed => format!(
+            "You are @{handle}. You were mentioned on {task_key}, which is closed. Read it with get_task, answer in its comments, and don't reopen it or take it over."
+        ),
+    }
 }
 
 /// How the runtime ended.
@@ -35,6 +62,8 @@ pub enum Exit {
     Signal(i32),
     /// The daemon stopped it on shutdown.
     Stopped,
+    /// The daemon stopped it at the ceiling.
+    TimedOut,
     /// It never started.
     SpawnFailed(String),
 }
@@ -45,6 +74,7 @@ impl std::fmt::Display for Exit {
             Exit::Code(c) => write!(f, "exit {c}"),
             Exit::Signal(s) => write!(f, "signal {s}"),
             Exit::Stopped => write!(f, "stopped by the daemon"),
+            Exit::TimedOut => write!(f, "stopped at the run ceiling"),
             Exit::SpawnFailed(e) => write!(f, "did not start: {e}"),
         }
     }
@@ -102,6 +132,7 @@ pub struct Launch<'a> {
     pub run_id: &'a str,
     pub secret: &'a Secret,
     pub task_key: &'a str,
+    pub brief: Brief,
     pub state_dir: &'a Path,
     pub runtime_dir: &'a Path,
 }
@@ -111,8 +142,24 @@ pub fn log_path(state_dir: &Path, run_id: &str) -> PathBuf {
     state_dir.join("runs").join(format!("{run_id}.log"))
 }
 
-/// Start the runtime, keep its run alive while it lives, stop it if asked. Returns how it ended.
-pub async fn run(launch: Launch<'_>, mut shutdown: watch::Receiver<bool>) -> Exit {
+/// "2h", "90s": a duration the way the log says it.
+pub fn span(d: Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 && s % 3600 == 0 {
+        format!("{}h", s / 3600)
+    } else if s >= 60 && s % 60 == 0 {
+        format!("{}m", s / 60)
+    } else {
+        format!("{s}s")
+    }
+}
+
+/// Start the runtime, keep its run alive while it lives, stop it if asked or once it reaches the ceiling. Returns how it ended.
+pub async fn run(launch: Launch<'_>, shutdown: watch::Receiver<bool>) -> Exit {
+    run_until(launch, shutdown, CEILING).await
+}
+
+async fn run_until(launch: Launch<'_>, mut shutdown: watch::Receiver<bool>, ceiling: Duration) -> Exit {
     let Launch {
         api,
         agent,
@@ -120,6 +167,7 @@ pub async fn run(launch: Launch<'_>, mut shutdown: watch::Receiver<bool>) -> Exi
         run_id,
         secret,
         task_key,
+        brief,
         state_dir,
         runtime_dir,
     } = launch;
@@ -141,7 +189,7 @@ pub async fn run(launch: Launch<'_>, mut shutdown: watch::Receiver<bool>) -> Exi
         Err(e) => return Exit::SpawnFailed(format!("{e:#}")),
     };
 
-    let argv = fill_command(&agent.command, &prompt(handle, task_key), &mcp_path);
+    let argv = fill_command(&agent.command, &prompt(handle, task_key, brief), &mcp_path);
     let _ = writeln!(
         log_file,
         "# copland-daemon: run {run_id}, @{handle} on {task_key}, in {}\n# argv: {:?}",
@@ -175,6 +223,7 @@ pub async fn run(launch: Launch<'_>, mut shutdown: watch::Receiver<bool>) -> Exi
     let pid = child.id();
     tracing::info!(run = %short(run_id), task = task_key, pid, log = %log.display(), "runtime started");
 
+    let deadline = Instant::now() + ceiling;
     let mut keepalive = interval_at(Instant::now() + KEEPALIVE, KEEPALIVE);
     let mut alive = true;
     loop {
@@ -199,6 +248,11 @@ pub async fn run(launch: Launch<'_>, mut shutdown: watch::Receiver<bool>) -> Exi
                     }
                     Err(e) => tracing::warn!(run = %short(run_id), "keepalive failed: {e}"),
                 }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                tracing::warn!(run = %short(run_id), task = task_key, "still running at the ceiling of {}; stopping it", span(ceiling));
+                stop(&mut child, pid).await;
+                return Exit::TimedOut;
             }
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
@@ -253,7 +307,57 @@ mod tests {
 
     #[test]
     fn prompt_names_the_agent_and_task() {
-        let p = prompt("me/dev", "COPL-9");
+        let p = prompt("me/dev", "COPL-9", Brief::Work);
         assert!(p.starts_with("You are @me/dev working on COPL-9."));
+        let p = prompt("me/dev", "COPL-9", Brief::Mentioned);
+        assert_eq!(
+            p,
+            "You are @me/dev. You were mentioned on COPL-9, which isn't yours. Read it with get_task, answer in its comments, and don't take it over."
+        );
+        assert!(prompt("me/dev", "COPL-9", Brief::Closed).contains("which is closed"));
+    }
+
+    #[test]
+    fn spans_read_plainly() {
+        assert_eq!(span(CEILING), "2h");
+        assert_eq!(span(Duration::from_secs(90)), "90s");
+        assert_eq!(span(Duration::from_secs(600)), "10m");
+    }
+
+    /// A runtime still going at the ceiling is stopped (SIGTERM to its group) and reported as such.
+    #[tokio::test]
+    async fn the_ceiling_stops_the_runtime() {
+        let scratch = std::env::temp_dir().join(format!("copland-ceiling-{}", std::process::id()));
+        let agent = AgentConfig {
+            url: "http://127.0.0.1:9".into(),
+            handle: "me/dev".into(),
+            token: Secret::new("cpl_x"),
+            command: vec!["sleep".into(), "30".into()],
+            workdir: std::env::temp_dir(),
+            client: "test".into(),
+        };
+        let api = Api::new(&agent.url).unwrap();
+        let (_tx, shutdown) = watch::channel(false);
+        let started = std::time::Instant::now();
+        let exit = run_until(
+            Launch {
+                api: &api,
+                agent: &agent,
+                handle: "me/dev",
+                run_id: "00000000-0000-0000-0000-000000000000",
+                secret: &Secret::new("cplr_x"),
+                task_key: "T-1",
+                brief: Brief::Work,
+                state_dir: &scratch,
+                runtime_dir: &scratch,
+            },
+            shutdown,
+            Duration::from_millis(300),
+        )
+        .await;
+        let _ = fs::remove_dir_all(&scratch);
+        assert_eq!(exit, Exit::TimedOut);
+        /* sleep dies on SIGTERM, so the grace period is not waited out. */
+        assert!(started.elapsed() < GRACE, "took {:?}", started.elapsed());
     }
 }

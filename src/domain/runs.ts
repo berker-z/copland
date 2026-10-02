@@ -25,3 +25,12 @@ export function shortRunId(id: string): string {
 export function runStatus(stored: "running" | RunEnding, lastSeenAt: string, now = Date.now()): RunStatus {
   return stored === "running" && Date.parse(lastSeenAt) + RUN_LEASE_MS < now ? "stale" : stored;
 }
+
+/**
+ * Why POST /api/tasks/:id/claim said no, as the `code` of its 409: the task
+ * is closed, it is assigned to others and not the claimer, or another run
+ * holds a live claim on it. A daemon tells them apart: the last one passes
+ * when that run ends, the first two do not.
+ */
+export const CLAIM_REFUSALS = ["closed", "assigned_elsewhere", "claimed"] as const;
+export type ClaimRefusal = (typeof CLAIM_REFUSALS)[number];

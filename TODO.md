@@ -67,10 +67,8 @@ docs/DESIGN.md under Touch.
 ## Later
 
 - [ ] The daemon (COPL-9) beyond headless: a GPUI window on the same
-      loop (COPL-33), a second runtime (Codex) to prove the binding, a way
-      back to a task whose claim another run held (today it waits for a new
-      inbox item), answering a mention on someone else's task without a
-      claim, and backoff for a runtime that keeps failing. Known gaps are in
+      loop (COPL-33), a second runtime (Codex) to prove the binding, and
+      backoff for a runtime that keeps failing. Known gaps are in
       daemon/README.md.
 - [ ] Data export: everything a person has, as one download from settings.
 - [ ] Mail (v0.2): IMAP/JMAP first, narrow read-only grants for agents.
@@ -222,3 +220,10 @@ docs/DESIGN.md under Touch.
   alive, finish it on exit (0 completed, else failed; cancelled on
   SIGINT/SIGTERM). A wake guard keeps it from relaunching on items a run
   already saw. Tested locally with a curl stub and one real Claude Code run
+- The daemon proof's gaps (COPL-49 to COPL-53): a claim refusal carries a
+  `code` (closed, assigned_elsewhere, claimed). The daemon comes back to a
+  task once the run that held it ends, launches without a claim to answer
+  a mention on someone else's task, stops a runtime at a fixed two-hour
+  ceiling (run failed), tells its own inbox items apart by actor id, and
+  refuses a read-only token at startup and in `--check` (`/api/me` now
+  says the token's `access`).

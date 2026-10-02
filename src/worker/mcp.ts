@@ -20,7 +20,7 @@
 
 import type { CalendarEvents, CalendarSetup } from "@/domain/calendar";
 import { NOTE_CONTENT_MAX, NOTE_NAME_MAX, type Note } from "@/domain/panes";
-import { RUN_ENDINGS, RUN_LEASE_MS, shortRunId } from "@/domain/runs";
+import { RUN_ENDINGS, RUN_LEASE_MS, shortRunId, type ClaimRefusal } from "@/domain/runs";
 import { addDays, descendantIds, isDate } from "@/domain/tasks";
 import {
   LEVELS,
@@ -52,6 +52,26 @@ import { CORS_HEADERS } from "./oauth";
 
 /** The app's API, as the connected user. Resolves to the parsed JSON; throws on an error status. */
 export type ApiCall = <T>(method: string, path: string, body?: unknown) => Promise<T>;
+
+/** What an ApiCall throws on an error status: the route's message, and its `code` when it gave one. */
+export class CallError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string | null,
+  ) {
+    super(message);
+    this.name = "CallError";
+  }
+}
+
+/** What to do after each claim refusal (domain/runs.ts CLAIM_REFUSALS). */
+const CLAIM_REFUSED: Record<ClaimRefusal, string> = {
+  closed: "It is closed. If you were asked something on it, answer in its comments; don't reopen it unless asked.",
+  assigned_elsewhere:
+    "It isn't yours. If you were mentioned on it, read it with get_task and answer in its comments; don't take it over.",
+  claimed: "Another run is on it. Leave it; it can be claimed once that run ends or its claim lapses.",
+};
 
 const SUPPORTED_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 /** The tool interface's version, for serverInfo. Bump when tools change shape. */
@@ -729,8 +749,8 @@ const TOOLS: Tool[] = [
         admin: me.user.isAdmin,
         inbox: boards.find((b) => b.id === me.inboxId)?.key ?? null,
         boards: boards.length,
-        /* How this connection was made is not the app's to say: it lives on the token. */
-        access: ctx.viewer.access?.scope === "read" ? "read-only" : "read and write",
+        /* /api/me says what the token may do; a connection without one (none today) can do anything its roles allow. */
+        access: me.access?.scope === "read" ? "read-only" : "read and write",
         run: run ? { id: run.short, status: run.status, since: run.startedAt, claims: run.claims } : null,
       };
     },
@@ -1040,12 +1060,19 @@ const TOOLS: Tool[] = [
   {
     name: "claim_task",
     title: "Claim a task",
-    description: `Take a task for this run: the way to start work on it. Needs a run (whoami's run is not null) and the editor role; without a run it refuses, and you assign yourself and move the task to an active stage instead. An unassigned task is assigned to you; one assigned to you (with or without others) is fine; one assigned only to others is refused, as is a closed task. A task has at most one live claim: refused while another run holds it, replaced once that claim lapses or its run ends; claiming again with the same run just renews it. Moves the task to the board's first active stage unless it is in one already, and its parents follow (see the guide). The claim lasts while this run keeps calling (any call renews it) and lapses after ${RUN_LEASE_MS / 60_000} quiet minutes; it ends when the run finishes, the task closes, or you come off its assignees. Returns { claimed: summary } (with claimed_by and run), plus also_moved for parents that moved.`,
+    description: `Take a task for this run: the way to start work on it. Needs a run (whoami's run is not null) and the editor role; without a run it refuses, and you assign yourself and move the task to an active stage instead. An unassigned task is assigned to you; one assigned to you (with or without others) is fine; one assigned only to others is refused, as is a closed task. A task has at most one live claim: refused while another run holds it, replaced once that claim lapses or its run ends; claiming again with the same run just renews it. Moves the task to the board's first active stage unless it is in one already, and its parents follow (see the guide). The claim lasts while this run keeps calling (any call renews it) and lapses after ${RUN_LEASE_MS / 60_000} quiet minutes; it ends when the run finishes, the task closes, or you come off its assignees. Returns { claimed: summary } (with claimed_by and run), plus also_moved for parents that moved. A refusal says why in its first words, "Not claimed (closed)", "(assigned_elsewhere)" or "(claimed)", and what to do instead: on a task that isn't yours you can still answer in its comments.`,
     inputSchema: { type: "object", properties: { task: TASK }, required: ["task"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     async run(args, ctx) {
       const { detail, task } = await loadTask(ctx, args.task);
-      const claimed = await ctx.call<TaskWrite>("POST", `/api/tasks/${task.id}/claim`);
+      let claimed: TaskWrite;
+      try {
+        claimed = await ctx.call<TaskWrite>("POST", `/api/tasks/${task.id}/claim`);
+      } catch (error) {
+        /* Say why in a word the assistant can act on, and what to do instead. */
+        if (!(error instanceof CallError) || !error.code || !Object.hasOwn(CLAIM_REFUSED, error.code)) throw error;
+        throw new Error(`Not claimed (${error.code}): ${error.message}. ${CLAIM_REFUSED[error.code as ClaimRefusal]}`);
+      }
       return { claimed: summarize(detail, claimed, ctx.origin), ...alsoMoved(detail, claimed.alsoMoved) };
     },
   },

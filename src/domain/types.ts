@@ -44,6 +44,19 @@ export interface Me {
   signup: SignupMode;
   /** For an agent: the person it acts for. */
   owner?: User;
+  /** When the request came with a token (or a run's secret) rather than a session: what it may do. */
+  access?: MeAccess;
+}
+
+/** GET /api/me's `access`: the credential's reach, never the token itself. */
+export interface MeAccess {
+  kind: ApiAccess["kind"];
+  /** "read" refuses every write. */
+  scope: ApiTokenScope;
+  /** What the history calls it ("Claude Code", or the token's name). */
+  via: string;
+  /** The run this is a run's secret for, or null for the token itself. */
+  runId: string | null;
 }
 
 /* ---------------------------------------------------------------- boards --- */
@@ -359,7 +372,7 @@ export interface InboxItem {
   id: string;
   kind: "assigned" | "mentioned" | "commented";
   task: { id: string; key: string; title: string; boardId: string; boardName: string };
-  actor: { handle: string; avatar: string | null };
+  actor: { id: string; handle: string; avatar: string | null };
   /** What the actor came through, when it was not the web app ("Claude Code"). */
   via: string | null;
   /** For a mention or a new comment: the comment's text as it is now. */

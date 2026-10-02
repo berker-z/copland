@@ -92,6 +92,7 @@ interface Row {
   board_id: string;
   board_key: string;
   board_name: string;
+  actor_id: string;
   actor_handle: string;
   actor_avatar: string | null;
   via: string | null;
@@ -115,7 +116,7 @@ export async function readInbox(env: Env, viewer: Viewer, query: InboxQuery = {}
   const [rows, count] = await Promise.all([
     env.DB.prepare(
       `SELECT i.id, i.kind, i.task_id, t.number, t.title, b.id AS board_id, b.key AS board_key, b.name AS board_name,
-              u.handle AS actor_handle, u.avatar_key AS actor_avatar, i.via, c.text AS comment, i.created_at, i.read_at
+              i.actor_id, u.handle AS actor_handle, u.avatar_key AS actor_avatar, i.via, c.text AS comment, i.created_at, i.read_at
          FROM inbox_items i
          JOIN tasks t ON t.id = i.task_id AND t.deleted_at IS NULL
          JOIN boards b ON b.id = i.board_id
@@ -141,7 +142,7 @@ export async function readInbox(env: Env, viewer: Viewer, query: InboxQuery = {}
     id: r.id,
     kind: r.kind,
     task: { id: r.task_id, key: `${r.board_key}-${r.number}`, title: r.title, boardId: r.board_id, boardName: r.board_name },
-    actor: { handle: r.actor_handle, avatar: avatarUrl(r.actor_avatar) },
+    actor: { id: r.actor_id, handle: r.actor_handle, avatar: avatarUrl(r.actor_avatar) },
     via: r.via,
     comment: r.comment,
     createdAt: r.created_at,
