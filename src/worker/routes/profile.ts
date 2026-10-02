@@ -71,6 +71,20 @@ export async function patchMe(request: Request, env: Env, viewer: Viewer, change
 
 /** PUT /api/me/avatar: the picture's bytes as the body. */
 export async function putAvatar(request: Request, env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
+  await storeAvatar(request, env, viewer.user.id);
+  changes.notify(await peopleAudience(env.DB, viewer.user.id), "people");
+  return freshMe(env, viewer);
+}
+
+/** DELETE /api/me/avatar: back to initials. */
+export async function deleteAvatar(env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
+  await replaceAvatar(env, viewer.user.id, null);
+  changes.notify(await peopleAudience(env.DB, viewer.user.id), "people");
+  return freshMe(env, viewer);
+}
+
+/** Keep the picture in the body as this user's (a person's, or an agent's: routes/agents.ts). */
+export async function storeAvatar(request: Request, env: Env, userId: string): Promise<void> {
   const mime = (request.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
   if (!AVATAR_TYPES.has(mime)) throw badRequest("A picture is a PNG, JPEG, WebP or GIF");
   const tooBig = `That picture is too big (the limit is ${MAX_AVATAR_BYTES / 1024} KB)`;
@@ -81,40 +95,29 @@ export async function putAvatar(request: Request, env: Env, viewer: Viewer, chan
   if (bytes.byteLength > MAX_AVATAR_BYTES) throw badRequest(tooBig);
 
   const key = `${AVATAR_PREFIX}${crypto.randomUUID()}`;
-  await env.FILES.put(key, bytes, {
-    httpMetadata: { contentType: mime },
-    customMetadata: { userId: viewer.user.id },
-  });
-  await replaceAvatar(env, viewer, key);
-  changes.notify(await peopleAudience(env.DB, viewer.user.id), "people");
-  return freshMe(env, viewer);
+  await env.FILES.put(key, bytes, { httpMetadata: { contentType: mime }, customMetadata: { userId } });
+  await replaceAvatar(env, userId, key);
 }
 
-/** DELETE /api/me/avatar: back to initials. */
-export async function deleteAvatar(env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
-  await replaceAvatar(env, viewer, null);
-  changes.notify(await peopleAudience(env.DB, viewer.user.id), "people");
-  return freshMe(env, viewer);
-}
-
-async function replaceAvatar(env: Env, viewer: Viewer, key: string | null): Promise<void> {
+export async function replaceAvatar(env: Env, userId: string, key: string | null): Promise<void> {
   const old = await env.DB.prepare(`SELECT avatar_key FROM users WHERE id = ?1`)
-    .bind(viewer.user.id)
+    .bind(userId)
     .first<{ avatar_key: string | null }>();
-  await env.DB.prepare(`UPDATE users SET avatar_key = ?2 WHERE id = ?1`).bind(viewer.user.id, key).run();
+  await env.DB.prepare(`UPDATE users SET avatar_key = ?2 WHERE id = ?1`).bind(userId, key).run();
   if (old?.avatar_key && old.avatar_key !== key) await env.FILES.delete(old.avatar_key);
 }
 
 /**
  * GET /api/avatars/:id. Seen by the people who can see its owner anywhere
- * else: themselves, anyone on a board with them, and admins. Everyone else
- * gets the same 404 as a key that never existed.
+ * else: themselves, anyone on a board with them, admins, and for an agent
+ * the person it belongs to. Everyone else gets the same 404 as a key that
+ * never existed.
  */
 export async function getAvatar(env: Env, viewer: Viewer, key: string): Promise<Response> {
   const visible = await env.DB.prepare(
     `SELECT 1 FROM users u
       WHERE u.avatar_key = ?1
-        AND (u.id = ?2 OR ?3 = 1 OR EXISTS (
+        AND (u.id = ?2 OR u.owner_id = ?2 OR ?3 = 1 OR EXISTS (
               SELECT 1 FROM board_members theirs
                 JOIN board_members mine ON mine.board_id = theirs.board_id
                WHERE theirs.user_id = u.id AND mine.user_id = ?2))`,

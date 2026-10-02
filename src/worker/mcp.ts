@@ -499,7 +499,9 @@ function guide(details: BoardDetail[], ctx: Ctx): string {
     : `You are connected as **@${v.user.handle}** (${v.user.email}), with ${scope}. You act as them: on each board you can do exactly what their role there allows, and every change you make shows in the task's history as "${v.user.handle} via ${via}".`;
   out.push(`# Copland: a guide for AI assistants
 
-${who} Today is ${today()} (UTC).`);
+${who} Today is ${today()} (UTC).${
+    v.agent?.description ? `\n\n## Your job\n\n@${v.agent.owner.handle} describes what you are for:\n\n> ${v.agent.description.replace(/\n/g, "\n> ")}` : ""
+  }`);
 
   out.push(`## Concepts
 

@@ -1,26 +1,29 @@
 /* ============================================================================
    Settings: everything that used to be hardcoded or in .env, per user.
-   Pages, in PAGES below: your handle and picture (Profile.tsx), the
-   dashboard's panes (calendars, markets, the weather's place), connections
-   (API keys in the vault, how to connect an assistant, and the tokens and
-   apps that act as you, in Connections.tsx), and for admins, the people on
-   the instance.
+   Pages, from pagesFor below, grouped by who they are about:
+     you        profile (Profile.tsx), and access: what acts as you and how
+                to connect it (Connections.tsx)
+     agents     one page per agent and one to make a new one (Agents.tsx)
+     dashboard  the panes (calendars, markets, the weather's place) and the
+                service keys behind them (the vault)
+     instance   the people on it, for admins
    ========================================================================== */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Copy, Trash2, X } from "lucide-react";
 import { VAULT_NAMES, type VaultEntry, type VaultName } from "@/domain/settings";
-import type { CreatedInvite, Me } from "@/domain/types";
+import type { Agent, CreatedInvite, Me } from "@/domain/types";
 import { CalendarSettings } from "@/features/calendar/CalendarSettings";
 import { searchCities, type GeoResult } from "@/features/shell/weather";
 import { send } from "@/lib/api";
-import { KEYS, useAdminInvites, useAdminUsers, useSettings, useVault } from "@/lib/queries";
+import { KEYS, useAdminInvites, useAdminUsers, useAgents, useSettings, useVault } from "@/lib/queries";
 import { useUpdateSettings } from "@/lib/settings";
 import { Avatar } from "@/ui/Avatar";
 import { ModalFrame } from "@/ui/ModalFrame";
 import { usePhone } from "@/ui/useMediaQuery";
-import { AccessSection, AssistantsSection } from "./Connections";
+import { AgentSection, NewAgentSection } from "./Agents";
+import { AccessSection } from "./Connections";
 import { ProfileSection } from "./Profile";
 
 import { Group, Section, button, input } from "./Section";
@@ -103,7 +106,7 @@ function MarketsSection() {
   return (
     <Section
       title="markets"
-      hint="Binance spot symbols, priced in USDT, need no key. CoinGecko ids (the slug in a coin's or collection's coingecko.com URL) need a coingecko key under api keys."
+      hint="Binance spot symbols, priced in USDT, need no key. CoinGecko ids (the slug in a coin's or collection's coingecko.com URL) need a coingecko key under service keys."
     >
       <ChipList setting="coins" label="binance" placeholder="BTC" normalize={(s) => s.toUpperCase()} maxLength={12} />
       <ChipList setting="coingeckoCoins" label="coingecko coins, by market cap" placeholder="milady-cult-coin" normalize={lower} maxLength={80} />
@@ -267,7 +270,7 @@ function VaultRow({ name, entry }: { name: VaultName; entry: VaultEntry | undefi
 function VaultSection() {
   const { data: entries } = useVault();
   return (
-    <Section title="api keys" hint="Keys for the services copland calls on your behalf. Stored encrypted on the server and never sent back to the browser.">
+    <Section title="service keys" hint="Keys for the services copland calls on your behalf, like CoinGecko for the markets pane. Stored encrypted on the server, never sent back to the browser, and never reachable by an agent.">
       {(Object.keys(VAULT_NAMES) as VaultName[]).map((name) => (
         <VaultRow key={name} name={name} entry={entries?.find((e) => e.name === name)} />
       ))}
@@ -404,32 +407,72 @@ function InstanceSection({ me }: { me: Me }) {
   );
 }
 
-export type SettingsPage = "profile" | "calendars" | "markets" | "weather" | "keys" | "assistants" | "access" | "people";
+/**
+ * A settings page. Fixed ones by name; an agent's is "agent:<id>", so the
+ * list grows and shrinks with your agents.
+ */
+export type SettingsPage =
+  | "profile"
+  | "access"
+  | "new-agent"
+  | `agent:${string}`
+  | "calendars"
+  | "markets"
+  | "weather"
+  | "keys"
+  | "people";
 
 interface Page {
   id: SettingsPage;
-  label: string;
+  label: ReactNode;
   group: string;
-  adminOnly?: boolean;
 }
 
-/* Grouped by what they are for: you, the panes on the dashboard, the things
-   copland talks to, and (for admins) the instance itself. */
-const PAGES: Page[] = [
-  { id: "profile", label: "profile", group: "you" },
-  { id: "calendars", label: "calendars", group: "dashboard" },
-  { id: "markets", label: "markets", group: "dashboard" },
-  { id: "weather", label: "weather", group: "dashboard" },
-  { id: "keys", label: "api keys", group: "connections" },
-  { id: "assistants", label: "assistants", group: "connections" },
-  { id: "access", label: "access", group: "connections" },
-  { id: "people", label: "people", group: "instance", adminOnly: true },
-];
+/**
+ * Grouped by who: you (how you show up, and what acts as you), your agents
+ * (each its own page), the panes on your dashboard and the keys behind them,
+ * and for admins the instance itself.
+ */
+function pagesFor(me: Me, agents: Agent[]): Page[] {
+  return [
+    { id: "profile", label: "profile", group: "you" },
+    { id: "access", label: "access", group: "you" },
+    ...agents.map((a) => ({
+      id: `agent:${a.user.id}` as const,
+      label: (
+        <span className="flex items-center gap-2 min-w-0">
+          <Avatar user={a.user} size={14} />
+          <span className="truncate">{a.name}</span>
+          {a.pausedAt && <span className="text-xs text-yellow">paused</span>}
+        </span>
+      ),
+      group: "agents",
+    })),
+    { id: "new-agent", label: <span className="text-muted">+ new agent</span>, group: "agents" },
+    { id: "calendars", label: "calendars", group: "dashboard" },
+    { id: "markets", label: "markets", group: "dashboard" },
+    { id: "weather", label: "weather", group: "dashboard" },
+    { id: "keys", label: "service keys", group: "dashboard" },
+    ...(me.user.isAdmin ? [{ id: "people" as const, label: "people", group: "instance" }] : []),
+  ];
+}
 
-function PageBody({ page, me }: { page: SettingsPage; me: Me }) {
+function PageBody({ page, me, agents, go }: { page: SettingsPage; me: Me; agents: Agent[]; go: (p: SettingsPage | null) => void }) {
+  if (page.startsWith("agent:")) {
+    const agent = agents.find((a) => `agent:${a.user.id}` === page);
+    return agent ? (
+      <AgentSection key={agent.user.id} me={me} agent={agent} onDeleted={() => go("new-agent")} />
+    ) : (
+      <p className="text-xs text-muted animate-pulse">loading…</p>
+    );
+  }
   switch (page) {
     case "profile":
       return <ProfileSection me={me} />;
+    case "access":
+      return <AccessSection />;
+    case "new-agent":
+      return <NewAgentSection me={me} onCreated={(id) => go(`agent:${id}`)} />;
     case "calendars":
       return (
         <Section title="calendars" hint="Google accounts and ICS links. What is ticked shows in the calendar and agenda panes.">
@@ -442,13 +485,10 @@ function PageBody({ page, me }: { page: SettingsPage; me: Me }) {
       return <LocationSection />;
     case "keys":
       return <VaultSection />;
-    case "assistants":
-      return <AssistantsSection />;
-    case "access":
-      return <AccessSection />;
     case "people":
       return <InstanceSection me={me} />;
   }
+  return null;
 }
 
 /**
@@ -458,7 +498,8 @@ function PageBody({ page, me }: { page: SettingsPage; me: Me }) {
  */
 export function SettingsModal({ me, initial, onClose }: { me: Me; initial?: SettingsPage; onClose: () => void }) {
   const phone = usePhone();
-  const pages = PAGES.filter((p) => !p.adminOnly || me.user.isAdmin);
+  const { data: agents = [] } = useAgents();
+  const pages = pagesFor(me, agents);
   const [picked, setPicked] = useState<SettingsPage | null>(initial ?? null);
   /* On a wide screen something is always open; on a phone nothing is until tapped. */
   const page = picked ?? (phone ? null : pages[0].id);
@@ -476,12 +517,12 @@ export function SettingsModal({ me, initial, onClose }: { me: Me; initial?: Sett
                 key={p.id}
                 onClick={() => setPicked(p.id)}
                 aria-current={p.id === page ? "page" : undefined}
-                className={`w-full flex items-center justify-between text-left px-5 sm:px-4 py-1.5 pointer-coarse:py-3 transition-colors ${
+                className={`w-full flex items-center justify-between gap-2 text-left px-5 sm:px-4 py-1.5 pointer-coarse:py-3 transition-colors ${
                   p.id === page ? "bg-raised text-accent" : "text-ink hover:bg-raised"
                 }`}
               >
                 {p.label}
-                <ChevronRight size={14} className="sm:hidden text-faint" />
+                <ChevronRight size={14} className="sm:hidden text-faint shrink-0" />
               </button>
             ))}
         </div>
@@ -508,7 +549,7 @@ export function SettingsModal({ me, initial, onClose }: { me: Me; initial?: Sett
         {(!phone || !page) && nav}
         {page && (
           <div className="flex-1 min-w-0 overflow-y-auto p-5">
-            <PageBody page={page} me={me} />
+            <PageBody page={page} me={me} agents={agents} go={setPicked} />
           </div>
         )}
       </div>

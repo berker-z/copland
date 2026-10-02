@@ -62,6 +62,16 @@ import { bearerFrom, requireWriteScope, touchStatement, viaContext } from "./tok
 import { getMarketExtras } from "./routes/markets";
 import { deleteNote, getNotes, patchNote, postNote } from "./routes/notes";
 import { deleteAvatar, getAvatar, patchMe, putAvatar } from "./routes/profile";
+import {
+  deleteAgent,
+  deleteAgentAvatar,
+  deleteAgentBoard,
+  getAgents,
+  patchAgent,
+  postAgent,
+  putAgentAvatar,
+  putAgentBoard,
+} from "./routes/agents";
 import { deleteVault, getMe, getSettings, getVault, patchSettings, putVault } from "./routes/personal";
 import { resolveViewer } from "./viewer";
 
@@ -107,6 +117,26 @@ const api = new Router<Ctx>()
   .on("GET", "/api/tokens", mine(null, ({ env, viewer }) => getTokens(env, viewer)))
   .on("POST", "/api/tokens", mine(null, ({ request, env, viewer, changes }) => postToken(request, env, viewer, changes)))
   .on("DELETE", "/api/tokens/:id", mine(null, ({ env, viewer, changes }, { id }) => deleteToken(env, viewer, id, changes)))
+  .on("GET", "/api/agents", mine(null, ({ env, viewer }) => getAgents(env, viewer)))
+  .on("POST", "/api/agents", mine(null, ({ request, env, viewer, changes }) => postAgent(request, env, viewer, changes)))
+  .on("PATCH", "/api/agents/:id", mine(null, ({ request, env, viewer, changes }, { id }) => patchAgent(request, env, viewer, id, changes)))
+  .on("DELETE", "/api/agents/:id", mine(null, ({ env, viewer, changes }, { id }) => deleteAgent(env, viewer, id, changes)))
+  .on(
+    "PUT",
+    "/api/agents/:id/avatar",
+    mine(null, ({ request, env, viewer, changes }, { id }) => putAgentAvatar(request, env, viewer, id, changes)),
+  )
+  .on("DELETE", "/api/agents/:id/avatar", mine(null, ({ env, viewer, changes }, { id }) => deleteAgentAvatar(env, viewer, id, changes)))
+  .on(
+    "PUT",
+    "/api/agents/:id/boards/:boardId",
+    mine(null, ({ request, env, viewer, changes }, p) => putAgentBoard(request, env, viewer, p.id, p.boardId, changes)),
+  )
+  .on(
+    "DELETE",
+    "/api/agents/:id/boards/:boardId",
+    mine(null, ({ env, viewer, changes }, p) => deleteAgentBoard(env, viewer, p.id, p.boardId, changes)),
+  )
 
   .on("GET", "/api/notes", mine("notes:read", ({ env, viewer }) => getNotes(env, viewer)))
   .on("POST", "/api/notes", mine("notes:write", ({ request, env, viewer, changes }) => postNote(request, env, viewer, changes)))

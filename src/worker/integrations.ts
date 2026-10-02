@@ -103,7 +103,7 @@ export async function handleIntegration(
       /* A new connection shows up in the person's open settings. */
       if (userId) {
         const changes = new Changes();
-        changes.notify([userId], "tokens");
+        changes.notify([userId], "tokens", "agents");
         changes.publish(env, ctx, null);
       }
       return response;

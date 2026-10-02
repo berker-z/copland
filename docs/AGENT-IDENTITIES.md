@@ -2,7 +2,7 @@
 
 An agent is a job you've given a name, like `berker-z/codex` or `berker-z/scout`. It isn't a product: the same Claude Code can be your reviewer one day and your scout the next, depending on which credential it holds.
 
-Step 1, the foundation, is built: the schema, how an agent's token resolves, access, and the MCP's view of it. Nothing in the app makes agents yet. That's step 2.
+Steps 1 to 3 are built: the foundation (schema, tokens, access, the MCP's view), settings › agents, and choosing an agent when connecting an app. What is left is under Steps.
 
 ## Four layers
 
@@ -29,7 +29,7 @@ The handle is stored whole (`berker-z/codex`) so every query reading `users.hand
 - **The owner's personal data: explicit grants.** Each personal route in `index.ts` is wrapped in `mine(grant)`. A person reaches their own data. An agent reaches its owner's only if it holds the grant, and the route then runs as the owner, unchanged. The grants are `calendar:read`, `notes:read` and `notes:write`. Settings, the vault, tokens, the profile and calendar writes are `mine(null)`: never.
 - **Who gives it work.** Assigning an agent needs its owner, or one of the owner's other agents, unless the owner set `work_from` to `members`. Unassigning, or editing a task someone already assigned to it, needs nothing.
 - **Live checks.** A paused agent, or one whose owner is disabled, gets 401 on every token at once (`agentContext` in `repo/agents.ts`).
-- **The inbox.** The owner will be able to add their own agents to their inbox (step 2; boards refuse inbox members today), and only their own. The agent's `/api/me` already reports the owner's inbox once it is there.
+- **The inbox.** The owner can put their own agents on their inbox from the agent's page, and nobody else's can get there. The agent's `/api/me` then reports it, and the MCP files board-less tasks there.
 
 ## Decided
 
@@ -38,7 +38,9 @@ The handle is stored whole (`berker-z/codex`) so every query reading `users.hand
 - Only the owner adds their agent to a board, the owner's inbox included.
 - Personal agents only, no instance agents.
 - Agents never make boards, invite people or manage tokens.
-- Deleting an agent ends its tokens and takes it off boards and assignments. History keeps "berker-z/codex (deleted)".
+- Deleting an agent ends its tokens and takes it off boards and assignments. It is renamed "berker-z/codex (deleted 1a2b)", which is how its comments and history read, and frees "codex" for a new agent that inherits nothing.
+- Any member may bring their own agent onto a board, at most at their own role. Board owners can remove it, and can never make it an owner.
+- What an agent is for (its description) is told to it in the MCP guide.
 - An agent can have a picture, with a generic mark until it does. Something generated per agent is for later.
 
 ## The risk to keep in mind
@@ -48,8 +50,8 @@ An agent opened to members (`work_from = members`) can be directed by anyone on 
 ## Steps
 
 1. **Done.** Schema, token resolution with owner and grants, the role cap, `mine(grant)`, the assignment rule, owner rename carrying over to agents, and the MCP speaking as an agent (`whoami` `agent_of`, the guide, no-inbox errors).
-2. Settings › agents: create, describe, pause, delete, grants, `work_from`, its tokens, its boards (and the owner's inbox). Agents show apart from people in the member and assignee pickers.
-3. The "act as" choice on the OAuth consent page and when making a personal token.
+2. **Done.** Settings › agents: a page per agent (picture, name, what it's for, boards including your inbox, who gives it work, your data, connect steps, tokens, pause, delete) and one to make a new one. Any member brings their own agent onto a board at most at their own role; board owners can remove it and never make it an owner. What it's for is told to the agent as "Your job" in the MCP guide. Agents show with a bot mark and after people in pickers.
+3. **Done.** The consent page asks "connect it as": you, one of your agents, or a new agent named right there. Tokens are made on the agent's page.
 4. More MCP for agents: claiming a task (assign yourself, move it to an active stage) and, later, a claim that expires (`claimed_until`) so a crashed agent doesn't hold work forever.
 5. Notifications: assignments and @mentions queue up for whoever they name, agent or person. An agent reads and acknowledges its queue. Human @mentions come from the same table.
 

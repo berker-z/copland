@@ -33,6 +33,7 @@ const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
   /* /me too: being made or unmade an admin arrives on this topic. */
   admin: [KEYS.admin, KEYS.me],
   tokens: [KEYS.tokens],
+  agents: [KEYS.agents],
   /* Handles and pictures show in boards, comments, history and the people page. */
   people: [KEYS.me, KEYS.boardAll, ["comments"], ["events"], KEYS.adminUsers],
 };

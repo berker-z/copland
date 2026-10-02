@@ -158,7 +158,12 @@ export async function listTokens(db: D1Database, userId: string): Promise<ApiTok
 
 export async function revokeToken(db: D1Database, userId: string, id: string): Promise<boolean> {
   const result = await db
-    .prepare(`UPDATE api_tokens SET revoked_at = ?3 WHERE id = ?1 AND user_id = ?2 AND revoked_at IS NULL`)
+    /* Mine, or one of my agents'. */
+    .prepare(
+      `UPDATE api_tokens SET revoked_at = ?3
+        WHERE id = ?1 AND revoked_at IS NULL
+          AND (user_id = ?2 OR user_id IN (SELECT id FROM users WHERE owner_id = ?2))`,
+    )
     .bind(id, userId, nowIso())
     .run();
   return result.meta.changes > 0;

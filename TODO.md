@@ -27,7 +27,7 @@ docs/DESIGN.md under Touch.
 
 - [ ] Calendar events: create, edit, delete an event from the agenda against a
       real Google calendar (the flow works locally and accounts connect).
-- [ ] Connect Claude over MCP (settings › assistants) and try
+- [ ] Connect Claude over MCP (settings › access, or as an agent) and try
       "what's on my plate?" and "what's on my calendar this week?".
 
 ### Small things noticed
@@ -49,9 +49,8 @@ docs/DESIGN.md under Touch.
 
 ## Later
 
-- [ ] Agents (`berker-z/codex`), step 2: settings › agents to make them, with
-      grants, pause, tokens and boards. Step 1 (schema, access, MCP) is in;
-      the steps after are in docs/AGENT-IDENTITIES.md.
+- [ ] Agents, step 4: claiming tasks over the MCP, then a claim that expires.
+      Step 5 is notifications and @mentions. docs/AGENT-IDENTITIES.md.
 - [ ] GitHub on boards: PRs that mention a task key show up on the task, a
       merge can close it. Undecided; the options are in docs/GITHUB.md.
 - [ ] @mentions and notifications on shared boards
@@ -102,3 +101,6 @@ docs/DESIGN.md under Touch.
   editor; the owner's notes and calendar only through explicit grants
   (`mine(grant)`); only the owner gives an agent work unless they open it;
   the MCP speaks as the agent
+- Agents, steps 2 and 3: settings regrouped by who (you, agents, dashboard,
+  instance) with a page per agent; the OAuth consent page connects as you,
+  an agent, or a new one; new tokens default to no expiry

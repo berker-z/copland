@@ -29,7 +29,7 @@ export interface Viewer {
   /** Set when the request came with an API token instead of a session. */
   access?: ApiAccess;
   /** Set when `user` is an agent: who it acts for, and what of theirs it may reach. */
-  agent?: { owner: User; grants: AgentGrant[]; workFrom: "owner" | "members" };
+  agent?: { owner: User; grants: AgentGrant[]; workFrom: "owner" | "members"; description: string };
 }
 
 export type SignupMode = "invite" | "open" | "closed";
@@ -185,6 +185,22 @@ export interface ApiToken {
   lastUsedAt: string | null;
   /** Null: a personal token without an expiry. */
   expiresAt: string | null;
+}
+
+/** One of my agents, as settings › agents shows it (GET /api/agents). */
+export interface Agent {
+  user: User;
+  /** The part after the slash. */
+  name: string;
+  /** What it is for; also told to the agent in the MCP guide. */
+  description: string;
+  workFrom: "owner" | "members";
+  pausedAt: string | null;
+  grants: AgentGrant[];
+  /** The boards it is on, at the role it was given (it acts at most at yours). */
+  boards: { boardId: string; role: BoardRole }[];
+  tokens: ApiToken[];
+  createdAt: string;
 }
 
 /** POST /api/tokens answers with the secret once; only its hash is kept. */

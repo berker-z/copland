@@ -1,11 +1,11 @@
 /* ============================================================================
-   Settings › assistants and settings › access: using copland from an AI
-   assistant or a script.
+   Using copland from an AI assistant or a script: settings › access as you,
+   and each agent's page as that agent (Agents.tsx).
    ----------------------------------------------------------------------------
-   Assistants is the how-to: the MCP URL to paste into Claude and how to
-   connect each kind of client. Access is what is connected: the user's own
-   tokens and the apps they approved, with when each was last used. Whatever connects acts as this
-   user with exactly their board roles (worker/tokens.ts), and a task's
+   ConnectSteps is the how-to: the MCP URL to paste into Claude and how to
+   connect each kind of client. Tokens is what is connected for one
+   principal, with when each was last used. Whatever connects acts as that
+   principal with exactly its board roles (worker/tokens.ts), and a task's
    history names it ("via Claude Code").
 
    Three ways in, easiest first:
@@ -101,13 +101,17 @@ function TokenRow({ token, onRevoke, pending }: { token: ApiToken; onRevoke: () 
   );
 }
 
-function Tokens() {
+/**
+ * Tokens and connected apps for one principal: you (settings › access), or
+ * one of your agents (its page), whose tokens are that agent.
+ */
+export function Tokens({ tokens, isPending, agentId }: { tokens: ApiToken[] | undefined; isPending: boolean; agentId?: string }) {
   const queryClient = useQueryClient();
-  const { data: tokens, isPending } = useTokens();
   const [name, setName] = useState("");
   const [scope, setScope] = useState<ApiTokenScope>("write");
-  const [expiry, setExpiry] = useState("90");
+  const [expiry, setExpiry] = useState("never");
   const [created, setCreated] = useState<CreatedToken | null>(null);
+  const changed = () => void queryClient.invalidateQueries({ queryKey: agentId ? KEYS.agents : KEYS.tokens });
 
   const create = useMutation({
     mutationFn: () =>
@@ -115,19 +119,20 @@ function Tokens() {
         name: name.trim(),
         scope,
         days: EXPIRY.find((e) => e.value === expiry)?.days ?? 90,
+        ...(agentId ? { agentId } : {}),
       }),
     onSuccess: (result) => {
       setCreated(result);
       setName("");
-      void queryClient.invalidateQueries({ queryKey: KEYS.tokens });
+      changed();
     },
   });
   /* A revoke that did not happen must not look like one that did: the token
-     would still work while its owner thinks it is dead. So the list comes
-     from the server's answer, and a failure says so. */
+     would still work while its owner thinks it is dead. So the list is
+     refetched from the server, and a failure says so. */
   const revoke = useMutation({
     mutationFn: (id: string) => send<ApiToken[]>("DELETE", `/tokens/${id}`),
-    onSuccess: (list) => queryClient.setQueryData(KEYS.tokens, list),
+    onSuccess: changed,
   });
 
   const apps = (tokens ?? []).filter((t) => t.kind === "oauth");
@@ -144,13 +149,13 @@ function Tokens() {
         {isPending ? (
           <p className="text-xs text-muted animate-pulse">loading…</p>
         ) : apps.length === 0 ? (
-          <p className="text-xs text-faint">None. Apps appear here when you connect one from assistants.</p>
+          <p className="text-xs text-faint">None. An app appears here once it is connected{agentId ? " as this agent" : ""}.</p>
         ) : (
           <ul className="text-sm">{rows(apps)}</ul>
         )}
       </Group>
 
-      <Group title="personal tokens">
+      <Group title="tokens">
         {!isPending && personal.length === 0 && <p className="text-xs text-faint mb-3">None yet.</p>}
         {personal.length > 0 && <ul className="text-sm mb-3">{rows(personal)}</ul>}
         {created && (
@@ -175,7 +180,7 @@ function Tokens() {
             className={`${input} flex-1 min-w-[10rem]`}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="new token name"
+            placeholder={agentId ? "where it runs, e.g. laptop" : "new token name"}
             maxLength={60}
             aria-label="Token name"
           />
@@ -200,44 +205,51 @@ function Tokens() {
   );
 }
 
-export function AssistantsSection() {
+/** How to connect a client, as you or as one of your agents (`as` is its handle). */
+export function ConnectSteps({ as }: { as?: string }) {
   const mcpUrl = `${window.location.origin}/mcp`;
+  const pick = as ? (
+    <>
+      On the consent page, pick <span className="text-ink">{as}</span> under “connect it as”.
+    </>
+  ) : (
+    <>On the consent page, keep “you” under “connect it as”.</>
+  );
   return (
-    <Section
-      title="assistants"
-      hint={
-        <>
-          Use copland from Claude or another AI assistant: “what's due this week?”, “move LNCH-4 to done”. Whatever
-          connects acts as you, with your role on each board, and its changes show in a task's history as “via
-          Claude”. What is connected is under access.
-        </>
-      }
-    >
+    <Group title="connect">
       <Step title="claude.ai and the Claude app">
-        <p>Settings › Connectors › add a custom connector, paste this URL, connect, and allow access.</p>
+        <p>Settings › Connectors › add a custom connector, paste this URL, connect. {pick}</p>
         <CopyLine value={mcpUrl} label="MCP URL" />
       </Step>
       <Step title="Claude Code">
-        <p>Run once, then type /mcp in Claude Code to sign in:</p>
-        <CopyLine value={`claude mcp add --transport http copland ${mcpUrl}`} label="command" />
+        <p>Run once, then type /mcp in Claude Code to sign in. {pick}</p>
+        <CopyLine value={`claude mcp add --transport http ${as ? `copland-${as.split("/")[1]}` : "copland"} ${mcpUrl}`} label="command" />
       </Step>
       <Step title="other clients and scripts">
         <p>
-          Make a token under access and send it as <code className="text-ink">Authorization: Bearer &lt;token&gt;</code>,
-          to the MCP URL or to <code className="text-ink">/api</code> itself. A read-only token can look but not change.
+          Make a token below and send it as <code className="text-ink">Authorization: Bearer &lt;token&gt;</code>, to the MCP
+          URL or to <code className="text-ink">/api</code> itself. A read-only token can look but not change.
         </p>
       </Step>
-    </Section>
+    </Group>
   );
 }
 
 export function AccessSection() {
+  const { data: tokens, isPending } = useTokens();
   return (
     <Section
       title="access"
-      hint="Everything that can act as you without a browser. Each one has your board roles and nothing more; revoke it and it stops working at once."
+      hint={
+        <>
+          Use copland from Claude, another AI assistant or a script, as you: “what's due this week?”, “move LNCH-4 to
+          done”. Whatever connects here has your role on each board and nothing more, and its changes show in a task's
+          history as “via Claude”. To give an assistant its own name and narrower access, make it an agent instead.
+        </>
+      }
     >
-      <Tokens />
+      <ConnectSteps />
+      <Tokens tokens={tokens} isPending={isPending} />
     </Section>
   );
 }

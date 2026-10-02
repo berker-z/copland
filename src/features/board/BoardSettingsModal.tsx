@@ -104,14 +104,19 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
               <li key={m.user.id} className="flex items-center gap-3 py-1.5">
                 <Avatar user={m.user} size={18} />
                 <span className="text-ink truncate">{m.user.handle}</span>
-                <span className="text-muted text-sm truncate">{m.user.email}</span>
+                {m.user.kind === "agent" ? (
+                  <span className="text-faint text-xs">agent</span>
+                ) : (
+                  <span className="text-muted text-sm truncate">{m.user.email}</span>
+                )}
                 <span className="flex-1" />
                 <select
                   className={`${input} py-0.5`}
                   value={m.role}
                   onChange={(e) => changeRole.mutate({ userId: m.user.id, role: e.target.value as BoardRole })}
                 >
-                  {BOARD_ROLES.map((r) => (
+                  {/* An agent never owns a board (worker/access.ts). */}
+                  {BOARD_ROLES.filter((r) => m.user.kind !== "agent" || r !== "owner").map((r) => (
                     <option key={r} value={r}>
                       {r}
                     </option>

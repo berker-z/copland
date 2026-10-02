@@ -1,11 +1,15 @@
 /* ============================================================================
-   Someone's picture, or their initials in a square when they have none (or
-   it fails to load). Square like everything else; sized in pixels so it
-   sits on a text line at 14 or 16.
+   Someone's picture, or a stand-in when they have none (or it fails to load):
+   their initials in a square for a person, a bot mark for an agent. Square
+   like everything else; sized in pixels so it sits on a text line at 14 or 16.
    ========================================================================== */
 
 import { useState } from "react";
+import { Bot } from "lucide-react";
 import type { User } from "@/domain/types";
+
+/** Agents are "owner/name"; a person's handle can never hold a slash (domain/handle.ts). */
+export const isAgentHandle = (handle: string) => handle.includes("/");
 
 /** "ada-lovelace" → "al", "ada" → "ad". */
 export function initials(handle: string): string {
@@ -28,13 +32,19 @@ export function Avatar({ user, size = 16, className = "" }: { user: Pick<User, "
       />
     );
   }
+  const agent = isAgentHandle(user.handle);
   return (
     <span
       title={user.handle}
       style={{ ...box, fontSize: Math.max(9, Math.round(size * 0.5)) }}
       className={`inline-flex shrink-0 items-center justify-center leading-none border border-faint text-muted select-none ${className}`}
     >
-      {initials(user.handle)}
+      {agent ? <Bot size={Math.round(size * 0.7)} strokeWidth={1.75} /> : initials(user.handle)}
     </span>
   );
+}
+
+/** Members for a picker: people first, then agents, each in the order given. */
+export function peopleFirst<T extends { user: Pick<User, "handle"> }>(members: T[]): T[] {
+  return [...members].sort((a, b) => Number(isAgentHandle(a.user.handle)) - Number(isAgentHandle(b.user.handle)));
 }

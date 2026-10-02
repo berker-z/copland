@@ -26,6 +26,7 @@ import {
 import { listLabels, listStages, listTasks } from "../repo/tasks";
 import { findUserByEmail } from "../repo/users";
 import { createInvite } from "./admin";
+import { ownerOf } from "./agents";
 
 const KEY = /^[A-Z][A-Z0-9]{1,5}$/;
 
@@ -188,6 +189,7 @@ export async function patchMember(
   await requireBoard(env.DB, viewer, id, "owner");
   const { role } = await readJson(request);
   if (!isRole(role)) throw badRequest("`role` must be owner, editor or viewer");
+  if (role === "owner" && (await ownerOf(env.DB, userId))) throw badRequest("An agent cannot own a board");
   if (role !== "owner") await requireAnotherOwner(env.DB, id, userId);
   const result = await env.DB.prepare(`UPDATE board_members SET role = ?3 WHERE board_id = ?1 AND user_id = ?2`)
     .bind(id, userId, role)
@@ -217,6 +219,9 @@ export async function deleteMember(
     ).bind(id, userId),
   ]);
   changes.notify(audience, "boards", "board");
+  /* An agent taken off: its owner's settings list its boards. */
+  const agentOwner = await ownerOf(env.DB, userId);
+  if (agentOwner) changes.notify([agentOwner], "agents");
   return json({ ok: true });
 }
 

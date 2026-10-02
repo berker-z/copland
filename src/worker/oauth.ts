@@ -18,7 +18,10 @@
    someone's machine or its maker's servers, and PKCE is what binds the code
    to the app that asked. Redirects must match a registered URI exactly.
    The consent page is where the person sees which app, where it will send
-   them afterwards, and chooses read-only or read and write.
+   them afterwards, chooses read-only or read and write, and who the app
+   will be: themselves, one of their agents, or a new agent made right there
+   (docs/AGENT-IDENTITIES.md). The code, and so the tokens, belong to that
+   principal.
    ========================================================================== */
 
 import type { ApiTokenScope } from "@/domain/types";
@@ -26,6 +29,8 @@ import type { Env } from "./env";
 import { HttpError, nowIso, randomToken, sha256Base64url, sha256Hex } from "./http";
 import { issueOAuthTokens, refreshOAuthTokens } from "./tokens";
 import { browserUser } from "./viewer";
+import { agentNames, createAgent, isOwnAgent } from "./repo/agents";
+import { parseName } from "./routes/agents";
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 /* Real registrations are a few hundred bytes: ten 500-character redirects
@@ -211,12 +216,33 @@ export async function authorize(request: Request, env: Env, url: URL): Promise<R
     return new Response(null, { status: 302, headers: { location: `/auth/google?next=${next}` } });
   }
 
-  if (request.method === "GET") return consentPage(parsed, user.handle, user.email, url);
+  const agents = await agentNames(env.DB, user.id);
+  const who = { handle: user.handle, email: user.email };
+  if (request.method === "GET") return consentPage(parsed, who, agents, params);
 
   if (params.get("decision") !== "allow") {
     return redirectTo(parsed.redirectUri, { error: "access_denied", state: parsed.state, iss: url.origin });
   }
   const scope: ApiTokenScope = params.get("access") === "read" ? "read" : "write";
+
+  /* Who the app will be: the person, one of their agents, or a new one made here. */
+  const as = params.get("as") ?? "me";
+  let principal = user.id;
+  if (as === "new") {
+    const newName = params.get("new_name") ?? "";
+    try {
+      principal = await createAgent(env.DB, user, parseName(newName), "");
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+      return consentPage(parsed, who, agents, params, { message: error.message, as, newName });
+    }
+  } else if (as !== "me") {
+    if (!(await isOwnAgent(env.DB, user.id, as))) {
+      return consentPage(parsed, who, agents, params, { message: "That agent is gone; pick again.", as: "me", newName: "" });
+    }
+    principal = as;
+  }
+
   const code = randomToken();
   await env.DB.batch([
     /* Housekeeping on the way in, as createSession does for sessions: a code
@@ -228,7 +254,7 @@ export async function authorize(request: Request, env: Env, url: URL): Promise<R
     ).bind(
       await sha256Hex(code),
       parsed.client.client_id,
-      user.id,
+      principal,
       parsed.redirectUri,
       parsed.codeChallenge,
       scope,
@@ -317,7 +343,11 @@ export async function token(request: Request, env: Env): Promise<{ response: Res
     clientName: client.client_name,
     scope: row.scope,
   });
-  return { response: jsonResponse(issued), userId: row.user_id };
+  /* The settings tab to tell is the person's, whether the app connected as them or as their agent. */
+  const person = await env.DB.prepare(`SELECT coalesce(owner_id, id) AS id FROM users WHERE id = ?1`)
+    .bind(row.user_id)
+    .first<{ id: string }>();
+  return { response: jsonResponse(issued), userId: person?.id ?? row.user_id };
 }
 
 /* ------------------------------------------------------------------ pages --- */
@@ -341,7 +371,7 @@ function page(title: string, body: string, status = 200, formTargets: string[] =
   :root { color-scheme: dark;
     --surface: 38 43 53; --raised: 49 56 71; --bar: 30 42 58; --divider: 23 28 38;
     --ink: 216 222 233; --bright: 236 239 244; --muted: 97 110 136; --faint: 76 86 106;
-    --accent: 136 192 208; --blue: 129 161 193; --yellow: 235 203 139; }
+    --accent: 136 192 208; --blue: 129 161 193; --yellow: 235 203 139; --red: 191 97 106; }
   * { box-sizing: border-box; }
   body { margin:0; min-height:100vh; display:grid; place-items:center; padding:16px;
          background: rgb(var(--divider)); color: rgb(var(--ink));
@@ -352,6 +382,11 @@ function page(title: string, body: string, status = 200, formTargets: string[] =
   p { margin: 0 0 12px; color: rgb(var(--muted)); }
   strong { color: rgb(var(--bright)); font-weight: 400; }
   code { color: rgb(var(--yellow)); word-break: break-all; }
+  .error { color: rgb(var(--red)); }
+  .named { display:flex; align-items:baseline; gap:2px; margin-top:6px; color: rgb(var(--muted)); }
+  input[type=text] { font: inherit; flex:1; min-width:0; padding: 4px 6px; background: rgb(var(--raised));
+                     border: 1px solid rgb(var(--faint)); color: rgb(var(--ink)); }
+  input[type=text]:focus { outline: none; border-color: rgb(var(--accent)); }
   fieldset { border: 1px solid rgb(var(--divider)); margin: 0 0 12px; padding: 4px 12px; }
   label { display:flex; gap:10px; align-items:flex-start; padding:8px 0; cursor:pointer; }
   label small { display:block; color: rgb(var(--muted)); }
@@ -376,36 +411,57 @@ function page(title: string, body: string, status = 200, formTargets: string[] =
   });
 }
 
-function consentPage(req: AuthRequest, handle: string, email: string, url: URL): Response {
+function consentPage(
+  req: AuthRequest,
+  user: { handle: string; email: string },
+  agents: { id: string; name: string }[],
+  source: URLSearchParams,
+  problem: { message: string; as: string; newName: string } | null = null,
+): Response {
   const target = new URL(req.redirectUri);
   const web = target.protocol === "https:" || target.protocol === "http:";
   const where = web ? target.host : target.protocol;
   const hidden = ["client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "response_type", "scope", "resource"]
     .map((k) => {
-      const v = url.searchParams.get(k);
+      const v = source.get(k);
       return v === null ? "" : `<input type="hidden" name="${k}" value="${esc(v)}">`;
     })
     .join("");
+  const chosen = problem?.as ?? "me";
+  const option = (value: string, title: string, small: string) =>
+    `<label><input type="radio" name="as" value="${esc(value)}"${chosen === value ? " checked" : ""}>
+      <span><strong>${title}</strong><small>${small}</small></span></label>`;
+  const app = esc(req.client.client_name);
   const body = `
 <form method="post" action="/oauth/authorize">
 ${hidden}
 <section>
-  <p><strong>${esc(req.client.client_name)}</strong> wants to use copland as <strong>@${esc(handle)}</strong> (${esc(email)}).</p>
-  <p>It will see the boards and tasks you can see${
-    req.scope === "write" ? " and, if you allow it, change them as you" : ""
-  }. Its changes show in a task's history as “via ${esc(req.client.client_name)}”.</p>
+  <p><strong>${app}</strong> wants to use copland. You are signed in as <strong>@${esc(user.handle)}</strong> (${esc(user.email)}).</p>
+  ${problem ? `<p class="error">${esc(problem.message)}</p>` : ""}
+  <p>Connect it as</p>
+  <fieldset>
+    ${option("me", "you", `sees what you see and acts as you; history says “${esc(user.handle)} via ${app}”`)}
+    ${agents
+      .map((a) =>
+        option(a.id, `${esc(user.handle)}/${esc(a.name)}`, "your agent: only the boards you gave it, at most an editor"),
+      )
+      .join("\n    ")}
+    <label><input type="radio" name="as" value="new"${chosen === "new" ? " checked" : ""}>
+      <span><strong>a new agent</strong><small>its own name in history; starts with no boards, set it up in settings › agents</small>
+      <span class="named">${esc(user.handle)}/<input type="text" name="new_name" value="${esc(problem?.newName ?? "")}" placeholder="codex" maxlength="32" autocomplete="off" spellcheck="false"></span></span></label>
+  </fieldset>
   <fieldset>
     <label><input type="radio" name="access" value="write"${req.scope === "write" ? " checked" : ""}>
       <span><strong>read and write</strong><small>create, edit, move and comment on tasks</small></span></label>
     <label><input type="radio" name="access" value="read"${req.scope === "read" ? " checked" : ""}>
       <span><strong>read only</strong><small>can't change anything</small></span></label>
   </fieldset>
-  <p>Afterwards you go back to <code>${esc(where)}</code>. Disconnect any time in settings › access.</p>
+  <p>Afterwards you go back to <code>${esc(where)}</code>. Disconnect any time in settings: access for you, or the agent's page.</p>
 </section>
 <footer>
   <button type="submit" name="decision" value="deny">[ deny ]</button>
   <button type="submit" name="decision" value="allow" class="primary">allow</button>
 </footer>
 </form>`;
-  return page("connect an app", body, 200, [web ? target.origin : target.protocol]);
+  return page("connect an app", body, problem ? 400 : 200, [web ? target.origin : target.protocol]);
 }

@@ -29,7 +29,9 @@ export type LiveTopic =
   /** Admin screens: users and invites. */
   | "admin"
   /** My API tokens and connected apps (settings). */
-  | "tokens";
+  | "tokens"
+  /** My agents: their settings, boards, grants and tokens. */
+  | "agents";
 
 export interface LiveEvent {
   topics: LiveTopic[];

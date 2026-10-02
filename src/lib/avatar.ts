@@ -6,7 +6,6 @@
    can encode it, PNG where it cannot. An animated GIF keeps its first frame.
    ========================================================================== */
 
-import type { Me } from "@/domain/types";
 import { api } from "./api";
 
 /** Shown at 16 to 64 px; this covers 64 at 4x. */
@@ -37,9 +36,9 @@ async function square(file: File): Promise<Blob> {
   return blob;
 }
 
-/** Crop, shrink and upload; answers with /me as it is now. */
-export async function uploadAvatar(file: File): Promise<Me> {
+/** Crop, shrink and PUT to `path` (/me/avatar, or an agent's); answers with what that route answers. */
+export async function uploadAvatar<T>(file: File, path: string): Promise<T> {
   const blob = await square(file);
   /* A browser without a WebP encoder hands back a PNG, and says so in the type. */
-  return api<Me>("/me/avatar", { method: "PUT", body: blob, headers: { "content-type": blob.type || "image/png" } });
+  return api<T>(path, { method: "PUT", body: blob, headers: { "content-type": blob.type || "image/png" } });
 }

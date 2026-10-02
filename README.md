@@ -21,15 +21,19 @@ The code is split by runtime: `src/worker` runs on Cloudflare, `src/app`, `src/f
 
 ## Connecting an AI assistant
 
-Copland has an MCP server at `/mcp`, so Claude (or anything else that speaks MCP) can read and change your boards: "what's due this week?", "move LNCH-4 to done", "put a passport renewal in my inbox for the 20th". Settings › assistants has the URL and the steps, and settings › access lists what is connected.
+Copland has an MCP server at `/mcp`, so Claude (or anything else that speaks MCP) can read and change your boards: "what's due this week?", "move LNCH-4 to done", "put a passport renewal in my inbox for the 20th". Settings › access has the URL, the steps and what is connected as you.
 
-- **claude.ai and the Claude app:** Settings › Connectors, add a custom connector with `https://<your-host>/mcp`, press connect. You sign in to Copland if you aren't already, see a consent page, and pick read and write or read only.
+- **claude.ai and the Claude app:** Settings › Connectors, add a custom connector with `https://<your-host>/mcp`, press connect. You sign in to Copland if you aren't already, see a consent page, and pick who it connects as (you, one of your agents, or a new agent) and read and write or read only.
 - **Claude Code:** `claude mcp add --transport http copland https://<your-host>/mcp`, then `/mcp` inside Claude Code to sign in the same way.
 - **Anything else:** make a personal token in settings (`cpl_…`, shown once) and send it as `Authorization: Bearer <token>`. The same token works on `/api` directly, for scripts.
 
-Whatever connects acts as you and nothing more: it gets your role on each board, and a task's history says "berker via Claude Code". The tools don't touch the database. They call the app's own API routes in-process as you (`src/worker/mcp.ts`), so the access checks, validation, event log and live updates are the same ones the browser goes through. A read-only token is refused on any write, on `/mcp` and `/api` alike. `/mcp` only takes tokens, never the session cookie, so another site can't drive it through your open tab.
+Whatever connects as you acts as you and nothing more: it gets your role on each board, and a task's history says "berker-z via Claude Code". The tools don't touch the database. They call the app's own API routes in-process as you (`src/worker/mcp.ts`), so the access checks, validation, event log and live updates are the same ones the browser goes through. A read-only token is refused on any write, on `/mcp` and `/api` alike. `/mcp` only takes tokens, never the session cookie, so another site can't drive it through your open tab.
 
 The OAuth side (`src/worker/oauth.ts`) is the minimum MCP clients need: protected-resource and authorization-server metadata, dynamic client registration, public clients with PKCE only, and refresh tokens that rotate on use. Tokens of both kinds live in `api_tokens` as hashes, and stop working the moment their owner is disabled. Settings lists them with when each was last used, and revokes them.
+
+### Agents
+
+An assistant can also be an agent: a name of its own like `berker-z/codex`, made in settings › agents or right on the consent page. Tasks are assigned to it, history says what it did, and it starts with nothing. You put it on the boards it should work on, never above your own role or editor, choose whether anyone but you can give it work, and tick which of your own notes and calendar it may read. Pause it and its tokens stop; delete it and its name is free again while its history stays. The design is in [docs/AGENT-IDENTITIES.md](docs/AGENT-IDENTITIES.md).
 
 `src/worker/mcpCoverage.ts` says, for every API route, which tools use it or why none do. `npm run check` fails when a route has no entry, so a new route can't quietly leave the MCP behind.
 

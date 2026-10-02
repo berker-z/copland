@@ -13,7 +13,7 @@
    ========================================================================== */
 
 import { useState, type ReactNode } from "react";
-import { Avatar } from "@/ui/Avatar";
+import { Avatar, peopleFirst } from "@/ui/Avatar";
 import { useQueryClient } from "@tanstack/react-query";
 import { PRIORITIES, type Attachment, type BoardDetail, type Priority } from "@/domain/types";
 import { send } from "@/lib/api";
@@ -184,7 +184,7 @@ export function NewTaskModal({ detail, stageId, onClose, onCreated }: NewTaskMod
         {detail.members.length > 1 && (
           <Row label="assignees">
             <div className="flex flex-col gap-1 pt-1.5">
-              {detail.members.map((m) => (
+              {peopleFirst(detail.members).map((m) => (
                 <Checkbox
                   key={m.user.id}
                   checked={assignees.includes(m.user.id)}

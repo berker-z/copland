@@ -5,7 +5,7 @@
    ========================================================================== */
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Avatar } from "@/ui/Avatar";
+import { Avatar, peopleFirst } from "@/ui/Avatar";
 import { LEVELS, PRIORITIES, type BoardDetail, type Task } from "@/domain/types";
 import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
@@ -146,7 +146,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
       {detail.members.length > 1 && (
         <Row label="assignees">
           <div className="flex flex-col gap-1 pt-1.5">
-            {detail.members.map((m) => (
+            {peopleFirst(detail.members).map((m) => (
               <Checkbox
                 key={m.user.id}
                 checked={task.assigneeIds.includes(m.user.id)}

@@ -29,6 +29,16 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /api/avatars/:id": { skip: "browser: image bytes for <img> tags; tools show people by handle" },
   "GET /api/live": { skip: "browser: a tab's WebSocket for live updates; tool writes are broadcast to it" },
 
+  /* Agents are set up by their owner, in the app; a token is refused on all of these. */
+  "GET /api/agents": { skip: "browser: settings › agents, owner only" },
+  "POST /api/agents": { skip: "browser: making an agent is its owner's, in settings or on the OAuth consent page" },
+  "PATCH /api/agents/:id": { skip: "browser: an agent never widens itself" },
+  "DELETE /api/agents/:id": { skip: "browser: settings › agents" },
+  "PUT /api/agents/:id/avatar": { skip: "browser: a picture is cropped and uploaded in settings" },
+  "DELETE /api/agents/:id/avatar": { skip: "browser: settings › agents" },
+  "PUT /api/agents/:id/boards/:boardId": { skip: "browser: only the owner puts an agent on a board" },
+  "DELETE /api/agents/:id/boards/:boardId": { skip: "browser: settings › agents" },
+
   /* Boards and tasks, the heart of it. load() in mcp.ts reads the board
      list and each board; loadTask() reads a task by key and its board. */
   "GET /api/boards": {

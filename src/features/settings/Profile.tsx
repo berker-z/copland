@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { handleProblem, HANDLE_MAX, normalizeHandle } from "@/domain/handle";
-import type { Me } from "@/domain/types";
+import type { Me, User } from "@/domain/types";
 import { send } from "@/lib/api";
 import { uploadAvatar } from "@/lib/avatar";
 import { refresh } from "@/lib/live";
@@ -34,17 +34,32 @@ function isTextTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable);
 }
 
-function PictureGroup({ me }: { me: Me }) {
-  const upload = useMeChange(uploadAvatar);
-  const remove = useMeChange(() => send<Me>("DELETE", "/me/avatar"));
+/**
+ * A picture to change: drop on the square, paste anywhere on the page, or
+ * click to pick. Used for you here and for an agent (Agents.tsx); the caller
+ * owns what an upload or a removal does.
+ */
+export function PictureEditor({
+  user,
+  onFile,
+  onRemove,
+  busy,
+  error,
+}: {
+  user: Pick<User, "handle" | "avatar">;
+  onFile: (file: File) => void;
+  onRemove: () => void;
+  busy: boolean;
+  error: Error | null;
+}) {
   const picker = useRef<HTMLInputElement>(null);
   const depth = useRef(0);
   const [over, setOver] = useState(false);
-  /* The latest mutate, for the document listener. */
+  /* The latest handler, for the document listener. */
   const take = useRef<(files: FileList | null | undefined) => void>(() => {});
   take.current = (files) => {
     const file = files && [...files].find((f) => f.type.startsWith("image/"));
-    if (file) upload.mutate(file);
+    if (file) onFile(file);
   };
 
   useEffect(() => {
@@ -68,11 +83,8 @@ function PictureGroup({ me }: { me: Me }) {
     if (depth.current === 0) setOver(false);
   };
 
-  const busy = upload.isPending || remove.isPending;
-  const error = upload.error ?? remove.error;
-
   return (
-    <Group title="picture">
+    <>
       <div className="flex items-center gap-4">
         <button
           type="button"
@@ -94,14 +106,14 @@ function PictureGroup({ me }: { me: Me }) {
             over ? "border-accent bg-accent/10" : "border-faint hover:border-accent"
           } ${busy ? "animate-pulse" : ""}`}
         >
-          <Avatar user={me.user} size={72} className="!border-0" />
+          <Avatar user={user} size={72} className="!border-0" />
         </button>
         <div className="text-xs text-muted leading-relaxed">
           <p className="pointer-coarse:hidden">Drop a picture on the square, paste one, or click to pick.</p>
           <p className="hidden pointer-coarse:block">Tap the square to pick a photo or take one.</p>
           <p className="text-faint">Cropped to a square in the middle.</p>
-          {me.user.avatar && (
-            <button onClick={() => remove.mutate(undefined)} disabled={busy} className="tap mt-1 text-muted hover:text-red disabled:opacity-50">
+          {user.avatar && (
+            <button onClick={onRemove} disabled={busy} className="tap mt-1 text-muted hover:text-red disabled:opacity-50">
               remove picture
             </button>
           )}
@@ -118,7 +130,7 @@ function PictureGroup({ me }: { me: Me }) {
         />
       </div>
       {error && <p className="text-red text-xs mt-2">{error.message}</p>}
-    </Group>
+    </>
   );
 }
 
@@ -170,11 +182,27 @@ function HandleGroup({ me }: { me: Me }) {
 export function ProfileSection({ me }: { me: Me }) {
   return (
     <Section title="profile" hint="How you show up to the people you share boards with. Your Google name and photo are not used.">
-      <PictureGroup me={me} />
+      <MyPicture me={me} />
       <HandleGroup me={me} />
       <p className="text-xs text-faint mt-5">
         signed in as <span className="text-muted">{me.user.email}</span>, which board members can also see
       </p>
     </Section>
+  );
+}
+
+function MyPicture({ me }: { me: Me }) {
+  const upload = useMeChange((file: File) => uploadAvatar<Me>(file, "/me/avatar"));
+  const remove = useMeChange(() => send<Me>("DELETE", "/me/avatar"));
+  return (
+    <Group title="picture">
+      <PictureEditor
+        user={me.user}
+        onFile={(file) => upload.mutate(file)}
+        onRemove={() => remove.mutate(undefined)}
+        busy={upload.isPending || remove.isPending}
+        error={upload.error ?? remove.error}
+      />
+    </Group>
   );
 }
