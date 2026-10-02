@@ -12,7 +12,19 @@ import { readSettings } from "../repo/settings";
 import { inboxIdFor, signupMode } from "../repo/users";
 import { listVault, removeVault, sealVault } from "../vault";
 
+/**
+ * GET /api/me. An agent has no inbox of its own; its "inbox" is its owner's,
+ * when the owner has added it there.
+ */
 export async function getMe(env: Env, viewer: Viewer): Promise<Response> {
+  if (viewer.agent) {
+    const inbox = await inboxIdFor(env.DB, viewer.agent.owner.id);
+    const onIt = await env.DB.prepare(`SELECT 1 FROM board_members WHERE board_id = ?1 AND user_id = ?2`)
+      .bind(inbox, viewer.user.id)
+      .first();
+    const me: Me = { user: viewer.user, inboxId: onIt ? inbox : null, signup: signupMode(env), owner: viewer.agent.owner };
+    return json(me);
+  }
   const me: Me = {
     user: viewer.user,
     inboxId: await inboxIdFor(env.DB, viewer.user.id),

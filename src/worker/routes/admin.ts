@@ -54,7 +54,7 @@ async function adminIds(env: Env): Promise<string[]> {
 
 export async function getUsers(env: Env, viewer: Viewer): Promise<Response> {
   requireAdmin(viewer);
-  const { results } = await env.DB.prepare(`SELECT * FROM users ORDER BY created_at`).all<UserRow>();
+  const { results } = await env.DB.prepare(`SELECT * FROM users WHERE kind = 'person' ORDER BY created_at`).all<UserRow>();
   return json(
     results.map((row) => ({ ...rowToUser(row), disabledAt: row.disabled_at })) satisfies (User & {
       disabledAt: string | null;
@@ -79,6 +79,8 @@ export async function createInvite(
   input: { email: string | null; boardId: string | null },
 ): Promise<CreatedInvite> {
   if (signupMode(env) === "closed") throw forbidden("This instance is closed to new accounts");
+  /* Agents' stand-in addresses live there (repo/users.ts agentEmail); nobody can sign in with one. */
+  if (input.email?.endsWith(".invalid")) throw badRequest("That is not an address anyone can sign in with");
   const code = randomToken();
   const row: InviteRow = {
     id: crypto.randomUUID(),
@@ -143,7 +145,7 @@ export async function patchUser(
   if (admin !== undefined && typeof admin !== "boolean") throw badRequest("`admin` must be a boolean");
   if (disabled === true && id === viewer.user.id) throw badRequest("You cannot disable yourself");
 
-  const target = await env.DB.prepare(`SELECT id FROM users WHERE id = ?1`).bind(id).first();
+  const target = await env.DB.prepare(`SELECT id FROM users WHERE id = ?1 AND kind = 'person'`).bind(id).first();
   if (!target) throw notFound("No such user");
 
   if (admin === false) {

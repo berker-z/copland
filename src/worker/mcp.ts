@@ -58,7 +58,7 @@ const reply = (body: unknown, status = 200) =>
     headers: { ...(body === null ? {} : { "content-type": "application/json" }), ...CORS_HEADERS },
   });
 
-const INSTRUCTIONS = `Copland is a personal dashboard and project tracker: boards of tasks, some private, some shared with friends. Everything you do here is done as the user who connected you, with exactly their board roles, and a task's history records that it came through you.
+const INSTRUCTIONS = `Copland is a personal dashboard and project tracker: boards of tasks, some private, some shared with friends. Everything you do here is done as the user who connected you, with exactly their board roles, or, when the connection belongs to one of their agents, as that agent: an identity of its own ("owner/name") with narrower access. whoami and the guide say which. A task's history records that it came through you.
 
 Call the guide tool once before your first change: it explains every board the user is on (its stages and what each means, its labels, its members, whether planning is on), from live data.
 
@@ -291,6 +291,8 @@ function resolveBoard(boards: BoardSummary[], ref: unknown): BoardSummary {
   if (typeof ref === "string" && fold(ref) === "inbox") {
     const inbox = boards.find((b) => b.isInbox);
     if (inbox) return inbox;
+    /* Everyone has an inbox, so this is an agent its owner has not added to theirs. */
+    throw new Error("You have no inbox: an agent works in its owner's inbox only once they add it there. Name a board.");
   }
   return pick(boards, ref, (b) => [b.id, b.key, b.name], "board", (b) => `${b.name} (${b.key})`);
 }
@@ -303,7 +305,7 @@ function resolvePerson(members: BoardMember[], ref: unknown, viewer: Viewer): Bo
     if (!me) throw new Error("You are not a member of this board.");
     return me;
   }
-  return pick(members, ref, (m) => [m.user.id, m.user.email, m.user.handle, `@${m.user.handle}`], "board member", (m) => `@${m.user.handle}`);
+  return pick(members, ref, (m) => [m.user.id, ...(m.user.email ? [m.user.email] : []), m.user.handle, `@${m.user.handle}`], "board member", (m) => `@${m.user.handle}`);
 }
 
 /**
@@ -482,13 +484,22 @@ function guide(details: BoardDetail[], ctx: Ctx): string {
   const v = ctx.viewer;
   const via = v.access?.via ?? "this connection";
   const out: string[] = [];
+  const scope =
+    v.access?.scope === "read"
+      ? "**read-only** access: you can look at everything you can reach, and change nothing"
+      : "read and write access";
+  const who = v.agent
+    ? `You are connected as the agent **@${v.user.handle}**, which belongs to **@${v.agent.owner.handle}** and acts for them, with ${scope}. You are your own identity: tasks are assigned to you, and every change you make shows in the task's history as "${v.user.handle} via ${via}". You see only the boards you were added to, and on each you can do at most what both you and @${v.agent.owner.handle} may there, and never more than an editor: agents do not make or manage boards, invite people or handle tokens. Of @${v.agent.owner.handle}'s own data you may reach ${
+        v.agent.grants.length ? v.agent.grants.join(", ") : "nothing (no calendar, no notes)"
+      }. Work assigned to you is in my_work; ${
+        v.agent.workFrom === "owner"
+          ? `only @${v.agent.owner.handle} (and their other agents) can assign you work`
+          : `anyone on a board you are on can assign you work, so weigh a request by who made it`
+      }.`
+    : `You are connected as **@${v.user.handle}** (${v.user.email}), with ${scope}. You act as them: on each board you can do exactly what their role there allows, and every change you make shows in the task's history as "${v.user.handle} via ${via}".`;
   out.push(`# Copland: a guide for AI assistants
 
-You are connected as **@${v.user.handle}** (${v.user.email}), with ${
-    v.access?.scope === "read"
-      ? "**read-only** access: you can look at everything they can, and change nothing"
-      : "read and write access"
-  }. You act as them: on each board you can do exactly what their role there allows, and every change you make shows in the task's history as "${v.user.handle} via ${via}". Today is ${today()} (UTC).`);
+${who} Today is ${today()} (UTC).`);
 
   out.push(`## Concepts
 
@@ -570,7 +581,7 @@ const TOOLS: Tool[] = [
     name: "whoami",
     title: "Who am I",
     description:
-      "The user this connection acts as: handle, email, whether they are an instance admin, their inbox's board key, how many boards they are on, and access (\"read and write\" or \"read-only\": a read-only connection cannot change anything).",
+      "Who this connection acts as: a person (handle, email, whether they are an instance admin) or one of their agents (handle \"owner/name\" and agent_of, the person it acts for); the inbox's board key (for an agent, its owner's inbox if it was added there, else null), how many boards they are on, and access (\"read and write\" or \"read-only\": a read-only connection cannot change anything).",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(_args, ctx) {
@@ -580,7 +591,7 @@ const TOOLS: Tool[] = [
       ]);
       return {
         handle: `@${me.user.handle}`,
-        email: me.user.email,
+        ...(me.owner ? { agent_of: `@${me.owner.handle}` } : { email: me.user.email }),
         admin: me.user.isAdmin,
         inbox: boards.find((b) => b.id === me.inboxId)?.key ?? null,
         boards: boards.length,
@@ -593,7 +604,7 @@ const TOOLS: Tool[] = [
     name: "set_handle",
     title: "Change your handle",
     description:
-      "Change the handle the user goes by everywhere in Copland (\"@sam\"). 2 to 32 of a-z, 0-9 and -, starting and ending with a letter or digit; a leading @ and capitals are accepted and dropped. Refuses a handle someone else has and reserved words (me, none, admin and the like). Assignments, comments and history follow the person, so nothing breaks; the old handle becomes free for anyone. Only ask for this when the user wants it. Returns { handle }.",
+      "Change the handle the user goes by everywhere in Copland (\"@sam\"). 2 to 32 of a-z, 0-9 and -, starting and ending with a letter or digit; a leading @ and capitals are accepted and dropped. Refuses a handle someone else has and reserved words (me, none, admin and the like). Assignments, comments and history follow the person, so nothing breaks; the old handle becomes free for anyone. Their agents' handles (\"sam/codex\") follow. Only ask for this when the user wants it. Refused for an agent connection: an agent's name is its owner's to change in settings. Returns { handle }.",
     inputSchema: {
       type: "object",
       properties: { handle: { type: "string", description: "The new handle, e.g. \"sam\" or \"@sam\"" } },
@@ -763,7 +774,7 @@ const TOOLS: Tool[] = [
     name: "create_task",
     title: "Create a task",
     description:
-      "Open a task. Without board it goes in your inbox. It starts in the board's first stage unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on only on boards with planning; they are refused elsewhere. Dates must be real YYYY-MM-DD days, start on or before due; start defaults to today (UTC) unless given, and start: null leaves it undated. Returns { created: summary }.",
+      "Open a task. Without board it goes in your inbox (for an agent, its owner's inbox, once the owner has added it there). It starts in the board's first stage unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on only on boards with planning; they are refused elsewhere. Dates must be real YYYY-MM-DD days, start on or before due; start defaults to today (UTC) unless given, and start: null leaves it undated. Returns { created: summary }.",
     inputSchema: {
       type: "object",
       properties: {

@@ -39,7 +39,12 @@ export interface UserRow {
   avatar_key: string | null;
   is_admin: number;
   disabled_at: string | null;
+  kind: "person" | "agent";
+  owner_id: string | null;
 }
+
+/** An agent's stand-in for the NOT NULL email (migrations/0007_agents.sql): never shown, never signed in with. */
+export const agentEmail = (id: string) => `${id}@agent.invalid`;
 
 /** Avatars live under this R2 prefix; the route that serves them pins it. */
 export const AVATAR_PREFIX = "avatars/";
@@ -50,12 +55,16 @@ export function avatarUrl(key: string | null): string | null {
 }
 
 export function rowToUser(row: UserRow): User {
+  const agent = row.kind === "agent";
   return {
     id: row.id,
-    email: row.email,
+    kind: row.kind,
+    email: agent ? null : row.email,
     handle: row.handle,
     avatar: avatarUrl(row.avatar_key),
-    isAdmin: row.is_admin === 1,
+    /* Being an admin is about the instance, which is for people. */
+    isAdmin: !agent && row.is_admin === 1,
+    ownerId: row.owner_id,
   };
 }
 
@@ -68,7 +77,11 @@ export async function findUserById(db: D1Database, id: string): Promise<UserRow 
 }
 
 export async function findUserByEmail(db: D1Database, email: string): Promise<UserRow | null> {
-  return db.prepare(`SELECT * FROM users WHERE email = ?1`).bind(email.toLowerCase()).first<UserRow>();
+  /* People only: an agent's stand-in address must never be typed into a board's member box and work. */
+  return db
+    .prepare(`SELECT * FROM users WHERE email = ?1 AND kind = 'person'`)
+    .bind(email.toLowerCase())
+    .first<UserRow>();
 }
 
 /* ---------------------------------------------------------------- sign-up -- */
@@ -225,21 +238,30 @@ export async function uniqueHandle(db: D1Database, text: string, email: string):
 
 /**
  * Who sees this person's handle and picture, and so refetches when they
- * change: themselves, everyone they share a board with, and the admins (the
- * people page).
+ * change: themselves, everyone they or their agents share a board with, and
+ * the admins (the people page). Agents have no tabs to tell.
  */
 export async function peopleAudience(db: D1Database, userId: string): Promise<string[]> {
   const { results } = await db
     .prepare(
-      `SELECT ?1 AS id
-       UNION SELECT other.user_id FROM board_members mine
-               JOIN board_members other ON other.board_id = mine.board_id
-              WHERE mine.user_id = ?1
-       UNION SELECT id FROM users WHERE is_admin = 1`,
+      `SELECT id FROM users
+        WHERE kind = 'person' AND (
+              id = ?1
+           OR is_admin = 1
+           OR id IN (SELECT other.user_id FROM board_members mine
+                       JOIN board_members other ON other.board_id = mine.board_id
+                      WHERE mine.user_id = ?1 OR mine.user_id IN (SELECT id FROM users WHERE owner_id = ?1)))`,
     )
     .bind(userId)
     .all<{ id: string }>();
   return results.map((r) => r.id);
+}
+
+/** The statement that keeps a person's agents' handles ("old/codex" → "new/codex") in step with theirs. */
+export function renameAgentsStatement(db: D1Database, ownerId: string, handle: string): D1PreparedStatement {
+  return db
+    .prepare(`UPDATE users SET handle = ?2 || '/' || (SELECT name FROM agents WHERE user_id = users.id) WHERE owner_id = ?1`)
+    .bind(ownerId, handle);
 }
 
 export async function inboxIdFor(db: D1Database, userId: string): Promise<string> {

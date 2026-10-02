@@ -5,12 +5,13 @@ Rules for anyone, human or AI, changing this repo. The README explains how it fi
 - Keep `README.md`, `TODO.md` and `docs/DESIGN.md` current with the change that makes them wrong, in the same commit.
 - `npm run typecheck`, `npm run check` and `npm run build` pass before anything is committed. The check is plain TypeScript run by node's type stripping, so it needs Node 22.18 or newer.
 - Access is checked in the Worker. Board routes start with `requireBoard` (`src/worker/access.ts`), admin routes with `requireAdmin`. Hiding a button is not a check.
-- Personal data (settings, vault, notes, calendar connections) is read and written only by its owner. Nothing personal gets a board-style sharing path.
+- Personal data (settings, vault, notes, calendar connections) is read and written only by its owner. Nothing personal gets a board-style sharing path. The one way in for anyone else is the owner's own agent holding a grant they gave it: personal routes are wrapped in `mine(grant)` in `src/worker/index.ts`, and a new one gets that wrapper too (`mine(null)` when no agent should ever reach it).
 - A route that changes something calls `changes.notify(userIds, ...topics)` for everyone who should refetch. Personal writes notify the author; board writes notify `boardAudience`.
 - Secrets never reach the browser: no `VITE_*` keys, no API keys in responses. Services that need a key are called from the Worker with the user's vault entry.
 - Colours only through the role classes in `docs/DESIGN.md`. No hex in components.
 - Migrations are forward-only and never edited once applied anywhere.
-- An API token is its owner, nothing more. Requests with a Bearer header resolve through `resolveViewer` like any other, read-only tokens are refused on writes in `runApi`, and token management (`/api/tokens`) refuses tokens altogether.
+- An API token is its principal, nothing more: a person, or one of their agents. Requests with a Bearer header resolve through `resolveViewer` like any other, read-only tokens are refused on writes in `runApi`, and token management (`/api/tokens`) refuses tokens altogether.
+- An agent is never more than its owner. `requireBoard` caps its role at the lowest of its own, its owner's and editor, and things only people do (making a board) call `requirePerson`; inviting and managing a board need the owner role, which an agent never has. Don't read board membership any other way. See `docs/AGENT-IDENTITIES.md`.
 - This project deploys to berker-z's personal Cloudflare account and GitHub. Never point it at, or copy config from, the Multiplayer (company) account or repos.
 
 ## Keep the MCP in step

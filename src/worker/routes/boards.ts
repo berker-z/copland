@@ -7,17 +7,19 @@
    owner passes on. The inbox is private and stays that way.
 
    A board always keeps at least one owner, so it can never be orphaned.
+
+   Agents never make boards and never manage one: access.ts caps them at
+   editor, below everything here that needs an owner.
    ========================================================================== */
 
 import { BOARD_ROLES, type BoardDetail, type BoardRole, type Viewer } from "@/domain/types";
-import { requireBoard } from "../access";
+import { boardsFor, requireBoard, requirePerson } from "../access";
 import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
 import {
   boardAudience,
   createBoardStatements,
-  listBoardsFor,
   listMembers,
   uniqueBoardKey,
 } from "../repo/boards";
@@ -38,7 +40,7 @@ function boardName(raw: unknown): string {
 }
 
 export async function getBoards(env: Env, viewer: Viewer): Promise<Response> {
-  return json(await listBoardsFor(env.DB, viewer.user.id));
+  return json(await boardsFor(env.DB, viewer));
 }
 
 export async function getBoard(env: Env, viewer: Viewer, id: string): Promise<Response> {
@@ -55,6 +57,7 @@ export async function getBoard(env: Env, viewer: Viewer, id: string): Promise<Re
 
 /** POST /api/boards { name, key?, hasPlanning? } */
 export async function postBoard(request: Request, env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
+  requirePerson(viewer, "make boards");
   const body = await readJson(request);
   const name = boardName(body.name);
   let key: string;

@@ -28,10 +28,11 @@ import {
   type Task,
   type Viewer,
 } from "@/domain/types";
-import { requireBoard } from "../access";
+import { personOf, requireBoard } from "../access";
 import type { Env } from "../env";
-import { badRequest, HttpError, json, notFound, nowIso, readJson } from "../http";
+import { badRequest, forbidden, HttpError, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
+import { agentsAmong } from "../repo/agents";
 import { boardAudience } from "../repo/boards";
 import { bottomRank, eventStatement, findTask, listStages } from "../repo/tasks";
 
@@ -76,11 +77,25 @@ function stageIn(stages: Stage[], id: unknown): Stage {
   return stage;
 }
 
-/** Everyone named must be on the board. */
-async function requireMembers(db: D1Database, boardId: string, userIds: string[]): Promise<void> {
+/**
+ * Everyone named must be on the board. An agent newly named also has to take
+ * work from whoever is assigning: by default only its owner (and the owner's
+ * other agents), unless the owner opened it to the board's members.
+ * Unassigning, or keeping an assignment someone else made, needs nothing.
+ */
+async function requireAssignable(
+  db: D1Database,
+  viewer: Viewer,
+  boardId: string,
+  userIds: string[],
+  already: string[] = [],
+): Promise<void> {
   if (userIds.length === 0) return;
   const members = new Set(await boardAudience(db, boardId));
   if (userIds.some((id) => !members.has(id))) throw badRequest("`assigneeIds` must all be members of the board");
+  const added = userIds.filter((id) => !already.includes(id));
+  const refused = (await agentsAmong(db, added)).filter((a) => a.workFrom === "owner" && a.ownerId !== personOf(viewer));
+  if (refused.length) throw forbidden("Only an agent's owner can give it work");
 }
 
 async function requireLabels(db: D1Database, boardId: string, labelIds: string[]): Promise<void> {
@@ -179,7 +194,7 @@ export async function postTask(
   if (startDate && dueDate && startDate > dueDate) throw badRequest("The start date is after the due date");
   const assigneeIds = body.assigneeIds === undefined ? [] : parseIdList(body.assigneeIds, "assigneeIds");
   const labelIds = body.labelIds === undefined ? [] : parseIdList(body.labelIds, "labelIds");
-  await requireMembers(db, board.id, assigneeIds);
+  await requireAssignable(db, viewer, board.id, assigneeIds);
   await requireLabels(db, board.id, labelIds);
 
   let parentId: string | null = null;
@@ -342,7 +357,7 @@ export async function patchTask(
 
   if (body.assigneeIds !== undefined) {
     const assigneeIds = parseIdList(body.assigneeIds, "assigneeIds");
-    await requireMembers(db, board.id, assigneeIds);
+    await requireAssignable(db, viewer, board.id, assigneeIds, task.assigneeIds);
     before.assigneeIds = task.assigneeIds;
     after.assigneeIds = assigneeIds;
     extra.push(

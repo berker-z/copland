@@ -6,19 +6,30 @@
 
 export interface User {
   id: string;
-  email: string;
-  /** What they go by: unique, lowercase (domain/handle.ts). */
+  /** A person, or an agent acting for one (docs/AGENT-IDENTITIES.md). */
+  kind: "person" | "agent";
+  /** Null for an agent: it has no address and never signs in. */
+  email: string | null;
+  /** What they go by: unique, lowercase (domain/handle.ts). An agent's is "owner/name". */
   handle: string;
   /** Where their uploaded picture is fetched; null shows initials. */
   avatar: string | null;
   isAdmin: boolean;
+  /** The person an agent belongs to; null for a person. */
+  ownerId: string | null;
 }
+
+/** Personal data of its owner an agent may be given. Board work needs none. */
+export const AGENT_GRANTS = ["calendar:read", "notes:read", "notes:write"] as const;
+export type AgentGrant = (typeof AGENT_GRANTS)[number];
 
 /** Who is making a request, as the Worker resolved it. */
 export interface Viewer {
   user: User;
   /** Set when the request came with an API token instead of a session. */
   access?: ApiAccess;
+  /** Set when `user` is an agent: who it acts for, and what of theirs it may reach. */
+  agent?: { owner: User; grants: AgentGrant[]; workFrom: "owner" | "members" };
 }
 
 export type SignupMode = "invite" | "open" | "closed";
@@ -26,8 +37,11 @@ export type SignupMode = "invite" | "open" | "closed";
 /** GET /api/me */
 export interface Me {
   user: User;
-  inboxId: string;
+  /** Null for an agent that has not been added to its owner's inbox. */
+  inboxId: string | null;
   signup: SignupMode;
+  /** For an agent: the person it acts for. */
+  owner?: User;
 }
 
 /* ---------------------------------------------------------------- boards --- */

@@ -63,6 +63,19 @@ export async function boardFor(db: D1Database, userId: string, boardId: string):
   return row ? rowToSummary(row) : null;
 }
 
+/** This user's role on each of these boards they are on. */
+export async function rolesOn(db: D1Database, userId: string, boardIds: string[]): Promise<Map<string, BoardRole>> {
+  if (boardIds.length === 0) return new Map();
+  const { results } = await db
+    .prepare(
+      `SELECT board_id, role FROM board_members
+        WHERE user_id = ?1 AND board_id IN (${boardIds.map((_, i) => `?${i + 2}`).join(",")})`,
+    )
+    .bind(userId, ...boardIds)
+    .all<{ board_id: string; role: BoardRole }>();
+  return new Map(results.map((r) => [r.board_id, r.role]));
+}
+
 export async function listMembers(db: D1Database, boardId: string): Promise<BoardMember[]> {
   const { results } = await db
     .prepare(

@@ -1,11 +1,13 @@
 /* ============================================================================
-   Viewer resolution: API token or session cookie → user row.
+   Viewer resolution: API token or session cookie → user row. A token may
+   belong to an agent, which comes with its owner and grants (repo/agents.ts).
    ========================================================================== */
 
 import type { Viewer } from "@/domain/types";
 import { sessionUser } from "./auth";
 import type { Env } from "./env";
 import { UnauthenticatedError } from "./http";
+import { agentContext } from "./repo/agents";
 import { createUser, findUserByEmail, rowToUser, type UserRow } from "./repo/users";
 import { bearerFrom, tokenAccess } from "./tokens";
 
@@ -20,7 +22,14 @@ export async function resolveViewer(request: Request, env: Env): Promise<Viewer>
   if (secret !== null || request.headers.has("authorization")) {
     const viaToken = secret ? await tokenAccess(env.DB, secret) : null;
     if (!viaToken) throw new UnauthenticatedError("Invalid, expired or revoked token");
-    return { user: rowToUser(viaToken.user), access: viaToken.access };
+    const viewer: Viewer = { user: rowToUser(viaToken.user), access: viaToken.access };
+    if (viaToken.user.kind === "agent") {
+      /* An agent acts only while it is not paused and its owner is still here. */
+      const agent = await agentContext(env.DB, viaToken.user);
+      if (!agent) throw new UnauthenticatedError("This agent is paused, or its owner's account is disabled");
+      viewer.agent = agent;
+    }
+    return viewer;
   }
   const row = await browserUser(request, env);
   if (!row) throw new UnauthenticatedError();

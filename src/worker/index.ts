@@ -14,15 +14,21 @@
    Identity is resolved once, before any route runs, so no route can forget
    to authenticate. Authorization is the route's job: requireBoard and
    requireAdmin in access.ts. The route table is the whole API.
+
+   The viewer may be an agent (docs/AGENT-IDENTITIES.md). Board routes need
+   nothing extra, requireBoard caps it. Personal routes are wrapped in
+   mine(grant) below, which decides whether an agent gets its owner's data;
+   a new personal route gets that wrapper too.
    ========================================================================== */
 
 import { TAB_HEADER } from "@/domain/live";
-import type { Viewer } from "@/domain/types";
+import type { AgentGrant, Viewer } from "@/domain/types";
+import { personalViewer } from "./access";
 import { finishLogin, logout, startCalendarConnect, startLogin } from "./auth";
 import type { Env } from "./env";
 import { errorResponse, HttpError, notFound } from "./http";
 import { Changes, connectLive } from "./live";
-import { Router } from "./router";
+import { Router, type Params } from "./router";
 import { deleteInvite, getInvites, getUsers, patchUser, postInvite } from "./routes/admin";
 import {
   deleteBoard,
@@ -70,49 +76,81 @@ interface Ctx {
   changes: Changes;
 }
 
+/**
+ * A personal route: a person reaches their own data, an agent its owner's
+ * and only with `grant` (null: never). The handler runs as the owner, so it
+ * needs no idea agents exist. See personalViewer in access.ts.
+ */
+function mine(grant: AgentGrant | null, handler: (ctx: Ctx, params: Params) => Promise<Response>) {
+  return (ctx: Ctx, params: Params) => handler({ ...ctx, viewer: personalViewer(ctx.viewer, grant) }, params);
+}
+
 const api = new Router<Ctx>()
+  /* An agent's own: who it is and whom it acts for. */
   .on("GET", "/api/me", ({ env, viewer }) => getMe(env, viewer))
-  .on("PATCH", "/api/me", ({ request, env, viewer, changes }) => patchMe(request, env, viewer, changes))
-  .on("PUT", "/api/me/avatar", ({ request, env, viewer, changes }) => putAvatar(request, env, viewer, changes))
-  .on("DELETE", "/api/me/avatar", ({ env, viewer, changes }) => deleteAvatar(env, viewer, changes))
+  .on("PATCH", "/api/me", mine(null, ({ request, env, viewer, changes }) => patchMe(request, env, viewer, changes)))
+  .on("PUT", "/api/me/avatar", mine(null, ({ request, env, viewer, changes }) => putAvatar(request, env, viewer, changes)))
+  .on("DELETE", "/api/me/avatar", mine(null, ({ env, viewer, changes }) => deleteAvatar(env, viewer, changes)))
   /* Keys are "avatars/<uuid>", pinned here like attachments below. */
   .on("GET", "/api/avatars/:id", ({ env, viewer }, { id }) => getAvatar(env, viewer, `avatars/${id}`))
-  .on("GET", "/api/live", ({ request, env, url, viewer }) => connectLive(request, env, url, viewer.user.id))
+  .on("GET", "/api/live", mine(null, ({ request, env, url, viewer }) => connectLive(request, env, url, viewer.user.id)))
 
-  .on("GET", "/api/settings", ({ env, viewer }) => getSettings(env, viewer))
-  .on("PATCH", "/api/settings", ({ request, env, viewer, changes }) => patchSettings(request, env, viewer, changes))
-  .on("GET", "/api/vault", ({ env, viewer }) => getVault(env, viewer))
-  .on("PUT", "/api/vault/:name", ({ request, env, viewer, changes }, { name }) =>
-    putVault(request, env, viewer, name, changes),
+  .on("GET", "/api/settings", mine(null, ({ env, viewer }) => getSettings(env, viewer)))
+  .on("PATCH", "/api/settings", mine(null, ({ request, env, viewer, changes }) => patchSettings(request, env, viewer, changes)))
+  .on("GET", "/api/vault", mine(null, ({ env, viewer }) => getVault(env, viewer)))
+  .on(
+    "PUT",
+    "/api/vault/:name",
+    mine(null, ({ request, env, viewer, changes }, { name }) => putVault(request, env, viewer, name, changes)),
   )
-  .on("DELETE", "/api/vault/:name", ({ env, viewer, changes }, { name }) => deleteVault(env, viewer, name, changes))
-  .on("GET", "/api/tokens", ({ env, viewer }) => getTokens(env, viewer))
-  .on("POST", "/api/tokens", ({ request, env, viewer, changes }) => postToken(request, env, viewer, changes))
-  .on("DELETE", "/api/tokens/:id", ({ env, viewer, changes }, { id }) => deleteToken(env, viewer, id, changes))
+  .on("DELETE", "/api/vault/:name", mine(null, ({ env, viewer, changes }, { name }) => deleteVault(env, viewer, name, changes)))
+  .on("GET", "/api/tokens", mine(null, ({ env, viewer }) => getTokens(env, viewer)))
+  .on("POST", "/api/tokens", mine(null, ({ request, env, viewer, changes }) => postToken(request, env, viewer, changes)))
+  .on("DELETE", "/api/tokens/:id", mine(null, ({ env, viewer, changes }, { id }) => deleteToken(env, viewer, id, changes)))
 
-  .on("GET", "/api/notes", ({ env, viewer }) => getNotes(env, viewer))
-  .on("POST", "/api/notes", ({ request, env, viewer, changes }) => postNote(request, env, viewer, changes))
-  .on("PATCH", "/api/notes/:id", ({ request, env, viewer, changes }, { id }) =>
-    patchNote(request, env, viewer, id, changes),
+  .on("GET", "/api/notes", mine("notes:read", ({ env, viewer }) => getNotes(env, viewer)))
+  .on("POST", "/api/notes", mine("notes:write", ({ request, env, viewer, changes }) => postNote(request, env, viewer, changes)))
+  .on(
+    "PATCH",
+    "/api/notes/:id",
+    mine("notes:write", ({ request, env, viewer, changes }, { id }) => patchNote(request, env, viewer, id, changes)),
   )
-  .on("DELETE", "/api/notes/:id", ({ env, viewer, changes }, { id }) => deleteNote(env, viewer, id, changes))
-  .on("GET", "/api/markets/coingecko", ({ env, viewer }) => getMarketExtras(env, viewer))
+  .on("DELETE", "/api/notes/:id", mine("notes:write", ({ env, viewer, changes }, { id }) => deleteNote(env, viewer, id, changes)))
+  .on("GET", "/api/markets/coingecko", mine(null, ({ env, viewer }) => getMarketExtras(env, viewer)))
 
-  .on("GET", "/api/calendar", ({ env, viewer }) => getCalendarSetup(env, viewer))
-  .on("POST", "/api/calendar/accounts/:id/sync", ({ env, viewer, changes }, { id }) => postAccountSync(env, viewer, id, changes))
-  .on("DELETE", "/api/calendar/accounts/:id", ({ env, viewer, changes }, { id }) => deleteAccount(env, viewer, id, changes))
-  .on("POST", "/api/calendar/ics", ({ request, env, viewer, changes }) => postIcsFeed(request, env, viewer, changes))
-  .on("PATCH", "/api/calendar/calendars/:id", ({ request, env, viewer, changes }, { id }) =>
-    patchCalendar(request, env, viewer, id, changes),
+  .on("GET", "/api/calendar", mine("calendar:read", ({ env, viewer }) => getCalendarSetup(env, viewer)))
+  .on(
+    "POST",
+    "/api/calendar/accounts/:id/sync",
+    mine(null, ({ env, viewer, changes }, { id }) => postAccountSync(env, viewer, id, changes)),
   )
-  .on("DELETE", "/api/calendar/calendars/:id", ({ env, viewer, changes }, { id }) => deleteCalendar(env, viewer, id, changes))
-  .on("GET", "/api/calendar/events", ({ env, viewer, url }) => getEvents(env, viewer, url))
-  .on("POST", "/api/calendar/events", ({ request, env, viewer, changes }) => postEvent(request, env, viewer, changes))
-  .on("PUT", "/api/calendar/events/:calendarId/:eventId", ({ request, env, viewer, changes }, p) =>
-    putEvent(request, env, viewer, p.calendarId, p.eventId, changes),
+  .on(
+    "DELETE",
+    "/api/calendar/accounts/:id",
+    mine(null, ({ env, viewer, changes }, { id }) => deleteAccount(env, viewer, id, changes)),
   )
-  .on("DELETE", "/api/calendar/events/:calendarId/:eventId", ({ env, viewer, changes }, p) =>
-    removeEvent(env, viewer, p.calendarId, p.eventId, changes),
+  .on("POST", "/api/calendar/ics", mine(null, ({ request, env, viewer, changes }) => postIcsFeed(request, env, viewer, changes)))
+  .on(
+    "PATCH",
+    "/api/calendar/calendars/:id",
+    mine(null, ({ request, env, viewer, changes }, { id }) => patchCalendar(request, env, viewer, id, changes)),
+  )
+  .on(
+    "DELETE",
+    "/api/calendar/calendars/:id",
+    mine(null, ({ env, viewer, changes }, { id }) => deleteCalendar(env, viewer, id, changes)),
+  )
+  .on("GET", "/api/calendar/events", mine("calendar:read", ({ env, viewer, url }) => getEvents(env, viewer, url)))
+  .on("POST", "/api/calendar/events", mine(null, ({ request, env, viewer, changes }) => postEvent(request, env, viewer, changes)))
+  .on(
+    "PUT",
+    "/api/calendar/events/:calendarId/:eventId",
+    mine(null, ({ request, env, viewer, changes }, p) => putEvent(request, env, viewer, p.calendarId, p.eventId, changes)),
+  )
+  .on(
+    "DELETE",
+    "/api/calendar/events/:calendarId/:eventId",
+    mine(null, ({ env, viewer, changes }, p) => removeEvent(env, viewer, p.calendarId, p.eventId, changes)),
   )
 
   .on("GET", "/api/boards", ({ env, viewer }) => getBoards(env, viewer))

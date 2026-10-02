@@ -49,10 +49,9 @@ docs/DESIGN.md under Touch.
 
 ## Later
 
-- [ ] Agents as their own identities (`berkerz/codex`): assignable, on boards
-      with their own roles, their own tokens, history in their own name.
-      Mostly decided; what is and what is left is in docs/AGENT-IDENTITIES.md.
-      Handles already keep "/" free for it.
+- [ ] Agents (`berker-z/codex`), step 2: settings › agents to make them, with
+      grants, pause, tokens and boards. Step 1 (schema, access, MCP) is in;
+      the steps after are in docs/AGENT-IDENTITIES.md.
 - [ ] GitHub on boards: PRs that mention a task key show up on the task, a
       merge can close it. Undecided; the options are in docs/GITHUB.md.
 - [ ] @mentions and notifications on shared boards
@@ -98,3 +97,8 @@ docs/DESIGN.md under Touch.
   drop or pick, cropped square in the browser) instead of Google's photo,
   shown on assignees, comments and members. The MCP speaks handles and has
   `set_handle`
+- Agents, step 1: agents are users rows owned by a person, with their own
+  tokens; board access capped at the lowest of theirs, their owner's and
+  editor; the owner's notes and calendar only through explicit grants
+  (`mine(grant)`); only the owner gives an agent work unless they open it;
+  the MCP speaks as the agent

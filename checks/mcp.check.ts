@@ -22,7 +22,7 @@ const t = (name: string, pass: boolean) => cases.push([name, pass]);
 
 const index = readFileSync("src/worker/index.ts", "utf8");
 const routes = new Set(
-  [...index.matchAll(/\.on\("(GET|POST|PATCH|PUT|DELETE)", "(\/api\/[^"]*)"/g)].map((m) => `${m[1]} ${m[2]}`),
+  [...index.matchAll(/\.on\(\s*"(GET|POST|PATCH|PUT|DELETE)",\s*"(\/api\/[^"]*)"/g)].map((m) => `${m[1]} ${m[2]}`),
 );
 const mcp = readFileSync("src/worker/mcp.ts", "utf8");
 

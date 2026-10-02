@@ -12,6 +12,8 @@
 
    Mentions and assignments point at user ids, never at handles, so a rename
    breaks nothing; the old handle is free for anyone the moment it changes.
+   Your agents' handles ("you/codex") are rewritten in the same batch.
+   Agents reach none of these: index.ts wraps them in mine(null).
 
    A picture is stored as sent. The browser crops and shrinks it first
    (lib/avatar.ts); the cap here only keeps a script from storing a poster.
@@ -24,7 +26,7 @@ import type { Viewer } from "@/domain/types";
 import type { Env } from "../env";
 import { badRequest, conflict, notFound, readJson } from "../http";
 import type { Changes } from "../live";
-import { AVATAR_PREFIX, findUserById, peopleAudience, rowToUser } from "../repo/users";
+import { AVATAR_PREFIX, findUserById, peopleAudience, renameAgentsStatement, rowToUser } from "../repo/users";
 import { getMe } from "./personal";
 
 const MAX_AVATAR_BYTES = 1024 * 1024;
@@ -52,7 +54,11 @@ export async function patchMe(request: Request, env: Env, viewer: Viewer, change
       .first();
     if (taken) throw conflict(`\`${handle}\` is taken`);
     try {
-      await env.DB.prepare(`UPDATE users SET handle = ?2 WHERE id = ?1`).bind(viewer.user.id, handle).run();
+      /* One batch: their agents' "old/name" handles follow, or nothing changes. */
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE users SET handle = ?2 WHERE id = ?1`).bind(viewer.user.id, handle),
+        renameAgentsStatement(env.DB, viewer.user.id, handle),
+      ]);
     } catch (error) {
       /* Someone took it between the check and the write. */
       if (String(error).includes("UNIQUE")) throw conflict(`\`${handle}\` is taken`);
