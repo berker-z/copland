@@ -180,4 +180,11 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /api/tokens": { skip: "browser: token management never goes through a token" },
   "POST /api/tokens": { skip: "browser: token management never goes through a token" },
   "DELETE /api/tokens/:id": { skip: "browser: token management never goes through a token" },
+
+  /* Device login: a box asks, a person approves in the app, the box collects its tokens. */
+  "POST /api/device/start": { skip: "private: the box's own unauthenticated first step; it mints nothing and no assistant should be asking to be let in" },
+  "POST /api/device/poll": { skip: "private: hands the box its token secrets once, against a device code only the box holds" },
+  "GET /api/device/:userCode": { skip: "browser: the /device approval page; tokens are refused" },
+  "POST /api/device/approve": { skip: "browser: approving mints tokens, which only a person in the app does" },
+  "POST /api/device/deny": { skip: "browser: the /device approval page; tokens are refused" },
 };

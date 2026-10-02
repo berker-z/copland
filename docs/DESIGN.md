@@ -341,6 +341,16 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   cannot load the app's stylesheet. It is one pane in the modal's shape
   (hairline border, rule under the title, footer on `bar`), with the nord
   theme's role values copied in under the same variable names.
+- `/device` (`src/features/device/DeviceScreen.tsx`) is the app's own
+  route, under the statusline, so it has the app's theme. One centred pane
+  with the login screen's header (`connect_a_box` in `text-blue` on a rule).
+  The box's code is the largest thing on it, `text-2xl` spaced out; the
+  warning about whose code it is sits in a `border-yellow/60 bg-yellow/10`
+  box; the two kinds of token it makes are named in `text-blue` (read only)
+  and `text-yellow` (read + write), as on token rows. Agents are a
+  `Checkbox` list, paused ones unticked with a muted note. Approve is the
+  only `border-accent` button; deny turns red on hover. Without a code it is
+  one input and "continue".
 - Scrollbars are standardized in `src/styles/index.css` (surface track, faint thumb,
   accent hover); no per-component overrides.
 

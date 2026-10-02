@@ -4,7 +4,9 @@
      /auth/*    sign-in: Google redirect, invite links, callback, logout
      /api/*     resolve the viewer (API token, session cookie, or
                 DEV_USER_EMAIL on localhost) → route → JSON. A successful write then tells the
-                affected users' open tabs what changed (live.ts).
+                affected users' open tabs what changed (live.ts). Two
+                routes come before any of that and have no viewer at all:
+                a box's device login, start and poll (routes/device.ts).
      /api/live  a tab's WebSocket for those messages
      /mcp, /oauth/*, /.well-known/oauth-*
                 AI assistants: the MCP server and its OAuth (integrations.ts).
@@ -63,6 +65,7 @@ import { getMyWork } from "./routes/work";
 import { getWired } from "./routes/wired";
 import { deleteClaim, getRun, postClaim, postRun, postRunFinish } from "./routes/runs";
 import { getInbox, postInboxDismiss, postInboxRead } from "./routes/inbox";
+import { getDevice, postDeviceApprove, postDeviceDeny, postDevicePoll, postDeviceStart } from "./routes/device";
 import { deleteToken, getTokens, postToken } from "./routes/tokens";
 import { handleIntegration, isIntegrationPath } from "./integrations";
 import { asAccess, bearerFrom, requireWriteScope, touchStatements } from "./tokens";
@@ -128,6 +131,11 @@ const api = new Router<Ctx>()
   .on("GET", "/api/tokens", mine(null, ({ env, viewer }) => getTokens(env, viewer)))
   .on("POST", "/api/tokens", mine(null, ({ request, env, viewer, changes }) => postToken(request, env, viewer, changes)))
   .on("DELETE", "/api/tokens/:id", mine(null, ({ env, viewer, changes }, { id }) => deleteToken(env, viewer, id, changes)))
+  /* Device login (routes/device.ts): a person approves a box in the app, never
+     with a token. The box's own two routes are in `open`, below. */
+  .on("GET", "/api/device/:userCode", mine(null, ({ env, viewer }, { userCode }) => getDevice(env, viewer, userCode)))
+  .on("POST", "/api/device/approve", mine(null, ({ request, env, viewer, changes }) => postDeviceApprove(request, env, viewer, changes)))
+  .on("POST", "/api/device/deny", mine(null, ({ request, env, viewer }) => postDeviceDeny(request, env, viewer)))
   .on("GET", "/api/agents", mine(null, ({ env, viewer }) => getAgents(env, viewer)))
   .on("POST", "/api/agents", mine(null, ({ request, env, viewer, changes }) => postAgent(request, env, viewer, changes)))
   .on("PATCH", "/api/agents/:id", mine(null, ({ request, env, viewer, changes }, { id }) => patchAgent(request, env, viewer, id, changes)))
@@ -301,6 +309,23 @@ const api = new Router<Ctx>()
     deleteInvite(env, viewer, id, changes),
   );
 
+interface OpenCtx {
+  request: Request;
+  env: Env;
+  url: URL;
+  changes: Changes;
+}
+
+/**
+ * The only API routes with no viewer: a box asking to be let in, and polling
+ * for the answer with the device code only it holds (routes/device.ts).
+ * Matched before identity is resolved, so a request here never acts as
+ * anyone, whatever cookie or token came with it.
+ */
+const open = new Router<OpenCtx>()
+  .on("POST", "/api/device/start", ({ request, env, url, changes }) => postDeviceStart(request, env, url, changes))
+  .on("POST", "/api/device/poll", ({ request, env, url, changes }) => postDevicePoll(request, env, url, changes));
+
 /**
  * The session rides in a cookie, so a page on another site could make the
  * browser send it. SameSite=Lax already withholds it from cross-site POSTs;
@@ -369,6 +394,13 @@ async function runApi(
 
 async function handleApi(request: Request, env: Env, ctx: ExecutionContext, url: URL): Promise<Response> {
   requireSameOrigin(request, url);
+  const changes = new Changes();
+  const unauthenticated = open.dispatch(request.method, url.pathname, { request, env, url, changes });
+  if (unauthenticated) {
+    const response = await unauthenticated;
+    if (response.ok) changes.publish(env, ctx, null);
+    return response;
+  }
   const viewer = await resolveViewer(request, env);
   const run = () => runApi(env, ctx, request, url, viewer, request.headers.get(TAB_HEADER));
   if (!viewer.access) return run();

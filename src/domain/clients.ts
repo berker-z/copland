@@ -11,6 +11,8 @@
  * through as they came.
  */
 const KNOWN_CLIENTS: Array<[RegExp, string]> = [
+  /* Tokens a box was given through device login (worker/routes/device.ts). */
+  [/^copland-box$/, "Copland box"],
   [/claude[-_ ]?code/i, "Claude Code"],
   [/claude/i, "Claude"],
   [/codex/i, "Codex"],

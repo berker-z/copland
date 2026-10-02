@@ -64,6 +64,11 @@ docs/DESIGN.md under Touch.
 - [ ] Runs and claims (COPL-7, COPL-8) were tested through the API and `/mcp`;
       in the browser only the card marker and the history line were looked
       at. The runs list on an agent's settings page hasn't been seen.
+- [ ] Device login (COPL-47) was tested with curl and a node script
+      against the dev server, and `/device` looked at in headless Chrome.
+      Not yet with the box's side driving it, and not the sign-in detour
+      (localhost is always the dev user): open a `/device?code=` link signed
+      out on the live site and check it comes back with the code.
 - [ ] Boards from before migration 0012 got a backlog stage but no blocked
       one, so agents there can only comment when they need an answer. Add a
       blocked stage by hand in board settings where agents work.
@@ -243,3 +248,13 @@ docs/DESIGN.md under Touch.
   under its pole and trimmed to fit its width. The default layout is now
   three columns: wired; boards, tasks, inbox; agenda, calendar, notepad.
   Saved layouts are left alone
+- Device login, the server side (COPL-47): a box asks with
+  `POST /api/device/start`, shows an `ABCD-EFGH` code, and polls
+  `POST /api/device/poll` with the device code only it holds. The person
+  approves on `/device` in the app (never with a token), ticking which
+  agents it may run. That mints a read-only token for them ("<host> box")
+  and a read and write one per agent ("<host>"), ordinary tokens shown as
+  "Copland box" in settings and revocable there. The secrets wait sealed
+  under VAULT_KEY and are handed over once; an approval nobody collects in
+  ten minutes loses its tokens. Per-IP and pending caps on the two open
+  routes. Migration 0016

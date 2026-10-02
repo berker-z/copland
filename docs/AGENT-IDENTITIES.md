@@ -70,6 +70,21 @@ A claim is live while `claimed_until` is in the future and its run is running. A
 
 Over the MCP the model works inside a run; it doesn't start one. A session can't switch its own credential mid-connection, so a `start_run` tool would hand the model a secret it has no use for. It gets `claim_task`, `release_task` and `finish_run`, and `whoami` and the guide say whether the connection is a run. Without one, `claim_task` refuses and the guide says to assign yourself and move the task to active instead. Blocked isn't crashed: a run can move its task to blocked, ask its question and finish, and a later run claims the task again once someone answers.
 
+## Device login
+
+The box (COPL-33) needs your read-only token for /wired and a write token per agent it runs. It gets them through a device login (COPL-47, `src/worker/routes/device.ts`, `migrations/0016_device_requests.sql`) instead of you pasting them in:
+
+- `POST /api/device/start { client, host }`, no credentials → `{ deviceCode, userCode, verifyUrl, interval: 3, expiresIn: 600 }`. The device code is `cpld_` plus 32 random bytes and only its hash is stored. The user code is eight characters from an alphabet without 0, O, 1, I, L, U and V, written `ABCD-EFGH`. `client` and `host` are cut to one printable line (40 and 48 characters) because the approval page shows them.
+- `GET /api/device/:userCode` → `{ client, host, createdAt, status }`, status pending, approved, denied or expired. Once someone answers a request, only they can look it up.
+- `POST /api/device/approve { userCode, agentIds }` and `POST /api/device/deny { userCode }`.
+- `POST /api/device/poll { deviceCode }`, no credentials → `{ status }`, and exactly once `{ status: "approved", url, owner: { handle, token }, agents: [{ handle, token }] }`. Polling faster than once a second while pending adds `slow_down: true`. After delivery, or for a code it doesn't know, it says expired.
+
+The user code is a pointer, not a credential. Approve, deny and the lookup need a person's browser session: a token is refused (even a write token of the same person) and so is an agent, the same rule as `/api/tokens`, so no token can ever mint more tokens this way. The agents must be the person's own and not deleted; a paused one is allowed and its token works once it is resumed (the page leaves paused ones unticked).
+
+Approval makes the tokens with `createPersonalToken`, the same rows settings makes: "<host> box", read, for the person; "<host>", write, for each agent. They carry `client = copland-box`, which settings and the history show as "Copland box". Their secrets are sealed under `VAULT_KEY` (bound to the request's id) on the request row. Until the box collects them the tokens expire with the request, so an approval nobody picks up is dead ten minutes in whatever else happens; the next device call also marks those tokens revoked and drops the ciphertext. Delivery is one update guarded on the request still being approved, which clears the ciphertext in the same statement, so two racing polls get the secrets once between them. The tokens then lose their expiry and last until revoked.
+
+The two open routes are matched in `index.ts` before identity is resolved, so they never act as anyone. Each IP gets ten starts per ten minutes, and the instance holds at most 200 pending requests. Nothing runs on a timer: every device call tidies first, and rows older than a day are deleted.
+
 ## Still open
 
 - What "pause" is beyond refusing tokens and ending runs (for example, showing paused on its assigned cards).

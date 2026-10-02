@@ -4,7 +4,9 @@
    /api/me decides everything: a 401 is the login screen, anything else is
    the dashboard. The dashboard is the panes the `dashboard` setting has on,
    in its columns, each drawn by the widget registry (domain/widgets.ts,
-   app/widgets.tsx). /b/KEY swaps it for a board screen.
+   app/widgets.tsx). /b/KEY swaps it for a board screen, /device for
+   approving a box's device login (features/device/DeviceScreen.tsx); signing
+   in first comes back to the same address, code and all.
    ========================================================================== */
 
 import { useState } from "react";
@@ -14,6 +16,7 @@ import { DEFAULT_SETTINGS } from "@/domain/settings";
 import type { DashboardLayout } from "@/domain/widgets";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { BoardScreen } from "@/features/board/BoardScreen";
+import { DeviceScreen } from "@/features/device/DeviceScreen";
 import { SettingsModal, type SettingsPage } from "@/features/settings/SettingsModal";
 import { StatusLine } from "@/features/shell/StatusLine";
 import { ApiError } from "@/lib/api";
@@ -56,6 +59,7 @@ export function App() {
   /* Which settings page is open, or "start" for wherever it opens by itself. */
   const [openSettings, setSettings] = useState<SettingsPage | "start" | null>(null);
   const boardRoute = useMatch("/b/:key");
+  const deviceRoute = useMatch("/device");
 
   useApplyTheme(signedIn);
   useLiveUpdates(signedIn);
@@ -84,6 +88,8 @@ export function App() {
       <main className="flex-1 pt-11">
         {boardRoute?.params.key ? (
           <BoardScreen boardKey={boardRoute.params.key} />
+        ) : deviceRoute ? (
+          <DeviceScreen />
         ) : (
           /* Waits for the settings, so the panes do not jump from the default layout to yours. */
           !settings.isPending && <Dashboard layout={(settings.data ?? DEFAULT_SETTINGS).dashboard} openSettings={setSettings} />
