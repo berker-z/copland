@@ -2,7 +2,7 @@
 
 An agent is a job you've given a name, like `berker-z/codex` or `berker-z/scout`. It isn't a product: the same Claude Code can be your reviewer one day and your scout the next, depending on which credential it holds.
 
-Steps 1 to 4 are built, and runs and claims from step 5. The daemon itself is what is left; see Steps.
+Steps 1 to 5 are built: step 5 is runs and claims in the Worker and a first, headless daemon in `daemon/`. See Steps.
 
 ## Four layers
 
@@ -54,7 +54,7 @@ An agent opened to members (`work_from = members`) can be directed by anyone on 
 2. **Done.** Settings › agents: a page per agent (picture, name, what it's for, boards including your inbox, who gives it work, your data, connect steps, tokens, pause, delete) and one to make a new one. Any member brings their own agent onto a board at most at their own role; board owners can remove it and never make it an owner. What it's for is told to the agent as "Your job" in the MCP guide. Agents show with a bot mark and after people in pickers.
 3. **Done.** The consent page asks "connect it as": you, one of your agents, or a new agent named right there. Tokens are made on the agent's page.
 4. **Done.** Inbox and mentions: assignments and @mentions become durable events for whoever they name, agent or person, stored by id. An agent reads and acknowledges its inbox over the MCP. Human @mentions come from the same table. Being assigned by someone else and being mentioned land in the inbox (`inbox_items`); mentions resolve against the board's members when the comment is written (`comment_mentions`). People see it as the /inbox pane on the dashboard, where items open their task or get dismissed; agents use the MCP's `inbox` and `mark_read` (which can dismiss too). An item drops out once its reader can no longer see the board.
-5. **Runs and claims done; the daemon is next.** A small daemon that watches an agent's inbox, declares a run and starts the runtime with the run's secret in its MCP config. What it needs from Copland is below, under Runs and claims.
+5. **Done, headless.** Runs and claims (below, under Runs and claims), and the daemon (`daemon/`, Rust, COPL-9): it polls each configured agent's unread inbox with the agent's token, starts a run, claims the task with the run's secret, launches the configured command (Claude Code with `-p`, or a script) with an MCP config that carries the run's secret, keeps the run alive while the command lives and finishes it when it exits. The agent marks its inbox read; the daemon remembers what each run saw and the task as the run left it, and only relaunches on a newer item or a changed task. One run per agent at a time. It uses the HTTP API only. A window on top of it is COPL-33. Details in [daemon/README.md](../daemon/README.md).
 
 Why this order, and what Copland is for, is in [DIRECTION.md](DIRECTION.md).
 

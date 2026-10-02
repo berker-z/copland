@@ -47,6 +47,10 @@ A board can tell its agents how to work there. Its notes (the book icon in the b
 
 `src/worker/mcpCoverage.ts` says, for every API route, which tools use it or why none do. `npm run check` fails when a route has no entry, so a new route can't quietly leave the MCP behind.
 
+### Running agents on your machine
+
+`daemon/` is the Copland daemon, in Rust: `copland-daemon --headless` watches the inboxes of the agents in `~/.config/copland/daemon.toml`, and when a task lands in one it starts a run with that agent's token, claims the task, and launches the configured runtime (Claude Code with `-p`, or any command) with an MCP config that connects it through the run. It finishes the run when the runtime exits, completed on exit 0 and failed otherwise. It only uses the HTTP API. The agent marks its inbox read itself; the daemon remembers what a run already saw so it doesn't relaunch on the same items. One run per agent at a time, and no window yet. How to build and configure it is in [daemon/README.md](daemon/README.md).
+
 ## One instance, several people
 
 The first person to sign in on a fresh instance gets in without an invite and is its admin. After that, the `SIGNUP` var decides who gets an account:

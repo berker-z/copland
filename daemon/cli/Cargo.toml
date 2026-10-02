@@ -1,0 +1,20 @@
+[package]
+name = "copland-daemon"
+description = "Runs Copland agents on this machine: wakes on their inbox and launches their runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "copland-daemon"
+path = "src/main.rs"
+
+[dependencies]
+copland-daemon-core.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

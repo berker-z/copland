@@ -66,9 +66,12 @@ docs/DESIGN.md under Touch.
 
 ## Later
 
-- [ ] Agents, step 5: the daemon that watches an agent's inbox and starts its
-      runtime. Runs and claims are in (COPL-7, COPL-8); it starts a run,
-      claims, launches, finishes. Order and reasons: docs/DIRECTION.md.
+- [ ] The daemon (COPL-9) beyond headless: a GPUI window on the same
+      loop (COPL-33), a second runtime (Codex) to prove the binding, a way
+      back to a task whose claim another run held (today it waits for a new
+      inbox item), answering a mention on someone else's task without a
+      claim, and backoff for a runtime that keeps failing. Known gaps are in
+      daemon/README.md.
 - [ ] Data export: everything a person has, as one download from settings.
 - [ ] Mail (v0.2): IMAP/JMAP first, narrow read-only grants for agents.
 - [ ] GitHub on boards: PRs that mention a task key show up on the task, a
@@ -211,3 +214,11 @@ docs/DESIGN.md under Touch.
   active, parents follow, and two racing runs can't both win. Released by
   finishing, closing, unassigning, pausing. MCP: `claim_task`,
   `release_task`, `finish_run`, `whoami` shows the run. Migration 0015
+- The daemon, headless (COPL-9): `daemon/`, a Rust workspace (`core` is the
+  loop, `cli` the `copland-daemon` binary). Per agent in
+  `~/.config/copland/daemon.toml`: poll the unread inbox, start a run, claim
+  with its secret, launch the command (Claude Code `-p` with a temporary
+  MCP config carrying the run secret) in its working directory, keep the run
+  alive, finish it on exit (0 completed, else failed; cancelled on
+  SIGINT/SIGTERM). A wake guard keeps it from relaunching on items a run
+  already saw. Tested locally with a curl stub and one real Claude Code run
