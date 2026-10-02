@@ -15,6 +15,7 @@
 import { useState, type ReactNode } from "react";
 import { Avatar, peopleFirst } from "@/ui/Avatar";
 import { useQueryClient } from "@tanstack/react-query";
+import { defaultStage } from "@/domain/tasks";
 import { PRIORITIES, type Attachment, type BoardDetail, type Priority } from "@/domain/types";
 import { send } from "@/lib/api";
 import { KEYS } from "@/lib/queries";
@@ -42,7 +43,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 
 interface NewTaskModalProps {
   detail: BoardDetail;
-  /** The column it was opened from; the first stage otherwise. */
+  /** The column it was opened from; the board's default stage (the first todo) otherwise. */
   stageId?: string;
   onClose: () => void;
   /** Called with the new task's id, e.g. to open it. */
@@ -53,7 +54,7 @@ export function NewTaskModal({ detail, stageId, onClose, onCreated }: NewTaskMod
   const queryClient = useQueryClient();
   const create = useCreateTask(detail.board.id);
   const [title, setTitle] = useState("");
-  const [stage, setStage] = useState(stageId ?? detail.stages[0]?.id ?? "");
+  const [stage, setStage] = useState(stageId ?? defaultStage(detail.stages)?.id ?? "");
   const [priority, setPriority] = useState<Priority>("normal");
   const [start, setStart] = useState<string | null>(todayLocal());
   const [due, setDue] = useState<string | null>(null);

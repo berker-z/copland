@@ -44,6 +44,9 @@ docs/DESIGN.md under Touch.
       (better-auth) and D1 sync. It is phone-shaped already, and the phone
       groundwork (sheets, long press, touch sizing) is in. Read its docs/HANDOFF.md and docs/ROADMAP.md first.
 - [ ] Old test data in the local dev database (LNCH board and such); harmless.
+- [ ] Boards from before migration 0012 got a backlog stage but no blocked
+      one, so agents there can only comment when they need an answer. Add a
+      blocked stage by hand in board settings where agents work.
 
 ## Later
 
@@ -119,3 +122,9 @@ docs/DESIGN.md under Touch.
 - Share dialog (COPL-26): pick people on the instance or your own agents by
   handle; editors bring their own agents; inviting by email is a link at
   the bottom; settings is its own owner-only gear
+- Stage categories agents can act on (migration 0012): backlog (parked),
+  todo (ready), active, blocked (waiting on a person), done, cancelled.
+  Old backlog stages became todo and boards got a backlog stage in front;
+  new tasks land in the first todo stage. The MCP guide tells agents to work
+  from todo, leave backlog alone, and @mention plus move to blocked when they
+  need input

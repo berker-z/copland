@@ -13,6 +13,21 @@ export function isClosing(category: StageCategory): boolean {
   return category === "done" || category === "cancelled";
 }
 
+/**
+ * Where a new task lands when nobody picks a stage, and where a reopened one
+ * goes back to: the first todo stage; on a board without one, the first open
+ * stage that is not backlog, then backlog itself. Something just written down
+ * is ready to be picked up, not parked.
+ */
+export function defaultStage<S extends { category: StageCategory }>(stages: S[]): S | undefined {
+  return (
+    stages.find((s) => s.category === "todo") ??
+    stages.find((s) => !isClosing(s.category) && s.category !== "backlog") ??
+    stages.find((s) => !isClosing(s.category)) ??
+    stages[0]
+  );
+}
+
 /** YYYY-MM-DD, and a real calendar date. */
 export function isDate(value: unknown): value is string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;

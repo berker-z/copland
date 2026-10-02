@@ -49,7 +49,12 @@ export interface Me {
 export const BOARD_ROLES = ["owner", "editor", "viewer"] as const;
 export type BoardRole = (typeof BOARD_ROLES)[number];
 
-export const STAGE_CATEGORIES = ["backlog", "active", "done", "cancelled"] as const;
+/**
+ * What a stage means, in the order work flows. backlog is parked, todo is
+ * ready to be picked up, active is being worked on, blocked waits on a
+ * person: those four are open. done and cancelled close a task.
+ */
+export const STAGE_CATEGORIES = ["backlog", "todo", "active", "blocked", "done", "cancelled"] as const;
 export type StageCategory = (typeof STAGE_CATEGORIES)[number];
 
 export const PRIORITIES = ["low", "normal", "high", "urgent"] as const;

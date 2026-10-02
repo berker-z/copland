@@ -35,6 +35,7 @@ import {
   type MyWork,
   type Priority,
   type Stage,
+  type StageCategory,
   type Task,
   type Viewer,
 } from "@/domain/types";
@@ -66,7 +67,7 @@ Call the guide tool once before your first change: it explains every board the u
 
 - Tasks are identified by keys like CPL-12 (board key + number), case-insensitive.
 - The user's inbox is their private board; create_task puts a task there when no board is given.
-- A stage's category decides whether a task is open: backlog and active stages are open, done and cancelled stages close it.
+- A stage's category says what it means: backlog (parked; leave it unless asked), todo (ready to pick up), active (being worked on), blocked (waiting on a person) are open; done and cancelled close a task. Take work from todo stages or what is assigned to you.
 - Dates are YYYY-MM-DD. People are given by handle (@sam or sam) or email, stages and labels by name; "me" is the connected user.
 - Pass only the arguments a tool lists, with the types it lists: an unknown or mistyped argument is refused, never ignored.
 - Prefer list_tasks with filters, or my_work, over fetching whole boards.
@@ -415,11 +416,13 @@ function summarize(detail: BoardDetail, task: Task, origin: string) {
   };
   const keyOf = (id: string) => detail.tasks.find((t) => t.id === id)?.key ?? id;
   const children = detail.tasks.filter((t) => t.parentId === task.id).length;
+  const stage = detail.stages.find((s) => s.id === task.stageId);
   return {
     key: task.key,
     title: task.title,
     board: detail.board.name,
-    stage: detail.stages.find((s) => s.id === task.stageId)?.name ?? task.stageId,
+    stage: stage?.name ?? task.stageId,
+    ...(stage ? { category: stage.category } : {}),
     status: statusOf(detail, task),
     priority: task.priority,
     start: task.startDate,
@@ -462,9 +465,11 @@ function boardOverview(detail: BoardDetail) {
 
 /* ------------------------------------------------------------- guide --- */
 
-const CATEGORY_MEANING: Record<string, string> = {
-  backlog: "not started",
-  active: "in progress",
+const CATEGORY_MEANING: Record<StageCategory, string> = {
+  backlog: "parked, not committed to; leave it unless asked",
+  todo: "ready to be picked up, not started",
+  active: "someone is on it",
+  blocked: "waiting on a person's answer or decision",
   done: "entering it completes the task",
   cancelled: "entering it closes the task as dropped",
 };
@@ -496,7 +501,9 @@ ${who} Today is ${today()} (UTC).${
 
 - **Boards.** A board is a set of tasks moving through stages, left to right. Everyone has an **inbox**: a private board only they see, where their own todos live. Other boards can be shared.
 - **Roles.** On each board the user is an owner (everything, including members and stages), an editor (tasks, labels, comments) or a viewer (reads and comments only). A tool refuses what the role does not allow.
-- **Stages and categories.** Every stage has a category: backlog (not started), active (in progress), done or cancelled. A task in a done or cancelled stage is closed; moving it back to an open stage reopens it. Stage names are the board's own; the category is what they mean.
+- **Stages and categories.** Every stage has a category, in the order work flows: backlog (parked, not committed to), todo (ready to be picked up), active (someone is on it), blocked (waiting on a person), done, cancelled. The first four are open; a task in a done or cancelled stage is closed, and moving it back to an open stage reopens it. Stage names are the board's own; the category is what they mean. A new task without a stage lands in the board's first todo stage (without one, its first open stage that is not backlog); pass stage: "backlog" to park it.
+- **Taking work.** Work from todo stages, or what is assigned to you (my_work); never pick up a backlog task unless asked to. Move a task to an active stage when you start it.
+- **Waiting on someone.** When you need an answer or a decision, comment with an @mention of the person who can give it, and move the task to the board's blocked stage (move_task { stage: "blocked" }). Once answered, move it back to an active stage and carry on. On a board without a blocked stage, just comment.
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
 - **Planning.** Any task can have a level (epic > story > task, plus milestone), a parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). All three are optional: a task without them is an ordinary task.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
@@ -519,7 +526,7 @@ ${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_
 
   out.push(`## Conventions
 
-- Tasks: a key like CPL-12. People: handle (with or without the @), email, or "me"; assignees must be members of the task's board. Stages: name, position number, or a category ("done" finds the board's done stage). Labels: existing names on that board. Partial names work when unambiguous; an unknown or ambiguous name returns the options.
+- Tasks: a key like CPL-12. People: handle (with or without the @), email, or "me"; assignees must be members of the task's board. Stages: name, position number, or a category ("done" finds the board's first done stage, "blocked" its first blocked stage). Labels: existing names on that board. Partial names work when unambiguous; an unknown or ambiguous name returns the options.
 - Dates: YYYY-MM-DD, real calendar days; "none" clears a date. A start date cannot be after the due date. overdue means past due and still open.
 - New tasks: leave start out and it is today, which is what the user wants unless they say otherwise. Pass start: null only when the user explicitly asks for no start date.
 - Arguments: pass only those a tool lists. An unknown argument is refused with an error, never silently dropped.
@@ -537,6 +544,8 @@ ${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_
 - "Give LNCH-4 to me, urgent, labelled bug" → update_task { task: "LNCH-4", assignees: ["me"], priority: "urgent", labels: ["bug"] }
 - "Tell the others the brief changed" → comment_on_task { task, text }
 - "Ask the reviewer to look at LNCH-4" → comment_on_task { task: "LNCH-4", text: "@berker-z/reviewer can you look at this?" }
+- You need Sam to choose between two designs on LNCH-4 → comment_on_task { task: "LNCH-4", text: "@sam A or B?" }, then move_task { task: "LNCH-4", stage: "blocked" }
+- "What can I pick up on the launch board?" → list_tasks { board: "launch", stage: "todo" }
 - "Anything for me?" → inbox`);
   return out.join("\n\n");
 }
@@ -557,7 +566,7 @@ const TASK = { type: "string", description: "Task key, e.g. CPL-12" } as const;
 const BOARD = { type: "string", description: "Board name or key; \"inbox\" is your private board" } as const;
 const PEOPLE = { type: "array", items: S, description: "Board members by handle, email, or \"me\"" } as const;
 const PRIORITY = { type: "string", enum: [...PRIORITIES] } as const;
-const STAGE = { type: ["string", "integer"], description: "Stage name, position number (0 is the first), or category (backlog, active, done, cancelled)" } as const;
+const STAGE = { type: ["string", "integer"], description: `Stage name, position number (0 is the first), or category (${STAGE_CATEGORIES.join(", ")}): a category picks the board's first stage of it` } as const;
 
 /* Label colours by the app's hue names, in tone order (src/ui/tone.ts). */
 const COLORS = ["blue", "yellow", "magenta", "green", "red", "orange", "cyan", "teal"] as const;
@@ -661,7 +670,7 @@ const TOOLS: Tool[] = [
     name: "list_tasks",
     title: "List tasks",
     description:
-      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields (level, parent, depends_on, children: a count) when set, comment count and the board's url. Filters combine.",
+      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, category (the stage's: backlog|todo|active|blocked|done|cancelled), status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields (level, parent, depends_on, children: a count) when set, comment count and the board's url. Filters combine.",
     inputSchema: {
       type: "object",
       properties: {
@@ -769,7 +778,7 @@ const TOOLS: Tool[] = [
     name: "create_task",
     title: "Create a task",
     description:
-      "Open a task. Without board it goes in your inbox (for an agent, its owner's inbox, once the owner has added it there). It starts in the board's first stage unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on are optional planning fields on any board; parent and depends_on must be tasks on the same board. Dates must be real YYYY-MM-DD days, start on or before due; leave start out and it is today (UTC), which is right unless the user says otherwise; pass start: null only when the user explicitly asks for no start date. Returns { created: summary }.",
+      "Open a task. Without board it goes in your inbox (for an agent, its owner's inbox, once the owner has added it there). It starts in the board's first todo stage (without one, its first open stage that is not backlog) unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on are optional planning fields on any board; parent and depends_on must be tasks on the same board. Dates must be real YYYY-MM-DD days, start on or before due; leave start out and it is today (UTC), which is right unless the user says otherwise; pass start: null only when the user explicitly asks for no start date. Returns { created: summary }.",
     inputSchema: {
       type: "object",
       properties: {
@@ -876,7 +885,7 @@ const TOOLS: Tool[] = [
     name: "move_task",
     title: "Move a task to a stage",
     description:
-      "Move a task to another stage of its board, to the bottom of that column. Moving into a done or cancelled stage closes it; moving back to a backlog or active stage reopens it. Stage by name, position number, or category (\"done\" finds the board's done stage). Needs the editor role. Returns { moved: summary }.",
+      "Move a task to another stage of its board, to the bottom of that column. Moving into a done or cancelled stage closes it; moving back to an open stage (backlog, todo, active, blocked) reopens it. Stage by name, position number, or category (\"done\" finds the board's done stage, \"blocked\" its blocked stage; a board without a stage of that category refuses and lists its stages). When you need someone's input, comment with an @mention and move the task to \"blocked\"; move it back to \"active\" once answered. Needs the editor role. Returns { moved: summary }.",
     inputSchema: {
       type: "object",
       properties: { task: TASK, stage: STAGE },
@@ -928,7 +937,7 @@ const TOOLS: Tool[] = [
     name: "my_work",
     title: "My work",
     description:
-      "What the connected principal has to do, grouped by due date (overdue, today, this_week = the next 7 days, later, no_date; date is today in UTC), soonest due first within each. For a person: open tasks assigned to them on any board, plus open tasks in their inbox assigned to nobody; tasks they handed to their own agents come separately under delegated. For an agent: only open tasks assigned to that agent, even on its owner's inbox; its owner's own work is not its work (list_tasks with assignee shows it). Start here for \"what should I do today\".",
+      "What the connected principal has to do, grouped by due date (overdue, today, this_week = the next 7 days, later, no_date; date is today in UTC), soonest due first within each. For a person: open tasks assigned to them on any board, plus open tasks in their inbox assigned to nobody; tasks they handed to their own agents come separately under delegated. For an agent: only open tasks assigned to that agent, even on its owner's inbox; its owner's own work is not its work (list_tasks with assignee shows it). Open includes blocked tasks: a summary's category says whether a task is ready (todo), under way (active) or waiting on someone (blocked). Start here for \"what should I do today\".",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(_args, ctx) {

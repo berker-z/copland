@@ -6,9 +6,23 @@
 import type { BoardMember, BoardRole, BoardSummary, StageCategory } from "@/domain/types";
 import { rowToUser, type UserRow } from "./users";
 
-/** What a new board starts with. Renamed, reordered or replaced freely later. */
-const DEFAULT_STAGES: { name: string; category: StageCategory; tone: number }[] = [
-  { name: "todo", category: "backlog", tone: 0 },
+type StageSeed = { name: string; category: StageCategory; tone: number };
+
+/**
+ * What a new board starts with. Renamed, reordered or replaced freely later.
+ * Tones index src/ui/tone.ts: cyan, blue, yellow, red, green.
+ */
+const DEFAULT_STAGES: StageSeed[] = [
+  { name: "backlog", category: "backlog", tone: 6 },
+  { name: "todo", category: "todo", tone: 0 },
+  { name: "doing", category: "active", tone: 1 },
+  { name: "blocked", category: "blocked", tone: 4 },
+  { name: "done", category: "done", tone: 3 },
+];
+
+/** An inbox is a personal todo list: nothing parked, nobody to wait on. */
+const INBOX_STAGES: StageSeed[] = [
+  { name: "todo", category: "todo", tone: 0 },
   { name: "doing", category: "active", tone: 1 },
   { name: "done", category: "done", tone: 3 },
 ];
@@ -135,7 +149,7 @@ export function createBoardStatements(
     db
       .prepare(`INSERT INTO board_members (board_id, user_id, role) VALUES (?1, ?2, 'owner')`)
       .bind(board.id, board.ownerId),
-    ...DEFAULT_STAGES.map((stage, position) =>
+    ...(board.isInbox ? INBOX_STAGES : DEFAULT_STAGES).map((stage, position) =>
       db
         .prepare(`INSERT INTO stages (id, board_id, position, name, category, tone) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`)
         .bind(crypto.randomUUID(), board.id, position, stage.name, stage.category, stage.tone),

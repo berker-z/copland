@@ -31,7 +31,7 @@ function parseTone(raw: unknown): number {
 
 function parseCategory(raw: unknown): StageCategory {
   if (typeof raw !== "string" || !(STAGE_CATEGORIES as readonly string[]).includes(raw)) {
-    throw badRequest("`category` must be backlog, active, done or cancelled");
+    throw badRequest(`\`category\` must be one of ${STAGE_CATEGORIES.join(", ")}`);
   }
   return raw as StageCategory;
 }

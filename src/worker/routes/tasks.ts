@@ -15,6 +15,7 @@
 
 import {
   BRIEF_MAX,
+  defaultStage,
   isClosing,
   isDate,
   TITLE_MAX,
@@ -175,7 +176,8 @@ export async function postTask(
   if (stages.length === 0) throw badRequest("This board has no stages");
 
   const title = parseTitle(body.title);
-  const stage = body.stageId === undefined ? stages[0] : stageIn(stages, body.stageId);
+  /* No stage given: the first todo stage, not the first column (domain/tasks.ts). */
+  const stage = body.stageId === undefined ? defaultStage(stages)! : stageIn(stages, body.stageId);
   const brief = body.brief === undefined ? "" : parseBrief(body.brief);
   const priority = body.priority === undefined ? "normal" : parsePriority(body.priority);
   const dueDate = body.dueDate === undefined ? null : parseDate(body.dueDate, "dueDate");

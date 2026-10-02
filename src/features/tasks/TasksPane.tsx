@@ -16,7 +16,7 @@ import { useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { ArrowUpRight, Plus } from "lucide-react";
-import { isClosing } from "@/domain/tasks";
+import { defaultStage } from "@/domain/tasks";
 import type { BoardDetail, MyWork, Task } from "@/domain/types";
 import { boardQuery, useMe, useMyWork } from "@/lib/queries";
 import { useCreateTask, useUpdateTask } from "@/lib/tasks";
@@ -94,7 +94,7 @@ export function TasksPane() {
   const toggle = ({ task, detail }: Item, closing: boolean) => {
     const target = closing
       ? detail.stages.find((s) => s.category === "done")
-      : detail.stages.find((s) => !isClosing(s.category));
+      : defaultStage(detail.stages);
     if (target) update.mutate({ id: task.id, patch: { stageId: target.id }, boardId: detail.board.id });
   };
 

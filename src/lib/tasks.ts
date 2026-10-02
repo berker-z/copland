@@ -14,7 +14,7 @@
    ========================================================================== */
 
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { isClosing } from "@/domain/tasks";
+import { defaultStage, isClosing } from "@/domain/tasks";
 import type { BoardDetail, Task } from "@/domain/types";
 import { send } from "./api";
 import { KEYS } from "./queries";
@@ -84,7 +84,7 @@ export function useCreateTask(boardId: string) {
     onMutate: async (input) => {
       const tempId = `temp-${crypto.randomUUID()}`;
       const previous = await editBoard(queryClient, boardId, (detail) => {
-        const stageId = input.stageId ?? detail.stages[0]?.id ?? "";
+        const stageId = input.stageId ?? defaultStage(detail.stages)?.id ?? "";
         const ranks = detail.tasks.filter((t) => t.stageId === stageId).map((t) => t.rank);
         const stage = detail.stages.find((s) => s.id === stageId);
         const now = new Date().toISOString();

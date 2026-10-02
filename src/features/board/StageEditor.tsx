@@ -78,7 +78,7 @@ function StageRow({ detail, stage, index }: { detail: BoardDetail; stage: Stage;
         className={input}
         value={stage.category}
         onChange={(e) => edits.patch.mutate({ id: stage.id, category: e.target.value as StageCategory })}
-        title="What this stage means: done and cancelled close a task"
+        title="What this stage means: backlog is parked, todo is ready to pick up, active is being worked on, blocked waits on a person; done and cancelled close a task"
       >
         {STAGE_CATEGORIES.map((c) => (
           <option key={c} value={c}>

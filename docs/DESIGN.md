@@ -47,6 +47,11 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   yellow = dirty/attention, blue = info/widget titles, magenta/orange/teal =
   account & event colors. `accent` is reserved for interactivity (focus,
   hover, active, today) — don't use it as decoration.
+- Stages and labels carry a tone (0-7), which `src/ui/tone.ts` maps to the
+  hue roles: blue, yellow, magenta, green, red, orange, cyan, teal. A
+  stage's colour is its tone, picked by the owner; its category never
+  colours anything. New boards follow the hue semantics: backlog cyan, todo
+  blue, doing yellow, blocked red, done green.
 - Corners: **square everywhere**. `rounded-full` survives only on spinners
   and event dots.
 - Depth: none. Separation comes from `divider` hairlines and `raised` fills.
