@@ -96,6 +96,11 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   "done" while editing) switches to the form; Escape leaves the form first,
   then the modal.
 - `src/features/shell/StatusLine.tsx` — statusline, theme menu, phone menu.
+- `src/features/board/ShareModal.tsx` — who is on a board, and adding
+  people or your agents by handle (one picker, agents after people). Rows
+  are fixed columns: avatar, handle, a fixed-width role, and a fixed
+  right-aligned slot for leave/remove that stays even when empty, so every
+  row lines up. Inviting by email sits behind a quiet link at the bottom.
 - `src/ui/Avatar.tsx` — someone's picture, or their initials in a
   `border-faint text-muted` square when they have none. Square like
   everything else, sized in px to sit on a text line (16 in rows, 18 in

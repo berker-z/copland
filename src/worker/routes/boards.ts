@@ -1,10 +1,14 @@
 /* ============================================================================
    Boards and their members.
    ----------------------------------------------------------------------------
-   Anyone signed in can make a board and owns it. Owners add people by email:
-   someone already on the instance joins at once; someone who is not gets an
-   invite link carrying the board (routes/admin.ts createInvite), which the
-   owner passes on. The inbox is private and stays that way.
+   Anyone signed in can make a board and owns it. Owners add someone on the
+   instance by picking them (GET /api/people, by handle, then { userId }),
+   or invite someone who is not by email: an address that already has an
+   account joins at once, any other gets an invite link carrying the board
+   (routes/admin.ts createInvite), which the owner passes on. The people
+   search answers handles and pictures only, never addresses. Editors bring
+   their own agents through routes/agents.ts, not here. The inbox is private
+   and stays that way.
 
    A board always keeps at least one owner, so it can never be orphaned.
 
@@ -12,7 +16,7 @@
    editor, below everything here that needs an owner.
    ========================================================================== */
 
-import { BOARD_ROLES, type BoardDetail, type BoardRole, type Viewer } from "@/domain/types";
+import { BOARD_ROLES, type BoardDetail, type BoardRole, type Person, type Viewer } from "@/domain/types";
 import { boardsFor, requireBoard, requirePerson } from "../access";
 import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } from "../http";
@@ -24,7 +28,7 @@ import {
   uniqueBoardKey,
 } from "../repo/boards";
 import { listLabels, listStages, listTasks } from "../repo/tasks";
-import { findUserByEmail } from "../repo/users";
+import { avatarUrl, findUserByEmail, findUserById, type UserRow } from "../repo/users";
 import { createInvite } from "./admin";
 import { ownerOf } from "./agents";
 
@@ -141,9 +145,35 @@ export async function deleteBoard(env: Env, viewer: Viewer, id: string, changes:
 
 /* --------------------------------------------------------------- members -- */
 
+const PEOPLE_LIMIT = 10;
+
 /**
- * POST /api/boards/:id/members { email, role? }: owners only. Adds someone
- * already here, or answers with an invite link for someone who is not.
+ * GET /api/people?q=: people on the instance whose handle holds q, those it
+ * starts with first, for the share picker. People only (not agents, not
+ * disabled, not you), and only id, handle and picture: never an email.
+ */
+export async function getPeople(env: Env, viewer: Viewer, url: URL): Promise<Response> {
+  requirePerson(viewer, "browse people");
+  const q = (url.searchParams.get("q") ?? "").trim().toLowerCase().replace(/^@/, "").slice(0, 40);
+  const like = q.replace(/[\\%_]/g, (c) => `\\${c}`);
+  const { results } = await env.DB.prepare(
+    `SELECT id, handle, avatar_key FROM users
+      WHERE kind = 'person' AND disabled_at IS NULL AND id <> ?1
+        AND handle LIKE ?2 ESCAPE '\\'
+      ORDER BY (handle LIKE ?3 ESCAPE '\\') DESC, handle
+      LIMIT ?4`,
+  )
+    .bind(viewer.user.id, `%${like}%`, `${like}%`, PEOPLE_LIMIT)
+    .all<Pick<UserRow, "id" | "handle" | "avatar_key">>();
+  const people: Person[] = results.map((r) => ({ id: r.id, handle: r.handle, avatar: avatarUrl(r.avatar_key) }));
+  return json(people);
+}
+
+/**
+ * POST /api/boards/:id/members { userId, role? } or { email, role? }: owners
+ * only. A userId is a person picked from GET /api/people and joins at once.
+ * An email adds someone already here, or answers with an invite link for
+ * someone who is not.
  */
 export async function postMember(
   request: Request,
@@ -156,15 +186,25 @@ export async function postMember(
   const board = await requireBoard(env.DB, viewer, id, "owner");
   if (board.isInbox) throw forbidden("Your inbox is private; make a board to share");
   const body = await readJson(request);
-  if (typeof body.email !== "string" || !body.email.includes("@")) throw badRequest("`email` must be an email address");
   const role = body.role ?? "editor";
   if (!isRole(role)) throw badRequest("`role` must be owner, editor or viewer");
-  const email = body.email.trim().toLowerCase();
 
-  const user = await findUserByEmail(env.DB, email);
-  if (!user) {
-    const created = await createInvite(env, viewer, url.origin, { email, boardId: id });
-    return json({ added: false, invite: created }, { status: 201 });
+  let user: UserRow | null;
+  if (body.userId !== undefined) {
+    if (typeof body.userId !== "string") throw badRequest("`userId` must be a string");
+    user = await findUserById(env.DB, body.userId);
+    /* People only: agents come onto boards through their owner (routes/agents.ts). */
+    if (!user || user.kind !== "person") throw notFound("No such person");
+  } else {
+    if (typeof body.email !== "string" || !body.email.includes("@")) {
+      throw badRequest("Pass `userId`, or `email` to invite by address");
+    }
+    const email = body.email.trim().toLowerCase();
+    user = await findUserByEmail(env.DB, email);
+    if (!user) {
+      const created = await createInvite(env, viewer, url.origin, { email, boardId: id });
+      return json({ added: false, invite: created }, { status: 201 });
+    }
   }
   if (user.disabled_at) throw forbidden("That account is disabled");
   await env.DB.prepare(

@@ -7,7 +7,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { MarketExtras, Note } from "@/domain/panes";
 import type { Settings, VaultEntry } from "@/domain/settings";
-import type { Agent, ApiToken, BoardDetail, BoardSummary, Inbox, Invite, Me, MyWork, User } from "@/domain/types";
+import type { Agent, ApiToken, BoardDetail, BoardSummary, Inbox, Invite, Me, MyWork, Person, User } from "@/domain/types";
 import { api } from "./api";
 import { isLive } from "./liveState";
 
@@ -27,6 +27,7 @@ export const KEYS = {
   tokens: ["tokens"],
   agents: ["agents"],
   inbox: ["inbox"],
+  people: (q: string) => ["people", q],
   /* Keyed on what the Worker will read (the ids in settings, the saved key),
      so changing either refetches without a live topic of its own. */
   marketExtras: (ids: unknown[]) => ["markets", "coingecko", ...ids],
@@ -79,6 +80,16 @@ export const useTokens = () => useQuery({ queryKey: KEYS.tokens, queryFn: () => 
 
 export const useAgents = (enabled = true) =>
   useQuery({ queryKey: KEYS.agents, queryFn: () => api<Agent[]>("/agents"), enabled });
+
+/** The share picker's search: people on the instance by handle, never their emails. */
+export const usePeople = (q: string, enabled = true) =>
+  useQuery({
+    queryKey: KEYS.people(q),
+    queryFn: () => api<Person[]>(`/people?q=${encodeURIComponent(q)}`),
+    enabled,
+    staleTime: 30_000,
+    placeholderData: (previous) => previous,
+  });
 
 export const useNotes = () =>
   useQuery({ queryKey: KEYS.notes, queryFn: () => api<Note[]>("/notes"), refetchInterval: fallbackPoll(60_000) });

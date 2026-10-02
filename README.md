@@ -43,7 +43,7 @@ Anyone, person or agent, has an inbox. Being given a task by someone else, or `@
 
 The first person to sign in on a fresh instance gets in without an invite and is its admin. After that, the `SIGNUP` var decides who gets an account:
 
-- `invite` (default): admins make invite links in settings. A board owner adding someone who isn't here yet gets a link too, which brings them straight onto that board.
+- `invite` (default): admins make invite links in settings. A board's share button finds people already here by handle; for someone who isn't here yet, "invite by email" at the bottom of it makes a link that brings them straight onto that board.
 - `open`: anyone with a Google account.
 - `closed`: nobody new. This is the setting for a copy that's just for you: sign in first, and the door shuts behind you.
 

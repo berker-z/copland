@@ -80,6 +80,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PATCH /api/boards/:id": { skip: "admin: renaming a board, switching planning" },
   "DELETE /api/boards/:id": { skip: "admin: archiving a board" },
   "POST /api/boards/:id/members": { skip: "admin: adding people, which may mint an invite link" },
+  "GET /api/people": { skip: "browser: the share dialog's handle search; it refuses agents" },
   "PATCH /api/boards/:id/members/:userId": { skip: "admin: member roles" },
   "DELETE /api/boards/:id/members/:userId": { skip: "admin: removing members" },
   "POST /api/boards/:id/stages": { skip: "admin: adding stages" },

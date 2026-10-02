@@ -75,6 +75,13 @@ export interface BoardMember {
   role: BoardRole;
 }
 
+/** GET /api/people: someone on the instance, for the share picker. Never their email. */
+export interface Person {
+  id: string;
+  handle: string;
+  avatar: string | null;
+}
+
 export interface Stage {
   id: string;
   position: number;

@@ -12,11 +12,15 @@
 
    On a touchscreen there is no HTML5 drag: a long press on a card opens
    MoveSheet instead, and on a phone the columns become a swipeable strip.
+
+   The header's "share" (owners and editors) opens ShareModal: members, and
+   adding people or your agents by handle. The gear (owners only) opens
+   BoardSettingsModal: stages, labels, name, key, planning, archive.
    ========================================================================== */
 
 import { useRef, useState, type DragEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { ArrowLeft, Plus, Settings2, Users } from "lucide-react";
+import { ArrowLeft, Plus, Settings2, UserPlus, Users } from "lucide-react";
 import { rankBetween } from "@/domain/tasks";
 import type { BoardDetail, Stage } from "@/domain/types";
 import { useBoard, useBoards } from "@/lib/queries";
@@ -27,6 +31,7 @@ import { GanttView } from "./GanttView";
 import { ListView } from "./ListView";
 import { MoveSheet } from "./MoveSheet";
 import { NewTaskModal } from "./NewTaskModal";
+import { ShareModal } from "./ShareModal";
 import { TaskModal } from "./TaskModal";
 import { TASK_DRAG_TYPE, TaskRow } from "./TaskRow";
 
@@ -209,6 +214,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   const [openTask, setOpenTask] = useState<string | null>(null);
   const [moving, setMoving] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [newTask, setNewTask] = useState<{ stageId?: string } | null>(null);
   const [params, setParams] = useSearchParams();
   const view = VIEWS.includes(params.get("view") as View) ? (params.get("view") as View) : "kanban";
@@ -261,13 +267,18 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
             <Users size={14} /> {detail.members.length}
           </span>
         )}
-        {detail.board.role === "owner" && (
+        {detail.board.role !== "viewer" && (
           <button
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => setShareOpen(true)}
             className="tap text-muted hover:text-accent flex items-center gap-1.5"
-            title={detail.board.isInbox ? "Settings" : "Share"}
+            title={detail.board.role === "owner" && !detail.board.isInbox ? "Share" : "Bring your agents"}
           >
-            <Settings2 size={14} /> <span className="hidden sm:inline">{detail.board.isInbox ? "settings" : "share"}</span>
+            <UserPlus size={14} /> <span className="hidden sm:inline">share</span>
+          </button>
+        )}
+        {detail.board.role === "owner" && (
+          <button onClick={() => setSettingsOpen(true)} className="tap text-muted hover:text-accent" title="Board settings">
+            <Settings2 size={14} />
           </button>
         )}
         {detail.board.role === "viewer" && <span className="text-xs text-yellow">view only</span>}
@@ -295,6 +306,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
         <NewTaskModal detail={detail} stageId={newTask.stageId} onClose={() => setNewTask(null)} />
       )}
       {settingsOpen && <BoardSettingsModal detail={detail} onClose={() => setSettingsOpen(false)} />}
+      {shareOpen && <ShareModal detail={detail} onClose={() => setShareOpen(false)} />}
     </div>
   );
 }

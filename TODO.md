@@ -116,3 +116,6 @@ docs/DESIGN.md under Touch.
   commenters and mentioned, so answering in the thread is enough. Tokens'
   `agent` field is now `client` (COPL-22). Open tabs see "new version ·
   reload" after a deploy (COPL-18)
+- Share dialog (COPL-26): pick people on the instance or your own agents by
+  handle; editors bring their own agents; inviting by email is a link at
+  the bottom; settings is its own owner-only gear

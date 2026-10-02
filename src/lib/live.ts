@@ -35,8 +35,8 @@ const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
   tokens: [KEYS.tokens],
   inbox: [KEYS.inbox],
   agents: [KEYS.agents],
-  /* Handles and pictures show in boards, comments, history and the people page. */
-  people: [KEYS.me, KEYS.boardAll, ["comments"], ["events"], KEYS.adminUsers],
+  /* Handles and pictures show in boards, comments, history, the people page and the share search. */
+  people: [KEYS.me, KEYS.boardAll, ["comments"], ["events"], KEYS.adminUsers, ["people"]],
 };
 
 /* Several writes in a burst (a drag across stages, an assistant filing ten

@@ -36,6 +36,7 @@ import {
   deleteMember,
   getBoard,
   getBoards,
+  getPeople,
   patchBoard,
   patchMember,
   postBoard,
@@ -206,6 +207,8 @@ const api = new Router<Ctx>()
   .on("DELETE", "/api/boards/:id/members/:userId", ({ env, viewer, changes }, p) =>
     deleteMember(env, viewer, p.id, p.userId, changes),
   )
+  /* The share picker's search: handles and pictures, never emails; people only (requirePerson). */
+  .on("GET", "/api/people", ({ env, viewer, url }) => getPeople(env, viewer, url))
 
   .on("POST", "/api/boards/:id/tasks", ({ request, env, viewer, changes }, { id }) =>
     postTask(request, env, viewer, id, changes),
