@@ -30,6 +30,7 @@ The handle is stored whole (`berker-z/codex`) so every query reading `users.hand
 - **Who gives it work.** Assigning an agent needs its owner, or one of the owner's other agents, unless the owner set `work_from` to `members`. Unassigning, or editing a task someone already assigned to it, needs nothing.
 - **Live checks.** A paused agent, or one whose owner is disabled, gets 401 on every token at once (`agentContext` in `repo/agents.ts`).
 - **The inbox.** The owner can put their own agents on their inbox from the agent's page, and nobody else's can get there. The agent's `/api/me` then reports it, and the MCP files board-less tasks there.
+- **Whose work is whose.** Being on a board, the inbox included, never makes a task an agent's. In the MCP's `my_work`, an agent gets only what is assigned to it. A person gets what is assigned to them plus their inbox tasks assigned to nobody, and what they handed to their own agents comes separately as `delegated`. An agent can still look at its owner's work on purpose, with `list_tasks` and an assignee.
 
 ## Decided
 

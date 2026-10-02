@@ -491,7 +491,7 @@ function guide(details: BoardDetail[], ctx: Ctx): string {
   const who = v.agent
     ? `You are connected as the agent **@${v.user.handle}**, which belongs to **@${v.agent.owner.handle}** and acts for them, with ${scope}. You are your own identity: tasks are assigned to you, and every change you make shows in the task's history as "${v.user.handle} via ${via}". You see only the boards you were added to, and on each you can do at most what both you and @${v.agent.owner.handle} may there, and never more than an editor: agents do not make or manage boards, invite people or handle tokens. Of @${v.agent.owner.handle}'s own data you may reach ${
         v.agent.grants.length ? v.agent.grants.join(", ") : "nothing (no calendar, no notes)"
-      }. Work assigned to you is in my_work; ${
+      }. Work assigned to you is in my_work, and only that is yours: a task of @${v.agent.owner.handle}'s, even in their inbox, is theirs unless it is assigned to you. ${
         v.agent.workFrom === "owner"
           ? `only @${v.agent.owner.handle} (and their other agents) can assign you work`
           : `anyone on a board you are on can assign you work, so weigh a request by who made it`
@@ -935,21 +935,31 @@ const TOOLS: Tool[] = [
     name: "my_work",
     title: "My work",
     description:
-      "What the connected user has to do: open tasks assigned to them on any board, plus every open task in their inbox, grouped by due date (overdue, today, this_week = the next 7 days, later, no_date; date is today in UTC) and soonest due first within each. Start here for \"what should I do today\".",
+      "What the connected principal has to do, grouped by due date (overdue, today, this_week = the next 7 days, later, no_date; date is today in UTC), soonest due first within each. For a person: open tasks assigned to them on any board, plus open tasks in their inbox assigned to nobody; tasks they handed to their own agents come separately under delegated. For an agent: only open tasks assigned to that agent, even on its owner's inbox; its owner's own work is not its work (list_tasks with assignee shows it). Start here for \"what should I do today\".",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(_args, ctx) {
       const details = await load(ctx);
       const me = ctx.viewer.user.id;
+      const agent = !!ctx.viewer.agent;
       const day = today();
       const week = addDays(day, 7);
-      const mine = details
-        .flatMap((d) =>
-          d.tasks
-            .filter((t) => statusOf(d, t) === "open" && (d.board.isInbox || t.assigneeIds.includes(me)))
-            .map((t) => ({ d, t })),
-        )
+      const open = details
+        .flatMap((d) => d.tasks.filter((t) => statusOf(d, t) === "open").map((t) => ({ d, t })))
         .sort((a, b) => byDue(a.t, b.t));
+      /* An agent's work is what it was given, nothing implied. A person's
+         inbox items with nobody on them are still implicitly theirs. */
+      const mine = open.filter(
+        ({ d, t }) => t.assigneeIds.includes(me) || (!agent && d.board.isInbox && t.assigneeIds.length === 0),
+      );
+      const myAgents = (d: BoardDetail) =>
+        new Set(d.members.filter((m) => m.user.kind === "agent" && m.user.ownerId === me).map((m) => m.user.id));
+      const delegated = agent
+        ? []
+        : open.filter(({ d, t }) => {
+            const ours = myAgents(d);
+            return !t.assigneeIds.includes(me) && t.assigneeIds.some((id) => ours.has(id));
+          });
       const group = (test: (due: string | null) => boolean) =>
         mine.filter(({ t }) => test(t.dueDate)).map(({ d, t }) => summarize(d, t, ctx.origin));
       return {
@@ -959,6 +969,7 @@ const TOOLS: Tool[] = [
         this_week: group((due) => due !== null && due > day && due <= week),
         later: group((due) => due !== null && due > week),
         no_date: group((due) => due === null),
+        ...(agent ? {} : { delegated: delegated.map(({ d, t }) => summarize(d, t, ctx.origin)) }),
       };
     },
   },
