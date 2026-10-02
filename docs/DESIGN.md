@@ -135,7 +135,8 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 - `src/features/board/FilterBar.tsx`: one `bg-surface` row under the board
   header, over every view. A search input in the standard style (`/`
   focuses it, Escape clears it), then chips that read like the view switch
-  (`text-accent bg-raised` on, `text-muted` off): levels, labels (in their
+  (`text-accent bg-raised` on, `text-muted` off): levels (each with its
+  level pill after the name, `none` without), labels (in their
   tone when on, `text-faint` off), an assignee select, `under…` (a
   search-and-pick dropdown of tasks, those with children first) which
   becomes an `under KEY ×` chip in `text-accent` (`text-red` when the key is
@@ -165,6 +166,16 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   pencil and the remove X appear on hover. A text doc opens in place as a
   `bg-raised` `<pre>` with a back arrow; anything else opens through the
   attachment route in a new tab.
+- `src/ui/LevelPill.tsx` — where a task sits in the plan, at a glance:
+  three dots in a 16×6 SVG filled from the right by depth, filled ones
+  `fill-muted`, empty ones smaller `fill-faint` (task `··●`, story `·●●`,
+  epic `●●●`). A milestone is off that ladder: one `fill-muted` diamond in
+  the same footprint. No level, no pill. It carries the level name as
+  `title` and `aria-label` (`decorative` hides it where the name is written
+  beside it). It always sits at the right: top right of a card on the
+  title's first line (the title wraps beside it, never under it), the last
+  column of a list row, the right end of a Gantt label, a lane header and
+  the `under…` picker, after the stage in the task modal's title.
 - `src/ui/Avatar.tsx` — someone's picture, or their initials in a
   `border-faint text-muted` square when they have none. Square like
   everything else, sized in px to sit on a text line (16 in rows, 18 in

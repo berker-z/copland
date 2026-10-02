@@ -16,6 +16,7 @@ import { LEVELS, PRIORITIES, type BoardDetail, type Task } from "@/domain/types"
 import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
 import { DeleteButton } from "@/ui/DeleteButton";
+import { LevelPill } from "@/ui/LevelPill";
 import { ModalFrame } from "@/ui/ModalFrame";
 import { dueClass, PRIORITY_CLASS, shortDate, toneText } from "@/ui/tone";
 import { Attachments, useTaskAttachments } from "./Attachments";
@@ -100,6 +101,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
       title={
         <span>
           <span className="text-faint">{task.key}</span> <span className={toneText(stage?.tone ?? 0)}>{stage?.name}</span>
+          <LevelPill level={task.level} className="ml-2.5" />
         </span>
       }
       onClose={onClose}

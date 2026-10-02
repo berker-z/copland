@@ -195,3 +195,7 @@ docs/DESIGN.md under Touch.
   the server and returns `next`; before this, fifty read items hid every
   older unread one. The pane and the bell load fifty and have an "older"
   row for the rest. Migration 0014 reindexes inbox_items for it
+- The level pill (COPL-46): three dots at the right of every card, list row,
+  Gantt label and lane header say where a task sits (task `··●`, story
+  `·●●`, epic `●●●`, a diamond for a milestone, nothing without a level);
+  the level filter chips carry it too. `src/ui/LevelPill.tsx`

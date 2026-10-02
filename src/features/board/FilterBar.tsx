@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CornerLeftUp, Search, SlidersHorizontal, X } from "lucide-react";
 import type { BoardDetail } from "@/domain/types";
+import { LevelPill } from "@/ui/LevelPill";
 import { toneText } from "@/ui/tone";
 import { useDismiss } from "@/ui/useDismiss";
 import { activeCount, LEVEL_FILTERS, NO_FILTERS, RECENT_DONE_DAYS, type BoardFilters, type Filtered } from "./filters";
@@ -84,9 +85,9 @@ function ScopePicker({ detail, onPick }: { detail: BoardDetail; onPick: (key: st
                 className="flex w-full items-baseline gap-2 px-3 py-1.5 pointer-coarse:py-2.5 text-left border-b border-divider hover:bg-raised"
               >
                 <span className="text-faint shrink-0">{task.key}</span>
-                {task.level && <span className="text-faint shrink-0">[{task.level}]</span>}
                 <span className="text-ink truncate flex-1">{task.title}</span>
                 {children > 0 && <span className="text-muted text-xs shrink-0">{children}↓</span>}
+                <LevelPill level={task.level} className="self-center" />
               </button>
             ))}
           </div>
@@ -162,8 +163,9 @@ export function FilterBar({ detail, filters, result, onChange }: FilterBarProps)
       <div className={`${open ? "flex" : "hidden"} sm:flex basis-full sm:basis-auto flex-wrap items-center gap-x-3 gap-y-1.5`}>
         <span className="flex items-center gap-px" role="group" aria-label="Level">
           {LEVEL_FILTERS.map((l) => (
-            <button key={l} onClick={() => set({ levels: toggle(filters.levels, l) })} className={chip(filters.levels.includes(l))} aria-pressed={filters.levels.includes(l)}>
+            <button key={l} onClick={() => set({ levels: toggle(filters.levels, l) })} className={`${chip(filters.levels.includes(l))} flex items-center gap-1.5`} aria-pressed={filters.levels.includes(l)}>
               {l}
+              {l !== "none" && <LevelPill level={l} decorative />}
             </button>
           ))}
         </span>

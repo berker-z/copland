@@ -24,6 +24,7 @@ import { useMemo, useRef, useState, type PointerEvent } from "react";
 import { addDays, daysBetween } from "@/domain/tasks";
 import type { BoardDetail, Task } from "@/domain/types";
 import { tasksIn, useUpdateTask } from "@/lib/tasks";
+import { LevelPill } from "@/ui/LevelPill";
 import { isDraft, todayLocal, toneBg } from "@/ui/tone";
 import { usePhone, useTouch } from "@/ui/useMediaQuery";
 import type { Hierarchy } from "./BoardScreen";
@@ -200,6 +201,7 @@ export function GanttView({ detail, hierarchy, onOpen }: { detail: BoardDetail; 
                     <ParentLink parentKey={lostParent} onClick={() => hierarchy.onScope(lostParent)} />
                   </span>
                 )}
+                <LevelPill level={task.level} />
               </div>
               <div className="relative" style={{ width: days * DAY_PX }}>
                 {/* Today. */}
@@ -253,10 +255,11 @@ export function GanttView({ detail, hierarchy, onOpen }: { detail: BoardDetail; 
             <button
               key={task.id}
               onClick={() => !isDraft(task.id) && onOpen(task.id)}
-              className="block w-full text-left px-3 py-1.5 pointer-coarse:py-2.5 border-b border-divider hover:bg-raised text-sm"
+              className="flex w-full items-baseline gap-2 text-left px-3 py-1.5 pointer-coarse:py-2.5 border-b border-divider hover:bg-raised text-sm"
             >
-              <span className="text-faint mr-2">{task.key}</span>
-              <span className="text-ink">{task.title}</span>
+              <span className="text-faint">{task.key}</span>
+              <span className="text-ink min-w-0 flex-1">{task.title}</span>
+              <LevelPill level={task.level} className="self-center" />
             </button>
           ))}
         </div>

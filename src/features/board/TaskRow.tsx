@@ -8,6 +8,7 @@ import type { DragEvent, ReactNode } from "react";
 import { Paperclip } from "lucide-react";
 import type { BoardMember, Label, Task } from "@/domain/types";
 import { Avatar } from "@/ui/Avatar";
+import { LevelPill } from "@/ui/LevelPill";
 import { dueClass, isDraft, shortDate, toneText } from "@/ui/tone";
 import { useLongPress } from "@/ui/useLongPress";
 
@@ -100,9 +101,13 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
     >
       {lead}
       <div className="min-w-0 flex-1">
-        <div className={`leading-snug break-words ${closed ? "text-muted line-through decoration-faint" : "text-ink"}`}>
-          {PRIORITY_MARK[task.priority] && <span className="mr-1.5">{PRIORITY_MARK[task.priority]}</span>}
-          {task.title}
+        {/* The level sits at the top right, on the title's first line; the title wraps beside it, never under it. */}
+        <div className="flex items-start gap-2 leading-snug">
+          <div className={`min-w-0 flex-1 break-words ${closed ? "text-muted line-through decoration-faint" : "text-ink"}`}>
+            {PRIORITY_MARK[task.priority] && <span className="mr-1.5">{PRIORITY_MARK[task.priority]}</span>}
+            {task.title}
+          </div>
+          <LevelPill level={task.level} className="h-[1lh]" />
         </div>
         {(showKey || parent || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0) && (
           <div className="flex flex-wrap items-center gap-x-2 mt-0.5 text-xs">

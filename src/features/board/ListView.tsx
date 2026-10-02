@@ -6,6 +6,7 @@
 
 import type { BoardDetail } from "@/domain/types";
 import { tasksIn } from "@/lib/tasks";
+import { LevelPill } from "@/ui/LevelPill";
 import { dueClass, isDraft, PRIORITY_CLASS, shortDate, toneText } from "@/ui/tone";
 import type { Hierarchy } from "./BoardScreen";
 import { ParentLink } from "./TaskRow";
@@ -25,6 +26,9 @@ export function ListView({ detail, hierarchy, onOpen }: { detail: BoardDetail; h
             <th className="px-3 py-2 font-normal w-24">due</th>
             <th className="px-3 py-2 font-normal hidden lg:table-cell">labels</th>
             {detail.members.length > 1 && <th className="px-3 py-2 font-normal hidden md:table-cell">people</th>}
+            <th className="pl-1 pr-3 py-2 font-normal w-8">
+              <span className="sr-only">level</span>
+            </th>
           </tr>
         </thead>
         {detail.stages.map((stage) => {
@@ -32,7 +36,7 @@ export function ListView({ detail, hierarchy, onOpen }: { detail: BoardDetail; h
           return (
             <tbody key={stage.id}>
               <tr>
-                <td colSpan={7} className="px-3 pt-4 pb-1">
+                <td colSpan={8} className="px-3 pt-4 pb-1">
                   <span className={`tracking-[0.14em] ${toneText(stage.tone)}`}>{stage.name}</span>
                   <span className="text-xs text-muted ml-2">{tasks.length}</span>
                 </td>
@@ -48,7 +52,6 @@ export function ListView({ detail, hierarchy, onOpen }: { detail: BoardDetail; h
                   >
                     <td className="px-3 py-1.5 text-faint whitespace-nowrap">{task.key}</td>
                     <td className={`px-3 py-1.5 ${closed ? "text-muted line-through decoration-faint" : "text-ink"}`}>
-                      {task.level && <span className="text-faint mr-1.5">[{task.level}]</span>}
                       {task.title}
                       {parentKey && (
                         <span className="ml-2 text-xs no-underline inline-block">
@@ -71,6 +74,9 @@ export function ListView({ detail, hierarchy, onOpen }: { detail: BoardDetail; h
                     {detail.members.length > 1 && (
                       <td className="px-3 py-1.5 text-muted hidden md:table-cell">{task.assigneeIds.map(name).join(", ")}</td>
                     )}
+                    <td className="pl-1 pr-3 py-1.5 text-right">
+                      <LevelPill level={task.level} />
+                    </td>
                   </tr>
                 );
               })}

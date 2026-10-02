@@ -32,6 +32,7 @@ import { rankBetween } from "@/domain/tasks";
 import type { BoardDetail, Stage, Task } from "@/domain/types";
 import { useBoard, useBoards, useMe } from "@/lib/queries";
 import { tasksIn, useCreateTask, useUpdateTask } from "@/lib/tasks";
+import { LevelPill } from "@/ui/LevelPill";
 import { todayLocal, toneText } from "@/ui/tone";
 import { usePhone } from "@/ui/useMediaQuery";
 import { BoardDocsModal } from "./BoardDocsModal";
@@ -155,6 +156,7 @@ function Column({ detail, stage, hierarchy, grouping, onOpen, onNew, onMoveMenu 
                     <>
                       <span className="text-faint">{lane.epic.key}</span>
                       <span className="text-muted truncate">{lane.epic.title}</span>
+                      <LevelPill level={lane.epic.level} className="ml-auto pl-2 self-center" />
                     </>
                   ) : (
                     <span className="text-faint">no epic</span>

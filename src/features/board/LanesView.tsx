@@ -24,6 +24,7 @@ import { ChevronDown, CornerLeftUp, Plus } from "lucide-react";
 import { rankBetween } from "@/domain/tasks";
 import type { BoardDetail, Stage } from "@/domain/types";
 import { tasksIn, useUpdateTask } from "@/lib/tasks";
+import { LevelPill } from "@/ui/LevelPill";
 import { toneText } from "@/ui/tone";
 import type { Hierarchy } from "./BoardScreen";
 import { buildLanes, laneIds, parentForLane, type Lane } from "./lanes";
@@ -214,6 +215,7 @@ export function LanesView({ detail, shown, hierarchy, onOpen, onNew }: LanesView
                       <CornerLeftUp size={12} /> under
                     </button>
                   )}
+                  <LevelPill level={lane.epic?.level} className="ml-auto pl-2" />
                 </div>
               </div>
 
