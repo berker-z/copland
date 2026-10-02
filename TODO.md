@@ -44,9 +44,6 @@ docs/DESIGN.md under Touch.
       (better-auth) and D1 sync. It is phone-shaped already, and the phone
       groundwork (sheets, long press, touch sizing) is in. Read its docs/HANDOFF.md and docs/ROADMAP.md first.
 - [ ] Old test data in the local dev database (LNCH board and such); harmless.
-- [ ] Board filters (COPL-35): a quick add in a filtered kanban column, or a
-      new task that doesn't match, disappears from view as soon as it is
-      made. Decide whether quick add should take the scope as its parent.
 - [ ] Widgets (COPL-29) not yet seen in a browser: the /boards line for
       someone with only an inbox, the phone `⋯` menu with the moon on, and
       the inbox bell on a real phone.
