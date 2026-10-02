@@ -4,7 +4,9 @@
    A token is another way of being a user (migrations/0002_api_access.sql):
    the Worker resolves it to the same user, with the same board roles, that a
    session would, plus a scope (read or write) and a label for the history
-   ("Claude Code").
+   ("Claude Code"): the MCP client that last introduced itself with the
+   token (api_tokens.client, migrations/0010_token_client.sql), else the
+   token's name.
 
    Secrets are "cpl_" + 32 random bytes; only their SHA-256 is stored, the
    same as session cookies. A token whose user has been disabled stops
@@ -16,7 +18,7 @@
    ========================================================================== */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { agentLabel } from "@/domain/agents";
+import { clientLabel } from "@/domain/clients";
 import type { ApiAccess, ApiToken, ApiTokenScope, Viewer } from "@/domain/types";
 import { HttpError, nowIso, randomToken, sha256Hex } from "./http";
 import { findUserById, type UserRow } from "./repo/users";
@@ -56,13 +58,13 @@ interface TokenRow {
   kind: "personal" | "oauth";
   name: string;
   scope: ApiTokenScope;
-  agent: string | null;
+  client: string | null;
   created_at: string;
   last_used_at: string | null;
   expires_at: string | null;
 }
 
-const TOKEN_COLUMNS = `t.id, t.user_id, t.kind, t.name, t.scope, t.agent, t.created_at, t.last_used_at, t.expires_at`;
+const TOKEN_COLUMNS = `t.id, t.user_id, t.kind, t.name, t.scope, t.client, t.created_at, t.last_used_at, t.expires_at`;
 
 function toToken(row: TokenRow): ApiToken {
   return {
@@ -70,7 +72,7 @@ function toToken(row: TokenRow): ApiToken {
     kind: row.kind,
     name: row.name,
     scope: row.scope,
-    agent: row.agent,
+    client: row.client,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
     expiresAt: row.expires_at,
@@ -78,8 +80,8 @@ function toToken(row: TokenRow): ApiToken {
 }
 
 /** The label the history shows: the client that introduced itself, else the token's name. */
-function viaLabel(row: Pick<TokenRow, "agent" | "name">): string {
-  return row.agent ? agentLabel(row.agent) : row.name;
+function viaLabel(row: Pick<TokenRow, "client" | "name">): string {
+  return row.client ? clientLabel(row.client) : row.name;
 }
 
 /** A presented secret → its live, unexpired token and a live user, or null. */
@@ -113,8 +115,8 @@ export function touchStatement(db: D1Database, tokenId: string): D1PreparedState
 }
 
 /** The MCP client's own name ("claude-code"), from its initialize call. */
-export async function setAgent(db: D1Database, tokenId: string, agent: string): Promise<void> {
-  await db.prepare(`UPDATE api_tokens SET agent = ?2 WHERE id = ?1`).bind(tokenId, agent.trim().slice(0, 60)).run();
+export async function setClient(db: D1Database, tokenId: string, client: string): Promise<void> {
+  await db.prepare(`UPDATE api_tokens SET client = ?2 WHERE id = ?1`).bind(tokenId, client.trim().slice(0, 60)).run();
 }
 
 async function mint(): Promise<{ secret: string; hash: string }> {

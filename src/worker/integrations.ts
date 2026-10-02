@@ -27,7 +27,7 @@ import {
   register,
   token,
 } from "./oauth";
-import { bearerFrom, setAgent, touchStatement, viaContext } from "./tokens";
+import { bearerFrom, setClient, touchStatement, viaContext } from "./tokens";
 import { resolveViewer } from "./viewer";
 
 /** One API request as a viewer: scope check, route, live updates on success (index.ts). */
@@ -134,7 +134,7 @@ export async function handleIntegration(
           request,
           viewer,
           apiCaller(viewer, url, runApi),
-          (name) => setAgent(env.DB, access.tokenId, name),
+          (name) => setClient(env.DB, access.tokenId, name),
           url.origin,
         ),
       );

@@ -112,3 +112,7 @@ docs/DESIGN.md under Touch.
   resolve against the board's members when written and are kept by id; `@`
   in the comment box suggests members. The /inbox pane (open, dismiss); `inbox` and
   `mark_read` on the MCP
+- Participants (COPL-24): a new comment reaches a task's creator, assignees,
+  commenters and mentioned, so answering in the thread is enough. Tokens'
+  `agent` field is now `client` (COPL-22). Open tabs see "new version ·
+  reload" after a deploy (COPL-18)

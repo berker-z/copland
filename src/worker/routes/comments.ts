@@ -7,6 +7,8 @@
 
    "@handle" or "@owner/agent" in the text mentions a member of the board:
    kept by id in comment_mentions, and put in their inbox (repo/inbox.ts).
+   A new comment also reaches the task's other participants as "commented";
+   editing one reaches only whoever it newly names.
 
    History is the board's event log filtered to the task, with the actor's
    handle joined in, newest first.
@@ -18,7 +20,7 @@ import type { Env } from "../env";
 import { badRequest, forbidden, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
 import { boardAudience, listMembers } from "../repo/boards";
-import { inboxAudience, inboxStatements, mentionedIn, type NewInboxItem } from "../repo/inbox";
+import { inboxAudience, inboxStatements, mentionedIn, participantsOf, type NewInboxItem } from "../repo/inbox";
 import { eventStatement } from "../repo/tasks";
 import { avatarUrl } from "../repo/users";
 
@@ -115,14 +117,20 @@ export async function postComment(request: Request, env: Env, viewer: Viewer, ta
   const board = await boardOfTask(db, viewer, taskId);
   const text = parseText((await readJson(request)).text);
   const id = crypto.randomUUID();
-  const mentions = mentionStatements(db, viewer, board.id, taskId, id, mentionedIn(text, await listMembers(db, board.id)));
+  const named = mentionedIn(text, await listMembers(db, board.id));
+  const mentions = mentionStatements(db, viewer, board.id, taskId, id, named);
+  // Everyone else taking part hears about it too, once: a mention outranks it.
+  const commented: NewInboxItem[] = (await participantsOf(db, taskId))
+    .filter((uid) => !named.includes(uid))
+    .map((userId) => ({ userId, kind: "commented", boardId: board.id, taskId, commentId: id, actorId: viewer.user.id }));
   await db.batch([
     db.prepare(`INSERT INTO comments (id, task_id, author_id, text) VALUES (?1, ?2, ?3, ?4)`).bind(id, taskId, viewer.user.id, text),
     ...mentions.statements,
+    ...inboxStatements(db, commented),
     eventStatement(db, { boardId: board.id, taskId, actorId: viewer.user.id, kind: "comment.added" }),
   ]);
   changes.notify(await boardAudience(db, board.id), "board");
-  changes.notify(mentions.audience, "inbox");
+  changes.notify([...mentions.audience, ...inboxAudience(commented)], "inbox");
   return json(await listComments(db, taskId), { status: 201 });
 }
 

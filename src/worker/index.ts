@@ -23,6 +23,7 @@
 
 import { TAB_HEADER } from "@/domain/live";
 import type { AgentGrant, Viewer } from "@/domain/types";
+import { VERSION, VERSION_HEADER } from "@/domain/version";
 import { personalViewer } from "./access";
 import { finishLogin, logout, startCalendarConnect, startLogin } from "./auth";
 import type { Env } from "./env";
@@ -294,6 +295,8 @@ function withSecurityHeaders(response: Response): Response {
   if (!out.headers.has("content-security-policy")) {
     out.headers.set("content-security-policy", "default-src 'none'; frame-ancestors 'none'");
   }
+  /* So an open tab can tell it is older than this Worker (domain/version.ts). */
+  out.headers.set(VERSION_HEADER, VERSION);
   return out;
 }
 

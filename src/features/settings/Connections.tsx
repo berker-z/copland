@@ -17,7 +17,7 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
-import { agentLabel } from "@/domain/agents";
+import { clientLabel } from "@/domain/clients";
 import type { ApiToken, ApiTokenScope, CreatedToken } from "@/domain/types";
 import { send } from "@/lib/api";
 import { KEYS, useTokens } from "@/lib/queries";
@@ -71,13 +71,13 @@ const EXPIRY: { value: string; label: string; days: number | null }[] = [
 
 function TokenRow({ token, onRevoke, pending }: { token: ApiToken; onRevoke: () => void; pending: boolean }) {
   const [confirming, setConfirming] = useState(false);
-  const agent = token.agent ? agentLabel(token.agent) : null;
+  const client = token.client ? clientLabel(token.client) : null;
   return (
     <li className="flex items-center gap-2 py-2 border-b border-divider last:border-b-0">
       <span className="flex-1 min-w-0">
         <span className="block truncate text-ink">
           {token.name}
-          {agent && agent !== token.name && <span className="text-muted"> · {agent}</span>}
+          {client && client !== token.name && <span className="text-muted"> · {client}</span>}
         </span>
         <span className="block text-xs text-muted">
           <span className={token.scope === "read" ? "text-blue" : "text-yellow"}>

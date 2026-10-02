@@ -189,7 +189,7 @@ export interface ApiToken {
   name: string;
   scope: ApiTokenScope;
   /** The MCP client that last used it ("claude-code"). */
-  agent: string | null;
+  client: string | null;
   createdAt: string;
   lastUsedAt: string | null;
   /** Null: a personal token without an expiry. */
@@ -257,12 +257,12 @@ export interface UploadedFile {
 /** Something that needs this principal's attention (GET /api/inbox). */
 export interface InboxItem {
   id: string;
-  kind: "assigned" | "mentioned";
+  kind: "assigned" | "mentioned" | "commented";
   task: { id: string; key: string; title: string; boardId: string; boardName: string };
   actor: { handle: string; avatar: string | null };
   /** What the actor came through, when it was not the web app ("Claude Code"). */
   via: string | null;
-  /** For a mention: the comment's text as it is now. */
+  /** For a mention or a new comment: the comment's text as it is now. */
   comment: string | null;
   createdAt: string;
   readAt: string | null;

@@ -4,6 +4,13 @@
    What lands in an inbox, from the routes that cause it:
      assigned   routes/tasks.ts, when someone else puts you on a task
      mentioned  routes/comments.ts, when a comment names you
+     commented  routes/comments.ts, when someone comments on a task you take
+                part in (participantsOf) and does not name you
+
+   A task's participants are its creator, its assignees, and everyone who has
+   commented on it or been mentioned on it, as long as they are still on its
+   board. Only a new comment tells them; editing one tells only whoever it
+   newly names.
 
    A mention is "@handle" or "@owner/agent" outside code and quotes (the rule
    is domain/mentions.ts, shared with the browser's highlight), matched
@@ -28,9 +35,27 @@ export function mentionedIn(text: string, members: BoardMember[]): string[] {
   return [...ids];
 }
 
+/** A task's participants who are still members of its board, by id. */
+export async function participantsOf(db: D1Database, taskId: string): Promise<string[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT p.user_id FROM (
+           SELECT created_by AS user_id FROM tasks WHERE id = ?1
+           UNION SELECT user_id FROM task_assignees WHERE task_id = ?1
+           UNION SELECT author_id FROM comments WHERE task_id = ?1
+           UNION SELECT m.user_id FROM comment_mentions m JOIN comments c ON c.id = m.comment_id WHERE c.task_id = ?1
+         ) p
+         JOIN tasks t ON t.id = ?1
+         JOIN board_members bm ON bm.board_id = t.board_id AND bm.user_id = p.user_id`,
+    )
+    .bind(taskId)
+    .all<{ user_id: string }>();
+  return results.map((r) => r.user_id);
+}
+
 export interface NewInboxItem {
   userId: string;
-  kind: "assigned" | "mentioned";
+  kind: "assigned" | "mentioned" | "commented";
   boardId: string;
   taskId: string;
   commentId?: string;

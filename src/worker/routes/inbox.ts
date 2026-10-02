@@ -25,7 +25,7 @@ const LIMIT = 50;
 
 interface Row {
   id: string;
-  kind: "assigned" | "mentioned";
+  kind: InboxItem["kind"];
   task_id: string;
   number: number;
   title: string;

@@ -10,7 +10,7 @@
  * is for machines; the history says it the way people do. Unknown names pass
  * through as they came.
  */
-const KNOWN_AGENTS: Array<[RegExp, string]> = [
+const KNOWN_CLIENTS: Array<[RegExp, string]> = [
   [/claude[-_ ]?code/i, "Claude Code"],
   [/claude/i, "Claude"],
   [/codex/i, "Codex"],
@@ -21,6 +21,6 @@ const KNOWN_AGENTS: Array<[RegExp, string]> = [
   [/chatgpt|openai/i, "ChatGPT"],
 ];
 
-export function agentLabel(raw: string): string {
-  return KNOWN_AGENTS.find(([pattern]) => pattern.test(raw))?.[1] ?? raw;
+export function clientLabel(raw: string): string {
+  return KNOWN_CLIENTS.find(([pattern]) => pattern.test(raw))?.[1] ?? raw;
 }

@@ -62,7 +62,10 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 - The statusline (`src/features/shell/StatusLine.tsx`) is fixed to the top,
   `h-11 bg-bar text-base`, `z-[55]` (above the login overlay z-50, below
   modals z-[60]); `main` gets `pt-11` to clear it. Left: the pole mark,
-  `copland`, your avatar and handle (opens settings › profile). Right: theme
+  `copland`, your avatar and handle (opens settings › profile), and when
+  the Worker answers with a newer build than the tab runs, "new version ·
+  reload" in `accent` (a reload icon standing in for the mark on a phone;
+  it never reloads by itself). Right: theme
   switcher (menu opens downward), weather, city, moon phase, date, clock,
   settings, logout. Below `sm` it keeps the
   mark, weather, clock and settings, and a `⋯` menu holds date, moon,

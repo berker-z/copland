@@ -71,13 +71,13 @@ Call the guide tool once before your first change: it explains every board the u
 - Dates are YYYY-MM-DD. People are given by handle (@sam or sam) or email, stages and labels by name; "me" is the connected user.
 - Pass only the arguments a tool lists, with the types it lists: an unknown or mistyped argument is refused, never ignored.
 - Prefer list_tasks with filters, or my_work, over fetching whole boards.
-- To ask a person for a decision or input, @mention them in a comment on the task (comment_on_task). That puts it in their inbox; a question in your chat reply or a task's notes reaches nobody.`;
+- A task's notes describe the work. Questions, decisions you need from someone, and status updates always go in comments (comment_on_task): a new comment reaches the inbox of everyone taking part in the task, and @mentioning someone hands it to them directly. A question in your chat reply or in the notes reaches nobody.`;
 
 export async function handleMcp(
   request: Request,
   viewer: Viewer,
   call: ApiCall,
-  onAgent: (name: string) => Promise<void>,
+  onClient: (name: string) => Promise<void>,
   origin: string,
 ): Promise<Response> {
   if (request.method === "GET" || request.method === "DELETE") {
@@ -96,7 +96,7 @@ export async function handleMcp(
   if (Array.isArray(payload) && !payload.length) return reply(invalidRequest(null), 400);
   const batch = Array.isArray(payload) ? payload : [payload];
   const ctx: Ctx = { viewer, call, origin };
-  const answers = (await Promise.all(batch.map((m) => answer(m, ctx, onAgent)))).filter(
+  const answers = (await Promise.all(batch.map((m) => answer(m, ctx, onClient)))).filter(
     (a): a is object => a !== null,
   );
   /* Notifications and responses only: nothing to say back. */
@@ -128,7 +128,7 @@ function classify(message: unknown): "request" | "notification" | "response" | "
   return "invalid";
 }
 
-async function answer(raw: unknown, ctx: Ctx, onAgent: (name: string) => Promise<void>): Promise<object | null> {
+async function answer(raw: unknown, ctx: Ctx, onClient: (name: string) => Promise<void>): Promise<object | null> {
   const kind = classify(raw);
   if (kind === "invalid") return invalidRequest((raw as { id?: unknown } | null)?.id);
   if (kind !== "request") return null;
@@ -141,7 +141,7 @@ async function answer(raw: unknown, ctx: Ctx, onAgent: (name: string) => Promise
       const requested = String(message.params?.protocolVersion ?? "");
       const clientInfo = message.params?.clientInfo as { name?: unknown } | undefined;
       if (typeof clientInfo?.name === "string" && clientInfo.name.trim()) {
-        await onAgent(clientInfo.name).catch(() => undefined);
+        await onClient(clientInfo.name).catch(() => undefined);
       }
       return ok({
         protocolVersion: SUPPORTED_VERSIONS.includes(requested) ? requested : SUPPORTED_VERSIONS[0],
@@ -518,7 +518,7 @@ ${who} Today is ${today()} (UTC).${
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
 - **Planning.** Boards with planning switched on add: level (epic > story > task, plus milestone), parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). Other boards refuse these fields.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
-- **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, and being @mentioned in a comment, land there. Read it with inbox, then mark_read what you have dealt with (or dismiss it). A mention is how to hand something to someone, and the only way to ask them something: "@sam can you check this". If you need a person's decision, ask it in a comment that @mentions them, never only in your own reply or a brief. A handle inside \`code\`, a \`\`\` block or a > quoted line notifies nobody.
+- **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, being @mentioned in a comment, and a new comment on a task they take part in (created, are assigned to, have commented on or been mentioned on) land there; someone a comment mentions gets only the mention. Read it with inbox, then mark_read what you have dealt with (or dismiss it). A task's notes describe the work; questions, decisions you need from someone, and status updates always go in comments, never only in your own reply or a brief. Replying in the thread reaches whoever asked; a mention is how to hand something to someone or ask a person who is not yet taking part: "@sam can you check this". A handle inside \`code\`, a \`\`\` block or a > quoted line notifies nobody.
 - **Labels** (tags like #frontend) belong to a board and are given by name; create_label adds one, update_label renames or recolours it. Priority is low, normal, high or urgent.`);
 
   out.push(`## Your boards`);
@@ -921,7 +921,7 @@ const TOOLS: Tool[] = [
     name: "comment_on_task",
     title: "Comment on a task",
     description:
-      "Write in a task's comment thread, as the connected principal. Markdown. This is how to ask a person something: @mention them and it lands in their inbox. Anyone on the board may comment, viewers included. @handle (or @owner/agent) mentions a member of the task's board and puts the comment in their inbox; a name that is not on the board mentions nobody, and neither does one inside `code`, a ``` block or a > quoted line, so quote or code-format a handle to talk about someone without notifying them. Returns the thread's length and who was mentioned.",
+      "Write in a task's comment thread, as the connected principal. Markdown. This is where questions, decisions and status updates go: the comment reaches the inbox of everyone else taking part in the task (its creator, assignees, commenters and anyone mentioned on it), and @mentioning someone hands it to them directly. Anyone on the board may comment, viewers included. @handle (or @owner/agent) mentions a member of the task's board and puts the comment in their inbox; a name that is not on the board mentions nobody, and neither does one inside `code`, a ``` block or a > quoted line, so quote or code-format a handle to talk about someone without notifying them. Returns the thread's length and who was mentioned.",
     inputSchema: {
       type: "object",
       properties: { task: TASK, text: { type: "string", description: "Markdown" } },
@@ -1054,7 +1054,7 @@ const TOOLS: Tool[] = [
     name: "inbox",
     title: "Your inbox",
     description:
-      "What needs the connected principal's attention: tasks someone else assigned to them, and comments that @mentioned them, newest first (the latest 50). Each item has its id (for mark_read), kind (assigned or mentioned), the task's key, title and board, who did it and through what client, the comment's text for a mention, when, and whether it was read. An agent's inbox is its own, not its owner's. unread defaults to true: only what has not been marked read.",
+      "What needs the connected principal's attention: tasks someone else assigned to them, comments that @mentioned them, and new comments on tasks they take part in (created, are assigned to, have commented on or been mentioned on), newest first (the latest 50). Each item has its id (for mark_read), kind (assigned, mentioned or commented; a comment that mentions you is only mentioned), the task's key, title and board, who did it and through what client, the comment's text for mentioned and commented, when, and whether it was read. An agent's inbox is its own, not its owner's. unread defaults to true: only what has not been marked read.",
     inputSchema: {
       type: "object",
       properties: { unread: { type: "boolean", description: "Only unread items (default true)" } },

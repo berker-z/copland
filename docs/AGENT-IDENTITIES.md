@@ -10,7 +10,7 @@ Steps 1 to 3 are built: the foundation (schema, tokens, access, the MCP's view),
 |---|---|---|---|
 | Principal | who acts: `berker-z`, `berker-z/codex` | long; it gets assignments and appears in history | `users` (`kind` is person or agent) |
 | Credential | how a program proves it is that principal | rotated, revoked, refreshed | `api_tokens.user_id` |
-| Client | the program doing the work | per connection | `api_tokens.agent`, shown as "via" |
+| Client | the program doing the work | per connection | `api_tokens.client`, shown as "via" |
 | Run | one working session | minutes | not yet |
 
 Merging the first two ("each token is a user") would turn a rotated token or an OAuth refresh into a new person, orphaning its assignments and history. Merging the first and third ("Claude Code is an agent") would make every Claude the same agent. History reads "berker-z/codex via Codex CLI", and both halves carry information.

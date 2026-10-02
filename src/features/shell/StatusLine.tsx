@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
-import { Cloud, CloudRain, MoreHorizontal, Sun } from "lucide-react";
+import { Cloud, CloudRain, MoreHorizontal, RotateCw, Sun } from "lucide-react";
 import { getMoonPhase } from "@/domain/moon";
 import type { Settings } from "@/domain/settings";
 import { THEMES } from "@/domain/themes";
 import type { User } from "@/domain/types";
 import { useSettings } from "@/lib/queries";
 import { useUpdateSettings } from "@/lib/settings";
+import { useNewVersion } from "@/lib/versionState";
 import { Avatar } from "@/ui/Avatar";
 import { useDismiss } from "@/ui/useDismiss";
 import { LogoMark } from "@/ui/LogoMark";
@@ -208,6 +209,25 @@ function PhoneMenuPanel({ onLogout }: { onLogout: () => void }) {
   );
 }
 
+/**
+ * Shown once the Worker answers with a newer build than this tab runs. A
+ * quiet line, never a reload of its own: someone may be mid-edit. A phone's
+ * bar has no room to spare, so there it is an icon standing in for the mark.
+ */
+function NewVersion() {
+  return (
+    <button
+      onClick={() => window.location.reload()}
+      className="tap shrink-0 flex items-center text-accent hover:text-bright transition-colors"
+      title="A new version of copland is out; reload to use it"
+      aria-label="New version: reload"
+    >
+      <RotateCw size={16} className="sm:hidden" aria-hidden />
+      <span className="hidden sm:inline">new version · reload</span>
+    </button>
+  );
+}
+
 interface StatusLineProps {
   user: User;
   onOpenSettings: () => void;
@@ -218,10 +238,15 @@ interface StatusLineProps {
 /** tmux-style statusline: global state lives here instead of a header. */
 export function StatusLine({ user, onOpenSettings, onOpenProfile, onLogout }: StatusLineProps) {
   const { data: settings } = useSettings();
+  const newVersion = useNewVersion();
   return (
     <header className="fixed top-0 inset-x-0 z-[55] h-11 bg-bar border-b border-divider px-4 flex items-center justify-between gap-4 whitespace-nowrap">
       <div className="flex items-center gap-2 min-w-0">
-        <Link to="/" className="flex items-center gap-2 text-accent hover:text-bright transition-colors" title="Dashboard">
+        <Link
+          to="/"
+          className={`${newVersion ? "hidden sm:flex" : "flex"} items-center gap-2 text-accent hover:text-bright transition-colors`}
+          title="Dashboard"
+        >
           <LogoMark />
           <span className="hidden sm:inline">copland</span>
         </Link>
@@ -229,6 +254,7 @@ export function StatusLine({ user, onOpenSettings, onOpenProfile, onLogout }: St
           <Avatar user={user} size={18} />
           <span className="truncate">{user.handle}</span>
         </button>
+        {newVersion && <NewVersion />}
       </div>
 
       <div className="flex items-center gap-2.5">

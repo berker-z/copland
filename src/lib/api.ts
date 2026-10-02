@@ -8,7 +8,9 @@
    ========================================================================== */
 
 import { TAB_HEADER } from "@/domain/live";
+import { VERSION_HEADER } from "@/domain/version";
 import { TAB_ID } from "./liveState";
+import { noteServerVersion } from "./versionState";
 
 export class ApiError extends Error {
   constructor(
@@ -34,6 +36,8 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
+  /* Every response, errors included, says which build answered it. */
+  noteServerVersion(response.headers.get(VERSION_HEADER));
 
   if (response.status === 401) {
     if (path !== "/me") window.location.assign(loginUrl());

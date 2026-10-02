@@ -1,8 +1,8 @@
 /* ============================================================================
    The /inbox pane: what needs your attention (routes/inbox.ts).
    ----------------------------------------------------------------------------
-   Being given a task by someone else, or @mentioned in a comment, lands
-   here, newest first; the unread count sits in the header. Clicking an item
+   Being given a task by someone else, @mentioned in a comment, or a new
+   comment on a task you take part in lands here, newest first; the unread count sits in the header. Clicking an item
    marks it read and opens its task over the dashboard, the way the tasks
    pane does. × dismisses an item for good. Read items stay, dimmed, until
    dismissed.
@@ -27,6 +27,12 @@ function useInboxWrite(path: "/inbox/read" | "/inbox/dismiss") {
   });
 }
 
+const VERB: Record<InboxItem["kind"], string> = {
+  assigned: "gave you",
+  mentioned: "mentioned you on",
+  commented: "commented on",
+};
+
 function Item({ item, onOpen, onDismiss }: { item: InboxItem; onOpen: () => void; onDismiss: () => void }) {
   const unread = item.readAt === null;
   return (
@@ -36,7 +42,7 @@ function Item({ item, onOpen, onDismiss }: { item: InboxItem; onOpen: () => void
         <span className="flex-1 min-w-0">
           <span className="block text-sm text-muted">
             <span className={unread ? "text-bright" : "text-ink"}>{item.actor.handle}</span>{" "}
-            {item.kind === "assigned" ? "gave you" : "mentioned you on"} <span className="text-ink">{item.task.key}</span>
+            {VERB[item.kind]} <span className="text-ink">{item.task.key}</span>
             {item.via && <span className="text-faint"> via {item.via}</span>}
           </span>
           <span className="block text-sm text-ink truncate">{item.task.title}</span>
@@ -85,7 +91,7 @@ export function InboxPane() {
       {error && <p className="p-4 text-red text-sm">{error.message}</p>}
       {!inbox && !error && <p className="px-4 py-3 text-muted text-sm animate-pulse">loading…</p>}
       {inbox && inbox.items.length === 0 && (
-        <p className="px-4 py-3 text-faint text-sm">Nothing here. Being given a task, or @mentioned in a comment, lands here.</p>
+        <p className="px-4 py-3 text-faint text-sm">Nothing here. Being given a task, @mentioned, or a new comment on a task you take part in lands here.</p>
       )}
       {inbox?.items.map((item) => (
         <Item
