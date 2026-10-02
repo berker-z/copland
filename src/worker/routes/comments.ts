@@ -6,7 +6,7 @@
    edits or deletes a comment; a board owner may also delete one.
 
    History is the board's event log filtered to the task, with the actor's
-   name joined in, newest first.
+   handle joined in, newest first.
    ========================================================================== */
 
 import type { Comment, TaskEvent, Viewer } from "@/domain/types";
@@ -16,6 +16,7 @@ import { badRequest, forbidden, json, notFound, nowIso, readJson } from "../http
 import type { Changes } from "../live";
 import { boardAudience } from "../repo/boards";
 import { eventStatement } from "../repo/tasks";
+import { avatarUrl } from "../repo/users";
 
 const TEXT_MAX = 5000;
 
@@ -42,7 +43,7 @@ async function boardOfTask(db: D1Database, viewer: Viewer, taskId: string) {
 async function listComments(db: D1Database, taskId: string): Promise<Comment[]> {
   const { results } = await db
     .prepare(
-      `SELECT c.id, c.task_id, c.author_id, u.name AS author_name, c.text, c.created_at, c.edited_at
+      `SELECT c.id, c.task_id, c.author_id, u.handle AS author_handle, u.avatar_key AS author_avatar, c.text, c.created_at, c.edited_at
          FROM comments c JOIN users u ON u.id = c.author_id
         WHERE c.task_id = ?1 ORDER BY c.created_at`,
     )
@@ -51,7 +52,8 @@ async function listComments(db: D1Database, taskId: string): Promise<Comment[]> 
       id: string;
       task_id: string;
       author_id: string;
-      author_name: string;
+      author_handle: string;
+      author_avatar: string | null;
       text: string;
       created_at: string;
       edited_at: string | null;
@@ -60,7 +62,8 @@ async function listComments(db: D1Database, taskId: string): Promise<Comment[]> 
     id: r.id,
     taskId: r.task_id,
     authorId: r.author_id,
-    authorName: r.author_name,
+    authorHandle: r.author_handle,
+    authorAvatar: avatarUrl(r.author_avatar),
     text: r.text,
     createdAt: r.created_at,
     editedAt: r.edited_at,
@@ -120,7 +123,7 @@ export async function deleteComment(env: Env, viewer: Viewer, id: string, change
 export async function getTaskEvents(env: Env, viewer: Viewer, taskId: string) {
   await boardOfTask(env.DB, viewer, taskId);
   const { results } = await env.DB.prepare(
-    `SELECT e.id, e.kind, u.name AS actor_name, e.before, e.after, e.via, e.created_at
+    `SELECT e.id, e.kind, u.handle AS actor_handle, e.before, e.after, e.via, e.created_at
        FROM events e LEFT JOIN users u ON u.id = e.actor_id
       WHERE e.task_id = ?1 ORDER BY e.created_at DESC LIMIT 100`,
   )
@@ -128,7 +131,7 @@ export async function getTaskEvents(env: Env, viewer: Viewer, taskId: string) {
     .all<{
       id: string;
       kind: string;
-      actor_name: string | null;
+      actor_handle: string | null;
       before: string | null;
       after: string | null;
       via: string | null;
@@ -137,7 +140,7 @@ export async function getTaskEvents(env: Env, viewer: Viewer, taskId: string) {
   const events: TaskEvent[] = results.map((r) => ({
     id: r.id,
     kind: r.kind,
-    actorName: r.actor_name,
+    actorHandle: r.actor_handle,
     before: r.before ? (JSON.parse(r.before) as Record<string, unknown>) : null,
     after: r.after ? (JSON.parse(r.after) as Record<string, unknown>) : null,
     via: r.via,

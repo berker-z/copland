@@ -290,8 +290,7 @@ async function verifyIdToken(env: Env, idToken: string): Promise<GoogleProfile> 
   if (!email || payload.email_verified !== true || typeof payload.sub !== "string") {
     throw new Error("ID token without a verified email");
   }
-  const str = (key: string) => (typeof payload[key] === "string" ? (payload[key] as string) : null);
-  return { sub: payload.sub, email, name: str("name"), picture: str("picture") };
+  return { sub: payload.sub, email, name: typeof payload.name === "string" ? payload.name : null };
 }
 
 /* ------------------------------------------------------------- helpers ----- */

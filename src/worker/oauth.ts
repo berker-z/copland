@@ -211,7 +211,7 @@ export async function authorize(request: Request, env: Env, url: URL): Promise<R
     return new Response(null, { status: 302, headers: { location: `/auth/google?next=${next}` } });
   }
 
-  if (request.method === "GET") return consentPage(parsed, user.name, user.email, url);
+  if (request.method === "GET") return consentPage(parsed, user.handle, user.email, url);
 
   if (params.get("decision") !== "allow") {
     return redirectTo(parsed.redirectUri, { error: "access_denied", state: parsed.state, iss: url.origin });
@@ -376,7 +376,7 @@ function page(title: string, body: string, status = 200, formTargets: string[] =
   });
 }
 
-function consentPage(req: AuthRequest, name: string, email: string, url: URL): Response {
+function consentPage(req: AuthRequest, handle: string, email: string, url: URL): Response {
   const target = new URL(req.redirectUri);
   const web = target.protocol === "https:" || target.protocol === "http:";
   const where = web ? target.host : target.protocol;
@@ -390,7 +390,7 @@ function consentPage(req: AuthRequest, name: string, email: string, url: URL): R
 <form method="post" action="/oauth/authorize">
 ${hidden}
 <section>
-  <p><strong>${esc(req.client.client_name)}</strong> wants to use copland as <strong>${esc(name)}</strong> (${esc(email)}).</p>
+  <p><strong>${esc(req.client.client_name)}</strong> wants to use copland as <strong>@${esc(handle)}</strong> (${esc(email)}).</p>
   <p>It will see the boards and tasks you can see${
     req.scope === "write" ? " and, if you allow it, change them as you" : ""
   }. Its changes show in a task's history as “via ${esc(req.client.client_name)}”.</p>

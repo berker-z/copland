@@ -11,7 +11,7 @@ import { dueClass, isDraft, shortDate, toneText } from "@/ui/tone";
 const PRIORITY_CLASS = { urgent: "text-red", high: "text-orange", normal: "text-muted", low: "text-faint" } as const;
 
 export function ListView({ detail, onOpen }: { detail: BoardDetail; onOpen: (taskId: string) => void }) {
-  const name = (id: string) => detail.members.find((m) => m.user.id === id)?.user.name ?? "?";
+  const name = (id: string) => detail.members.find((m) => m.user.id === id)?.user.handle ?? "?";
 
   return (
     <div className="flex-1 min-h-0 overflow-auto px-4 md:px-8 py-4">

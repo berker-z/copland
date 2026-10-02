@@ -257,7 +257,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
           ))}
         </span>
         {detail.members.length > 1 && (
-          <span className="hidden sm:flex items-center gap-1.5 text-muted text-sm" title={detail.members.map((m) => m.user.name).join(", ")}>
+          <span className="hidden sm:flex items-center gap-1.5 text-muted text-sm" title={detail.members.map((m) => m.user.handle).join(", ")}>
             <Users size={14} /> {detail.members.length}
           </span>
         )}

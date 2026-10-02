@@ -23,6 +23,10 @@ export type Coverage = { tools: string[] } | { skip: string };
 export const ROUTE_COVERAGE: Record<string, Coverage> = {
   /* Identity. */
   "GET /api/me": { tools: ["whoami"] },
+  "PATCH /api/me": { tools: ["set_handle"] },
+  "PUT /api/me/avatar": { skip: "browser: a picture is cropped and uploaded from the profile page" },
+  "DELETE /api/me/avatar": { skip: "browser: goes with uploading one, on the profile page" },
+  "GET /api/avatars/:id": { skip: "browser: image bytes for <img> tags; tools show people by handle" },
   "GET /api/live": { skip: "browser: a tab's WebSocket for live updates; tool writes are broadcast to it" },
 
   /* Boards and tasks, the heart of it. load() in mcp.ts reads the board

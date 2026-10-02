@@ -4,8 +4,10 @@ import { Cloud, CloudRain, MoreHorizontal, Sun } from "lucide-react";
 import { getMoonPhase } from "@/domain/moon";
 import type { Settings } from "@/domain/settings";
 import { THEMES } from "@/domain/themes";
+import type { User } from "@/domain/types";
 import { useSettings } from "@/lib/queries";
 import { useUpdateSettings } from "@/lib/settings";
+import { Avatar } from "@/ui/Avatar";
 import { LogoMark } from "@/ui/LogoMark";
 import { MoonPhaseIcon } from "@/ui/MoonPhaseIcon";
 import { useWeather } from "./weather";
@@ -223,13 +225,14 @@ function PhoneMenuPanel({ onLogout }: { onLogout: () => void }) {
 }
 
 interface StatusLineProps {
-  userName: string;
+  user: User;
   onOpenSettings: () => void;
+  onOpenProfile: () => void;
   onLogout: () => void;
 }
 
 /** tmux-style statusline: global state lives here instead of a header. */
-export function StatusLine({ userName, onOpenSettings, onLogout }: StatusLineProps) {
+export function StatusLine({ user, onOpenSettings, onOpenProfile, onLogout }: StatusLineProps) {
   const { data: settings } = useSettings();
   return (
     <header className="fixed top-0 inset-x-0 z-[55] h-11 bg-bar border-b border-divider px-4 flex items-center justify-between gap-4 whitespace-nowrap">
@@ -238,7 +241,10 @@ export function StatusLine({ userName, onOpenSettings, onLogout }: StatusLinePro
           <LogoMark />
           <span className="hidden sm:inline">copland</span>
         </Link>
-        <span className="hidden sm:inline text-muted truncate">{userName.toLowerCase()}</span>
+        <button onClick={onOpenProfile} className="hidden sm:inline-flex items-center gap-2 min-w-0 text-muted hover:text-accent transition-colors" title="Your profile">
+          <Avatar user={user} size={18} />
+          <span className="truncate">{user.handle}</span>
+        </button>
       </div>
 
       <div className="flex items-center gap-2.5">

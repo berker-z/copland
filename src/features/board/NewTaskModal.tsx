@@ -13,6 +13,7 @@
    ========================================================================== */
 
 import { useState, type ReactNode } from "react";
+import { Avatar } from "@/ui/Avatar";
 import { useQueryClient } from "@tanstack/react-query";
 import { PRIORITIES, type Attachment, type BoardDetail, type Priority } from "@/domain/types";
 import { send } from "@/lib/api";
@@ -188,7 +189,12 @@ export function NewTaskModal({ detail, stageId, onClose, onCreated }: NewTaskMod
                   key={m.user.id}
                   checked={assignees.includes(m.user.id)}
                   onChange={() => setAssignees(toggle(assignees, m.user.id))}
-                  label={<span className="text-ink">{m.user.name}</span>}
+                  label={
+                  <span className="inline-flex items-center gap-1.5 text-ink">
+                    <Avatar user={m.user} size={16} />
+                    {m.user.handle}
+                  </span>
+                }
                   size={15}
                 />
               ))}

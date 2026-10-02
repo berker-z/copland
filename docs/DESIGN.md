@@ -61,8 +61,9 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 - The statusline (`src/features/shell/StatusLine.tsx`) is fixed to the top,
   `h-11 bg-bar text-base`, `z-[55]` (above the login overlay z-50, below
   modals z-[60]); `main` gets `pt-11` to clear it. Left: the pole mark,
-  `copland`, user. Right: theme switcher (menu opens downward), weather,
-  city, moon phase, date, clock, settings, logout. Below `sm` it keeps the
+  `copland`, your avatar and handle (opens settings › profile). Right: theme
+  switcher (menu opens downward), weather, city, moon phase, date, clock,
+  settings, logout. Below `sm` it keeps the
   mark, weather, clock and settings, and a `⋯` menu holds date, moon,
   themes and logout.
 - Moon phase glyph (`components/ui/MoonPhaseIcon.tsx`): 16px SVG, dark disc
@@ -88,6 +89,11 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   the X, and a form ends with `FormActions` (cancel, then the action) inside
   the body, as nord-dash did.
 - `src/features/shell/StatusLine.tsx` — statusline, theme menu, phone menu.
+- `src/ui/Avatar.tsx` — someone's picture, or their initials in a
+  `border-faint text-muted` square when they have none. Square like
+  everything else, sized in px to sit on a text line (16 in rows, 18 in
+  lists, 72 on the profile page). People are named by handle, lowercase,
+  next to it.
 - `components/ui/Checkbox.tsx` — shared checkbox (checked green, unchecked
   muted, `focus-visible:ring-accent`).
 

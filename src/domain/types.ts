@@ -7,8 +7,10 @@
 export interface User {
   id: string;
   email: string;
-  name: string;
-  picture: string | null;
+  /** What they go by: unique, lowercase (domain/handle.ts). */
+  handle: string;
+  /** Where their uploaded picture is fetched; null shows initials. */
+  avatar: string | null;
   isAdmin: boolean;
 }
 
@@ -133,7 +135,8 @@ export interface Comment {
   id: string;
   taskId: string;
   authorId: string;
-  authorName: string;
+  authorHandle: string;
+  authorAvatar: string | null;
   text: string;
   createdAt: string;
   editedAt: string | null;
@@ -143,7 +146,7 @@ export interface Comment {
 export interface TaskEvent {
   id: string;
   kind: string;
-  actorName: string | null;
+  actorHandle: string | null;
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   /** What made the change when it was not the web app ("Claude"). */

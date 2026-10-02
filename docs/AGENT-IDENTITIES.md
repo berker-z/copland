@@ -1,38 +1,41 @@
-# Agents as their own identities (undecided)
+# Agents as their own identities (mostly decided)
 
-Notes for later. Nothing here is built.
+Notes for the next piece of work. Nothing here is built yet, except that handles already leave room for it.
 
 ## What a token is today
 
-Every token is you. A personal token and an approved OAuth app both resolve to your user row (`src/worker/tokens.ts`), with your board roles and nothing more, narrowed only by scope: read, or read + write. The `agent` column remembers which client last used the token ("claude-code"), and that's what puts "berker via Claude Code" in a task's history.
+Every token is you. A personal token and an approved OAuth app both resolve to your user row (`src/worker/tokens.ts`), with your board roles and nothing more, narrowed only by scope: read, or read + write. The `agent` column remembers which client last used the token ("claude-code"), and that's what puts "berker-z via Claude Code" in a task's history.
 
 So an assistant can't be assigned a task, can't be on a board you're not on, can't have less access than you on one board and more on another, and can't be told apart from you except by that "via". For one person and Claude Code that's fine. It stops being fine once agents do work on their own: "Scout picks up anything assigned to it on LNCH" has nowhere to live.
 
-## What an agent identity would be
+## What an agent is
 
-An agent is a principal of its own. It has a name, an owner (the person who made it and answers for it), board memberships with roles, and its own tokens. It can be assigned tasks, it shows in history as itself ("scout, berker's agent"), and pausing or deleting it kills every token it has.
+An agent is a principal of its own, owned by the person who made it and answers for it. Its handle is `owner/name`, e.g. `berker-z/codex`: the owner is visible to everyone, and two people can both have a `codex`. Person handles can't contain "/" (`src/domain/handle.ts`), so the two never collide.
 
-## The choices
+It has board memberships, its own tokens, a picture, and it can be assigned tasks and mentioned. History shows it as itself, with "via" kept for which client it was running in.
 
-**Where agents live.** As rows in `users` with `kind = 'agent'` and an `owner_id`, or in a table of their own. A user row gets memberships, assignees, history actors and `rowToUser` for free, because everything already speaks user ids. The cost is remembering to keep agents out of the places only people belong: sign-in, the people page, invites, admin. A separate table is tidier and touches every query that joins on users. User rows look like the cheaper path.
+## Decided
 
-**How much an agent can do.** Board owners could add agents like members, with any role, independent of whoever owns the agent. Or an agent's role on a board is capped by its owner's (it never exceeds the owner, and it loses access the moment the owner does). The cap is easier to reason about: an agent can't be a way around someone's own permissions.
+- **The agent is the identity; a token is a credential it holds.** Not one identity per token: rotating a token, or an OAuth refresh, must not make a new "person" and orphan its assignments and history. An agent can hold several tokens.
+- **Making a token asks who it acts as:** me, one of my agents, or a new agent. The OAuth consent page asks the same. Plain "me" tokens stay, for scripts.
+- **Agents are rows in `users`** with `kind = 'agent'` and an `owner_id`. Memberships, assignees, comments and history actors all work unchanged because they already speak user ids. They are kept out of what only people do: sign-in, invites, the admin people list.
+- **Capped by the owner.** An agent sees only boards it was added to, and its role there is never more than its owner's. It loses access the moment the owner does. It can't be a way around anyone's own permissions.
+- **Only the owner adds their agent to a board.** Not other board owners.
+- **Personal agents only**, for now. No instance agents.
+- **An explicit capability list.** What an agent may do is a list, not "whatever its role allows". It never makes boards, invites people, or manages tokens; those three are off the list for now. Anything added later is added to the list on purpose.
+- **Deleting an agent** kills its tokens and takes it off boards and assignments. History keeps showing "berker-z/codex (deleted)".
+- **Pictures:** an agent can have one like anyone, a generic mark until it does. Something generated per agent is an idea for later.
 
-**Who makes agents.** Anyone, for themselves? Only admins? And are there instance agents, owned by nobody in particular, like a nightly triage bot? Personal agents first is the obvious start.
+## MCP
 
-**Tokens and OAuth.** Tokens would belong to a principal, a person or an agent. Connecting Claude over OAuth then needs one more question on the consent page: connect as me, or as one of my agents.
+`whoami` answers with the agent. `my_work` for an agent is what's assigned to it, which is the loop that makes agents useful: assign, the agent picks it up, its changes show up as its own. `set_handle` has to decide what it means for an agent (rename the agent part only, probably).
 
-**History.** The actor becomes the agent, with the owner beside it. "via" stays, for which client the agent was running in.
+## Settings
 
-**MCP.** `whoami` answers with the agent. `my_work` for an agent is what's assigned to it, which is exactly the loop that makes agents useful: assign, the agent picks it up, its changes show up as its own.
+Access stays "things that act as you": your tokens and the apps you approved. Agents get a page of their own next to it, each agent with its boards, its tokens, its capabilities and a pause switch.
 
-## What it does to settings
+## Still open
 
-Access stays "things that act as you": your tokens and the apps you approved. Agents get a page of their own next to it, each agent with its boards, its tokens and a pause switch. The settings layout already has room for that page under connections.
-
-## Still to decide
-
-- User rows with a kind, or a table of their own?
-- Capped by the owner's role, or independent?
-- Personal agents only, or instance agents too?
-- Does an agent ever get to invite people or make boards, or only work on existing ones?
+- The schema for the capability list: a column of flags, or a table of grants.
+- What "pause" is beyond refusing its tokens.
+- Whether mentions of an agent notify the agent (a queue it reads), its owner, or both.

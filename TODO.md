@@ -49,9 +49,10 @@ docs/DESIGN.md under Touch.
 
 ## Later
 
-- [ ] Agents as their own identities: assignable, on boards with their own
-      roles, their own tokens, history in their own name. Undecided; the options
-      are in docs/AGENT-IDENTITIES.md.
+- [ ] Agents as their own identities (`berkerz/codex`): assignable, on boards
+      with their own roles, their own tokens, history in their own name.
+      Mostly decided; what is and what is left is in docs/AGENT-IDENTITIES.md.
+      Handles already keep "/" free for it.
 - [ ] GitHub on boards: PRs that mention a task key show up on the task, a
       merge can close it. Undecided; the options are in docs/GITHUB.md.
 - [ ] @mentions and notifications on shared boards
@@ -92,3 +93,8 @@ docs/DESIGN.md under Touch.
 - Settings as pages: a list on the left (dashboard, connections, instance), the
   open page on the right, drill-in on a phone, and panes open it at the page
   they need
+- Handles instead of names: unique `@handle`s chosen in settings › profile
+  (the Google name only seeds a new account's), uploaded pictures (paste,
+  drop or pick, cropped square in the browser) instead of Google's photo,
+  shown on assignees, comments and members. The MCP speaks handles and has
+  `set_handle`

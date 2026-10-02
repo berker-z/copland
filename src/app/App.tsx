@@ -49,7 +49,12 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-divider text-ink font-mono flex flex-col">
-      <StatusLine userName={me.data.user.name} onOpenSettings={() => setSettings("start")} onLogout={logout} />
+      <StatusLine
+        user={me.data.user}
+        onOpenSettings={() => setSettings("start")}
+        onOpenProfile={() => setSettings("profile")}
+        onLogout={logout}
+      />
       <main className="flex-1 pt-11">
         {boardRoute?.params.key ? (
           <BoardScreen boardKey={boardRoute.params.key} />

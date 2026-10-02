@@ -1,9 +1,10 @@
 /* ============================================================================
    Settings: everything that used to be hardcoded or in .env, per user.
-   Pages, in PAGES below: the dashboard's panes (calendars, markets, the
-   weather's place), connections (API keys in the vault, how to connect an
-   assistant, and the tokens and apps that act as you, in Connections.tsx),
-   and for admins, the people on the instance.
+   Pages, in PAGES below: your handle and picture (Profile.tsx), the
+   dashboard's panes (calendars, markets, the weather's place), connections
+   (API keys in the vault, how to connect an assistant, and the tokens and
+   apps that act as you, in Connections.tsx), and for admins, the people on
+   the instance.
    ========================================================================== */
 
 import { useEffect, useState } from "react";
@@ -16,9 +17,11 @@ import { searchCities, type GeoResult } from "@/features/shell/weather";
 import { send } from "@/lib/api";
 import { KEYS, useAdminInvites, useAdminUsers, useSettings, useVault } from "@/lib/queries";
 import { useUpdateSettings } from "@/lib/settings";
+import { Avatar } from "@/ui/Avatar";
 import { ModalFrame } from "@/ui/ModalFrame";
 import { usePhone } from "@/ui/useMediaQuery";
 import { AccessSection, AssistantsSection } from "./Connections";
+import { ProfileSection } from "./Profile";
 
 import { Group, Section, button, input } from "./Section";
 
@@ -320,8 +323,9 @@ function InstanceSection({ me }: { me: Me }) {
             const self = u.id === me.user.id;
             return (
               <li key={u.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 border-b border-divider last:border-b-0">
+                <Avatar user={u} size={18} />
                 <span className={`min-w-0 flex-1 truncate ${u.disabledAt ? "text-faint line-through" : "text-ink"}`}>
-                  {u.name} <span className="text-muted">{u.email}</span>
+                  {u.handle} <span className="text-muted">{u.email}</span>
                 </span>
                 <button
                   onClick={() => patch.mutate({ id: u.id, body: { admin: !u.isAdmin } })}
@@ -400,7 +404,7 @@ function InstanceSection({ me }: { me: Me }) {
   );
 }
 
-export type SettingsPage = "calendars" | "markets" | "weather" | "keys" | "assistants" | "access" | "people";
+export type SettingsPage = "profile" | "calendars" | "markets" | "weather" | "keys" | "assistants" | "access" | "people";
 
 interface Page {
   id: SettingsPage;
@@ -409,9 +413,10 @@ interface Page {
   adminOnly?: boolean;
 }
 
-/* Grouped by what they are for: the panes on the dashboard, the things
+/* Grouped by what they are for: you, the panes on the dashboard, the things
    copland talks to, and (for admins) the instance itself. */
 const PAGES: Page[] = [
+  { id: "profile", label: "profile", group: "you" },
   { id: "calendars", label: "calendars", group: "dashboard" },
   { id: "markets", label: "markets", group: "dashboard" },
   { id: "weather", label: "weather", group: "dashboard" },
@@ -423,6 +428,8 @@ const PAGES: Page[] = [
 
 function PageBody({ page, me }: { page: SettingsPage; me: Me }) {
   switch (page) {
+    case "profile":
+      return <ProfileSection me={me} />;
     case "calendars":
       return (
         <Section title="calendars" hint="Google accounts and ICS links. What is ticked shows in the calendar and agenda panes.">

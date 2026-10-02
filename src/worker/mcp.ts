@@ -66,7 +66,7 @@ Call the guide tool once before your first change: it explains every board the u
 - The user's inbox is their private board; create_task puts a task there when no board is given.
 - A stage's category decides whether a task is open: backlog and active stages are open, done and cancelled stages close it.
 - Planning fields (level, parent, depends_on) only exist on boards with planning switched on; a tool refuses them elsewhere.
-- Dates are YYYY-MM-DD. People, stages and labels can be given by name; "me" is the connected user.
+- Dates are YYYY-MM-DD. People are given by handle (@sam or sam) or email, stages and labels by name; "me" is the connected user.
 - Pass only the arguments a tool lists, with the types it lists: an unknown or mistyped argument is refused, never ignored.
 - Prefer list_tasks with filters, or my_work, over fetching whole boards.`;
 
@@ -303,7 +303,7 @@ function resolvePerson(members: BoardMember[], ref: unknown, viewer: Viewer): Bo
     if (!me) throw new Error("You are not a member of this board.");
     return me;
   }
-  return pick(members, ref, (m) => [m.user.id, m.user.email, m.user.name], "board member", (m) => m.user.name);
+  return pick(members, ref, (m) => [m.user.id, m.user.email, m.user.handle, `@${m.user.handle}`], "board member", (m) => `@${m.user.handle}`);
 }
 
 /**
@@ -417,7 +417,10 @@ function byDue(a: Task, b: Task): number {
 
 /** A task the way an assistant wants to read it: names and keys, not ids. */
 function summarize(detail: BoardDetail, task: Task, origin: string) {
-  const person = (id: string) => detail.members.find((m) => m.user.id === id)?.user.name ?? id;
+  const person = (id: string) => {
+    const user = detail.members.find((m) => m.user.id === id)?.user;
+    return user ? `@${user.handle}` : id;
+  };
   const keyOf = (id: string) => detail.tasks.find((t) => t.id === id)?.key ?? id;
   const children = detail.tasks.filter((t) => t.parentId === task.id).length;
   return {
@@ -462,7 +465,7 @@ function boardOverview(detail: BoardDetail) {
       tasks: detail.tasks.filter((t) => t.stageId === s.id).length,
     })),
     labels: detail.labels.map((l) => l.name),
-    members: detail.members.map((m) => ({ name: m.user.name, email: m.user.email, role: m.role })),
+    members: detail.members.map((m) => ({ handle: `@${m.user.handle}`, email: m.user.email, role: m.role })),
   };
 }
 
@@ -481,11 +484,11 @@ function guide(details: BoardDetail[], ctx: Ctx): string {
   const out: string[] = [];
   out.push(`# Copland: a guide for AI assistants
 
-You are connected as **${v.user.name}** (${v.user.email}), with ${
+You are connected as **@${v.user.handle}** (${v.user.email}), with ${
     v.access?.scope === "read"
       ? "**read-only** access: you can look at everything they can, and change nothing"
       : "read and write access"
-  }. You act as them: on each board you can do exactly what their role there allows, and every change you make shows in the task's history as "${v.user.name} via ${via}". Today is ${today()} (UTC).`);
+  }. You act as them: on each board you can do exactly what their role there allows, and every change you make shows in the task's history as "${v.user.handle} via ${via}". Today is ${today()} (UTC).`);
 
   out.push(`## Concepts
 
@@ -494,6 +497,7 @@ You are connected as **${v.user.name}** (${v.user.email}), with ${
 - **Stages and categories.** Every stage has a category: backlog (not started), active (in progress), done or cancelled. A task in a done or cancelled stage is closed; moving it back to an open stage reopens it. Stage names are the board's own; the category is what they mean.
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
 - **Planning.** Boards with planning switched on add: level (epic > story > task, plus milestone), parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). Other boards refuse these fields.
+- **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
 - **Labels** belong to a board and are given by name. Priority is low, normal, high or urgent.`);
 
   out.push(`## Your boards`);
@@ -503,7 +507,7 @@ You are connected as **${v.user.name}** (${v.user.email}), with ${
 
 - Your role: ${b.role}
 - Planning: ${b.hasPlanning ? "on (level, parent, depends_on)" : "off"}
-- Members: ${d.members.map((m) => `${m.user.name} (${m.role})`).join(", ")}
+- Members: ${d.members.map((m) => `@${m.user.handle} (${m.role})`).join(", ")}
 - Labels: ${d.labels.length ? d.labels.map((l) => l.name).join(", ") : "none yet"}
 - Open tasks: ${d.tasks.filter((t) => statusOf(d, t) === "open").length}
 
@@ -513,7 +517,7 @@ ${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_
 
   out.push(`## Conventions
 
-- Tasks: a key like CPL-12. People: name, email, or "me"; assignees must be members of the task's board. Stages: name, position number, or a category ("done" finds the board's done stage). Labels: existing names on that board. Partial names work when unambiguous; an unknown or ambiguous name returns the options.
+- Tasks: a key like CPL-12. People: handle (with or without the @), email, or "me"; assignees must be members of the task's board. Stages: name, position number, or a category ("done" finds the board's done stage). Labels: existing names on that board. Partial names work when unambiguous; an unknown or ambiguous name returns the options.
 - Dates: YYYY-MM-DD, real calendar days; "none" clears a date. A start date cannot be after the due date. overdue means past due and still open.
 - Arguments: pass only those a tool lists. An unknown argument, or a planning field on a board without planning, is refused with an error, never silently dropped.
 - Errors come back as the tool's text: read them, they say what to do instead.
@@ -525,7 +529,7 @@ ${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_
 - "What's on my calendar this week?" → list_events { days: 7 }
 - "What's late?" → list_tasks { overdue: true }
 - "Remind me to renew the passport by the 20th" → create_task { title: "Renew passport", due: "YYYY-MM-20" } (no board: the inbox)
-- "What's Sam doing on the launch board?" → list_tasks { board: "launch", assignee: "Sam" }
+- "What's Sam doing on the launch board?" → list_tasks { board: "launch", assignee: "sam" }
 - "Move LNCH-4 to done" → move_task { task: "LNCH-4", stage: "done" }
 - "Give LNCH-4 to me, urgent, labelled bug" → update_task { task: "LNCH-4", assignees: ["me"], priority: "urgent", labels: ["bug"] }
 - "Tell the others the brief changed" → comment_on_task { task, text }`);
@@ -546,7 +550,7 @@ interface Tool {
 const S = { type: "string" } as const;
 const TASK = { type: "string", description: "Task key, e.g. CPL-12" } as const;
 const BOARD = { type: "string", description: "Board name or key; \"inbox\" is your private board" } as const;
-const PEOPLE = { type: "array", items: S, description: "Board members by name, email, or \"me\"" } as const;
+const PEOPLE = { type: "array", items: S, description: "Board members by handle, email, or \"me\"" } as const;
 const PRIORITY = { type: "string", enum: [...PRIORITIES] } as const;
 const STAGE = { type: ["string", "integer"], description: "Stage name, position number (0 is the first), or category (backlog, active, done, cancelled)" } as const;
 
@@ -566,7 +570,7 @@ const TOOLS: Tool[] = [
     name: "whoami",
     title: "Who am I",
     description:
-      "The user this connection acts as: name, email, whether they are an instance admin, their inbox's board key, how many boards they are on, and access (\"read and write\" or \"read-only\": a read-only connection cannot change anything).",
+      "The user this connection acts as: handle, email, whether they are an instance admin, their inbox's board key, how many boards they are on, and access (\"read and write\" or \"read-only\": a read-only connection cannot change anything).",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(_args, ctx) {
@@ -575,7 +579,7 @@ const TOOLS: Tool[] = [
         ctx.call<BoardSummary[]>("GET", "/api/boards"),
       ]);
       return {
-        name: me.user.name,
+        handle: `@${me.user.handle}`,
         email: me.user.email,
         admin: me.user.isAdmin,
         inbox: boards.find((b) => b.id === me.inboxId)?.key ?? null,
@@ -583,6 +587,23 @@ const TOOLS: Tool[] = [
         /* How this connection was made is not the app's to say: it lives on the token. */
         access: ctx.viewer.access?.scope === "read" ? "read-only" : "read and write",
       };
+    },
+  },
+  {
+    name: "set_handle",
+    title: "Change your handle",
+    description:
+      "Change the handle the user goes by everywhere in Copland (\"@sam\"). 2 to 32 of a-z, 0-9 and -, starting and ending with a letter or digit; a leading @ and capitals are accepted and dropped. Refuses a handle someone else has and reserved words (me, none, admin and the like). Assignments, comments and history follow the person, so nothing breaks; the old handle becomes free for anyone. Only ask for this when the user wants it. Returns { handle }.",
+    inputSchema: {
+      type: "object",
+      properties: { handle: { type: "string", description: "The new handle, e.g. \"sam\" or \"@sam\"" } },
+      required: ["handle"],
+      additionalProperties: false,
+    },
+    annotations: { idempotentHint: true },
+    async run(args, ctx) {
+      const me = await ctx.call<Me>("PATCH", "/api/me", { handle: args.handle });
+      return { handle: `@${me.user.handle}` };
     },
   },
   {
@@ -637,7 +658,7 @@ const TOOLS: Tool[] = [
         board: { type: "string", description: "Board name or key. Omit for every board." },
         stage: { ...STAGE, description: `${STAGE.description}. Needs board.` },
         status: { type: "string", enum: ["open", "closed", "done", "cancelled", "all"], description: "Default open" },
-        assignee: { type: "string", description: "A board member, \"me\", or \"none\" for unassigned" },
+        assignee: { type: "string", description: "A board member by handle or email, \"me\", or \"none\" for unassigned" },
         due_before: { type: "string", description: "Due on or before this day, YYYY-MM-DD" },
         due_after: { type: "string", description: "Due on or after this day, YYYY-MM-DD" },
         overdue: { type: "boolean", description: "Only open tasks past their due date" },
@@ -734,7 +755,7 @@ const TOOLS: Tool[] = [
                 .map((t) => `${t.key} ${t.title}${t.level ? ` (${t.level})` : ""}`),
             }
           : {}),
-        thread: comments.map((c) => ({ by: c.authorName, at: c.createdAt, text: c.text, ...(c.editedAt ? { edited: true } : {}) })),
+        thread: comments.map((c) => ({ by: `@${c.authorHandle}`, at: c.createdAt, text: c.text, ...(c.editedAt ? { edited: true } : {}) })),
       };
     },
   },

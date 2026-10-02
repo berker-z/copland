@@ -19,8 +19,13 @@
 
    A new user gets their inbox board in the same batch, and joins the
    invite's board if it carries one.
+
+   People go by a handle (domain/handle.ts), made from their Google name when
+   the account is created and theirs to change after (routes/profile.ts).
+   Google's name and photo are not kept; a picture is one they upload.
    ========================================================================== */
 
+import { handleFrom, handleProblem, HANDLE_MAX } from "@/domain/handle";
 import type { SignupMode, User } from "@/domain/types";
 import type { Env } from "../env";
 import { createBoardStatements, uniqueBoardKey } from "./boards";
@@ -30,18 +35,26 @@ export interface UserRow {
   id: string;
   email: string;
   google_sub: string | null;
-  name: string;
-  picture: string | null;
+  handle: string;
+  avatar_key: string | null;
   is_admin: number;
   disabled_at: string | null;
+}
+
+/** Avatars live under this R2 prefix; the route that serves them pins it. */
+export const AVATAR_PREFIX = "avatars/";
+
+/** Where the browser fetches a picture. The key is new with every upload, so the URL can be cached for good. */
+export function avatarUrl(key: string | null): string | null {
+  return key ? `/api/${key}` : null;
 }
 
 export function rowToUser(row: UserRow): User {
   return {
     id: row.id,
     email: row.email,
-    name: row.name,
-    picture: row.picture,
+    handle: row.handle,
+    avatar: avatarUrl(row.avatar_key),
     isAdmin: row.is_admin === 1,
   };
 }
@@ -65,8 +78,8 @@ export interface GoogleProfile {
   sub: string;
   /** Lowercased and verified by Google. */
   email: string;
+  /** Only used to suggest a new account's handle; never stored. */
   name: string | null;
-  picture: string | null;
 }
 
 /** Why a sign-in was refused; auth.ts turns it into a reason on the login screen. */
@@ -96,13 +109,11 @@ export async function signIn(env: Env, profile: GoogleProfile, inviteHash: strin
   if (existing) {
     if (existing.disabled_at) throw new SignInRefused("disabled");
     if (existing.google_sub && existing.google_sub !== profile.sub) throw new SignInRefused("mismatch");
-    /* Claim the row on first real sign-in, and follow Google's photo. The
-       name is left alone once set: the person may have changed it here. */
-    await db
-      .prepare(`UPDATE users SET google_sub = ?2, picture = ?3 WHERE id = ?1`)
-      .bind(existing.id, profile.sub, profile.picture)
-      .run();
-    return { ...existing, google_sub: profile.sub, picture: profile.picture };
+    /* Claim the row on first real sign-in. */
+    if (!existing.google_sub) {
+      await db.prepare(`UPDATE users SET google_sub = ?2 WHERE id = ?1`).bind(existing.id, profile.sub).run();
+    }
+    return { ...existing, google_sub: profile.sub };
   }
 
   const first = !(await db.prepare(`SELECT 1 FROM users LIMIT 1`).first());
@@ -121,8 +132,7 @@ export async function signIn(env: Env, profile: GoogleProfile, inviteHash: strin
   return createUser(env, {
     email: profile.email,
     googleSub: profile.sub,
-    name: profile.name?.trim() || profile.email.split("@")[0],
-    picture: profile.picture,
+    handleFrom: profile.name?.trim() || profile.email.split("@")[0],
     isAdmin: false,
     invite,
   });
@@ -134,8 +144,8 @@ export async function createUser(
   input: {
     email: string;
     googleSub: string | null;
-    name: string;
-    picture: string | null;
+    /** What the handle is made from: their Google name, or the email's local part. */
+    handleFrom: string;
     isAdmin: boolean;
     invite: InviteRow | null;
   },
@@ -143,7 +153,8 @@ export async function createUser(
   const db = env.DB;
   const id = crypto.randomUUID();
   const inboxId = crypto.randomUUID();
-  const key = await uniqueBoardKey(db, input.name);
+  const handle = await uniqueHandle(db, input.handleFrom, input.email);
+  const key = await uniqueBoardKey(db, handle);
   const { invite } = input;
 
   await db.batch([
@@ -151,10 +162,10 @@ export async function createUser(
       /* The first user is the admin, decided in the INSERT itself so two
          first sign-ins racing cannot both get it. */
       .prepare(
-        `INSERT INTO users (id, email, google_sub, name, picture, is_admin)
-         VALUES (?1, ?2, ?3, ?4, ?5, CASE WHEN EXISTS (SELECT 1 FROM users) THEN ?6 ELSE 1 END)`,
+        `INSERT INTO users (id, email, google_sub, handle, is_admin)
+         VALUES (?1, ?2, ?3, ?4, CASE WHEN EXISTS (SELECT 1 FROM users) THEN ?5 ELSE 1 END)`,
       )
-      .bind(id, input.email, input.googleSub, input.name, input.picture, input.isAdmin ? 1 : 0),
+      .bind(id, input.email, input.googleSub, handle, input.isAdmin ? 1 : 0),
     ...createBoardStatements(db, {
       id: inboxId,
       key,
@@ -188,6 +199,47 @@ export async function createUser(
   const row = await findUserById(db, id);
   if (!row) throw new Error("user row missing right after insert");
   return row;
+}
+
+/**
+ * A free handle made from `text`, else from the email's local part, else
+ * "user", with a number on the end when the plain one is taken. Two sign-ups
+ * racing for the same one: the unique index refuses the second, and signing
+ * in again picks the next number.
+ */
+export async function uniqueHandle(db: D1Database, text: string, email: string): Promise<string> {
+  const usable = (h: string | null) => (h && !handleProblem(h) ? h : null);
+  const base = usable(handleFrom(text)) ?? usable(handleFrom(email.split("@")[0])) ?? "user";
+  const stem = base.slice(0, HANDLE_MAX - 3).replace(/-+$/, "");
+  const candidates = [base, ...Array.from({ length: 9 }, (_, i) => `${stem}-${i + 2}`)];
+  const { results } = await db
+    .prepare(`SELECT handle FROM users WHERE handle IN (${candidates.map((_, i) => `?${i + 1}`).join(",")})`)
+    .bind(...candidates)
+    .all<{ handle: string }>();
+  const taken = new Set(results.map((r) => r.handle));
+  const free = candidates.find((h) => !taken.has(h) && !handleProblem(h));
+  if (free) return free;
+  const random = [...crypto.getRandomValues(new Uint8Array(4))].map((b) => (b % 36).toString(36)).join("");
+  return `${stem}-${random}`;
+}
+
+/**
+ * Who sees this person's handle and picture, and so refetches when they
+ * change: themselves, everyone they share a board with, and the admins (the
+ * people page).
+ */
+export async function peopleAudience(db: D1Database, userId: string): Promise<string[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT ?1 AS id
+       UNION SELECT other.user_id FROM board_members mine
+               JOIN board_members other ON other.board_id = mine.board_id
+              WHERE mine.user_id = ?1
+       UNION SELECT id FROM users WHERE is_admin = 1`,
+    )
+    .bind(userId)
+    .all<{ id: string }>();
+  return results.map((r) => r.id);
 }
 
 export async function inboxIdFor(db: D1Database, userId: string): Promise<string> {

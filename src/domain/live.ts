@@ -24,6 +24,8 @@ export type LiveTopic =
   | "notes"
   /** Calendar connections and events (your own only). */
   | "calendar"
+  /** Someone's handle or picture: theirs, and everywhere it is shown. */
+  | "people"
   /** Admin screens: users and invites. */
   | "admin"
   /** My API tokens and connected apps (settings). */

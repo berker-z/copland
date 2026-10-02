@@ -7,6 +7,7 @@
    ========================================================================== */
 
 import { useState } from "react";
+import { Avatar } from "@/ui/Avatar";
 import type { BoardDetail, TaskEvent } from "@/domain/types";
 import { useCommentEdits, useComments, useTaskEvents } from "@/lib/boardEdits";
 import { useMe } from "@/lib/queries";
@@ -98,7 +99,8 @@ export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: 
           {comments.data?.map((c) => (
             <div key={c.id} className="group/comment mb-3">
               <div className="flex items-baseline gap-2 text-xs">
-                <span className="text-bright">{c.authorName}</span>
+                <Avatar user={{ handle: c.authorHandle, avatar: c.authorAvatar }} size={16} className="self-center" />
+                <span className="text-bright">{c.authorHandle}</span>
                 <span className="text-faint">
                   {when(c.createdAt)}
                   {c.editedAt && " · edited"}
@@ -168,7 +170,7 @@ export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: 
             <li key={e.id} className="flex gap-2 py-0.5">
               <span className="text-faint w-14 shrink-0">{when(e.createdAt)}</span>
               <span className="text-muted">
-                <span className="text-ink">{e.actorName ?? "someone"}</span>
+                <span className="text-ink">{e.actorHandle ?? "someone"}</span>
                 {e.via && <span className="text-faint"> via {e.via}</span>} {describe(e, detail)}
               </span>
             </li>

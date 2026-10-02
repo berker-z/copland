@@ -7,6 +7,7 @@
    ========================================================================== */
 
 import { useState, type ReactNode } from "react";
+import { Avatar } from "@/ui/Avatar";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router";
 import { Copy } from "lucide-react";
@@ -101,7 +102,8 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
           <ul className="mb-3">
             {members.map((m) => (
               <li key={m.user.id} className="flex items-center gap-3 py-1.5">
-                <span className="text-ink truncate">{m.user.name}</span>
+                <Avatar user={m.user} size={18} />
+                <span className="text-ink truncate">{m.user.handle}</span>
                 <span className="text-muted text-sm truncate">{m.user.email}</span>
                 <span className="flex-1" />
                 <select

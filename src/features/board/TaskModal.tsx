@@ -5,6 +5,7 @@
    ========================================================================== */
 
 import { useEffect, useState, type ReactNode } from "react";
+import { Avatar } from "@/ui/Avatar";
 import { LEVELS, PRIORITIES, type BoardDetail, type Task } from "@/domain/types";
 import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
@@ -150,7 +151,12 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
                 key={m.user.id}
                 checked={task.assigneeIds.includes(m.user.id)}
                 onChange={() => canEdit && save({ assigneeIds: toggleIn(task.assigneeIds, m.user.id) })}
-                label={<span className="text-ink">{m.user.name}</span>}
+                label={
+                  <span className="inline-flex items-center gap-1.5 text-ink">
+                    <Avatar user={m.user} size={16} />
+                    {m.user.handle}
+                  </span>
+                }
                 size={15}
               />
             ))}

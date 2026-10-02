@@ -63,8 +63,7 @@ async function resolveForLocalDev(request: Request, env: Env): Promise<UserRow> 
   return createUser(env, {
     email,
     googleSub: null,
-    name: email.split("@")[0],
-    picture: null,
+    handleFrom: email.split("@")[0],
     isAdmin: true,
     invite: null,
   });

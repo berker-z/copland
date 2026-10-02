@@ -33,6 +33,8 @@ const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
   /* /me too: being made or unmade an admin arrives on this topic. */
   admin: [KEYS.admin, KEYS.me],
   tokens: [KEYS.tokens],
+  /* Handles and pictures show in boards, comments, history and the people page. */
+  people: [KEYS.me, KEYS.boardAll, ["comments"], ["events"], KEYS.adminUsers],
 };
 
 /* Several writes in a burst (a drag across stages, an assistant filing ten
@@ -41,7 +43,8 @@ const COALESCE_MS = 300;
 const PING_MS = 30_000;
 const MAX_BACKOFF_MS = 30_000;
 
-function refresh(queryClient: QueryClient, topics: Iterable<LiveTopic>): void {
+/** Refetch what these topics cover. Also for a tab's own writes that touch more than the query it changed. */
+export function refresh(queryClient: QueryClient, topics: Iterable<LiveTopic>): void {
   const keys = new Map<string, QueryKey>();
   for (const topic of topics) for (const key of TOPIC_KEYS[topic] ?? []) keys.set(JSON.stringify(key), key);
   const refetchType = document.hidden ? "none" : "active";

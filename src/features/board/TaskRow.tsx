@@ -7,6 +7,7 @@
 import type { DragEvent, ReactNode } from "react";
 import { Paperclip } from "lucide-react";
 import type { BoardMember, Label, Task } from "@/domain/types";
+import { Avatar } from "@/ui/Avatar";
 import { dueClass, isDraft, shortDate, toneText } from "@/ui/tone";
 import { useLongPress } from "@/ui/useLongPress";
 
@@ -18,11 +19,6 @@ const PRIORITY_MARK: Record<Task["priority"], ReactNode> = {
   normal: null,
   low: <span className="text-faint">↓</span>,
 };
-
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  return (parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : name.slice(0, 2)).toLowerCase();
-}
 
 interface TaskRowProps {
   task: Task;
@@ -98,9 +94,7 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, drag
             ))}
             <span className="flex-1" />
             {assignees.map((u) => (
-              <span key={u.id} title={u.name} className="text-muted border border-faint px-1 leading-4">
-                {initials(u.name)}
-              </span>
+              <Avatar key={u.id} user={u} />
             ))}
           </div>
         )}

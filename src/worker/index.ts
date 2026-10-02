@@ -55,6 +55,7 @@ import { handleIntegration, isIntegrationPath } from "./integrations";
 import { bearerFrom, requireWriteScope, touchStatement, viaContext } from "./tokens";
 import { getMarketExtras } from "./routes/markets";
 import { deleteNote, getNotes, patchNote, postNote } from "./routes/notes";
+import { deleteAvatar, getAvatar, patchMe, putAvatar } from "./routes/profile";
 import { deleteVault, getMe, getSettings, getVault, patchSettings, putVault } from "./routes/personal";
 import { resolveViewer } from "./viewer";
 
@@ -71,6 +72,11 @@ interface Ctx {
 
 const api = new Router<Ctx>()
   .on("GET", "/api/me", ({ env, viewer }) => getMe(env, viewer))
+  .on("PATCH", "/api/me", ({ request, env, viewer, changes }) => patchMe(request, env, viewer, changes))
+  .on("PUT", "/api/me/avatar", ({ request, env, viewer, changes }) => putAvatar(request, env, viewer, changes))
+  .on("DELETE", "/api/me/avatar", ({ env, viewer, changes }) => deleteAvatar(env, viewer, changes))
+  /* Keys are "avatars/<uuid>", pinned here like attachments below. */
+  .on("GET", "/api/avatars/:id", ({ env, viewer }, { id }) => getAvatar(env, viewer, `avatars/${id}`))
   .on("GET", "/api/live", ({ request, env, url, viewer }) => connectLive(request, env, url, viewer.user.id))
 
   .on("GET", "/api/settings", ({ env, viewer }) => getSettings(env, viewer))
