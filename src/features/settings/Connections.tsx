@@ -212,9 +212,7 @@ export function ConnectSteps({ as }: { as?: string }) {
     <>
       On the consent page, pick <span className="text-ink">{as}</span> under “connect it as”.
     </>
-  ) : (
-    <>On the consent page, keep “you” under “connect it as”.</>
-  );
+  ) : null;
   return (
     <Group title="connect">
       <Step title="claude.ai and the Claude app">
@@ -244,7 +242,8 @@ export function AccessSection() {
         <>
           Use copland from Claude, another AI assistant or a script, as you: “what's due this week?”, “move LNCH-4 to
           done”. Whatever connects here has your role on each board and nothing more, and its changes show in a task's
-          history as “via Claude”. To give an assistant its own name and narrower access, make it an agent instead.
+          history as “via Claude”. The consent page also offers your agents: pick one there, or make one, to give an
+          assistant its own name and narrower access instead.
         </>
       }
     >

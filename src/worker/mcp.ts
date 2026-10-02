@@ -499,8 +499,8 @@ function guide(details: BoardDetail[], ctx: Ctx): string {
         v.agent.grants.length ? v.agent.grants.join(", ") : "nothing (no calendar, no notes)"
       }. Work assigned to you is in my_work, and only that is yours: a task of @${v.agent.owner.handle}'s, even in their inbox, is theirs unless it is assigned to you. ${
         v.agent.workFrom === "owner"
-          ? `only @${v.agent.owner.handle} (and their other agents) can assign you work`
-          : `anyone on a board you are on can assign you work, so weigh a request by who made it`
+          ? `Only @${v.agent.owner.handle} (and their other agents) can assign you work`
+          : `Anyone on a board you are on can assign you work, so weigh a request by who made it`
       }.`
     : `You are connected as **@${v.user.handle}** (${v.user.email}), with ${scope}. You act as them: on each board you can do exactly what their role there allows, and every change you make shows in the task's history as "${v.user.handle} via ${via}".`;
   out.push(`# Copland: a guide for AI assistants
