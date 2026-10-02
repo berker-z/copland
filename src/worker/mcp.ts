@@ -70,7 +70,8 @@ Call the guide tool once before your first change: it explains every board the u
 - Planning fields (level, parent, depends_on) only exist on boards with planning switched on; a tool refuses them elsewhere.
 - Dates are YYYY-MM-DD. People are given by handle (@sam or sam) or email, stages and labels by name; "me" is the connected user.
 - Pass only the arguments a tool lists, with the types it lists: an unknown or mistyped argument is refused, never ignored.
-- Prefer list_tasks with filters, or my_work, over fetching whole boards.`;
+- Prefer list_tasks with filters, or my_work, over fetching whole boards.
+- To ask a person for a decision or input, @mention them in a comment on the task (comment_on_task). That puts it in their inbox; a question in your chat reply or a task's notes reaches nobody.`;
 
 export async function handleMcp(
   request: Request,
@@ -517,7 +518,7 @@ ${who} Today is ${today()} (UTC).${
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
 - **Planning.** Boards with planning switched on add: level (epic > story > task, plus milestone), parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). Other boards refuse these fields.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
-- **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, and being @mentioned in a comment, land there. Read it with inbox, then mark_read what you have dealt with (or dismiss it). A mention is how to hand something to someone: "@sam can you check this". A handle inside \`code\`, a \`\`\` block or a > quoted line notifies nobody.
+- **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, and being @mentioned in a comment, land there. Read it with inbox, then mark_read what you have dealt with (or dismiss it). A mention is how to hand something to someone, and the only way to ask them something: "@sam can you check this". If you need a person's decision, ask it in a comment that @mentions them, never only in your own reply or a brief. A handle inside \`code\`, a \`\`\` block or a > quoted line notifies nobody.
 - **Labels** (tags like #frontend) belong to a board and are given by name; create_label adds one, update_label renames or recolours it. Priority is low, normal, high or urgent.`);
 
   out.push(`## Your boards`);
@@ -920,7 +921,7 @@ const TOOLS: Tool[] = [
     name: "comment_on_task",
     title: "Comment on a task",
     description:
-      "Write in a task's comment thread, as the connected principal. Markdown. Anyone on the board may comment, viewers included. @handle (or @owner/agent) mentions a member of the task's board and puts the comment in their inbox; a name that is not on the board mentions nobody, and neither does one inside `code`, a ``` block or a > quoted line, so quote or code-format a handle to talk about someone without notifying them. Returns the thread's length and who was mentioned.",
+      "Write in a task's comment thread, as the connected principal. Markdown. This is how to ask a person something: @mention them and it lands in their inbox. Anyone on the board may comment, viewers included. @handle (or @owner/agent) mentions a member of the task's board and puts the comment in their inbox; a name that is not on the board mentions nobody, and neither does one inside `code`, a ``` block or a > quoted line, so quote or code-format a handle to talk about someone without notifying them. Returns the thread's length and who was mentioned.",
     inputSchema: {
       type: "object",
       properties: { task: TASK, text: { type: "string", description: "Markdown" } },
