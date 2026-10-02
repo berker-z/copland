@@ -1,9 +1,10 @@
 # Design System — "Splits"
 
-The dashboard is one continuous terminal surface divided into panes by 1px
-hairlines, after tmux. There are no cards: no radii, no shadows, no blur, no
-filled widget headers. Global state (clock, weather, session, theme, auth)
-lives in a statusline bar fixed to the top of the screen.
+The dashboard is one terminal surface split into panes, after tmux, with
+the near-black `divider` ground showing in the gutters between them. There
+are no cards: no radii, no shadows, no blur, no filled widget headers.
+Global state (clock, weather, inbox, session) lives in a statusline bar
+fixed to the top of the screen.
 
 ## Tokens & Theming
 
@@ -17,7 +18,7 @@ in components — only the role classes below.**
 | `surface` | `bg-surface` | pane background |
 | `raised` | `bg-raised` | inputs, hover rows, selected states |
 | `bar` | `bg-bar` | statusline, filled chrome |
-| `divider` | `gap-px` grid ground, `border-divider` | hairlines between/inside panes |
+| `divider` | page ground behind the panes, `border-divider` | gutters between panes, hairlines inside them |
 | `ink` | `text-ink` | primary text |
 | `bright` | `text-bright` | emphasized text (titles, prices) |
 | `muted` | `text-muted` | secondary text, idle icons/labels |
@@ -28,8 +29,9 @@ in components — only the role classes below.**
 Themes are `[data-theme="<id>"]` blocks in `src/styles/themes.css` overriding the same
 variables. Registry + labels live in `src/domain/themes.ts`; `src/lib/theme.ts` applies
 `data-theme` on `<html>` and saves it to the user's settings (cached in localStorage for first paint). The
-switcher is in the statusline; each menu row carries its own `data-theme`
-attribute so its swatch/colors preview that theme for free.
+switcher is settings › theme (`src/features/settings/Dashboard.tsx`); each
+row carries its own `data-theme` attribute so its swatch/colors preview that
+theme for free.
 
 Shipped themes: `nord` (default), `tokyo-night`, `dracula`, `catppuccin`
 (mocha), `gruvbox`, `one-dark`, `solarized`.
@@ -58,23 +60,35 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 
 ## Layout
 
-- `App.tsx` renders a `grid lg:grid-cols-3 gap-px` on a `bg-divider` page
-  ground; columns are `flex flex-col gap-px`; every pane is `bg-surface` so
-  the 1px gaps read as tmux splits. Below `lg` the columns are `contents`
-  and the panes stack edge to edge in one column, ordered with `order-*`
-  for a phone: agenda, tasks, inbox, boards, calendar, notepad, markets.
-  The middle column is tasks, boards, then inbox.
+- What is on the dashboard and in the statusline comes from the widget
+  registry: `src/domain/widgets.ts` lists every pane and statusline item
+  (id, name, default on or off, always-on, default column, phone order,
+  what it needs), and `src/app/widgets.tsx` maps each id to its component.
+  The personal `dashboard` setting says which are on and, for panes, in
+  which column and order. A new pane is an entry in each file.
+- `App.tsx` renders the columns that have panes in them as a
+  `grid lg:grid-cols-{n} gap-4` on a `bg-divider` page ground; columns are
+  `flex flex-col gap-4`; every pane is `bg-surface`. Below `lg` the columns
+  are `contents` and the panes stack in one column with `gap-2` between
+  them, edge to edge sideways below `sm`, ordered by each pane's
+  `phoneOrder` (a `--phone-order` variable read by `order-(--phone-order)`):
+  agenda, tasks, inbox, boards, calendar, notepad, markets. By default the
+  first column is calendar, agenda, notepad, the second tasks, boards,
+  inbox, and markets (off by default) goes in a third.
 - The statusline (`src/features/shell/StatusLine.tsx`) is fixed to the top,
   `h-11 bg-bar text-base`, `z-[55]` (above the login overlay z-50, below
   modals z-[60]); `main` gets `pt-11` to clear it. Left: the pole mark,
   `copland`, your avatar and handle (opens settings › profile), and when
   the Worker answers with a newer build than the tab runs, "new version ·
   reload" in `accent` (a reload icon standing in for the mark on a phone;
-  it never reloads by itself). Right: theme
-  switcher (menu opens downward), weather, city, moon phase, date, clock,
-  settings, logout. Below `sm` it keeps the
-  mark, weather, clock and settings, and a `⋯` menu holds date, moon,
-  themes and logout.
+  it never reloads by itself). Right, in registry order and only when on:
+  weather and city (needs a place), moon phase, then date and clock, all
+  `│`-separated readouts; then icon buttons without separators: the inbox
+  bell (unread count beside it in `accent`, quiet `text-muted` with none;
+  opens the inbox list in a modal on any screen), settings (gear) and log
+  out (`hover:text-red`), each with a `title` and `aria-label`. Below `sm`
+  it keeps the mark, weather, clock and the icons, and a `⋯` menu holds
+  the date and, when on, the moon.
 - Moon phase glyph (`components/ui/MoonPhaseIcon.tsx`): 16px SVG, dark disc
   `fill-bar stroke-faint`, lit region in `currentColor` (`text-ink`). The lit
   shape is limb arc + half-ellipse terminator so it morphs continuously
@@ -100,7 +114,14 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   modal shows its fields as text, and the pencil beside delete (a tick with
   "done" while editing) switches to the form; Escape leaves the form first,
   then the modal.
-- `src/features/shell/StatusLine.tsx` — statusline, theme menu, phone menu.
+- `src/features/shell/StatusLine.tsx` — statusline and phone menu; its
+  readouts are in `topbar.tsx`, the inbox bell in
+  `src/features/inbox/InboxBadge.tsx` (the same `InboxItems` list as the
+  /inbox pane; opening an item swaps the modal for the task, closing the
+  task comes back to the list).
+- The /boards pane always ends with a `+ new board` row (muted, accent on
+  hover) for people; with only the inbox it adds a line saying what a board
+  is for. Agents never see it, since only people make boards.
 - `src/features/board/ShareModal.tsx` — who is on a board, and adding
   people or your agents by handle (one picker, agents after people). Rows
   are fixed columns: avatar, handle, a fixed-width role, and a fixed
@@ -190,6 +211,12 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   that can still show something adds one `text-xs text-faint` line that
   opens settings on click (`hover:text-accent`); a pane that can show
   nothing without it explains in `text-muted` and offers `[ OPEN_SETTINGS ]`.
+- Settings › widgets: one row per widget that can be switched, a
+  `role="switch"` button with the checkbox glyphs (green `CheckSquare` on,
+  muted `Square` off), the name, and a `text-muted` line saying what it
+  shows. A widget that needs a setting asks for it inline under its row:
+  switching on the weather without a place opens the city search there,
+  and picking one switches it on.
 - Search-and-pick (the weather city search): a standard input; results as
   flat rows below it (`border-b border-divider`, `hover:bg-raised`), name in
   `text-bright`, detail in `text-muted`, coordinates `text-faint` tabular on
@@ -198,8 +225,9 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   so far; the rest of nord-dash's set (`text-nav`, `text-section`, ...) comes
   over with the widgets that use them. Use these instead of inline weights.
 - Settings (`src/features/settings/SettingsModal.tsx`) is pages, not one long
-  scroll: a `w-44` list on the left grouped as dashboard, connections and
-  instance, the open page on the right, `ModalFrame size="xl"` at a fixed
+  scroll: a `w-44` list on the left grouped as you, agents, dashboard
+  (widgets, theme, calendars, markets, service keys) and instance, the open
+  page on the right, `ModalFrame size="xl"` at a fixed
   height so switching pages does not resize it. On a phone the list is its
   own screen and a page opens with a back arrow in the title. A page is a
   `Section` (title, one-line purpose) with `Group`s inside. Panes open

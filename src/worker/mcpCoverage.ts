@@ -123,7 +123,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "DELETE /api/labels/:id": { tools: ["delete_label"] },
 
   /* The dashboard's personal panes. */
-  "GET /api/settings": { skip: "browser: dashboard preferences (theme, coins, weather place)" },
+  "GET /api/settings": { skip: "browser: dashboard preferences (theme, which widgets are on, coins, weather place)" },
   "PATCH /api/settings": { skip: "browser: dashboard preferences" },
   "GET /api/vault": { skip: "browser: saved API keys never leave the app" },
   "PUT /api/vault/:name": { skip: "browser: saved API keys" },

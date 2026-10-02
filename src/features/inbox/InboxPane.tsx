@@ -6,6 +6,9 @@
    marks it read and opens its task over the dashboard, the way the tasks
    pane does. × dismisses an item for good. Read items stay, dimmed, until
    dismissed.
+
+   The list itself (InboxItems) is shared with the statusline's inbox badge
+   (InboxBadge.tsx), which shows it in a modal on every screen.
    ========================================================================== */
 
 import { useState } from "react";
@@ -62,32 +65,37 @@ function Item({ item, onOpen, onDismiss }: { item: InboxItem; onOpen: () => void
   );
 }
 
-/** An item's task, over the dashboard, once its board has loaded. */
-function OpenTask({ boardId, taskId, onClose }: { boardId: string; taskId: string; onClose: () => void }) {
+/** What to open when an item is clicked: its task, on its board. */
+export interface InboxTarget {
+  boardId: string;
+  taskId: string;
+}
+
+/** An item's task, over whatever is on screen, once its board has loaded. */
+export function OpenTask({ boardId, taskId, onClose }: InboxTarget & { onClose: () => void }) {
   const { data: detail } = useBoard(boardId);
   return detail ? <TaskModal detail={detail} taskId={taskId} onClose={onClose} /> : null;
 }
 
-export function InboxPane() {
+/** "Mark all read", shown only while something is unread. */
+export function MarkAllRead({ className = "tap p-1 hover:text-accent transition-colors" }: { className?: string }) {
+  const { data: inbox } = useInbox();
+  const markRead = useInboxWrite("/inbox/read");
+  if (!inbox?.unread) return null;
+  return (
+    <button onClick={() => markRead.mutate(undefined)} className={className} title="Mark all read" aria-label="Mark all read">
+      <Check size={14} />
+    </button>
+  );
+}
+
+/** The items, newest first. Opening one marks it read and hands its task to `onOpen`. */
+export function InboxItems({ onOpen }: { onOpen: (target: InboxTarget) => void }) {
   const { data: inbox, error } = useInbox();
   const markRead = useInboxWrite("/inbox/read");
   const dismiss = useInboxWrite("/inbox/dismiss");
-  const [task, setTask] = useState<{ boardId: string; taskId: string } | null>(null);
-  const unread = inbox?.unread ?? 0;
-
   return (
-    <WidgetFrame
-      title="/inbox"
-      meta={inbox ? (unread ? <span className="text-accent">{unread} unread</span> : "all read") : undefined}
-      controls={
-        unread > 0 && (
-          <button onClick={() => markRead.mutate(undefined)} className="tap p-1 hover:text-accent transition-colors" title="Mark all read">
-            <Check size={14} />
-          </button>
-        )
-      }
-      bodyClassName="!p-0"
-    >
+    <>
       {error && <p className="p-4 text-red text-sm">{error.message}</p>}
       {!inbox && !error && <p className="px-4 py-3 text-muted text-sm animate-pulse">loading…</p>}
       {inbox && inbox.items.length === 0 && (
@@ -99,7 +107,7 @@ export function InboxPane() {
           item={item}
           onOpen={() => {
             if (item.readAt === null) markRead.mutate([item.id]);
-            setTask({ boardId: item.task.boardId, taskId: item.task.id });
+            onOpen({ boardId: item.task.boardId, taskId: item.task.id });
           }}
           onDismiss={() => dismiss.mutate([item.id])}
         />
@@ -107,7 +115,24 @@ export function InboxPane() {
       {(markRead.error ?? dismiss.error) && (
         <p className="px-4 py-2 text-xs text-red">{(markRead.error ?? dismiss.error)?.message}</p>
       )}
-      {task && <OpenTask boardId={task.boardId} taskId={task.taskId} onClose={() => setTask(null)} />}
+    </>
+  );
+}
+
+export function InboxPane() {
+  const { data: inbox } = useInbox();
+  const [task, setTask] = useState<InboxTarget | null>(null);
+  const unread = inbox?.unread ?? 0;
+
+  return (
+    <WidgetFrame
+      title="/inbox"
+      meta={inbox ? (unread ? <span className="text-accent">{unread} unread</span> : "all read") : undefined}
+      controls={<MarkAllRead />}
+      bodyClassName="!p-0"
+    >
+      <InboxItems onOpen={setTask} />
+      {task && <OpenTask {...task} onClose={() => setTask(null)} />}
     </WidgetFrame>
   );
 }

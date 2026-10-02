@@ -11,6 +11,7 @@
    ========================================================================== */
 
 import { THEMES } from "./themes";
+import { DEFAULT_LAYOUT, TOPBAR, parseLayout, requirementMet, topbarOn, type DashboardLayout } from "./widgets";
 
 export interface Settings {
   theme: string;
@@ -26,6 +27,8 @@ export interface Settings {
   coingeckoCoins: string[];
   /** CoinGecko NFT collection ids ("milady-maker"), shown by floor price. */
   coingeckoNfts: string[];
+  /** Which panes and statusline items are on, and where (domain/widgets.ts). */
+  dashboard: DashboardLayout;
 }
 
 export type SettingKey = keyof Settings;
@@ -36,6 +39,7 @@ export const DEFAULT_SETTINGS: Settings = {
   coins: ["BTC", "ETH", "SOL"],
   coingeckoCoins: [],
   coingeckoNfts: [],
+  dashboard: DEFAULT_LAYOUT,
 };
 
 type Parser<T> = (raw: unknown) => T | null;
@@ -79,6 +83,8 @@ const PARSERS: { [K in SettingKey]: Parser<Settings[K]> } = {
      that list is kept shorter. */
   coingeckoCoins: coingeckoIds(20),
   coingeckoNfts: coingeckoIds(8),
+
+  dashboard: parseLayout,
 };
 
 export function isSettingKey(key: string): key is SettingKey {
@@ -93,6 +99,20 @@ export function parseSetting<K extends SettingKey>(key: K, raw: unknown): Settin
   const parsed = PARSERS[key](raw);
   if (parsed === null && !(key === "location" && raw === null)) return undefined;
   return parsed as Settings[K];
+}
+
+/**
+ * What is wrong with a whole set of settings once a change is applied, or
+ * null. Keys are parsed one at a time; this is for what spans two of them:
+ * a widget switched on without the setting it needs.
+ */
+export function settingsProblem(settings: Settings): string | null {
+  for (const t of TOPBAR) {
+    if (topbarOn(settings.dashboard, t.id) && !requirementMet(t, settings)) {
+      return `The ${t.name} needs a ${t.requires} first`;
+    }
+  }
+  return null;
 }
 
 /* ----------------------------------------------------------------- vault --- */

@@ -3,7 +3,7 @@
    to anyone else, so every write notifies only its author's other tabs.
    ========================================================================== */
 
-import { isSettingKey, isVaultName, parseSetting } from "@/domain/settings";
+import { isSettingKey, isVaultName, parseSetting, settingsProblem, type Settings } from "@/domain/settings";
 import type { Me, Viewer } from "@/domain/types";
 import type { Env } from "../env";
 import { badRequest, json, readJson } from "../http";
@@ -39,16 +39,27 @@ export async function getSettings(env: Env, viewer: Viewer): Promise<Response> {
   return json(await readSettings(env.DB, viewer.user.id));
 }
 
-/** PATCH /api/settings { key: value, ... }: each key validated, all written together. */
+/**
+ * PATCH /api/settings { key: value, ... }: each key validated, then the
+ * result as a whole (a widget switched on without the setting it needs),
+ * all written together.
+ */
 export async function patchSettings(request: Request, env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
   const body = await readJson(request);
   const entries = Object.entries(body);
   if (entries.length === 0) throw badRequest("Nothing to update");
 
-  const statements = entries.map(([key, raw]) => {
+  const parsed = entries.map(([key, raw]) => {
     if (!isSettingKey(key)) throw badRequest(`Unknown setting \`${key}\``);
     const value = parseSetting(key, raw);
     if (value === undefined) throw badRequest(`Invalid value for \`${key}\``);
+    return [key, value] as const;
+  });
+  const after: Settings = { ...(await readSettings(env.DB, viewer.user.id)), ...Object.fromEntries(parsed) };
+  const problem = settingsProblem(after);
+  if (problem) throw badRequest(problem);
+
+  const statements = parsed.map(([key, value]) => {
     return env.DB.prepare(
       `INSERT INTO settings (user_id, key, value, updated_at)
        VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))

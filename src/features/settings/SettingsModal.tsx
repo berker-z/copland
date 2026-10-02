@@ -4,18 +4,18 @@
      you        profile (Profile.tsx), and access: what acts as you and how
                 to connect it (Connections.tsx)
      agents     one page per agent and one to make a new one (Agents.tsx)
-     dashboard  the panes (calendars, markets, the weather's place) and the
+     dashboard  which widgets are on and the theme (Dashboard.tsx), the
+                panes' own settings (calendars, markets), and the
                 service keys behind them (the vault)
      instance   the people on it, for admins
    ========================================================================== */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Copy, Trash2, X } from "lucide-react";
 import { VAULT_NAMES, type VaultEntry, type VaultName } from "@/domain/settings";
 import type { Agent, CreatedInvite, Me } from "@/domain/types";
 import { CalendarSettings } from "@/features/calendar/CalendarSettings";
-import { searchCities, type GeoResult } from "@/features/shell/weather";
 import { send } from "@/lib/api";
 import { KEYS, useAdminInvites, useAdminUsers, useAgents, useSettings, useVault } from "@/lib/queries";
 import { useUpdateSettings } from "@/lib/settings";
@@ -24,6 +24,7 @@ import { ModalFrame } from "@/ui/ModalFrame";
 import { usePhone } from "@/ui/useMediaQuery";
 import { AgentSection, NewAgentSection } from "./Agents";
 import { AccessSection } from "./Connections";
+import { DashboardSection, ThemeSection } from "./Dashboard";
 import { ProfileSection } from "./Profile";
 
 import { Group, Section, button, input } from "./Section";
@@ -111,107 +112,6 @@ function MarketsSection() {
       <ChipList setting="coins" label="binance" placeholder="BTC" normalize={(s) => s.toUpperCase()} maxLength={12} />
       <ChipList setting="coingeckoCoins" label="coingecko coins, by market cap" placeholder="milady-cult-coin" normalize={lower} maxLength={80} />
       <ChipList setting="coingeckoNfts" label="coingecko nfts, by floor" placeholder="milady-maker" normalize={lower} maxLength={80} />
-    </Section>
-  );
-}
-
-/**
- * Pick the weather's place by name. Open-Meteo's geocoder turns what is
- * typed into candidates; choosing one saves its name and coordinates.
- */
-function LocationSection() {
-  const { data: settings } = useSettings();
-  const update = useUpdateSettings();
-  const location = settings?.location;
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<GeoResult[] | null>(null);
-  const [searching, setSearching] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  /* Search as you type, once typing pauses; a newer search cancels the one
-     in flight so results never arrive out of order. */
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
-      setResults(null);
-      setSearching(false);
-      return;
-    }
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      setSearching(true);
-      searchCities(q, controller.signal)
-        .then((found) => {
-          setResults(found);
-          setError(null);
-        })
-        .catch((e: unknown) => {
-          if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "Search failed");
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setSearching(false);
-        });
-    }, 350);
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, [query]);
-
-  const choose = (place: GeoResult) => {
-    update.mutate({ location: { name: place.name, latitude: place.latitude, longitude: place.longitude } });
-    setQuery("");
-    setResults(null);
-  };
-
-  return (
-    <Section title="weather" hint="Where the statusline weather is for. Open-Meteo, no key needed.">
-      <div className="flex items-baseline justify-between gap-2 mb-2 text-sm">
-        {location ? (
-          <span className="text-bright">
-            {location.name}{" "}
-            <span className="text-muted tabular-nums">
-              {location.latitude.toFixed(2)}, {location.longitude.toFixed(2)}
-            </span>
-          </span>
-        ) : (
-          <span className="text-faint">no place set</span>
-        )}
-        {location && (
-          <button onClick={() => update.mutate({ location: null })} className="tap text-xs text-muted hover:text-red">
-            clear
-          </button>
-        )}
-      </div>
-      <input
-        className={`${input} w-full`}
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="search a city"
-        maxLength={80}
-        aria-label="Search a city"
-      />
-      {searching && <p className="text-xs text-muted mt-2 animate-pulse">searching…</p>}
-      {results && !searching && results.length === 0 && <p className="text-xs text-faint mt-2">no match</p>}
-      {results && results.length > 0 && (
-        <ul className="mt-2">
-          {results.map((r) => (
-            <li key={r.id}>
-              <button
-                onClick={() => choose(r)}
-                className="w-full flex items-baseline gap-2 px-2 py-2 text-left border-b border-divider last:border-b-0 hover:bg-raised transition-colors"
-              >
-                <span className="text-bright">{r.name}</span>
-                <span className="text-xs text-muted truncate">{r.detail}</span>
-                <span className="ml-auto text-xs text-faint tabular-nums shrink-0">
-                  {r.latitude.toFixed(2)}, {r.longitude.toFixed(2)}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {(error ?? update.error?.message) && <p className="text-red text-xs mt-2">{error ?? update.error?.message}</p>}
     </Section>
   );
 }
@@ -418,7 +318,8 @@ export type SettingsPage =
   | `agent:${string}`
   | "calendars"
   | "markets"
-  | "weather"
+  | "widgets"
+  | "theme"
   | "keys"
   | "people";
 
@@ -449,9 +350,10 @@ function pagesFor(me: Me, agents: Agent[]): Page[] {
       group: "agents",
     })),
     { id: "new-agent", label: <span className="text-muted">+ new agent</span>, group: "agents" },
+    { id: "widgets", label: "widgets", group: "dashboard" },
+    { id: "theme", label: "theme", group: "dashboard" },
     { id: "calendars", label: "calendars", group: "dashboard" },
     { id: "markets", label: "markets", group: "dashboard" },
-    { id: "weather", label: "weather", group: "dashboard" },
     { id: "keys", label: "service keys", group: "dashboard" },
     ...(me.user.isAdmin ? [{ id: "people" as const, label: "people", group: "instance" }] : []),
   ];
@@ -481,8 +383,10 @@ function PageBody({ page, me, agents, go }: { page: SettingsPage; me: Me; agents
       );
     case "markets":
       return <MarketsSection />;
-    case "weather":
-      return <LocationSection />;
+    case "widgets":
+      return <DashboardSection />;
+    case "theme":
+      return <ThemeSection />;
     case "keys":
       return <VaultSection />;
     case "people":

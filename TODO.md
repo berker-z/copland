@@ -44,6 +44,9 @@ docs/DESIGN.md under Touch.
       (better-auth) and D1 sync. It is phone-shaped already, and the phone
       groundwork (sheets, long press, touch sizing) is in. Read its docs/HANDOFF.md and docs/ROADMAP.md first.
 - [ ] Old test data in the local dev database (LNCH board and such); harmless.
+- [ ] Widgets (COPL-29) not yet seen in a browser: the /boards line for
+      someone with only an inbox, the phone `⋯` menu with the moon on, and
+      the inbox bell on a real phone.
 - [ ] Board notes and docs (COPL-27) were tested through the API and `/mcp`,
       not in a browser: open the book icon on a board, write notes, drop a
       .md and a PDF, open both, describe one, delete one, and look at it as
@@ -61,7 +64,11 @@ docs/DESIGN.md under Touch.
 - [ ] GitHub on boards: PRs that mention a task key show up on the task, a
       merge can close it. Undecided; the options are in docs/GITHUB.md.
 - [ ] Invite a friend for real and share a board; watch live updates between two people
-- [ ] Layout as a setting (which panes, which column) instead of the fixed grid
+- [ ] Dashboard edit mode (COPL-30): drag panes between and within columns,
+      add and remove them in place. The `dashboard` setting already stores
+      columns in order (`src/domain/widgets.ts`); edit mode writes the same
+      shape. Empty columns are hidden today and will need to show as drop
+      targets while editing.
 - [ ] A time zone setting, so "today" and "overdue" in the MCP stop meaning UTC
 - [ ] More MCP tools from the `not yet` entries in `src/worker/mcpCoverage.ts`
       (attaching links, the notepad, history, creating boards, calendar writes)
@@ -133,3 +140,11 @@ docs/DESIGN.md under Touch.
   new tasks land in the first todo stage. The MCP guide tells agents to work
   from todo, leave backlog alone, and @mention plus move to blocked when they
   need input
+- Widgets (COPL-29): every pane and statusline item is in a registry
+  (`src/domain/widgets.ts`, components in `src/app/widgets.tsx`) and the
+  `dashboard` setting says which are on and where. Markets, weather and the
+  moon are opt-in in settings › widgets; the weather cannot be on without
+  a place. The theme moved to settings › theme, settings and logout are
+  icons, panes have real gutters, the inbox bell is back in the statusline
+  on every screen (opens the inbox in a modal), and /boards always shows
+  "+ new board"
