@@ -188,3 +188,10 @@ docs/DESIGN.md under Touch.
   request, board notes, docs, briefs, comments, outside content). Lower-trust
   text never widens permissions, touches identity or credentials, or puts
   the owner's notes or calendar where others can read them
+- Inbox paging (COPL-42): `GET /api/inbox` takes `unread=true`, `limit`
+  (up to 200) and a `cursor`, and answers with `next`. Newest first, ties
+  broken by id, so nothing repeats or goes missing between pages, and
+  marking read while paging skips nothing. The MCP's `inbox` filters on
+  the server and returns `next`; before this, fifty read items hid every
+  older unread one. The pane and the bell load fifty and have an "older"
+  row for the rest. Migration 0014 reindexes inbox_items for it

@@ -327,8 +327,11 @@ export interface InboxItem {
   readAt: string | null;
 }
 
-/** GET /api/inbox */
+/** GET /api/inbox: one page, newest first (by created time, then id). */
 export interface Inbox {
+  /** Every unread item, not just this page's. */
   unread: number;
   items: InboxItem[];
+  /** Opaque cursor for the next page (?cursor=), null on the last one. */
+  next: string | null;
 }

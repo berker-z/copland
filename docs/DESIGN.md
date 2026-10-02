@@ -122,7 +122,8 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   readouts are in `topbar.tsx`, the inbox bell in
   `src/features/inbox/InboxBadge.tsx` (the same `InboxItems` list as the
   /inbox pane; opening an item swaps the modal for the task, closing the
-  task comes back to the list).
+  task comes back to the list). The list loads fifty and ends in a muted
+  "older" row while there are more.
 - The /boards pane always ends with a `+ new board` row (muted, accent on
   hover) for people; with only the inbox it adds a line saying what a board
   is for. Agents never see it, since only people make boards.

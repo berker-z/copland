@@ -110,7 +110,7 @@ const api = new Router<Ctx>()
   .on("GET", "/api/avatars/:id", ({ env, viewer }, { id }) => getAvatar(env, viewer, `avatars/${id}`))
   .on("GET", "/api/live", mine(null, ({ request, env, url, viewer }) => connectLive(request, env, url, viewer.user.id)))
   /* Not mine(grant): an agent's inbox is its own, not its owner's. */
-  .on("GET", "/api/inbox", ({ env, viewer }) => getInbox(env, viewer))
+  .on("GET", "/api/inbox", ({ env, viewer, url }) => getInbox(env, viewer, url))
   .on("POST", "/api/inbox/read", ({ request, env, viewer, changes }) => postInboxRead(request, env, viewer, changes))
   .on("POST", "/api/inbox/dismiss", ({ request, env, viewer, changes }) => postInboxDismiss(request, env, viewer, changes))
 

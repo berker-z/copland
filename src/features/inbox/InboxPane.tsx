@@ -5,14 +5,15 @@
    comment on a task you take part in lands here, newest first; the unread count sits in the header. Clicking an item
    marks it read and opens its task over the dashboard, the way the tasks
    pane does. × dismisses an item for good. Read items stay, dimmed, until
-   dismissed.
+   dismissed. The first 50 load; "older" at the foot loads the next page
+   (the route's cursor), so nothing old is out of reach.
 
    The list itself (InboxItems) is shared with the statusline's inbox badge
    (InboxBadge.tsx), which shows it in a modal on every screen.
    ========================================================================== */
 
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
 import type { Inbox, InboxItem } from "@/domain/types";
 import { send } from "@/lib/api";
@@ -22,11 +23,30 @@ import { when } from "@/ui/tone";
 import { WidgetFrame } from "@/ui/WidgetFrame";
 import { TaskModal } from "../board/TaskModal";
 
+/* The answer is the first page as it is now. Rather than swap it in, which
+   could shift what the pages already loaded hold, the write is applied to
+   every loaded page and the count taken from the answer. */
 function useInboxWrite(path: "/inbox/read" | "/inbox/dismiss") {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (ids?: string[]) => send<Inbox>("POST", path, ids ? { ids } : {}),
-    onSuccess: (inbox) => queryClient.setQueryData(KEYS.inbox, inbox),
+    onSuccess: (inbox, ids) => {
+      const hit = (item: InboxItem) => ids === undefined || ids.includes(item.id);
+      const now = new Date().toISOString();
+      queryClient.setQueryData<InfiniteData<Inbox, string | null>>(KEYS.inbox, (old) =>
+        old && {
+          ...old,
+          pages: old.pages.map((page) => ({
+            ...page,
+            unread: inbox.unread,
+            items:
+              path === "/inbox/dismiss"
+                ? page.items.filter((item) => !hit(item))
+                : page.items.map((item) => (item.readAt === null && hit(item) ? { ...item, readAt: now } : item)),
+          })),
+        },
+      );
+    },
   });
 }
 
@@ -91,7 +111,7 @@ export function MarkAllRead({ className = "tap p-1 hover:text-accent transition-
 
 /** The items, newest first. Opening one marks it read and hands its task to `onOpen`. */
 export function InboxItems({ onOpen }: { onOpen: (target: InboxTarget) => void }) {
-  const { data: inbox, error } = useInbox();
+  const { data: inbox, error, hasNextPage, fetchNextPage, isFetchingNextPage } = useInbox();
   const markRead = useInboxWrite("/inbox/read");
   const dismiss = useInboxWrite("/inbox/dismiss");
   return (
@@ -112,6 +132,15 @@ export function InboxItems({ onOpen }: { onOpen: (target: InboxTarget) => void }
           onDismiss={() => dismiss.mutate([item.id])}
         />
       ))}
+      {hasNextPage && (
+        <button
+          onClick={() => void fetchNextPage()}
+          disabled={isFetchingNextPage}
+          className="tap block w-full px-4 py-2.5 text-left text-sm text-muted hover:text-accent hover:bg-raised transition-colors disabled:animate-pulse"
+        >
+          {isFetchingNextPage ? "loading…" : "older"}
+        </button>
+      )}
       {(markRead.error ?? dismiss.error) && (
         <p className="px-4 py-2 text-xs text-red">{(markRead.error ?? dismiss.error)?.message}</p>
       )}

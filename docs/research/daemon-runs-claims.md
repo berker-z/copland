@@ -864,6 +864,8 @@ But do not close the door architecturally.
 
 # 24. Inbox issue to fix before daemon use
 
+Fixed in COPL-42: `GET /api/inbox?unread=true&limit=&cursor=` filters on the server and pages by a cursor, and the MCP `inbox` tool passes them through and returns `next`.
+
 The current inbox endpoint returns only the newest 50 items.
 
 The MCP then filters those client-side when `unread=true`.

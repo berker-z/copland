@@ -4,7 +4,7 @@
    is spelled once and lib/live.ts can refetch by it.
    ========================================================================== */
 
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import type { MarketExtras, Note } from "@/domain/panes";
 import type { Settings, VaultEntry } from "@/domain/settings";
 import type { Agent, ApiToken, BoardDetail, BoardSummary, Inbox, Invite, Me, MyWork, Person, User } from "@/domain/types";
@@ -73,8 +73,17 @@ export const useAdminUsers = () =>
 export const useAdminInvites = () =>
   useQuery({ queryKey: KEYS.adminInvites, queryFn: () => api<Invite[]>("/admin/invites") });
 
+/** The inbox, a page at a time (newest first); fetchNextPage follows `next`. */
 export const useInbox = () =>
-  useQuery({ queryKey: KEYS.inbox, queryFn: () => api<Inbox>("/inbox"), refetchInterval: fallbackPoll(60_000) });
+  useInfiniteQuery({
+    queryKey: KEYS.inbox,
+    queryFn: ({ pageParam }) => api<Inbox>(pageParam ? `/inbox?cursor=${encodeURIComponent(pageParam)}` : "/inbox"),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next,
+    /* The pages as one list; the count is the whole inbox's, on every page. */
+    select: (data) => ({ unread: data.pages[0]?.unread ?? 0, items: data.pages.flatMap((p) => p.items) }),
+    refetchInterval: fallbackPoll(60_000),
+  });
 
 export const useTokens = () => useQuery({ queryKey: KEYS.tokens, queryFn: () => api<ApiToken[]>("/tokens") });
 
