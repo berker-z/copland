@@ -10,7 +10,10 @@
    the id comes from the boards list. ?view=list and ?view=gantt switch to
    the other two views (ListView, GanttView) over the same data. The filter
    bar (FilterBar, filters.ts) sits over all three; its state is more of the
-   query string, and each view draws the filtered board.
+   query string, and each view draws the filtered board. ?group=epic (the
+   "by epic" switch next to the views) splits the kanban into a lane per
+   epic: LanesView from sm up, sections inside each column on a phone
+   (lanes.ts has the rules).
 
    On a touchscreen there is no HTML5 drag: a long press on a card opens
    MoveSheet instead, and on a phone the columns become a swipeable strip.
@@ -30,11 +33,14 @@ import type { BoardDetail, Stage, Task } from "@/domain/types";
 import { useBoard, useBoards, useMe } from "@/lib/queries";
 import { tasksIn, useCreateTask, useUpdateTask } from "@/lib/tasks";
 import { todayLocal, toneText } from "@/ui/tone";
+import { usePhone } from "@/ui/useMediaQuery";
 import { BoardDocsModal } from "./BoardDocsModal";
 import { BoardSettingsModal } from "./BoardSettingsModal";
 import { FilterBar } from "./FilterBar";
 import { applyFilters, readFilters, writeFilters } from "./filters";
 import { GanttView } from "./GanttView";
+import { buildLanes, laneIds, type Lane } from "./lanes";
+import { LanesView } from "./LanesView";
 import { ListView } from "./ListView";
 import { MoveSheet } from "./MoveSheet";
 import { NewTaskModal } from "./NewTaskModal";
@@ -52,17 +58,26 @@ export interface Hierarchy {
   onScope: (parentKey: string) => void;
 }
 
+/** Lanes by epic, drawn as sections inside each column (the phone's ?group=epic). */
+interface Grouping {
+  lanes: Lane[];
+  laneOf: Map<string, string>;
+}
+
 interface ColumnProps {
   detail: BoardDetail;
   stage: Stage;
   hierarchy: Hierarchy;
+  grouping: Grouping | null;
   onOpen: (taskId: string) => void;
   onNew: (stageId: string) => void;
   onMoveMenu: (taskId: string) => void;
 }
 
-function Column({ detail, stage, hierarchy, onOpen, onNew, onMoveMenu }: ColumnProps) {
+function Column({ detail, stage, hierarchy, grouping, onOpen, onNew, onMoveMenu }: ColumnProps) {
   const tasks = tasksIn(detail, stage.id);
+  /* Grouped, epics are the section headers rather than cards. */
+  const cards = grouping ? tasks.filter((t) => t.level !== "epic") : tasks;
   const update = useUpdateTask(detail.board.id);
   const create = useCreateTask(detail.board.id);
   const canEdit = detail.board.role !== "viewer";
@@ -111,7 +126,7 @@ function Column({ detail, stage, hierarchy, onOpen, onNew, onMoveMenu }: ColumnP
           ──
         </span>
         <span className={`tracking-[0.14em] ${toneText(stage.tone)}`}>{stage.name}</span>
-        <span className="text-xs text-muted">{tasks.length}</span>
+        <span className="text-xs text-muted">{cards.length}</span>
         <span className="flex-1 border-t border-faint/50" aria-hidden />
         {canEdit && (
           <button
@@ -125,24 +140,49 @@ function Column({ detail, stage, hierarchy, onOpen, onNew, onMoveMenu }: ColumnP
       </div>
 
       <div className="flex-1 overflow-y-auto min-h-16">
-        {tasks.map((task) => (
-          <TaskRow
-            key={task.id}
-            task={task}
-            members={detail.members}
-            labels={detail.labels}
-            parentKey={hierarchy.parentKey(task)}
-            onParent={() => {
-              const key = hierarchy.parentKey(task);
-              if (key) hierarchy.onScope(key);
-            }}
-            draggable={canEdit}
-            dropMarker={over === task.id}
-            onOpen={() => onOpen(task.id)}
-            onLongPress={canEdit ? () => onMoveMenu(task.id) : undefined}
-            {...dropHandlers(task.id)}
-          />
-        ))}
+        {(grouping ? grouping.lanes : [null]).map((lane) => {
+          const rows = lane && grouping ? cards.filter((t) => grouping.laneOf.get(t.id) === lane.id) : cards;
+          if (lane && rows.length === 0) return null;
+          return (
+            <div key={lane?.id ?? "all"}>
+              {lane && (
+                <button
+                  onClick={() => lane.epic && onOpen(lane.epic.id)}
+                  disabled={!lane.epic}
+                  className="w-full flex items-baseline gap-2 px-3 pt-2.5 pb-1 text-left text-xs border-b border-divider whitespace-nowrap"
+                >
+                  {lane.epic ? (
+                    <>
+                      <span className="text-faint">{lane.epic.key}</span>
+                      <span className="text-muted truncate">{lane.epic.title}</span>
+                    </>
+                  ) : (
+                    <span className="text-faint">no epic</span>
+                  )}
+                </button>
+              )}
+              {rows.map((task) => {
+                /* `↑ KEY` only when the parent is not the section's own epic. */
+                const parentKey = task.parentId && task.parentId !== lane?.epic?.id ? hierarchy.parentKey(task) : null;
+                return (
+                  <TaskRow
+                    key={task.id}
+                    task={task}
+                    members={detail.members}
+                    labels={detail.labels}
+                    parentKey={parentKey}
+                    onParent={() => parentKey && hierarchy.onScope(parentKey)}
+                    draggable={canEdit}
+                    dropMarker={over === task.id}
+                    onOpen={() => onOpen(task.id)}
+                    onLongPress={canEdit ? () => onMoveMenu(task.id) : undefined}
+                    {...dropHandlers(task.id)}
+                  />
+                );
+              })}
+            </div>
+          );
+        })}
         {over === "end" && <div className="border-t-2 border-accent" />}
       </div>
 
@@ -176,6 +216,7 @@ function Column({ detail, stage, hierarchy, onOpen, onNew, onMoveMenu }: ColumnP
 interface KanbanProps {
   detail: BoardDetail;
   hierarchy: Hierarchy;
+  grouping: Grouping | null;
   onOpen: (taskId: string) => void;
   onNew: (stageId: string) => void;
   onMoveMenu: (taskId: string) => void;
@@ -186,7 +227,7 @@ interface KanbanProps {
  * column most of the screen wide with the next peeking in, and a row of
  * stage chips above that shows where you are and jumps.
  */
-function Kanban({ detail, hierarchy, onOpen, onNew, onMoveMenu }: KanbanProps) {
+function Kanban({ detail, hierarchy, grouping, onOpen, onNew, onMoveMenu }: KanbanProps) {
   const strip = useRef<HTMLDivElement | null>(null);
   const [active, setActive] = useState(0);
 
@@ -206,7 +247,8 @@ function Kanban({ detail, hierarchy, onOpen, onNew, onMoveMenu }: KanbanProps) {
             onClick={() => jump(i)}
             className={`shrink-0 px-4 py-2.5 whitespace-nowrap ${i === active ? `bg-raised ${toneText(stage.tone)}` : "bg-surface text-muted"}`}
           >
-            {stage.name} <span className="text-xs text-faint">{tasksIn(detail, stage.id).length}</span>
+            {stage.name}{" "}
+            <span className="text-xs text-faint">{tasksIn(detail, stage.id).filter((t) => !grouping || t.level !== "epic").length}</span>
           </button>
         ))}
       </div>
@@ -216,7 +258,7 @@ function Kanban({ detail, hierarchy, onOpen, onNew, onMoveMenu }: KanbanProps) {
         className="flex-1 min-h-0 flex items-stretch gap-px overflow-x-auto snap-x snap-mandatory sm:snap-none sm:px-4 md:px-8 sm:py-4"
       >
         {detail.stages.map((stage) => (
-          <Column key={stage.id} detail={detail} stage={stage} hierarchy={hierarchy} onOpen={onOpen} onNew={onNew} onMoveMenu={onMoveMenu} />
+          <Column key={stage.id} detail={detail} stage={stage} hierarchy={hierarchy} grouping={grouping} onOpen={onOpen} onNew={onNew} onMoveMenu={onMoveMenu} />
         ))}
       </div>
     </>
@@ -240,7 +282,9 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   const [params, setParams] = useSearchParams();
   const view = VIEWS.includes(params.get("view") as View) ? (params.get("view") as View) : "kanban";
   const filters = readFilters(params);
+  const byEpic = params.get("group") === "epic";
   const me = useMe();
+  const phone = usePhone();
 
   if (boards.isPending || (summary && board.isPending)) {
     return <p className="p-8 text-muted animate-pulse">loading…</p>;
@@ -268,6 +312,22 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
     parentKey: (task) => (task.parentId ? (byId.get(task.parentId)?.key ?? null) : null),
     onScope: (key) => setFilters({ ...filters, under: key }),
   };
+  const setGroup = (on: boolean) =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (on) next.set("group", "epic");
+        else next.delete("group");
+        return next;
+      },
+      { replace: true },
+    );
+  /* On a phone the lanes are sections inside the swipeable columns; from sm up, LanesView. */
+  const phoneLanes = (() => {
+    if (!byEpic || !phone || view !== "kanban") return null;
+    const laneOf = laneIds(detail.tasks);
+    return { laneOf, lanes: buildLanes(detail.tasks, shown.tasks, detail.stages, laneOf) };
+  })();
 
   return (
     <div className="flex flex-col h-[calc(100dvh-2.75rem)]">
@@ -304,6 +364,16 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
               {v}
             </button>
           ))}
+          {view === "kanban" && (
+            <button
+              onClick={() => setGroup(!byEpic)}
+              aria-pressed={byEpic}
+              title={byEpic ? "One kanban, no lanes" : "A lane per epic"}
+              className={`tap flex-1 sm:flex-none sm:ml-2 px-2 py-0.5 transition-colors ${byEpic ? "text-accent bg-raised" : "text-muted hover:text-ink"}`}
+            >
+              by epic
+            </button>
+          )}
         </span>
         {detail.members.length > 1 && (
           <span className="hidden sm:flex items-center gap-1.5 text-muted text-sm" title={detail.members.map((m) => m.user.handle).join(", ")}>
@@ -337,8 +407,19 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
 
       <FilterBar detail={detail} filters={filters} result={result} onChange={setFilters} />
 
-      {view === "kanban" && (
-        <Kanban detail={shown} hierarchy={hierarchy} onOpen={setOpenTask} onNew={(stageId) => setNewTask({ stageId })} onMoveMenu={setMoving} />
+      {view === "kanban" && byEpic && !phone ? (
+        <LanesView detail={detail} shown={shown} hierarchy={hierarchy} onOpen={setOpenTask} onNew={(stageId) => setNewTask({ stageId })} />
+      ) : (
+        view === "kanban" && (
+          <Kanban
+            detail={shown}
+            hierarchy={hierarchy}
+            grouping={phoneLanes}
+            onOpen={setOpenTask}
+            onNew={(stageId) => setNewTask({ stageId })}
+            onMoveMenu={setMoving}
+          />
+        )
       )}
       {view === "list" && <ListView detail={shown} hierarchy={hierarchy} onOpen={setOpenTask} />}
       {view === "gantt" && <GanttView detail={shown} hierarchy={hierarchy} onOpen={setOpenTask} />}

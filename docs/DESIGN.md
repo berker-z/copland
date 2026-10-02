@@ -143,6 +143,18 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   search and a `filters n` toggle stay; the rest folds under them. A card's
   or list row's parent is a `↑ KEY` in `text-muted` (accent on hover) that
   scopes the board to that parent instead of opening the task.
+- `src/features/board/LanesView.tsx`: the kanban by epic (`?group=epic`,
+  a `by epic` chip after the view switch, styled like it). One sticky row
+  of stage headers (the column header style, on `bg-divider`) over lanes
+  split by the same 1px gaps. A lane header is a `bg-surface` strip that
+  stays at the left while the lanes scroll sideways: a chevron (folds the
+  lane, remembered per browser), the epic's key in `text-faint`, its title
+  in `text-bright` (`text-muted` struck through when closed; accent on
+  hover, opens it), its stage in the stage's tone, the card count in
+  `text-muted`, and `under` (scopes the board to the epic). Cells are
+  `bg-surface` drop targets; a cell that refuses a drop says why in a
+  `text-xs text-muted` line instead of a drop marker. Cards drop the
+  `↑ KEY` when the parent is the lane's epic.
 - `src/features/board/BoardDocsModal.tsx`: a board's notes and docs, behind
   the book icon in the board header, which everyone on the board sees (the
   gear is owners only, and editors write these). Notes read as plain
@@ -181,7 +193,10 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 - Short menus pass `fit` to `ModalFrame`: a bottom sheet on a phone instead
   of the full screen.
 - The board on a phone: kanban columns are an `85vw` scroll-snap strip with
-  stage chips above it; the view switch wraps onto its own row.
+  stage chips above it; the view switch wraps onto its own row. Grouped
+  by epic, each column lists its cards in lane sections under a
+  `text-xs` header (key `text-faint`, title `text-muted`; a tap opens the
+  epic); a lane with nothing in that stage has no section there.
 - An installed app (`public/manifest.webmanifest`, standalone) takes its
   title bar colour from `theme-color`, which follows the theme's `--bar`.
 
