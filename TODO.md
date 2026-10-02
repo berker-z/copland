@@ -29,7 +29,6 @@ docs/DESIGN.md under Touch.
       real Google calendar (the flow works locally and accounts connect).
 - [ ] Connect Claude over MCP (settings › assistants) and try
       "what's on my plate?" and "what's on my calendar this week?".
-- [ ] Verse pane with a new OpenAI key (nord-dash's is revoked).
 
 ### Small things noticed
 
@@ -72,7 +71,7 @@ docs/DESIGN.md under Touch.
 - Personal settings, encrypted vault for API keys, themes, the statusline
 - Every nord-dash pane: calendar and agenda (several Google accounts, ICS
   links), tasks, markets (coins and CoinGecko extras from settings), notepad
-  with autosave and live sync, verse, weather with city search
+  with autosave and live sync, weather with city search
 - Tracker: boards shared with roles, inbox per user, kanban with drag and
   drop, list and Gantt views, new-task form (start today, +1d/+3d/+1w),
   quick add, labels, comments, history, editable stages and board keys,

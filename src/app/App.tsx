@@ -19,7 +19,6 @@ import { NotepadPane } from "@/features/notepad/NotepadPane";
 import { SettingsModal, type SettingsPage } from "@/features/settings/SettingsModal";
 import { StatusLine } from "@/features/shell/StatusLine";
 import { TasksPane } from "@/features/tasks/TasksPane";
-import { VersePane } from "@/features/verse/VersePane";
 import { ApiError } from "@/lib/api";
 import { useLiveUpdates } from "@/lib/live";
 import { useMe } from "@/lib/queries";
@@ -57,7 +56,7 @@ export function App() {
         ) : (
           /* Below lg the three columns dissolve (`contents`) into one, and
              `order` puts what a phone is opened for first: today's agenda
-             and tasks, then the rest, markets and verse last. */
+             and tasks, then the rest, markets last. */
           <div className="flex flex-col lg:grid lg:grid-cols-3 items-stretch lg:items-start gap-px w-full max-w-[1500px] mx-auto px-0 py-0 sm:px-4 sm:py-4 md:px-8 md:py-6">
             <div className="contents lg:flex lg:flex-col lg:gap-px">
               <div className="order-4 lg:order-none">
@@ -81,9 +80,6 @@ export function App() {
             <div className="contents lg:flex lg:flex-col lg:gap-px">
               <div className="order-6 lg:order-none">
                 <MarketsPane onOpenSettings={setSettings} />
-              </div>
-              <div className="order-7 lg:order-none">
-                <VersePane onOpenSettings={() => setSettings("keys")} />
               </div>
             </div>
           </div>

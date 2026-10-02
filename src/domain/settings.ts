@@ -99,7 +99,6 @@ export function parseSetting<K extends SettingKey>(key: K, raw: unknown): Settin
 
 export const VAULT_NAMES = {
   coingecko: "CoinGecko demo API key: market caps and NFT floors in the markets pane",
-  openai: "OpenAI API key: the verse pane",
 } as const;
 
 export type VaultName = keyof typeof VAULT_NAMES;

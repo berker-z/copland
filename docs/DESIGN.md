@@ -57,7 +57,7 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   ground; columns are `flex flex-col gap-px`; every pane is `bg-surface` so
   the 1px gaps read as tmux splits. Below `lg` the columns are `contents`
   and the panes stack edge to edge in one column, ordered with `order-*`
-  for a phone: agenda, tasks, boards, calendar, notepad, markets, verse.
+  for a phone: agenda, tasks, boards, calendar, notepad, markets.
 - The statusline (`src/features/shell/StatusLine.tsx`) is fixed to the top,
   `h-11 bg-bar text-base`, `z-[55]` (above the login overlay z-50, below
   modals z-[60]); `main` gets `pt-11` to clear it. Left: the pole mark,
@@ -162,8 +162,6 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   flat rows below it (`border-b border-divider`, `hover:bg-raised`), name in
   `text-bright`, detail in `text-muted`, coordinates `text-faint` tabular on
   the right. Picking saves at once; there is no separate save button.
-- Verse: the passage is a quote block, `border-l-2 border-yellow` with the
-  reference in `text-yellow` uppercase above it.
 - Typography utilities in `src/styles/index.css` (`@utility`): `text-label`
   so far; the rest of nord-dash's set (`text-nav`, `text-section`, ...) comes
   over with the widgets that use them. Use these instead of inline weights.

@@ -97,7 +97,6 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PATCH /api/notes/:id": { skip: "not yet: editing a note" },
   "DELETE /api/notes/:id": { skip: "not yet: deleting a note" },
   "GET /api/markets/coingecko": { skip: "browser: the markets pane, spending the user's CoinGecko quota" },
-  "POST /api/verse": { skip: "browser: the verse pane, spending the user's OpenAI key" },
 
   /* The instance. */
   "GET /api/admin/users": { skip: "admin: the instance's users" },

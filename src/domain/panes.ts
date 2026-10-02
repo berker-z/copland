@@ -1,6 +1,6 @@
 /* ============================================================================
-   Shapes the dashboard panes' routes send and take: notes, the CoinGecko
-   extras for the markets pane, and the verse. Kept apart from types.ts,
+   Shapes the dashboard panes' routes send and take: notes and the CoinGecko
+   extras for the markets pane. Kept apart from types.ts,
    which is the boards and people side.
    ========================================================================== */
 
@@ -49,13 +49,3 @@ export interface MarketExtras {
   /** What failed, one short line each ("nfts/foo: 404"). The rest still shows. */
   errors: string[];
 }
-
-/* ----------------------------------------------------------------- verse --- */
-
-/** POST /api/verse { feeling } */
-export interface Verse {
-  reference: string;
-  text: string;
-}
-
-export const FEELING_MAX = 500;
