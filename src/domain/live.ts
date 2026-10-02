@@ -31,7 +31,9 @@ export type LiveTopic =
   /** My API tokens and connected apps (settings). */
   | "tokens"
   /** My agents: their settings, boards, grants and tokens. */
-  | "agents";
+  | "agents"
+  /** My inbox: assigned to me, mentioned me. */
+  | "inbox";
 
 export interface LiveEvent {
   topics: LiveTopic[];

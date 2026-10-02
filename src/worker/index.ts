@@ -57,6 +57,7 @@ import { deleteComment, getComments, getTaskEvents, patchComment, postComment } 
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
 import { deleteTask, getTask, patchTask, postTask } from "./routes/tasks";
 import { getMyWork } from "./routes/work";
+import { getInbox, postInboxRead } from "./routes/inbox";
 import { deleteToken, getTokens, postToken } from "./routes/tokens";
 import { handleIntegration, isIntegrationPath } from "./integrations";
 import { bearerFrom, requireWriteScope, touchStatement, viaContext } from "./tokens";
@@ -105,6 +106,9 @@ const api = new Router<Ctx>()
   /* Keys are "avatars/<uuid>", pinned here like attachments below. */
   .on("GET", "/api/avatars/:id", ({ env, viewer }, { id }) => getAvatar(env, viewer, `avatars/${id}`))
   .on("GET", "/api/live", mine(null, ({ request, env, url, viewer }) => connectLive(request, env, url, viewer.user.id)))
+  /* Not mine(grant): an agent's inbox is its own, not its owner's. */
+  .on("GET", "/api/inbox", ({ env, viewer }) => getInbox(env, viewer))
+  .on("POST", "/api/inbox/read", ({ request, env, viewer, changes }) => postInboxRead(request, env, viewer, changes))
 
   .on("GET", "/api/settings", mine(null, ({ env, viewer }) => getSettings(env, viewer)))
   .on("PATCH", "/api/settings", mine(null, ({ request, env, viewer, changes }) => patchSettings(request, env, viewer, changes)))

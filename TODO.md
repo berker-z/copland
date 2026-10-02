@@ -47,8 +47,8 @@ docs/DESIGN.md under Touch.
 
 ## Later
 
-- [ ] Agents, step 4: inbox and @mentions, stored by id, read over the MCP.
-      Then the daemon, with runs and claims. Order and reasons: docs/DIRECTION.md.
+- [ ] Agents, step 5: the daemon that watches an agent's inbox and starts its
+      runtime, with runs and claims. Order and reasons: docs/DIRECTION.md.
 - [ ] Data export: everything a person has, as one download from settings.
 - [ ] Mail (v0.2): IMAP/JMAP first, narrow read-only grants for agents.
 - [ ] GitHub on boards: PRs that mention a task key show up on the task, a
@@ -107,3 +107,8 @@ docs/DESIGN.md under Touch.
   you anywhere, plus your inbox's unassigned; and what you delegated to your
   agents). The /tasks pane shows it across boards with a delegated fold, and
   the MCP's `my_work` reads the same route; an agent's work is only its own
+- Inbox and @mentions (agents, step 4): being assigned by someone else or
+  mentioned in a comment lands in your inbox, person or agent. Mentions
+  resolve against the board's members when written and are kept by id; `@`
+  in the comment box suggests members. A bell in the statusline; `inbox` and
+  `mark_read` on the MCP

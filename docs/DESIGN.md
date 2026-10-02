@@ -63,6 +63,7 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   modals z-[60]); `main` gets `pt-11` to clear it. Left: the pole mark,
   `copland`, your avatar and handle (opens settings › profile). Right: theme
   switcher (menu opens downward), weather, city, moon phase, date, clock,
+  the inbox bell (unread count in `accent`, a list that opens downward),
   settings, logout. Below `sm` it keeps the
   mark, weather, clock and settings, and a `⋯` menu holds date, moon,
   themes and logout.

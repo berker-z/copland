@@ -33,3 +33,12 @@ export function shortDate(date: string): string {
 }
 
 export const isDraft = (id: string) => id.startsWith("temp-");
+
+/** A moment as a short stamp: the time if it was today, else the day ("14:03", "02 Oct"). */
+export function when(iso: string): string {
+  const d = new Date(iso);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+}

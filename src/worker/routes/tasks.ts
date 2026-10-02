@@ -3,7 +3,8 @@
    ----------------------------------------------------------------------------
    Editors and owners write; viewers only read. Every write goes into the
    board's event log in the same batch as the change, and tells the board's
-   members to refetch.
+   members to refetch. Someone newly put on a task by someone else also gets
+   it in their inbox (repo/inbox.ts).
 
    A PATCH carries only the fields that change, so the client can send one
    field at a time (a drag sends stageId and rank; a checkbox sends stageId).
@@ -33,6 +34,7 @@ import type { Env } from "../env";
 import { badRequest, forbidden, HttpError, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
 import { agentsAmong } from "../repo/agents";
+import { inboxAudience, inboxStatements, type NewInboxItem } from "../repo/inbox";
 import { boardAudience } from "../repo/boards";
 import { bottomRank, eventStatement, findTask, listStages } from "../repo/tasks";
 
@@ -214,6 +216,13 @@ export async function postTask(
   const rank = typeof body.rank === "number" && Number.isFinite(body.rank) ? body.rank : await bottomRank(db, stage.id);
   const id = crypto.randomUUID();
   const now = nowIso();
+  const assigned: NewInboxItem[] = assigneeIds.map((userId) => ({
+    userId,
+    kind: "assigned",
+    boardId: board.id,
+    taskId: id,
+    actorId: viewer.user.id,
+  }));
 
   await db.batch([
     /* The number comes from the board's counter and the counter moves in the
@@ -247,9 +256,11 @@ export async function postTask(
     ),
     ...labelIds.map((lid) => db.prepare(`INSERT INTO task_labels (task_id, label_id) VALUES (?1, ?2)`).bind(id, lid)),
     eventStatement(db, { boardId: board.id, taskId: id, actorId: viewer.user.id, kind: "task.created", after: { title } }),
+    ...inboxStatements(db, assigned),
   ]);
 
   changes.notify(await boardAudience(db, board.id), "board");
+  changes.notify(inboxAudience(assigned), "inbox");
   return json(await findTask(db, id), { status: 201 });
 }
 
@@ -307,6 +318,7 @@ export async function patchTask(
   const before: Record<string, unknown> = {};
   const after: Record<string, unknown> = {};
   const extra: D1PreparedStatement[] = [];
+  const assigned: NewInboxItem[] = [];
 
   const set = (column: string, field: keyof Task, value: unknown) => {
     if (task[field] === value) return;
@@ -358,6 +370,10 @@ export async function patchTask(
   if (body.assigneeIds !== undefined) {
     const assigneeIds = parseIdList(body.assigneeIds, "assigneeIds");
     await requireAssignable(db, viewer, board.id, assigneeIds, task.assigneeIds);
+    /* Only the newly added hear about it; staying on a task is not news. */
+    for (const userId of assigneeIds.filter((uid) => !task.assigneeIds.includes(uid))) {
+      assigned.push({ userId, kind: "assigned", boardId: board.id, taskId: id, actorId: viewer.user.id });
+    }
     before.assigneeIds = task.assigneeIds;
     after.assigneeIds = assigneeIds;
     extra.push(
@@ -397,9 +413,11 @@ export async function patchTask(
     db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?1`).bind(id, ...values),
     ...extra,
     eventStatement(db, { boardId: board.id, taskId: id, actorId: viewer.user.id, kind: "task.updated", before, after }),
+    ...inboxStatements(db, assigned),
   ]);
 
   changes.notify(await boardAudience(db, board.id), "board");
+  changes.notify(inboxAudience(assigned), "inbox");
   return json(await findTask(db, id));
 }
 

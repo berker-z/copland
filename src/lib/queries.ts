@@ -7,7 +7,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { MarketExtras, Note } from "@/domain/panes";
 import type { Settings, VaultEntry } from "@/domain/settings";
-import type { Agent, ApiToken, BoardDetail, BoardSummary, Invite, Me, MyWork, User } from "@/domain/types";
+import type { Agent, ApiToken, BoardDetail, BoardSummary, Inbox, Invite, Me, MyWork, User } from "@/domain/types";
 import { api } from "./api";
 import { isLive } from "./liveState";
 
@@ -26,6 +26,7 @@ export const KEYS = {
   notes: ["notes"],
   tokens: ["tokens"],
   agents: ["agents"],
+  inbox: ["inbox"],
   /* Keyed on what the Worker will read (the ids in settings, the saved key),
      so changing either refetches without a live topic of its own. */
   marketExtras: (ids: unknown[]) => ["markets", "coingecko", ...ids],
@@ -70,6 +71,9 @@ export const useAdminUsers = () =>
 
 export const useAdminInvites = () =>
   useQuery({ queryKey: KEYS.adminInvites, queryFn: () => api<Invite[]>("/admin/invites") });
+
+export const useInbox = () =>
+  useQuery({ queryKey: KEYS.inbox, queryFn: () => api<Inbox>("/inbox"), refetchInterval: fallbackPoll(60_000) });
 
 export const useTokens = () => useQuery({ queryKey: KEYS.tokens, queryFn: () => api<ApiToken[]>("/tokens") });
 

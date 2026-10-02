@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { Cloud, CloudRain, MoreHorizontal, Sun } from "lucide-react";
 import { getMoonPhase } from "@/domain/moon";
@@ -8,6 +8,8 @@ import type { User } from "@/domain/types";
 import { useSettings } from "@/lib/queries";
 import { useUpdateSettings } from "@/lib/settings";
 import { Avatar } from "@/ui/Avatar";
+import { useDismiss } from "@/ui/useDismiss";
+import { InboxMenu } from "./InboxMenu";
 import { LogoMark } from "@/ui/LogoMark";
 import { MoonPhaseIcon } from "@/ui/MoonPhaseIcon";
 import { useWeather } from "./weather";
@@ -89,23 +91,6 @@ function WeatherReadout({ place }: { place: NonNullable<Settings["location"]> })
       )}
     </span>
   );
-}
-
-/** Closes a dropdown on a click outside `ref` or on Escape. */
-function useDismiss(ref: RefObject<HTMLElement | null>, open: boolean, close: () => void) {
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) close();
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
-    document.addEventListener("mousedown", onClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [ref, open, close]);
 }
 
 function useTheme() {
@@ -263,6 +248,8 @@ export function StatusLine({ user, onOpenSettings, onOpenProfile, onLogout }: St
         )}
         {settings?.location && <Sep />}
         <Clock />
+        <Sep />
+        <InboxMenu />
         <Sep />
         <button onClick={onOpenSettings} className="text-muted hover:text-accent transition-colors pointer-coarse:py-2.5">
           settings

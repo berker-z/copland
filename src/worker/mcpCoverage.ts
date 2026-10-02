@@ -42,7 +42,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   /* Boards and tasks, the heart of it. load() in mcp.ts reads the board
      list and each board; loadTask() reads a task by key and its board. */
   "GET /api/boards": {
-    tools: ["guide", "whoami", "list_boards", "get_board", "list_tasks", "create_task", "my_work"],
+    tools: ["guide", "whoami", "list_boards", "get_board", "list_tasks", "create_task", "my_work", "create_label", "update_label", "delete_label"],
   },
   "GET /api/boards/:id": {
     tools: [
@@ -56,9 +56,14 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
       "comment_on_task",
       "delete_task",
       "my_work",
+      "create_label",
+      "update_label",
+      "delete_label",
     ],
   },
   "GET /api/tasks/mine": { tools: ["my_work"] },
+  "GET /api/inbox": { tools: ["inbox"] },
+  "POST /api/inbox/read": { tools: ["mark_read"] },
   "GET /api/tasks/:id": { tools: ["get_task", "update_task", "move_task", "comment_on_task", "delete_task"] },
   "POST /api/boards/:id/tasks": { tools: ["create_task"] },
   /* create_task sets dependencies with a second write: creation takes none. */
@@ -80,9 +85,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PUT /api/boards/:id/stages/order": { skip: "admin: reordering stages" },
   "PATCH /api/stages/:id": { skip: "admin: editing stages" },
   "DELETE /api/stages/:id": { skip: "admin: deleting stages" },
-  "POST /api/boards/:id/labels": { skip: "not yet: creating a label" },
-  "PATCH /api/labels/:id": { skip: "admin: renaming and recolouring labels" },
-  "DELETE /api/labels/:id": { skip: "admin: deleting labels" },
+  "POST /api/boards/:id/labels": { tools: ["create_label"] },
+  "PATCH /api/labels/:id": { tools: ["update_label"] },
+  "DELETE /api/labels/:id": { tools: ["delete_label"] },
 
   /* The dashboard's personal panes. */
   "GET /api/settings": { skip: "browser: dashboard preferences (theme, coins, weather place)" },

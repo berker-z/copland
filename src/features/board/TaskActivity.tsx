@@ -11,14 +11,8 @@ import { Avatar } from "@/ui/Avatar";
 import type { BoardDetail, TaskEvent } from "@/domain/types";
 import { useCommentEdits, useComments, useTaskEvents } from "@/lib/boardEdits";
 import { useMe } from "@/lib/queries";
-
-function when(iso: string): string {
-  const d = new Date(iso);
-  const sameDay = d.toDateString() === new Date().toDateString();
-  return sameDay
-    ? d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
-    : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-}
+import { when } from "@/ui/tone";
+import { CommentText, MentionTextarea } from "./Mentions";
 
 const FIELD_NAMES: Record<string, string> = {
   title: "title",
@@ -125,10 +119,11 @@ export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: 
                     if (editing.text.trim()) edits.edit.mutate(editing, { onSuccess: () => setEditing(null) });
                   }}
                 >
-                  <textarea
+                  <MentionTextarea
                     autoFocus
+                    members={detail.members}
                     value={editing.text}
-                    onChange={(e) => setEditing({ id: c.id, text: e.target.value })}
+                    onValue={(text) => setEditing({ id: c.id, text })}
                     onKeyDown={(e) => {
                       if (e.key === "Escape") setEditing(null);
                       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) e.currentTarget.form?.requestSubmit();
@@ -137,15 +132,16 @@ export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: 
                   />
                 </form>
               ) : (
-                <p className="text-ink whitespace-pre-wrap break-words mt-0.5">{c.text}</p>
+                <CommentText comment={c} />
               )}
             </div>
           ))}
-          <textarea
+          <MentionTextarea
+            members={detail.members}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onValue={setDraft}
             onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && (e.preventDefault(), post())}
-            placeholder="write a comment (ctrl+enter to post)"
+            placeholder="write a comment, @ to mention (ctrl+enter to post)"
             className="w-full min-h-16 bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent [field-sizing:content]"
           />
           <div className="flex justify-end mt-1.5">

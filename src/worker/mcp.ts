@@ -30,6 +30,7 @@ import {
   type Comment,
   type Label,
   type Level,
+  type Inbox,
   type Me,
   type MyWork,
   type Priority,
@@ -468,7 +469,11 @@ function boardOverview(detail: BoardDetail) {
       tasks: detail.tasks.filter((t) => t.stageId === s.id).length,
     })),
     labels: detail.labels.map((l) => l.name),
-    members: detail.members.map((m) => ({ handle: `@${m.user.handle}`, email: m.user.email, role: m.role })),
+    members: detail.members.map((m) => ({
+      handle: `@${m.user.handle}`,
+      ...(m.user.email ? { email: m.user.email } : { agent: true }),
+      role: m.role,
+    })),
   };
 }
 
@@ -512,7 +517,8 @@ ${who} Today is ${today()} (UTC).${
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
 - **Planning.** Boards with planning switched on add: level (epic > story > task, plus milestone), parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). Other boards refuse these fields.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
-- **Labels** belong to a board and are given by name. Priority is low, normal, high or urgent.`);
+- **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, and being @mentioned in a comment, land there. Read it with inbox, then mark_read what you have dealt with. A mention is how to hand something to someone: "@sam can you check this".
+- **Labels** (tags like #frontend) belong to a board and are given by name; create_label adds one, update_label renames or recolours it. Priority is low, normal, high or urgent.`);
 
   out.push(`## Your boards`);
   for (const d of details) {
@@ -546,7 +552,9 @@ ${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_
 - "What's Sam doing on the launch board?" → list_tasks { board: "launch", assignee: "sam" }
 - "Move LNCH-4 to done" → move_task { task: "LNCH-4", stage: "done" }
 - "Give LNCH-4 to me, urgent, labelled bug" → update_task { task: "LNCH-4", assignees: ["me"], priority: "urgent", labels: ["bug"] }
-- "Tell the others the brief changed" → comment_on_task { task, text }`);
+- "Tell the others the brief changed" → comment_on_task { task, text }
+- "Ask the reviewer to look at LNCH-4" → comment_on_task { task: "LNCH-4", text: "@berker-z/reviewer can you look at this?" }
+- "Anything for me?" → inbox`);
   return out.join("\n\n");
 }
 
@@ -567,6 +575,12 @@ const BOARD = { type: "string", description: "Board name or key; \"inbox\" is yo
 const PEOPLE = { type: "array", items: S, description: "Board members by handle, email, or \"me\"" } as const;
 const PRIORITY = { type: "string", enum: [...PRIORITIES] } as const;
 const STAGE = { type: ["string", "integer"], description: "Stage name, position number (0 is the first), or category (backlog, active, done, cancelled)" } as const;
+
+/* Label colours by the app's hue names, in tone order (src/ui/tone.ts). */
+const COLORS = ["blue", "yellow", "magenta", "green", "red", "orange", "cyan", "teal"] as const;
+const COLOR = { type: "string", enum: [...COLORS], description: "One of the app's hues" } as const;
+const toneOf = (color: unknown) => COLORS.indexOf(color as (typeof COLORS)[number]);
+const labelList = (d: BoardDetail) => ({ board: d.board.key, labels: d.labels.map((l) => ({ name: l.name, color: COLORS[l.tone] ?? "blue" })) });
 
 const TOOLS: Tool[] = [
   {
@@ -905,7 +919,7 @@ const TOOLS: Tool[] = [
     name: "comment_on_task",
     title: "Comment on a task",
     description:
-      "Write in a task's comment thread, as the connected user. Markdown. Anyone on the board may comment, viewers included. Returns the thread's length.",
+      "Write in a task's comment thread, as the connected principal. Markdown. Anyone on the board may comment, viewers included. @handle (or @owner/agent) mentions a member of the task's board and puts the comment in their inbox; a name that is not on the board mentions nobody. Returns the thread's length and who was mentioned.",
     inputSchema: {
       type: "object",
       properties: { task: TASK, text: { type: "string", description: "Markdown" } },
@@ -916,7 +930,9 @@ const TOOLS: Tool[] = [
     async run(args, ctx) {
       const { task } = await loadTask(ctx, args.task);
       const thread = await ctx.call<Comment[]>("POST", `/api/tasks/${task.id}/comments`, { text: args.text });
-      return `Commented on ${task.key} (${thread.length} comment${thread.length === 1 ? "" : "s"} now).`;
+      const mine = thread[thread.length - 1];
+      const named = mine?.mentions.length ? `; mentioned ${mine.mentions.map((m) => `@${m.handle}`).join(", ")}` : "";
+      return `Commented on ${task.key} (${thread.length} comment${thread.length === 1 ? "" : "s"} now${named}).`;
     },
   },
   {
@@ -965,6 +981,124 @@ const TOOLS: Tool[] = [
         no_date: group((due) => due === null),
         ...(agent ? {} : { delegated: openOf(work.delegated).map(({ d, t }) => summarize(d, t, ctx.origin)) }),
       };
+    },
+  },
+  {
+    name: "create_label",
+    title: "Create a label",
+    description:
+      "Add a label (a tag like #frontend) to a board, so tasks there can carry it. Names are up to 24 characters and unique on the board, case-insensitive. color is one of the app's hues; without it one is picked at random. Needs the editor role. Returns the board's labels.",
+    inputSchema: {
+      type: "object",
+      properties: { board: BOARD, name: S, color: COLOR },
+      required: ["board", "name"],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const [detail] = await load(ctx, args.board);
+      await ctx.call("POST", `/api/boards/${detail.board.id}/labels`, {
+        name: args.name,
+        ...(args.color !== undefined ? { tone: toneOf(args.color) } : {}),
+      });
+      const [after] = await load(ctx, detail.board.id);
+      return labelList(after);
+    },
+  },
+  {
+    name: "update_label",
+    title: "Rename or recolour a label",
+    description:
+      "Change a board label's name or color. Tasks keep it either way. Needs the editor role. Returns the board's labels.",
+    inputSchema: {
+      type: "object",
+      properties: { board: BOARD, label: { type: "string", description: "The label's current name" }, name: S, color: COLOR },
+      required: ["board", "label"],
+      additionalProperties: false,
+    },
+    annotations: { idempotentHint: true },
+    async run(args, ctx) {
+      const [detail] = await load(ctx, args.board);
+      const [id] = resolveLabels(detail.labels, [args.label]);
+      if (args.name === undefined && args.color === undefined) throw new Error("Give a new name, a color, or both.");
+      await ctx.call("PATCH", `/api/labels/${id}`, {
+        ...(args.name !== undefined ? { name: args.name } : {}),
+        ...(args.color !== undefined ? { tone: toneOf(args.color) } : {}),
+      });
+      const [after] = await load(ctx, detail.board.id);
+      return labelList(after);
+    },
+  },
+  {
+    name: "delete_label",
+    title: "Delete a label",
+    description:
+      "Remove a label from a board; every task loses it. Cannot be undone. Needs the editor role. Ask before deleting a label the user did not name. Returns the board's labels.",
+    inputSchema: {
+      type: "object",
+      properties: { board: BOARD, label: { type: "string", description: "The label's name" } },
+      required: ["board", "label"],
+      additionalProperties: false,
+    },
+    annotations: { destructiveHint: true },
+    async run(args, ctx) {
+      const [detail] = await load(ctx, args.board);
+      const [id] = resolveLabels(detail.labels, [args.label]);
+      await ctx.call("DELETE", `/api/labels/${id}`);
+      const [after] = await load(ctx, detail.board.id);
+      return labelList(after);
+    },
+  },
+  {
+    name: "inbox",
+    title: "Your inbox",
+    description:
+      "What needs the connected principal's attention: tasks someone else assigned to them, and comments that @mentioned them, newest first (the latest 50). Each item has its id (for mark_read), kind (assigned or mentioned), the task's key, title and board, who did it and through what client, the comment's text for a mention, when, and whether it was read. An agent's inbox is its own, not its owner's. unread defaults to true: only what has not been marked read.",
+    inputSchema: {
+      type: "object",
+      properties: { unread: { type: "boolean", description: "Only unread items (default true)" } },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
+    async run(args, ctx) {
+      const inbox = await ctx.call<Inbox>("GET", "/api/inbox");
+      const unreadOnly = args.unread !== false;
+      return {
+        unread: inbox.unread,
+        items: inbox.items
+          .filter((i) => !unreadOnly || i.readAt === null)
+          .map((i) => ({
+            id: i.id,
+            kind: i.kind,
+            task: i.task.key,
+            title: i.task.title,
+            board: i.task.boardName,
+            by: `@${i.actor.handle}${i.via ? ` via ${i.via}` : ""}`,
+            ...(i.comment !== null ? { comment: i.comment } : {}),
+            at: i.createdAt,
+            read: i.readAt !== null,
+          })),
+      };
+    },
+  },
+  {
+    name: "mark_read",
+    title: "Mark inbox items read",
+    description:
+      "Mark inbox items as dealt with: the ids given (from inbox), or everything with all: true. One of the two is required. Read items stay in the inbox, marked read. Needs a read and write connection. Returns how many are still unread.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ids: { type: "array", items: S, description: "Inbox item ids" },
+        all: { type: "boolean", description: "Mark everything read" },
+      },
+      additionalProperties: false,
+    },
+    annotations: { idempotentHint: true },
+    async run(args, ctx) {
+      if (args.all === true && args.ids !== undefined) throw new Error("Give ids or all: true, not both.");
+      if (args.all !== true && args.ids === undefined) throw new Error("Give the ids to mark read, or all: true.");
+      const inbox = await ctx.call<Inbox>("POST", "/api/inbox/read", args.all === true ? {} : { ids: list(args.ids) });
+      return { unread: inbox.unread };
     },
   },
   {
