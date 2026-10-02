@@ -77,28 +77,22 @@ function WeatherIcon({ code }: { code: number }) {
   return <CloudRain className="text-blue" size={16} />;
 }
 
-/** The temperature where you set, and the place's name from sm up. Nothing without a place. */
+/** The temperature where you set; the place's name only on hover. Nothing without a place. */
 export function WeatherItem() {
   const { data: settings } = useSettings();
   const place = settings?.location ?? null;
   const { data: weather, isError } = useWeather(place);
   if (!place) return null;
   return (
-    <>
-      <span className="flex items-center gap-1.5 text-ink" title={isError ? "Weather unavailable" : place.name}>
-        {weather ? (
-          <>
-            <WeatherIcon code={weather.weatherCode} />
-            {weather.temperature}°C
-          </>
-        ) : (
-          <span className={isError ? "text-faint" : "text-muted animate-pulse"}>--°C</span>
-        )}
-      </span>
-      <span className="hidden sm:inline-flex items-center gap-2.5">
-        <Sep />
-        <span className="text-muted uppercase">{place.name}</span>
-      </span>
-    </>
+    <span className="flex items-center gap-1.5 text-ink" title={isError ? "Weather unavailable" : place.name}>
+      {weather ? (
+        <>
+          <WeatherIcon code={weather.weatherCode} />
+          {weather.temperature}°C
+        </>
+      ) : (
+        <span className={isError ? "text-faint" : "text-muted animate-pulse"}>--°C</span>
+      )}
+    </span>
   );
 }
