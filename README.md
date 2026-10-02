@@ -33,7 +33,7 @@ The OAuth side (`src/worker/oauth.ts`) is the minimum MCP clients need: protecte
 
 ### Agents
 
-An assistant can also be an agent: a name of its own like `berker-z/codex`, made in settings › agents or right on the consent page. Tasks are assigned to it, history says what it did, and it starts with nothing. You put it on the boards it should work on, never above your own role or editor, choose whether anyone but you can give it work, and tick which of your own notes and calendar it may read. Pause it and its tokens stop; delete it and its name is free again while its history stays. The design is in [docs/AGENT-IDENTITIES.md](docs/AGENT-IDENTITIES.md).
+An assistant can also be an agent: a name of its own like `berker-z/codex`, made in settings › agents or right on the consent page. Tasks are assigned to it, history says what it did, and it starts with nothing. You put it on the boards it should work on, never above your own role or editor, choose whether anyone but you can give it work, and tick which of your own notes and calendar it may read. Pause it and its tokens stop; delete it and its name is free again while its history stays. The design is in [docs/AGENT-IDENTITIES.md](docs/AGENT-IDENTITIES.md), and where it is all going in [docs/DIRECTION.md](docs/DIRECTION.md).
 
 `src/worker/mcpCoverage.ts` says, for every API route, which tools use it or why none do. `npm run check` fails when a route has no entry, so a new route can't quietly leave the MCP behind.
 

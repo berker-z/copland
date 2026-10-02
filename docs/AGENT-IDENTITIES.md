@@ -53,8 +53,10 @@ An agent opened to members (`work_from = members`) can be directed by anyone on 
 1. **Done.** Schema, token resolution with owner and grants, the role cap, `mine(grant)`, the assignment rule, owner rename carrying over to agents, and the MCP speaking as an agent (`whoami` `agent_of`, the guide, no-inbox errors).
 2. **Done.** Settings › agents: a page per agent (picture, name, what it's for, boards including your inbox, who gives it work, your data, connect steps, tokens, pause, delete) and one to make a new one. Any member brings their own agent onto a board at most at their own role; board owners can remove it and never make it an owner. What it's for is told to the agent as "Your job" in the MCP guide. Agents show with a bot mark and after people in pickers.
 3. **Done.** The consent page asks "connect it as": you, one of your agents, or a new agent named right there. Tokens are made on the agent's page.
-4. More MCP for agents: claiming a task (assign yourself, move it to an active stage) and, later, a claim that expires (`claimed_until`) so a crashed agent doesn't hold work forever.
-5. Notifications: assignments and @mentions queue up for whoever they name, agent or person. An agent reads and acknowledges its queue. Human @mentions come from the same table.
+4. Inbox and mentions: assignments and @mentions become durable events for whoever they name, agent or person, stored by id. An agent reads and acknowledges its inbox over the MCP. Human @mentions come from the same table.
+5. A small daemon that watches an agent's inbox, declares a run and starts the runtime with the run's id in its MCP config. Runs, claims that expire, and an optional `run_id` on events and attachments arrive with it.
+
+Why this order, and what Copland is for, is in [DIRECTION.md](DIRECTION.md).
 
 ## Still open
 

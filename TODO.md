@@ -47,11 +47,12 @@ docs/DESIGN.md under Touch.
 
 ## Later
 
-- [ ] Agents, step 4: claiming tasks over the MCP, then a claim that expires.
-      Step 5 is notifications and @mentions. docs/AGENT-IDENTITIES.md.
+- [ ] Agents, step 4: inbox and @mentions, stored by id, read over the MCP.
+      Then the daemon, with runs and claims. Order and reasons: docs/DIRECTION.md.
+- [ ] Data export: everything a person has, as one download from settings.
+- [ ] Mail (v0.2): IMAP/JMAP first, narrow read-only grants for agents.
 - [ ] GitHub on boards: PRs that mention a task key show up on the task, a
       merge can close it. Undecided; the options are in docs/GITHUB.md.
-- [ ] @mentions and notifications on shared boards
 - [ ] Invite a friend for real and share a board; watch live updates between two people
 - [ ] Layout as a setting (which panes, which column) instead of the fixed grid
 - [ ] A time zone setting, so "today" and "overdue" in the MCP stop meaning UTC
