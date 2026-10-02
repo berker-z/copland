@@ -122,10 +122,14 @@ impl BoxView {
         &self.focus
     }
 
-    /// The whole window at `cell` pixels per logo pixel.
-    pub fn window_size(scene: &Scene, cell: f32) -> (f32, f32) {
-        let (w, h) = scene.size(cell);
-        (w + 2.0 * SIDE + 2.0, TITLE_H + 2.0 + h + 4.0 + STATUS_H + 2.0)
+    /// The whole window at `cell` pixels per logo pixel, everything else `zoom` times its
+    /// natural size. The 1px border stays 1px.
+    pub fn window_size(scene: &Scene, cell: f32, zoom: f32) -> (f32, f32) {
+        let (w, h) = scene.size(cell, zoom);
+        (
+            w + 2.0 * SIDE * zoom + 2.0,
+            (TITLE_H + 2.0 + 4.0 + STATUS_H) * zoom + h + 2.0,
+        )
     }
 
     fn board(&self, now: f64) -> Option<Board> {
@@ -197,7 +201,7 @@ impl BoxView {
 
     /// Setup's step under the poles: its lines on the left, the text field with its cursor,
     /// and a code to approve drawn large on the right.
-    fn panel(&self, p: &Panel, top: f32, width: f32) -> gpui::Div {
+    fn panel(&self, p: &Panel, top: f32, width: f32, z: f32) -> gpui::Div {
         let th = self.theme;
         let lines = p.lines.iter().enumerate().map(|(i, l)| match &p.input {
             Some((at, before, after)) if *at == i => div()
@@ -206,7 +210,7 @@ impl BoxView {
                 .items_center()
                 .child(div().text_color(color(th.blue, 1.0)).child("› "))
                 .child(div().text_color(color(th.ink, 1.0)).child(before.clone()))
-                .child(div().w(px(1.5)).h(px(13.)).bg(color(th.ink, 0.9)))
+                .child(div().w(px(1.5 * z)).h(px(13. * z)).bg(color(th.ink, 0.9)))
                 .child(div().text_color(color(th.ink, 1.0)).child(after.clone())),
             _ => self.row(l),
         });
@@ -224,23 +228,43 @@ impl BoxView {
                     .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .gap(px(1.))
+                    .gap(px(z))
                     .children(lines),
             );
         if let Some(code) = &p.code {
             d = d.child(
                 div()
                     .flex_none()
-                    .pl(px(16.))
-                    .pt(px(10.))
-                    .text_size(px(26.))
-                    .line_height(px(30.))
+                    .pl(px(16. * z))
+                    .pt(px(10. * z))
+                    .text_size(px(26. * z))
+                    .line_height(px(30. * z))
                     .text_color(color(th.yellow, 1.0))
                     .child(code.clone()),
             );
         }
         d
     }
+}
+
+/// The most a window much larger than the box blows it up.
+const MAX_ZOOM: u32 = 16;
+
+/// The box in a window of `viewport` (logical px) at `sf` device px per logical px: the
+/// largest whole multiple of its natural size that fits (1 when none does), as `(cell, zoom)`,
+/// the cell rounded to whole device pixels so every cell is the same size.
+pub fn fit(scene: &Scene, viewport: (f32, f32), sf: f32) -> (f32, f32) {
+    let base = scene.tune.scale as f32;
+    let zoom = (1..=MAX_ZOOM)
+        .rev()
+        .map(|k| k as f32)
+        .find(|&k| {
+            let (w, h) = BoxView::window_size(scene, base * k, k);
+            /* Half a pixel of slack for a compositor that rounds the size it gives. */
+            w <= viewport.0 + 0.5 && h <= viewport.1 + 0.5
+        })
+        .unwrap_or(1.0);
+    ((base * zoom * sf).round().max(1.0) / sf, zoom)
 }
 
 /// One character of the lists (11px JetBrains Mono is about 6.6px), rounded up.
@@ -254,13 +278,14 @@ const TODO_HALF: f32 = 28.0;
 /// web widget's rule (`budgets` in WiredPane.tsx; S is the span, a pole's centre is 5 in):
 /// todo centred on its pole, doing from its pole's right edge back to clear of todo, blocked
 /// centred between doing's right edge and done's left edge, done from its pole's left edge
-/// to the window's margin.
-pub fn budgets(l: &Layout, spacing: f32, cell: f32) -> [f32; 4] {
+/// to the window's margin. The px constants are `zoom` times theirs, as the text is.
+pub fn budgets(l: &Layout, spacing: f32, cell: f32, zoom: f32) -> [f32; 4] {
+    let (half, gap) = (TODO_HALF * zoom, GAP * zoom);
     [
-        2.0 * TODO_HALF.min((l.x[0] + 5.0) * cell + SIDE - 2.0),
-        (spacing + 5.0) * cell - TODO_HALF - GAP,
-        (spacing - 10.0) * cell - 2.0 * GAP,
-        (l.bw as f32 - l.x[3]) * cell + DONE_TAIL - 2.0,
+        2.0 * half.min((l.x[0] + 5.0) * cell + (SIDE - 2.0) * zoom),
+        (spacing + 5.0) * cell - half - gap,
+        (spacing - 10.0) * cell - 2.0 * gap,
+        (l.bw as f32 - l.x[3]) * cell + (DONE_TAIL - 2.0) * zoom,
     ]
 }
 
@@ -472,10 +497,13 @@ impl Render for BoxView {
         }
 
         let th = self.theme;
-        /* Whole device pixels per logo pixel, so every cell is the same size on any output scale. */
+        /* The largest whole multiple of the natural size the window has room for, in whole device
+        pixels per logo pixel, so every cell is the same size on any output scale. A window the
+        compositor made larger than the box gets it bigger and centred, not in a corner. */
         let sf = window.scale_factor();
-        let cell = (self.scene.tune.scale as f32 * sf).round().max(1.0) / sf;
-        let (scene_w, scene_h) = self.scene.size(cell);
+        let vp = window.viewport_size();
+        let (cell, z) = fit(&self.scene, (vp.width.into(), vp.height.into()), sf);
+        let (scene_w, scene_h) = self.scene.size(cell, z);
         let raster = self.scene.draw(th);
         let runs = raster.runs(th.surface);
         let (bw, bh) = (raster.w as f32 * cell, raster.h as f32 * cell);
@@ -500,9 +528,11 @@ impl Render for BoxView {
         .h(px(bh));
 
         let x = self.scene.layout.x;
-        let list_top = Scene::list_top(cell);
-        let room = budgets(&self.scene.layout, self.scene.tune.spacing, cell);
-        let cols = self.scene.columns(room.map(|w| (w / CH).floor().max(1.0) as usize));
+        let list_top = Scene::list_top(cell, z);
+        let room = budgets(&self.scene.layout, self.scene.tune.spacing, cell, z);
+        let cols = self
+            .scene
+            .columns(room.map(|w| (w / (CH * z)).floor().max(1.0) as usize));
         /* Where each list hangs: todo centred under its pole, doing flush right with its pole,
         blocked centred under its own, done flush left with its pole; as the web widget. */
         let list = |i: usize| {
@@ -522,7 +552,7 @@ impl Render for BoxView {
                 .overflow_hidden()
                 .flex()
                 .flex_col()
-                .gap(px(1.));
+                .gap(px(z));
             let d = match align {
                 0 => d.items_center(),
                 1 => d.items_end(),
@@ -530,7 +560,7 @@ impl Render for BoxView {
             };
             d.child(
                 div()
-                    .mb(px(2.))
+                    .mb(px(2. * z))
                     .text_color(color(c.head_role.of(th), 1.0))
                     .child(c.head),
             )
@@ -539,14 +569,15 @@ impl Render for BoxView {
 
         let title = div()
             .id("title")
-            .h(px(TITLE_H))
+            .flex_none()
+            .h(px(TITLE_H * z))
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(8.))
-            .px(px(10.))
-            .pt(px(4.))
-            .text_size(px(12.))
+            .gap(px(8. * z))
+            .px(px(10. * z))
+            .pt(px(4. * z))
+            .text_size(px(12. * z))
             .child(div().text_color(color(th.faint, 1.0)).child("—"))
             .child(div().text_color(color(th.blue, 1.0)).child("wired"))
             .child(div().flex_1().h(px(1.)).bg(color(th.faint, 0.55)))
@@ -573,13 +604,13 @@ impl Render for BoxView {
             None => self.scene.status(),
         };
         let mut bar = div()
-            .h(px(STATUS_H))
-            .mt(px(4.))
+            .flex_none()
+            .h(px(STATUS_H * z))
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(10.))
-            .px(px(10.))
+            .gap(px(10. * z))
+            .px(px(10. * z))
             .bg(color(th.bar, 1.0))
             .text_color(color(th.muted, 1.0))
             .whitespace_nowrap()
@@ -617,22 +648,33 @@ impl Render for BoxView {
             .border_1()
             .border_color(color(th.faint, 0.7))
             .font_family(self.font.clone())
-            .text_size(px(11.))
-            .line_height(px(11.0 * 1.35))
+            .text_size(px(11. * z))
+            .line_height(px(11. * 1.35 * z))
             .child(title)
             .child(
+                /* Whatever the window has beyond the box's size, around the scene: it is centred. */
                 div()
-                    .relative()
-                    .mt(px(2.))
-                    .mx(px(SIDE))
-                    .w(px(scene_w))
-                    .h(px(scene_h))
-                    .whitespace_nowrap()
-                    .child(pixels)
-                    .children(match &panel {
-                        Some((_, p)) => vec![self.panel(p, list_top, scene_w).into_any_element()],
-                        None => (0..4).map(|i| list(i).into_any_element()).collect(),
-                    }),
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .relative()
+                            .flex_none()
+                            .mt(px(2. * z))
+                            .mb(px(4. * z))
+                            .mx(px(SIDE * z))
+                            .w(px(scene_w))
+                            .h(px(scene_h))
+                            .whitespace_nowrap()
+                            .child(pixels)
+                            .children(match &panel {
+                                Some((_, p)) => vec![self.panel(p, list_top, scene_w, z).into_any_element()],
+                                None => (0..4).map(|i| list(i).into_any_element()).collect(),
+                            }),
+                    ),
             )
             .child(bar)
     }
@@ -655,6 +697,20 @@ mod tests {
         );
         assert!(parse_utc("yesterday").is_none());
         assert!(parse_utc("2026-13-02T00:00:00Z").is_none());
+    }
+
+    #[test]
+    fn grows_by_whole_multiples_to_fill_a_larger_window() {
+        let s = Scene::live(crate::scene::Tune::default());
+        assert_eq!(BoxView::window_size(&s, 3.0, 1.0), (548.0, 196.0));
+        assert_eq!(BoxView::window_size(&s, 6.0, 2.0), (1094.0, 390.0));
+        assert_eq!(fit(&s, (548.0, 196.0), 1.0), (3.0, 1.0));
+        assert_eq!(fit(&s, (548.0, 196.0), 2.0), (3.0, 1.0));
+        /* Hyprland tiling it into half a 1440p screen. */
+        assert_eq!(fit(&s, (1402.0, 1396.0), 1.0), (6.0, 2.0));
+        assert_eq!(fit(&s, (1700.0, 1000.0), 1.0), (9.0, 3.0));
+        /* Smaller than the box: the natural size, cut off, rather than nothing. */
+        assert_eq!(fit(&s, (300.0, 100.0), 1.0), (3.0, 1.0));
     }
 
     #[test]

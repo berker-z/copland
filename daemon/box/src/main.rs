@@ -4,6 +4,7 @@
 //! instead, with no config and no server.
 
 mod feed;
+mod hyprland;
 mod runtime;
 mod scene;
 mod setup;
@@ -34,7 +35,7 @@ use crate::view::{BoxView, Source};
 use crate::wizard::Wizard;
 
 /// The Wayland app id and X11 WM class, for compositor rules.
-const APP_ID: &str = "copland-box";
+pub const APP_ID: &str = "copland-box";
 
 /// The first of these the system has; else fontconfig's monospace, else a common one.
 const PREFERRED_FONTS: [&str; 3] = [
@@ -67,6 +68,10 @@ struct Args {
     /// A Copland theme, over the config's `theme` (nord, tokyo-night, dracula, catppuccin, gruvbox, one-dark, solarized).
     #[arg(long, value_name = "NAME")]
     theme: Option<String>,
+    /// Print a Hyprland window rule for the box (floating, pinned, in a corner) and exit.
+    /// It floats by itself; the rule is for pinning it and choosing where it goes.
+    #[arg(long, conflicts_with_all = ["demo", "setup"])]
+    hyprland_rule: bool,
 }
 
 /// The config file as a plain table, read leniently, so a config the daemon refuses still sets the box's looks.
@@ -233,6 +238,11 @@ fn main() -> Result<()> {
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
     let args = Args::parse();
+    if args.hyprland_rule {
+        let (w, h) = BoxView::window_size(&Scene::live(Tune::default()), Tune::default().scale as f32, 1.0);
+        print!("{}", hyprland::rule(w, h));
+        return Ok(());
+    }
     let path = args.config.clone().unwrap_or_else(default_config_path);
     let theme = pick_theme(&args, &path)?;
     let tune = Tune::default();
@@ -277,7 +287,7 @@ fn main() -> Result<()> {
     };
     let mut scene = scene;
     scene.motion = motion;
-    let (w, h) = BoxView::window_size(&scene, tune.scale as f32);
+    let (w, h) = BoxView::window_size(&scene, tune.scale as f32, 1.0);
     let mut scene = Some(scene);
     let mut source = Some(source);
     Application::new().run(move |cx| {
@@ -289,6 +299,9 @@ fn main() -> Result<()> {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: None,
                 kind: WindowKind::Normal,
+                /* Fixed size: min = max is what makes a tiling compositor float a window. GPUI
+                0.2.2 sends only the min size on Wayland (is_resizable does nothing on Linux),
+                so on Hyprland the box floats itself over IPC below. */
                 is_resizable: false,
                 is_minimizable: false,
                 app_id: Some(APP_ID.into()),
@@ -315,6 +328,7 @@ fn main() -> Result<()> {
             cx.quit();
             return;
         }
+        hyprland::float_when_mapped(w, h);
         cx.on_window_closed(|cx| cx.quit()).detach();
     });
     if let Some(r) = running.lock().expect("one writer").take() {
@@ -350,6 +364,7 @@ mod tests {
             setup: false,
             url: None,
             theme: None,
+            hyprland_rule: false,
         };
         assert_eq!(pick_theme(&args, &file).unwrap().name, "dracula");
         std::fs::remove_dir_all(&dir).unwrap();
@@ -363,6 +378,7 @@ mod tests {
             setup: false,
             url: None,
             theme: Some("nope".into()),
+            hyprland_rule: false,
         };
         assert!(pick_theme(&args, Path::new("/nonexistent")).is_err());
     }

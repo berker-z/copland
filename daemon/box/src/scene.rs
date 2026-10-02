@@ -1474,17 +1474,18 @@ impl Scene {
     }
 
     /// Where the lists start, in screen pixels from the scene's top: under the poles.
-    pub fn list_top(cell: f32) -> f32 {
-        (TOP + POLE_H) as f32 * cell + 2.0
+    /// `zoom` scales the screen-pixel parts (text, gaps) with the window: 1 at the natural size.
+    pub fn list_top(cell: f32, zoom: f32) -> f32 {
+        (TOP + POLE_H) as f32 * cell + 2.0 * zoom
     }
 
     /// The box's scene area in screen pixels at `cell` pixels per logo pixel.
-    pub fn size(&self, cell: f32) -> (f32, f32) {
+    pub fn size(&self, cell: f32, zoom: f32) -> (f32, f32) {
         let l = &self.layout;
-        let list_top = Self::list_top(cell);
+        let list_top = Self::list_top(cell, zoom);
         (
-            l.bw as f32 * cell + DONE_TAIL,
-            (l.bh as f32 * cell + 6.0).max(list_top + 20.0 + LINES as f32 * 15.0),
+            l.bw as f32 * cell + DONE_TAIL * zoom,
+            (l.bh as f32 * cell + 6.0 * zoom).max(list_top + (20.0 + LINES as f32 * 15.0) * zoom),
         )
     }
 }
@@ -1587,7 +1588,8 @@ mod tests {
         assert_eq!(l.bw, 170);
         assert_eq!(l.bh, 22);
         let s = Scene::live(Tune::default());
-        assert_eq!(s.size(3.0), (526.0, 142.0));
+        assert_eq!(s.size(3.0, 1.0), (526.0, 142.0));
+        assert_eq!(s.size(6.0, 2.0), (1052.0, 284.0));
     }
 
     #[test]

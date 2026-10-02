@@ -104,6 +104,8 @@ TLS is rustls with ring, so there is no OpenSSL and no cmake to find; on NixOS p
 
 The scene is drawn on a 170×22 grid at 3 screen pixels per cell, rounded to whole device pixels on scaled outputs. It is composited in software the way the web's canvas is, then painted as one GPUI quad per horizontal run of same-coloured cells, a few hundred quads. The lists and the status line are text in JetBrains Mono when the system has it, else fontconfig's monospace, else DejaVu Sans Mono. No font is bundled. Each list shows the longest form of its lines that all of them fit, as the web does: doing drops the timer, then the agent; blocked the agent, then the mark. At the box's size the full forms fit for ordinary keys and names.
 
+The window is 548×196 and asks to stay that size. When the compositor gives it more anyway (tiling, a rule, a resize), the box draws at the largest whole multiple of its natural size that fits, 6 pixels per cell at twice the size and so on, with the text and gaps scaled to match, and centres the scene in the space. The title and status lines run the full width. Smaller than 548×196 it stays at its natural size and is cut off.
+
 It draws only when something changes: every frame while a ticket travels or fades, about 20 frames a second while the wires only sway and the current runs, once a second while a run's timer shows with `motion = false`, and otherwise when the daemon's state or the owner's feed changes (and every 30 seconds for the done list's slow fade). GPUI has no reduced-motion setting to follow, so `motion = false` in `daemon.toml` is the switch.
 
 What it shows, live, with `owner_token_file`:
@@ -133,7 +135,9 @@ The colours are Copland's seven themes, copied from `src/styles/themes.css` into
 
 ### Hyprland
 
-The window is a normal toplevel with app id `copland-box`, no title and no server-side decorations, sized 548×196. Hyprland tiles it unless told otherwise. With the Lua config (Hyprland 0.55 and later):
+Hyprland floats a window by itself when its minimum and maximum size are equal. The box would say so, but GPUI 0.2.2 sends only the minimum size on Wayland (`window_min_size`; `is_resizable` does nothing on Linux), so Hyprland tiles it. Until GPUI can, the box does it over Hyprland's IPC socket (`box/src/hyprland.rs`): once its window shows up in `j/clients` it floats it, sizes it to 548×196 and centres it, by its own pid, so another box or anything else is left alone. A window that is already floating when it appears is left as it is, because then a rule put it there. It tries the Lua dispatchers first (`hl.dsp.window.float` and friends, Hyprland 0.55 and later with `hyprland.lua`) and the old ones (`setfloating`, `resizewindowpixel`, `centerwindow`) when those are refused. The Lua ones were checked on Hyprland 0.56; the old ones weren't. You may see it tiled for a frame or two first.
+
+Keeping it on top and on every workspace still takes a rule: Wayland has no way for a window to ask for that. `copland-box --hyprland-rule` prints one for the box's size, for `hyprland.lua` and for an older `hyprland.conf`, floating and pinned in the bottom-right corner with no border. For the Lua config it is:
 
 ```lua
 hl.window_rule({
@@ -148,19 +152,7 @@ hl.window_rule({
 })
 ```
 
-The move puts it 24px from the right and 48px from the bottom. Use constants there, not `window_w`: the rule is evaluated against the size the window would have had tiled, which changes with whatever else is on the workspace. With an older `hyprland.conf`:
-
-```
-windowrulev2 = float, class:^(copland-box)$
-windowrulev2 = pin, class:^(copland-box)$
-windowrulev2 = size 548 196, class:^(copland-box)$
-windowrulev2 = move 100%-572 100%-244, class:^(copland-box)$
-windowrulev2 = noborder, class:^(copland-box)$
-windowrulev2 = rounding 0, class:^(copland-box)$
-windowrulev2 = noshadow, class:^(copland-box)$
-```
-
-The Lua rule was checked on Hyprland 0.56; the `windowrulev2` lines weren't.
+The move puts it 24px from the right and 48px from the bottom. Use constants there, not `window_w`: the rule is evaluated against the size the window would have had tiled, which changes with whatever else is on the workspace. The Lua rule was checked on Hyprland 0.56; the `windowrulev2` lines weren't.
 
 ### Building the box
 
