@@ -64,7 +64,6 @@ export interface BoardSummary {
   key: string;
   name: string;
   isInbox: boolean;
-  hasPlanning: boolean;
   role: BoardRole;
   memberCount: number;
   openTaskCount: number;

@@ -1,6 +1,6 @@
 /* ============================================================================
    Board settings, for owners (the gear): its stages and labels, what it is
-   called, planning on or off, and archiving it. The inbox is private, so it
+   called, and archiving it. The inbox is private, so it
    has no archive section. Who is on the board, and adding people or agents,
    is the share dialog (ShareModal.tsx).
    ========================================================================== */
@@ -11,7 +11,6 @@ import { useNavigate } from "react-router";
 import type { BoardDetail } from "@/domain/types";
 import { send } from "@/lib/api";
 import { KEYS } from "@/lib/queries";
-import { Checkbox } from "@/ui/Checkbox";
 import { ModalFrame } from "@/ui/ModalFrame";
 import { LabelEditor, StageEditor } from "./StageEditor";
 
@@ -41,7 +40,7 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
   };
 
   const patchBoard = useMutation({
-    mutationFn: (patch: { name?: string; key?: string; hasPlanning?: boolean }) =>
+    mutationFn: (patch: { name?: string; key?: string }) =>
       send("PATCH", `/boards/${board.id}`, patch),
     onSettled: refresh,
   });
@@ -112,12 +111,6 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
           </span>
           {changeKey.error && <span className="text-xs text-red basis-full">{changeKey.error.message}</span>}
         </form>
-        <Checkbox
-          checked={board.hasPlanning}
-          onChange={(next) => patchBoard.mutate({ hasPlanning: next })}
-          label={<span className="text-ink">planning: levels (epic, story, task, milestone) and parent tasks</span>}
-          size={15}
-        />
       </Section>
 
       {!board.isInbox && (

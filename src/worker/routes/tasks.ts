@@ -9,8 +9,8 @@
    A PATCH carries only the fields that change, so the client can send one
    field at a time (a drag sends stageId and rank; a checkbox sends stageId).
    The stage decides completed_at: entering a done or cancelled stage stamps
-   it, leaving one clears it. Planning fields (parentId, level, dependsOn) are
-   refused on boards without planning.
+   it, leaving one clears it. Planning fields (parentId, level, dependsOn)
+   work on every board.
    ========================================================================== */
 
 import {
@@ -158,10 +158,6 @@ async function checkDependencies(db: D1Database, board: BoardSummary, taskId: st
   }
 }
 
-function requirePlanning(board: BoardSummary, field: string): void {
-  if (!board.hasPlanning) throw badRequest(`\`${field}\` needs planning switched on for this board`);
-}
-
 /* ------------------------------------------------------------- routes ---- */
 
 /** POST /api/boards/:id/tasks { title, stageId?, brief?, priority?, dates, assigneeIds?, ... } */
@@ -202,13 +198,11 @@ export async function postTask(
   let parentId: string | null = null;
   let level: Level | null = null;
   if (body.parentId !== undefined && body.parentId !== null) {
-    requirePlanning(board, "parentId");
     if (typeof body.parentId !== "string") throw badRequest("`parentId` must be a task id or null");
     await checkParent(db, board, null, body.parentId);
     parentId = body.parentId;
   }
   if (body.level !== undefined && body.level !== null) {
-    requirePlanning(board, "level");
     if (!(LEVELS as readonly string[]).includes(body.level as string)) throw badRequest("`level` is not a level");
     level = body.level as Level;
   }
@@ -354,13 +348,11 @@ export async function patchTask(
   }
 
   if (body.parentId !== undefined) {
-    requirePlanning(board, "parentId");
     if (body.parentId !== null && typeof body.parentId !== "string") throw badRequest("`parentId` must be a task id or null");
     await checkParent(db, board, task.id, body.parentId as string | null);
     set("parent_id", "parentId", body.parentId);
   }
   if (body.level !== undefined) {
-    requirePlanning(board, "level");
     if (body.level !== null && !(LEVELS as readonly string[]).includes(body.level as string)) {
       throw badRequest("`level` is not a level");
     }
@@ -392,7 +384,6 @@ export async function patchTask(
     );
   }
   if (body.dependsOn !== undefined) {
-    requirePlanning(board, "dependsOn");
     const dependsOn = parseIdList(body.dependsOn, "dependsOn");
     await checkDependencies(db, board, task.id, dependsOn);
     before.dependsOn = task.dependsOn;

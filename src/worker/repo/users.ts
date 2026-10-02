@@ -185,7 +185,6 @@ export async function createUser(
       name: "inbox",
       ownerId: id,
       isInbox: true,
-      hasPlanning: false,
     }),
     ...(invite
       ? [

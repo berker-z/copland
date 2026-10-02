@@ -60,7 +60,7 @@ export async function getBoard(env: Env, viewer: Viewer, id: string): Promise<Re
   return json(detail);
 }
 
-/** POST /api/boards { name, key?, hasPlanning? } */
+/** POST /api/boards { name, key? } */
 export async function postBoard(request: Request, env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
   requirePerson(viewer, "make boards");
   const body = await readJson(request);
@@ -84,7 +84,6 @@ export async function postBoard(request: Request, env: Env, viewer: Viewer, chan
       name,
       ownerId: viewer.user.id,
       isInbox: false,
-      hasPlanning: body.hasPlanning === true,
     }),
   );
   changes.notify([viewer.user.id], "boards");
@@ -92,7 +91,7 @@ export async function postBoard(request: Request, env: Env, viewer: Viewer, chan
 }
 
 /**
- * PATCH /api/boards/:id { name?, key?, hasPlanning? }: owners only. Task keys
+ * PATCH /api/boards/:id { name?, key? }: owners only. Task keys
  * are the board key plus the number, computed on read, so a new key renames
  * every task on the board at once (BERK-1 becomes ME-1); links and notes
  * that spelled out the old key stop matching.
@@ -121,11 +120,6 @@ export async function patchBoard(
     if (taken) throw conflict(`The key ${key} is taken`);
     sets.push(`key = ?${values.length + 2}`);
     values.push(key);
-  }
-  if (body.hasPlanning !== undefined) {
-    if (typeof body.hasPlanning !== "boolean") throw badRequest("`hasPlanning` must be a boolean");
-    sets.push(`has_planning = ?${values.length + 2}`);
-    values.push(body.hasPlanning ? 1 : 0);
   }
   if (sets.length === 0) throw badRequest("Nothing to update");
   await env.DB.prepare(`UPDATE boards SET ${sets.join(", ")} WHERE id = ?1`).bind(id, ...values).run();

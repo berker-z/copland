@@ -7,8 +7,8 @@
    date. The change is one optimistic PATCH on release, so a drag that the
    Worker refuses (start after due) snaps back.
 
-   Rows follow the board's order: by stage, then rank. With planning on,
-   children sit under their parent, indented. Undated tasks are listed under
+   Rows follow the board's order: by stage, then rank, with children under
+   their parent, indented. Undated tasks are listed under
    the chart so they can be opened and given dates.
 
    On a touchscreen the chart is read-only: bars are small targets and a
@@ -44,10 +44,9 @@ function span(task: Task): [string, string] | null {
   return start && end ? [start, end] : null;
 }
 
-/** Board order, with planning children placed right under their parent. */
+/** Board order, with children placed right under their parent. */
 function ordered(detail: BoardDetail): { task: Task; depth: number }[] {
   const flat = detail.stages.flatMap((s) => tasksIn(detail, s.id));
-  if (!detail.board.hasPlanning) return flat.map((task) => ({ task, depth: 0 }));
   const ids = new Set(flat.map((t) => t.id));
   const children = new Map<string, Task[]>();
   for (const t of flat) if (t.parentId && ids.has(t.parentId)) children.set(t.parentId, [...(children.get(t.parentId) ?? []), t]);

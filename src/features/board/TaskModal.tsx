@@ -150,13 +150,12 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
   );
 }
 
-/* Reading: what is set, as text. Planning fields only on a planning board. */
+/* Reading: what is set, as text. */
 function TaskView({ detail, task }: { detail: BoardDetail; task: Task }) {
   const stage = detail.stages.find((s) => s.id === task.stageId);
   const labels = detail.labels.filter((l) => task.labelIds.includes(l.id));
   const assignees = peopleFirst(detail.members.filter((m) => task.assigneeIds.includes(m.user.id)));
   const parent = task.parentId ? detail.tasks.find((t) => t.id === task.parentId) : undefined;
-  const planning = detail.board.hasPlanning;
 
   return (
     <>
@@ -212,19 +211,19 @@ function TaskView({ detail, task }: { detail: BoardDetail; task: Task }) {
         </Row>
       )}
 
-      {planning && task.level && (
+      {task.level && (
         <Row label="level" text>
           <span className="text-ink">{task.level}</span>
         </Row>
       )}
 
-      {planning && task.parentId && (
+      {task.parentId && (
         <Row label="parent" text>
           <span className="text-ink">{parent ? `${parent.key} ${parent.title}` : "(deleted)"}</span>
         </Row>
       )}
 
-      {planning && task.dependsOn.length > 0 && (
+      {task.dependsOn.length > 0 && (
         <Row label="after" text>
           <span className="flex flex-col gap-0.5">
             {task.dependsOn.map((id) => {
@@ -341,59 +340,55 @@ function TaskForm({ detail, task, others, title, brief, setTitle, setBrief, setE
         </Row>
       )}
 
-      {detail.board.hasPlanning && (
-        <>
-          <Row label="level">
-            <select className={field} value={task.level ?? ""} onChange={(e) => save({ level: (e.target.value || null) as Task["level"] })}>
-              <option value="">none</option>
-              {LEVELS.map((l) => (
-                <option key={l} value={l}>
-                  {l}
-                </option>
-              ))}
-            </select>
-          </Row>
-          <Row label="parent">
-            <select className={`${field} w-full`} value={task.parentId ?? ""} onChange={(e) => save({ parentId: e.target.value || null })}>
-              <option value="">none</option>
-              {others.map((t) => (
+      <Row label="level">
+        <select className={field} value={task.level ?? ""} onChange={(e) => save({ level: (e.target.value || null) as Task["level"] })}>
+          <option value="">none</option>
+          {LEVELS.map((l) => (
+            <option key={l} value={l}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </Row>
+      <Row label="parent">
+        <select className={`${field} w-full`} value={task.parentId ?? ""} onChange={(e) => save({ parentId: e.target.value || null })}>
+          <option value="">none</option>
+          {others.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.key} {t.title}
+            </option>
+          ))}
+        </select>
+      </Row>
+      <Row label="after">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {task.dependsOn.map((id) => {
+            const dep = detail.tasks.find((t) => t.id === id);
+            return (
+              <span key={id} className={`inline-flex items-center gap-1 border border-faint px-1.5 py-0.5 text-sm ${dep?.completedAt ? "text-green" : "text-ink"}`}>
+                {dep ? `${dep.key} ${dep.title}` : "(deleted)"}
+                <button onClick={() => save({ dependsOn: task.dependsOn.filter((x) => x !== id) })} className="tap text-muted hover:text-red" aria-label="Remove dependency">
+                  ×
+                </button>
+              </span>
+            );
+          })}
+          <select
+            className={field}
+            value=""
+            onChange={(e) => e.target.value && save({ dependsOn: [...task.dependsOn, e.target.value] })}
+          >
+            <option value="">+ waits on…</option>
+            {others
+              .filter((t) => !task.dependsOn.includes(t.id))
+              .map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.key} {t.title}
                 </option>
               ))}
-            </select>
-          </Row>
-          <Row label="after">
-            <div className="flex flex-wrap items-center gap-1.5">
-              {task.dependsOn.map((id) => {
-                const dep = detail.tasks.find((t) => t.id === id);
-                return (
-                  <span key={id} className={`inline-flex items-center gap-1 border border-faint px-1.5 py-0.5 text-sm ${dep?.completedAt ? "text-green" : "text-ink"}`}>
-                    {dep ? `${dep.key} ${dep.title}` : "(deleted)"}
-                    <button onClick={() => save({ dependsOn: task.dependsOn.filter((x) => x !== id) })} className="tap text-muted hover:text-red" aria-label="Remove dependency">
-                      ×
-                    </button>
-                  </span>
-                );
-              })}
-              <select
-                className={field}
-                value=""
-                onChange={(e) => e.target.value && save({ dependsOn: [...task.dependsOn, e.target.value] })}
-              >
-                <option value="">+ waits on…</option>
-                {others
-                  .filter((t) => !task.dependsOn.includes(t.id))
-                  .map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.key} {t.title}
-                    </option>
-                  ))}
-              </select>
-            </div>
-          </Row>
-        </>
-      )}
+          </select>
+        </div>
+      </Row>
 
       <Row label="notes">
         <textarea

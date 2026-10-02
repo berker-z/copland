@@ -18,7 +18,6 @@ interface BoardRow {
   key: string;
   name: string;
   is_inbox: number;
-  has_planning: number;
   role: BoardRole;
   member_count: number;
   open_task_count: number;
@@ -30,7 +29,6 @@ function rowToSummary(row: BoardRow): BoardSummary {
     key: row.key,
     name: row.name,
     isInbox: row.is_inbox === 1,
-    hasPlanning: row.has_planning === 1,
     role: row.role,
     memberCount: row.member_count,
     openTaskCount: row.open_task_count,
@@ -38,7 +36,7 @@ function rowToSummary(row: BoardRow): BoardSummary {
 }
 
 const SUMMARY_SELECT = `
-  SELECT b.id, b.key, b.name, b.is_inbox, b.has_planning, bm.role,
+  SELECT b.id, b.key, b.name, b.is_inbox, bm.role,
          (SELECT count(*) FROM board_members x WHERE x.board_id = b.id) AS member_count,
          (SELECT count(*) FROM tasks t
             WHERE t.board_id = b.id AND t.deleted_at IS NULL AND t.completed_at IS NULL) AS open_task_count
@@ -126,14 +124,14 @@ export async function uniqueBoardKey(db: D1Database, base: string): Promise<stri
  */
 export function createBoardStatements(
   db: D1Database,
-  board: { id: string; key: string; name: string; ownerId: string; isInbox: boolean; hasPlanning: boolean },
+  board: { id: string; key: string; name: string; ownerId: string; isInbox: boolean },
 ): D1PreparedStatement[] {
   return [
     db
       .prepare(
-        `INSERT INTO boards (id, key, name, is_inbox, has_planning, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+        `INSERT INTO boards (id, key, name, is_inbox, created_by) VALUES (?1, ?2, ?3, ?4, ?5)`,
       )
-      .bind(board.id, board.key, board.name, board.isInbox ? 1 : 0, board.hasPlanning ? 1 : 0, board.ownerId),
+      .bind(board.id, board.key, board.name, board.isInbox ? 1 : 0, board.ownerId),
     db
       .prepare(`INSERT INTO board_members (board_id, user_id, role) VALUES (?1, ?2, 'owner')`)
       .bind(board.id, board.ownerId),

@@ -73,8 +73,8 @@ docs/DESIGN.md under Touch.
 - Tracker: boards shared with roles, inbox per user, kanban with drag and
   drop, list and Gantt views, new-task form (start today, +1d/+3d/+1w),
   quick add, labels, comments, history, editable stages and board keys,
-  planning (levels, parents, dependencies), attachments (images, files,
-  links) checked per board
+  planning (levels, parents, dependencies) on every board, attachments
+  (images, files, links) checked per board
 - MCP server with OAuth and personal tokens, 13 tools, a coverage check
 - Deployed at copland.berkerz.dev with a published Google consent screen,
   privacy and terms pages, the pole mark and favicon

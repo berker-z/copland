@@ -62,12 +62,11 @@ const reply = (body: unknown, status = 200) =>
 
 const INSTRUCTIONS = `Copland is a personal dashboard and project tracker: boards of tasks, some private, some shared with friends. Everything you do here is done as the user who connected you, with exactly their board roles, or, when the connection belongs to one of their agents, as that agent: an identity of its own ("owner/name") with narrower access. whoami and the guide say which. A task's history records that it came through you.
 
-Call the guide tool once before your first change: it explains every board the user is on (its stages and what each means, its labels, its members, whether planning is on), from live data.
+Call the guide tool once before your first change: it explains every board the user is on (its stages and what each means, its labels, its members), from live data.
 
 - Tasks are identified by keys like CPL-12 (board key + number), case-insensitive.
 - The user's inbox is their private board; create_task puts a task there when no board is given.
 - A stage's category decides whether a task is open: backlog and active stages are open, done and cancelled stages close it.
-- Planning fields (level, parent, depends_on) only exist on boards with planning switched on; a tool refuses them elsewhere.
 - Dates are YYYY-MM-DD. People are given by handle (@sam or sam) or email, stages and labels by name; "me" is the connected user.
 - Pass only the arguments a tool lists, with the types it lists: an unknown or mistyped argument is refused, never ignored.
 - Prefer list_tasks with filters, or my_work, over fetching whole boards.
@@ -378,18 +377,6 @@ function list(value: unknown): unknown[] {
 
 const str = (v: unknown) => (typeof v === "string" ? v : undefined);
 
-const PLANNING_ARGS = ["level", "parent", "depends_on"] as const;
-
-/** Refuse planning fields on a board without planning, instead of letting them vanish. */
-function requirePlanningFor(board: BoardSummary, args: Record<string, unknown>): void {
-  const used = PLANNING_ARGS.filter((f) => args[f] !== undefined);
-  if (used.length && !board.hasPlanning) {
-    throw new Error(
-      `${board.name} does not use planning fields (${used.join(", ")}). Only boards with planning switched on do; see list_boards.`,
-    );
-  }
-}
-
 /* ------------------------------------------------------------- dates --- */
 
 /**
@@ -442,14 +429,10 @@ function summarize(detail: BoardDetail, task: Task, origin: string) {
     ...(task.labelIds.length
       ? { labels: task.labelIds.map((id) => detail.labels.find((l) => l.id === id)?.name ?? id) }
       : {}),
-    ...(detail.board.hasPlanning
-      ? {
-          ...(task.level ? { level: task.level } : {}),
-          ...(task.parentId ? { parent: keyOf(task.parentId) } : {}),
-          ...(task.dependsOn.length ? { depends_on: task.dependsOn.map(keyOf) } : {}),
-          ...(children ? { children } : {}),
-        }
-      : {}),
+    ...(task.level ? { level: task.level } : {}),
+    ...(task.parentId ? { parent: keyOf(task.parentId) } : {}),
+    ...(task.dependsOn.length ? { depends_on: task.dependsOn.map(keyOf) } : {}),
+    ...(children ? { children } : {}),
     comments: task.commentCount,
     url: `${origin}/b/${detail.board.key}`,
   };
@@ -462,7 +445,6 @@ function boardOverview(detail: BoardDetail) {
     key: b.key,
     ...(b.isInbox ? { inbox: true } : {}),
     your_role: b.role,
-    planning: b.hasPlanning,
     stages: detail.stages.map((s) => ({
       position: s.position,
       name: s.name,
@@ -516,7 +498,7 @@ ${who} Today is ${today()} (UTC).${
 - **Roles.** On each board the user is an owner (everything, including members and stages), an editor (tasks, labels, comments) or a viewer (reads and comments only). A tool refuses what the role does not allow.
 - **Stages and categories.** Every stage has a category: backlog (not started), active (in progress), done or cancelled. A task in a done or cancelled stage is closed; moving it back to an open stage reopens it. Stage names are the board's own; the category is what they mean.
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
-- **Planning.** Boards with planning switched on add: level (epic > story > task, plus milestone), parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). Other boards refuse these fields.
+- **Planning.** Any task can have a level (epic > story > task, plus milestone), a parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). All three are optional: a task without them is an ordinary task.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
 - **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, being @mentioned in a comment, and a new comment on a task they take part in (created, are assigned to, have commented on or been mentioned on) land there; someone a comment mentions gets only the mention. Read it with inbox, then mark_read what you have dealt with (or dismiss it). A task's notes describe the work; questions, decisions you need from someone, and status updates always go in comments, never only in your own reply or a brief. Replying in the thread reaches whoever asked; a mention is how to hand something to someone or ask a person who is not yet taking part: "@sam can you check this". A handle inside \`code\`, a \`\`\` block or a > quoted line notifies nobody.
 - **Labels** (tags like #frontend) belong to a board and are given by name; create_label adds one, update_label renames or recolours it. Priority is low, normal, high or urgent.`);
@@ -527,7 +509,6 @@ ${who} Today is ${today()} (UTC).${
     out.push(`### ${b.name} (key ${b.key}${b.isInbox ? ", your inbox" : ""})
 
 - Your role: ${b.role}
-- Planning: ${b.hasPlanning ? "on (level, parent, depends_on)" : "off"}
 - Members: ${d.members.map((m) => `@${m.user.handle} (${m.role})`).join(", ")}
 - Labels: ${d.labels.length ? d.labels.map((l) => l.name).join(", ") : "none yet"}
 - Open tasks: ${d.tasks.filter((t) => statusOf(d, t) === "open").length}
@@ -541,7 +522,7 @@ ${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_
 - Tasks: a key like CPL-12. People: handle (with or without the @), email, or "me"; assignees must be members of the task's board. Stages: name, position number, or a category ("done" finds the board's done stage). Labels: existing names on that board. Partial names work when unambiguous; an unknown or ambiguous name returns the options.
 - Dates: YYYY-MM-DD, real calendar days; "none" clears a date. A start date cannot be after the due date. overdue means past due and still open.
 - New tasks: leave start out and it is today, which is what the user wants unless they say otherwise. Pass start: null only when the user explicitly asks for no start date.
-- Arguments: pass only those a tool lists. An unknown argument, or a planning field on a board without planning, is refused with an error, never silently dropped.
+- Arguments: pass only those a tool lists. An unknown argument is refused with an error, never silently dropped.
 - Errors come back as the tool's text: read them, they say what to do instead.
 - Ask before deleting or bulk-changing things the user did not explicitly ask for.
 
@@ -640,7 +621,7 @@ const TOOLS: Tool[] = [
     name: "list_boards",
     title: "List boards",
     description:
-      "Every board you are on: name, key (the prefix of its task keys), your role (owner, editor, viewer), whether it is your inbox, whether planning is on, member count and open task count. get_board has a board's stages, labels and members.",
+      "Every board you are on: name, key (the prefix of its task keys), your role (owner, editor, viewer), whether it is your inbox, member count and open task count. get_board has a board's stages, labels and members.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(_args, ctx) {
@@ -650,7 +631,6 @@ const TOOLS: Tool[] = [
         key: b.key,
         your_role: b.role,
         ...(b.isInbox ? { inbox: true } : {}),
-        planning: b.hasPlanning,
         members: b.memberCount,
         open_tasks: b.openTaskCount,
       }));
@@ -660,7 +640,7 @@ const TOOLS: Tool[] = [
     name: "get_board",
     title: "Get a board",
     description:
-      "One board in full: its stages in order (position, name, category, task count), labels, members with their roles, your role, whether planning is on, and its tasks as summaries (open ones unless include_closed), soonest due first.",
+      "One board in full: its stages in order (position, name, category, task count), labels, members with their roles, your role, and its tasks as summaries (open ones unless include_closed), soonest due first.",
     inputSchema: {
       type: "object",
       properties: { board: BOARD, include_closed: { type: "boolean", description: "Also list done and cancelled tasks" } },
@@ -681,7 +661,7 @@ const TOOLS: Tool[] = [
     name: "list_tasks",
     title: "List tasks",
     description:
-      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields where the board uses them, comment count and the board's url. Filters combine.",
+      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields (level, parent, depends_on, children: a count) when set, comment count and the board's url. Filters combine.",
     inputSchema: {
       type: "object",
       properties: {
@@ -694,8 +674,8 @@ const TOOLS: Tool[] = [
         overdue: { type: "boolean", description: "Only open tasks past their due date" },
         label: { type: "string", description: "A label name" },
         priority: PRIORITY,
-        level: { type: "string", enum: [...LEVELS], description: "Planning boards only" },
-        parent: { type: "string", description: "Only direct children of this task key (planning boards)" },
+        level: { type: "string", enum: [...LEVELS], description: "Only tasks at this level" },
+        parent: { type: "string", description: "Only direct children of this task key" },
         query: { type: "string", description: "Text in the title or brief" },
         limit: { type: "number", description: "Default 50, at most 200" },
       },
@@ -706,7 +686,6 @@ const TOOLS: Tool[] = [
       const details = await load(ctx, args.board);
       if (args.stage !== undefined && args.board === undefined) throw new Error("stage needs board: stage names are per board.");
       const single = args.board !== undefined ? details[0] : null;
-      if (single) requirePlanningFor(single.board, { level: args.level, parent: args.parent });
       const stage = single && args.stage !== undefined ? resolveStage(single.stages, args.stage) : null;
       const status = fold(str(args.status) ?? "open");
       const before = args.due_before !== undefined ? date(args.due_before, "due_before") : null;
@@ -767,23 +746,20 @@ const TOOLS: Tool[] = [
     name: "get_task",
     title: "Get a task",
     description:
-      "One task in full: everything list_tasks returns, plus the brief (markdown), created and updated times, children on planning boards, and the comment thread (oldest first). Use a key like CPL-12.",
+      "One task in full: everything list_tasks returns, plus the brief (markdown), created and updated times, its children (when it has any), and the comment thread (oldest first). Use a key like CPL-12.",
     inputSchema: { type: "object", properties: { task: TASK }, required: ["task"], additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(args, ctx) {
       const { detail, task } = await loadTask(ctx, args.task);
       const comments = await ctx.call<Comment[]>("GET", `/api/tasks/${task.id}/comments`);
+      const children = detail.tasks.filter((t) => t.parentId === task.id);
       return {
         ...summarize(detail, task, ctx.origin),
         brief: task.brief,
         created: task.createdAt,
         updated: task.updatedAt,
-        ...(detail.board.hasPlanning
-          ? {
-              children: detail.tasks
-                .filter((t) => t.parentId === task.id)
-                .map((t) => `${t.key} ${t.title}${t.level ? ` (${t.level})` : ""}`),
-            }
+        ...(children.length
+          ? { children: children.map((t) => `${t.key} ${t.title}${t.level ? ` (${t.level})` : ""}`) }
           : {}),
         thread: comments.map((c) => ({ by: `@${c.authorHandle}`, at: c.createdAt, text: c.text, ...(c.editedAt ? { edited: true } : {}) })),
       };
@@ -793,7 +769,7 @@ const TOOLS: Tool[] = [
     name: "create_task",
     title: "Create a task",
     description:
-      "Open a task. Without board it goes in your inbox (for an agent, its owner's inbox, once the owner has added it there). It starts in the board's first stage unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on only on boards with planning; they are refused elsewhere. Dates must be real YYYY-MM-DD days, start on or before due; leave start out and it is today (UTC), which is right unless the user says otherwise; pass start: null only when the user explicitly asks for no start date. Returns { created: summary }.",
+      "Open a task. Without board it goes in your inbox (for an agent, its owner's inbox, once the owner has added it there). It starts in the board's first stage unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on are optional planning fields on any board; parent and depends_on must be tasks on the same board. Dates must be real YYYY-MM-DD days, start on or before due; leave start out and it is today (UTC), which is right unless the user says otherwise; pass start: null only when the user explicitly asks for no start date. Returns { created: summary }.",
     inputSchema: {
       type: "object",
       properties: {
@@ -806,9 +782,9 @@ const TOOLS: Tool[] = [
         due: { type: "string", description: "YYYY-MM-DD" },
         assignees: PEOPLE,
         labels: { type: "array", items: S, description: "Existing label names on that board" },
-        level: { type: "string", enum: [...LEVELS], description: "Planning boards" },
-        parent: { type: "string", description: "Planning boards: the parent's task key, on the same board" },
-        depends_on: { type: "array", items: S, description: "Planning boards: task keys this one is blocked by" },
+        level: { type: "string", enum: [...LEVELS], description: "epic, story, task or milestone" },
+        parent: { type: "string", description: "The parent's task key, on the same board" },
+        depends_on: { type: "array", items: S, description: "Task keys on the same board this one is blocked by" },
       },
       required: ["title"],
       additionalProperties: false,
@@ -816,7 +792,6 @@ const TOOLS: Tool[] = [
     annotations: { readOnlyHint: false, destructiveHint: false },
     async run(args, ctx) {
       const [detail] = await load(ctx, args.board ?? "inbox");
-      requirePlanningFor(detail.board, args);
       const body: Record<string, unknown> = { title: args.title };
       if (args.brief !== undefined) body.brief = args.brief;
       if (args.stage !== undefined) body.stageId = resolveStage(detail.stages, args.stage).id;
@@ -853,7 +828,7 @@ const TOOLS: Tool[] = [
     name: "update_task",
     title: "Update a task",
     description:
-      "Change a task. Only what you pass changes; lists (assignees, labels, depends_on) replace the whole list, [] clears. stage moves it (the same as move_task). \"none\" clears start, due, level or parent. Planning fields only on boards with planning. Needs the editor role. Everything you pass is saved in one write: all of it, or (on an error) none of it. Returns { updated: summary }.",
+      "Change a task. Only what you pass changes; lists (assignees, labels, depends_on) replace the whole list, [] clears. stage moves it (the same as move_task). \"none\" clears start, due, level or parent. parent and depends_on must be tasks on the same board. Needs the editor role. Everything you pass is saved in one write: all of it, or (on an error) none of it. Returns { updated: summary }.",
     inputSchema: {
       type: "object",
       properties: {
@@ -876,7 +851,6 @@ const TOOLS: Tool[] = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     async run(args, ctx) {
       const { detail, task } = await loadTask(ctx, args.task);
-      requirePlanningFor(detail.board, args);
       const fields: Record<string, unknown> = {};
       if (args.title !== undefined) fields.title = args.title;
       if (args.brief !== undefined) fields.brief = args.brief;

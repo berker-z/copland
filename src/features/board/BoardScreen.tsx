@@ -15,7 +15,7 @@
 
    The header's "share" (owners and editors) opens ShareModal: members, and
    adding people or your agents by handle. The gear (owners only) opens
-   BoardSettingsModal: stages, labels, name, key, planning, archive.
+   BoardSettingsModal: stages, labels, name, key, archive.
    ========================================================================== */
 
 import { useRef, useState, type DragEvent } from "react";
