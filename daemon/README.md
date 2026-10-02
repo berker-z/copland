@@ -71,6 +71,17 @@ command = [
 
 About the Claude Code flags, as of Claude Code 2.1: `--tools ""` takes away every built-in tool (no Bash, no Edit, no file reads), `--strict-mcp-config` ignores your other MCP servers, and `--permission-mode dontAsk` denies whatever isn't in `--allowedTools` instead of waiting for a prompt nobody will answer. `--allowedTools` is variadic, so keep it last. For an agent that should actually write code, give it the built-in tools it needs and a working directory you don't mind it changing. `claude` has to be signed in already (`claude` once, interactively); the daemon doesn't handle that.
 
+Three top-level keys are for the box alone, and the headless daemon ignores them:
+
+```toml
+theme = "nord"                                  # one of Copland's seven themes
+motion = false                                  # a still picture: no sway, current, blinking or travel
+owner_token_file = "~/.config/copland/me.token" # your own token, for all four poles (below)
+owner_url = "https://copland.example.com"       # only when the agents are on more than one Copland
+```
+
+`owner_token_file` (or `owner_token = "cpl_…"` inline) is a token of yours, the person the agents belong to, made in settings › tokens; read-only is enough and is what to use. It is held to the same rules as the agents' tokens: an API token, never a run's secret, with a warning if the file can be read by anyone but you. It is for one Copland: the agents' `url` when they all share one, else `owner_url`, which a config with agents on more than one instance must give.
+
 `copland-daemon --check` reads the config, checks it, asks each instance who the token is and prints what it would run. It fails on a token it can't use: a read-only one (runs and claims are writes), or a run's secret (`cplr_…`) given in place of the agent's own token. The daemon checks the same at startup, through `/api/me`'s `access`, and stops watching that agent with an error; when no agent is left it exits. `COPLAND_LOG=debug` shows each poll's decisions and keepalives.
 
 ## Building
@@ -89,17 +100,21 @@ TLS is rustls with ring, so there is no OpenSSL and no cmake to find; on NixOS p
 
 ## The box
 
-`copland-box` is the daemon with a window (COPL-33). It runs the same loop as `copland-daemon`, in the same process, and draws the daemon's state as the wired scene from `docs/research/wired-prototype.html`: tickets wait on the wire into todo, a run picks one up at doing while current runs along its wire, and two branches leave doing, up to done and down to blocked. The geometry, the default tuning and the per-frame update are a port of the prototype's script, kept close enough to read side by side. All of it is in `box/src/scene.rs`: the pole and wire layout is the constants and `Layout`/`build_wires` at the top, plus where `draw` puts the poles and where `view.rs` puts the lists.
+`copland-box` is the daemon with a window (COPL-33). It runs the same loop as `copland-daemon`, in the same process, and draws your agents' work as the wired scene, the same one as the web's /wired pane (`src/features/wired/scene.ts` and `WiredPane.tsx`, designed in `docs/research/wired-prototype.html`): four poles on one ground line, todo, doing, blocked half a span on and done a span on, each with its list underneath. Tickets wait on the wire into doing, a run's sits at the doing pole while current runs along its wire, blocked ones take the short span and wait by the blocked pole, and done ones ride the long span that sags under blocked and fade off the edge. The geometry, the default tuning and the per-frame update are a port of the web scene, kept close enough to read side by side; when the web scene's geometry changes, the box's has to follow by hand. All of it is in `box/src/scene.rs`: the layout is the constants and `Layout`/`build_wires` at the top, and `view.rs` places the lists by the web pane's rule (`budgets`).
 
-The scene is drawn on a 152×56 grid at 3 screen pixels per cell, rounded to whole device pixels on scaled outputs. Each frame it is composited in software the way the prototype's canvas is, then painted as one GPUI quad per horizontal run of same-coloured cells, a few hundred quads. The lists and the status line are text in JetBrains Mono when the system has it, else fontconfig's monospace, else DejaVu Sans Mono. No font is bundled.
+The scene is drawn on a 170×22 grid at 3 screen pixels per cell, rounded to whole device pixels on scaled outputs. It is composited in software the way the web's canvas is, then painted as one GPUI quad per horizontal run of same-coloured cells, a few hundred quads. The lists and the status line are text in JetBrains Mono when the system has it, else fontconfig's monospace, else DejaVu Sans Mono. No font is bundled. Each list shows the longest form of its lines that all of them fit, as the web does: doing drops the timer, then the agent; blocked the agent, then the mark. At the box's size the full forms fit for ordinary keys and names.
 
-What it shows, live:
+It draws only when something changes: every frame while a ticket travels or fades, about 20 frames a second while the wires only sway and the current runs, once a second while a run's timer shows with `motion = false`, and otherwise when the daemon's state or the owner's feed changes (and every 30 seconds for the done list's slow fade). GPUI has no reduced-motion setting to follow, so `motion = false` in `daemon.toml` is the switch.
 
-- todo: tasks with unread items for an agent (`AgentState::waiting`, published on every poll), minus any a run is on.
-- doing: each agent's current run, with the task key, the agent and how long it has run.
-- done and blocked: nothing yet. Those are task stages, and the daemon doesn't read stages. A later step reads them from Copland's API, the same data the web widget uses.
+What it shows, live, with `owner_token_file`:
 
-A task the daemon has already run stays in todo while its items are unread, because that is what the inbox says. Without a usable config (no file, no agents, a refused one) the box shows the empty scene and "nothing on the wire" with the reason. `--demo` drives it with the prototype's simulation instead: no config, no server, nothing launched. In the demo `n` adds an item, `a` answers a blocked one and `f` finishes a run; `q` or Esc quits anywhere.
+- The box reads `GET /api/wired` with your token every 15 seconds, and two seconds after any of its runs starts or ends: the same data as the web pane, so todo, doing (live claims with their timers, then active tasks no run holds, dimmer and without timer or current), blocked, and done in the last 24 hours with the count in the status line. This runs on the daemon's Tokio runtime (`box/src/feed.rs`) and is handed to the window as a `watch` value, like the daemon's own state.
+- The daemon's own runs go over it: a run it has just started shows in doing at once, before the next read says so, and the two are matched by task key.
+- When the data changes, each ticket that changed pole travels the wires to its new one, diffed by key; one nothing lists any more fades. The first read is placed as it is, without travel.
+- Clicking a ticket opens its board in the browser, `<url>/b/<BOARD>`, the board key being the task key's prefix.
+- An agent's token given as `owner_token_file` is refused (the route is a person's own) and the box says so in the status line and stops reading; so does any other refusal. A failed read (the server down) keeps the last picture and says why.
+
+Without `owner_token_file` it draws what the daemon alone knows, and the status line says to add the key: todo is the tasks with unread items for an agent (`AgentState::waiting`, published on every poll), doing is each agent's current run, and done and blocked stay empty. A task the daemon has already run stays in todo there while its items are unread, because that is what the inbox says. Without a usable config (no file, no agents, a refused one) the box shows the empty scene and "nothing on the wire" with the reason. `--demo` drives it with the prototype's simulation instead: no config, no server, nothing launched. In the demo `n` adds an item, `a` answers a blocked one and `f` finishes a run; `q` or Esc quits anywhere.
 
 Closing the window, SIGINT or SIGTERM stop the daemon as the headless one stops: runtimes get SIGTERM and their runs finish as cancelled. The title bar drags the window (GPUI's `start_window_move`).
 
@@ -107,15 +122,15 @@ The colours are Copland's seven themes, copied from `src/styles/themes.css` into
 
 ### Hyprland
 
-The window is a normal toplevel with app id `copland-box`, no title and no server-side decorations, sized 628×247. Hyprland tiles it unless told otherwise. With the Lua config (Hyprland 0.55 and later):
+The window is a normal toplevel with app id `copland-box`, no title and no server-side decorations, sized 548×196. Hyprland tiles it unless told otherwise. With the Lua config (Hyprland 0.55 and later):
 
 ```lua
 hl.window_rule({
 	match = { class = "^(copland-box)$" },
 	float = true,
 	pin = true,
-	size = { 628, 247 },
-	move = { "monitor_w-652", "monitor_h-295" },
+	size = { 548, 196 },
+	move = { "monitor_w-572", "monitor_h-244" },
 	border_size = 0,
 	rounding = 0,
 	no_shadow = true,
@@ -127,8 +142,8 @@ The move puts it 24px from the right and 48px from the bottom. Use constants the
 ```
 windowrulev2 = float, class:^(copland-box)$
 windowrulev2 = pin, class:^(copland-box)$
-windowrulev2 = size 628 247, class:^(copland-box)$
-windowrulev2 = move 100%-652 100%-295, class:^(copland-box)$
+windowrulev2 = size 548 196, class:^(copland-box)$
+windowrulev2 = move 100%-572 100%-244, class:^(copland-box)$
 windowrulev2 = noborder, class:^(copland-box)$
 windowrulev2 = rounding 0, class:^(copland-box)$
 windowrulev2 = noshadow, class:^(copland-box)$

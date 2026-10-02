@@ -113,6 +113,51 @@ pub struct StartedRun {
     pub secret: Secret,
 }
 
+/// One task on the wired scene (`WiredTask` in `src/domain/types.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WiredTask {
+    pub id: String,
+    pub board_id: String,
+    /// "COPL-12": the board's key, a dash, the task's number.
+    pub key: String,
+    pub title: String,
+    /// The claimer when a run holds it, else the first of the owner's agents assigned.
+    pub agent_id: String,
+    /// doing: when the live claim was taken (none when no run holds it). done: when it was
+    /// completed. Otherwise when the task last changed. ISO 8601, UTC.
+    pub since: Option<String>,
+    /// doing only: a run of the agent holds a live claim on it right now.
+    #[serde(default)]
+    pub live: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WiredAgent {
+    pub id: String,
+    pub handle: String,
+    pub name: String,
+    #[serde(default)]
+    pub paused: bool,
+}
+
+/// GET /api/wired: what the signed-in person's agents have on, by pole. A person's own read;
+/// an agent's token is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Wired {
+    pub agents: Vec<WiredAgent>,
+    pub todo: Vec<WiredTask>,
+    /// Live claims first (oldest claim first), then active tasks no run holds.
+    pub doing: Vec<WiredTask>,
+    pub blocked: Vec<WiredTask>,
+    /// Done within the window, newest first, capped by the server.
+    pub done: Vec<WiredTask>,
+    /// All of those done within the window.
+    pub done_count: u32,
+    pub done_window_hours: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ending {
     Completed,
@@ -245,6 +290,11 @@ impl Api {
 
     pub async fn me(&self, cred: &Secret) -> ApiResult<Me> {
         self.send(self.http.get(self.url("/api/me")), cred).await
+    }
+
+    /// The token's person's agents' work, by pole (what the box draws). Refused for an agent's token.
+    pub async fn wired(&self, cred: &Secret) -> ApiResult<Wired> {
+        self.send(self.http.get(self.url("/api/wired")), cred).await
     }
 
     /// One page of unread items, newest first.

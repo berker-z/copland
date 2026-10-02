@@ -5,10 +5,13 @@
 //! scene draws into a small RGB raster at one cell per logo pixel and lists
 //! its text as spans; `view.rs` puts both on screen.
 //!
-//! Items move along wires: in from the left to the todo pole, queued on the
-//! wire to doing, picked up there by a run (current flows along its wire while
-//! it works), and out by one of two branches from the doing pole: the upper
-//! climbs to done and runs off the edge, the lower drops to blocked and waits.
+//! The four poles stand on one ground line: todo, doing, blocked half a span
+//! past doing, done a whole span past it. Items move along wires: in from the
+//! left to the todo pole, queued on the wire to doing, picked up there by a run
+//! (current flows along its wire while it works), and out of doing by one of
+//! two spans: the short one to blocked, where they wait, or the long one that
+//! sags under blocked's arms to done and runs off the edge. The web widget
+//! (`src/features/wired/scene.ts`) is the same scene; keep the two in step.
 
 use crate::theme::{Rgb, Theme};
 
@@ -48,7 +51,7 @@ impl Default for Tune {
     fn default() -> Self {
         Self {
             scale: 3,
-            spacing: 54.0,
+            spacing: 64.0,
             sag: 0.08,
             sway_amp: 0.12,
             sway_speed: 0.3,
@@ -99,14 +102,17 @@ impl Role {
 /* ---------- geometry (units = logo pixels) ---------- */
 
 pub const POLE_H: i32 = 16;
-pub const TOPD: i32 = 4;
-pub const TOPM: i32 = 21;
-pub const TOPB: i32 = 38;
-pub const BH: i32 = TOPB + POLE_H + 2;
-/// Room right of the poles for the done and blocked lists, in screen pixels.
-pub const TEXT_W: f32 = 150.0;
-/// Lines under the todo and doing poles.
+/// Every pole's top: one ground line, with room above for the lamps.
+pub const TOP: i32 = 4;
+/// Past the done pole: room for its wires to run off the edge.
+pub const TAIL: i32 = 22;
+/// How much deeper than `sag` the doing-to-done span hangs: under blocked's lower arm, above its foot.
+const DEEP: f32 = 1.1;
+/// Room right of the canvas for the done list, in screen pixels.
+pub const DONE_TAIL: f32 = 16.0;
+/// Lines under the todo and doing poles; blocked and done have `SHORT_LINES`.
 pub const LINES: usize = 4;
+pub const SHORT_LINES: usize = 3;
 
 /// JS `Math.round`: halves go up.
 fn round(x: f32) -> i32 {
@@ -115,8 +121,8 @@ fn round(x: f32) -> i32 {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
-    /// The three pole columns: todo, doing, done/blocked.
-    pub x: [f32; 3],
+    /// The four poles' left edges, left to right: todo, doing, blocked (half a span on), done (a whole span on).
+    pub x: [f32; 4],
     /// The raster's width and height, in logo pixels.
     pub bw: i32,
     pub bh: i32,
@@ -124,11 +130,16 @@ pub struct Layout {
 
 impl Layout {
     pub fn new(spacing: f32) -> Self {
-        let x = [10.0, 10.0 + spacing, 10.0 + 2.0 * spacing];
+        let x = [
+            10.0,
+            10.0 + spacing,
+            10.0 + spacing + spacing / 2.0,
+            10.0 + 2.0 * spacing,
+        ];
         Self {
             x,
-            bw: x[2] as i32 + 10 + round(spacing * 0.45),
-            bh: BH,
+            bw: x[3] as i32 + 10 + TAIL,
+            bh: TOP + POLE_H + 2,
         }
     }
 }
@@ -139,12 +150,12 @@ pub enum W {
     In2,
     Ab1,
     Ab2,
+    /// The long span, doing's lower arm to done's, hanging under blocked.
     Bd,
+    /// The short span, doing's upper arm to blocked's.
     Bb,
     Done1,
     Done2,
-    Blk1,
-    Blk2,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -174,8 +185,8 @@ impl Wire {
     }
 }
 
-/// The ten wires at `clock`, swaying.
-pub fn build_wires(l: &Layout, v: &Tune, clock: f32) -> [Wire; 10] {
+/// The eight wires at `clock`, swaying.
+pub fn build_wires(l: &Layout, v: &Tune, clock: f32) -> [Wire; 8] {
     /* 6.283, not TAU: the prototype's literal, kept so the sway matches it. */
     #[allow(clippy::approx_constant)]
     let sway = |ph: f32| 1.0 + v.sway_amp * (clock * v.sway_speed * 6.283 + ph).sin();
@@ -190,19 +201,17 @@ pub fn build_wires(l: &Layout, v: &Tune, clock: f32) -> [Wire; 10] {
             len: (x1 - x0).hypot(y1 - y0),
         }
     };
-    let [a, b, c] = l.x;
+    let [a, b, k, c] = l.x;
     let e = (l.bw + 8) as f32;
     [
-        mk(-8.0, TOPM + 6, a, TOPM + 3, 0.4, 1.0),
-        mk(-8.0, TOPM + 12, a + 2.0, TOPM + 8, 1.1, 1.2),
-        mk(a + 9.0, TOPM + 3, b, TOPM + 3, 2.0, 1.0),
-        mk(a + 7.0, TOPM + 8, b + 2.0, TOPM + 8, 2.7, 1.25),
-        mk(b + 9.0, TOPM + 3, c, TOPD + 3, 3.3, 0.8),
-        mk(b + 7.0, TOPM + 8, c, TOPB + 3, 4.1, 0.8),
-        mk(c + 9.0, TOPD + 3, e, TOPD + 8, 5.0, 1.0),
-        mk(c + 7.0, TOPD + 8, e, TOPD + 13, 5.4, 1.2),
-        mk(c + 9.0, TOPB + 3, e, TOPB + 8, 5.7, 1.0),
-        mk(c + 7.0, TOPB + 8, e, TOPB + 12, 6.1, 1.2),
+        mk(-8.0, TOP + 6, a, TOP + 3, 0.4, 1.0),
+        mk(-8.0, TOP + 12, a + 2.0, TOP + 8, 1.1, 1.2),
+        mk(a + 9.0, TOP + 3, b, TOP + 3, 2.0, 1.0),
+        mk(a + 7.0, TOP + 8, b + 2.0, TOP + 8, 2.7, 1.25),
+        mk(b + 7.0, TOP + 8, c + 2.0, TOP + 8, 3.3, DEEP),
+        mk(b + 9.0, TOP + 3, k, TOP + 3, 4.1, 1.0),
+        mk(c + 9.0, TOP + 3, e, TOP + 8, 5.0, 1.0),
+        mk(c + 7.0, TOP + 8, e, TOP + 13, 5.4, 1.2),
     ]
 }
 
@@ -305,9 +314,9 @@ pub enum State {
     /// Leaving doing by one of the branches.
     Leaving,
     Blocked,
-    /// An answered blocked item, going back to the queue.
+    /// Going back to the queue: an answered blocked item, or one a run let go of.
     Returning,
-    /// Leaving the scene where it is (live: the daemon no longer lists it).
+    /// Leaving the scene where it is (live: nothing lists it any more).
     Fading,
     Gone,
 }
@@ -318,11 +327,14 @@ pub enum Outcome {
     Blocked,
 }
 
+/// One leg of a journey: along a wire from t=a to t=b.
+type Seg = (W, f32, f32);
+
 #[derive(Debug, Clone)]
 pub struct Item {
     pub key: String,
     pub state: State,
-    route: Vec<(W, f32, f32)>,
+    route: Vec<Seg>,
     seg: usize,
     p: f32,
     pub wire: W,
@@ -335,8 +347,13 @@ pub struct Item {
     until: f64,
     pub alpha: f32,
     pub outcome: Option<Outcome>,
+    /// Where it rests on its wire, eased towards while it sits there.
     qt: Option<f32>,
     flashed: bool,
+    /// Doing, but no run holds it (live: an active stage without a live claim). Drawn dimmer, no timer, no current.
+    pub idle: bool,
+    /// Its place in its pole's list (live). The demo keeps the order items came in.
+    order: usize,
 }
 
 impl Item {
@@ -362,6 +379,17 @@ impl Item {
             outcome: None,
             qt: None,
             flashed: false,
+            idle: false,
+            order: usize::MAX,
+        }
+    }
+
+    /// How long its run has gone, "…" while it is still being picked up and that isn't known.
+    fn elapsed(&self, now: f64) -> String {
+        if self.state == State::Working || self.started_known {
+            fmt(now - self.started)
+        } else {
+            "…".into()
         }
     }
 
@@ -374,7 +402,46 @@ impl Item {
     }
 
     fn is_blocked(&self) -> bool {
-        self.state == State::Blocked || (self.state == State::Leaving && self.outcome == Some(Outcome::Blocked))
+        self.state == State::Blocked || self.leaving_to(Outcome::Blocked)
+    }
+
+    fn leaving_to(&self, outcome: Outcome) -> bool {
+        self.state == State::Leaving && self.outcome == Some(outcome)
+    }
+
+    /// Still on the scene as something a list shows (not fading out, not on its way off).
+    fn present(&self) -> bool {
+        !matches!(self.state, State::Fading | State::Gone) && !self.leaving_to(Outcome::Done)
+    }
+
+    /// Set off along `route`, which must not be empty.
+    fn go(&mut self, state: State, route: Vec<Seg>) {
+        debug_assert!(!route.is_empty());
+        self.state = state;
+        self.route = route;
+        self.seg = 0;
+        self.p = 0.0;
+    }
+
+    /// Put it straight where it rests, no journey.
+    fn place(&mut self, state: State, wire: W, t: f32) {
+        self.state = state;
+        self.route.clear();
+        self.wire = wire;
+        self.t = t;
+        self.outcome = None;
+        self.alpha = 1.0;
+    }
+
+    /// The legs from where it is to the doing pole's end of the wires.
+    fn to_doing_pole(&self) -> Vec<Seg> {
+        match self.state {
+            State::Arriving if self.wire == W::In1 => vec![(W::In1, self.t, 1.0), (W::Ab1, 0.0, 1.0)],
+            State::Arriving | State::Queued => vec![(self.wire, self.t, 1.0)],
+            State::Blocked => vec![(W::Bb, self.t, 0.0)],
+            State::Leaving if self.wire == W::Bb => vec![(W::Bb, self.t, 0.0)],
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -387,18 +454,42 @@ pub struct AgentLabel {
     pub stopped: bool,
 }
 
-/// What the scene is told, each frame, in live mode: the daemon's view of the wire.
+/// A task on the doing pole, as the scene is told it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Doing {
+    pub key: String,
+    /// The agent's name.
+    pub agent: String,
+    /// Scene seconds when its run started, when one holds it.
+    pub started: Option<f64>,
+    /// A run holds it. Otherwise it is only in an active stage: drawn dimmer, no timer, no current.
+    pub live: bool,
+}
+
+/// What the scene is told in live mode: where each task is, by key.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Board {
     pub agents: Vec<AgentLabel>,
-    /// Task keys waiting, oldest first.
+    /// Task keys waiting, in order.
     pub todo: Vec<String>,
-    /// (task key, agent name, scene seconds when the run started).
-    pub doing: Vec<(String, String, f64)>,
-    /// (task key, agent name). Empty until the box reads stages from Copland.
+    pub doing: Vec<Doing>,
+    /// (task key, agent name).
     pub blocked: Vec<(String, String)>,
+    /// (task key, scene seconds when it was done), newest first. None when the box can't know
+    /// (no owner token), and then done is never drawn.
+    pub done: Option<Vec<(String, f64)>>,
+    /// All done within the window, of which `done` may be the newest few.
+    pub done_count: Option<u32>,
+    /// How long done ones are listed, in seconds; their lines fade over it.
+    pub done_window: f64,
+    /// A task's page, by key, for clicking its line.
+    pub links: Vec<(String, String)>,
     /// Shown instead of the agents when there is nothing to watch.
     pub quiet: Option<String>,
+    /// A last word in the status line: how to see more, or why it can't.
+    pub note: Option<(String, Role)>,
+    /// The data is real (not a placeholder before the first read): from the next change on, moves animate.
+    pub ready: bool,
 }
 
 /// A small xorshift, so the demo needs no dependency.
@@ -418,6 +509,30 @@ const DEMO_POOL: [&str; 10] = [
     "COPL-54", "COPL-55", "COPL-56", "COPL-57", "COPL-58", "COPL-59", "COPL-60", "COPL-61", "COPL-62", "COPL-63",
 ];
 
+/// Beads drawn resting on a pole; the lists say how many more there are.
+pub const MAX_BEADS: usize = 4;
+/// The done list's header stays lit this long after the newest, in seconds (live).
+const DONE_LIT: f64 = 15.0 * 60.0;
+
+/// Where the i-th resting item of todo sits on the wire into doing.
+fn queue_t(i: usize) -> f32 {
+    (0.7 - i as f32 * 0.2).max(0.12)
+}
+
+/// Where the i-th blocked item sits on the wire to blocked.
+fn blocked_t(i: usize) -> f32 {
+    0.85 - 0.18 * i as f32
+}
+
+/// Where the i-th item working on a slot's wire sits: at the pole, then stepping back.
+fn doing_t(i: usize) -> f32 {
+    1.0 - 0.08 * i as f32
+}
+
+fn slot_wire(slot: usize) -> W {
+    if slot == 0 { W::Ab1 } else { W::Ab2 }
+}
+
 struct Demo {
     pool: usize,
     next_arrival: f64,
@@ -429,7 +544,7 @@ struct Demo {
 pub struct Scene {
     pub tune: Tune,
     pub layout: Layout,
-    pub wires: [Wire; 10],
+    pub wires: [Wire; 8],
     pub items: Vec<Item>,
     /// Animation time: sway, pulses, blinking.
     pub clock: f64,
@@ -438,10 +553,20 @@ pub struct Scene {
     last: f64,
     pub flash_done: f32,
     pub done_log: Vec<(String, f64)>,
-    /// Known only in the demo.
+    /// Known in the demo, and live with the owner's token.
     pub done_count: Option<u32>,
+    /// Live: how long done ones are listed, s (their lines fade over it).
+    done_window: Option<f64>,
+    /// Live: done keys already seen, so each climbs to done once.
+    known_done: std::collections::HashSet<String>,
+    /// Live: the board has been real once, so changes from here on animate.
+    synced: bool,
+    links: Vec<(String, String)>,
     pub agents: Vec<AgentLabel>,
     pub quiet: Option<String>,
+    note: Option<(String, Role)>,
+    /// Sway, current, blinking and travel. Off, it is a still picture redrawn when something changes.
+    pub motion: bool,
     demo: Option<Demo>,
 }
 
@@ -459,8 +584,14 @@ impl Scene {
             flash_done: 0.0,
             done_log: Vec::new(),
             done_count: None,
+            done_window: None,
+            known_done: Default::default(),
+            synced: false,
+            links: Vec::new(),
             agents: Vec::new(),
             quiet: None,
+            note: None,
+            motion: true,
             demo: None,
         }
     }
@@ -499,8 +630,8 @@ impl Scene {
             s.items.push(q);
         }
         let mut bl = Item::new("COPL-48", State::Blocked);
-        bl.wire = W::Blk1;
-        bl.t = 0.35;
+        bl.wire = W::Bb;
+        bl.t = blocked_t(0);
         bl.agent = Some("review".into());
         s.items.push(bl);
         s.demo = Some(Demo {
@@ -532,10 +663,8 @@ impl Scene {
     /// The demo's "answer blocked" button: the first blocked item goes back to the queue.
     pub fn answer(&mut self) {
         if let Some(b) = self.items.iter_mut().find(|i| i.state == State::Blocked) {
-            b.state = State::Returning;
-            b.route = vec![(W::Blk1, b.t, 0.0), (W::Bb, 1.0, 0.0)];
-            b.seg = 0;
-            b.p = 0.0;
+            let route = vec![(W::Bb, b.t, 0.0), (W::Ab1, 1.0, 0.9)];
+            b.go(State::Returning, route);
         }
     }
 
@@ -553,37 +682,53 @@ impl Scene {
         }
     }
 
+    /// Off the doing pole by one of the branches (or from wherever it is, by way of the doing pole).
     fn finish(&mut self, ix: usize, outcome: Outcome) {
-        let blocked = self.items.iter().filter(|i| i.state == State::Blocked).count() as f32;
+        let blocked = self.items.iter().filter(|i| i.state == State::Blocked).count();
         let it = &mut self.items[ix];
-        it.state = State::Leaving;
+        let mut route = it.to_doing_pole();
+        match outcome {
+            Outcome::Done => route.extend([(W::Bd, 0.0, 1.0), (W::Done2, 0.0, 1.0)]),
+            Outcome::Blocked => route.push((W::Bb, 0.0, blocked_t(blocked))),
+        }
+        it.go(State::Leaving, route);
         it.outcome = Some(outcome);
-        it.route = match outcome {
-            Outcome::Done => vec![(W::Bd, 0.0, 1.0), (W::Done1, 0.0, 1.0)],
-            Outcome::Blocked => vec![(W::Bb, 0.0, 1.0), (W::Blk1, 0.0, (0.35 + 0.17 * blocked).min(0.85))],
-        };
-        it.seg = 0;
-        it.p = 0.0;
+        it.qt = None;
+        it.idle = false;
     }
 
     fn queue_targets(&mut self) {
-        for (i, it) in self.items.iter_mut().filter(|i| i.state == State::Queued).enumerate() {
-            it.qt = Some((0.7 - i as f32 * 0.2).max(0.12));
+        let mut queued: Vec<&mut Item> = self.items.iter_mut().filter(|i| i.state == State::Queued).collect();
+        queued.sort_by_key(|i| i.order);
+        for (i, it) in queued.into_iter().enumerate() {
+            it.qt = Some(queue_t(i));
+        }
+        if self.demo.is_none() {
+            for slot in [0, 1] {
+                let mut on: Vec<&mut Item> = self
+                    .items
+                    .iter_mut()
+                    .filter(|i| i.state == State::Working && i.slot == Some(slot))
+                    .collect();
+                on.sort_by_key(|i| (i.idle, i.order));
+                for (i, it) in on.into_iter().enumerate() {
+                    it.qt = Some(doing_t(i));
+                }
+            }
         }
     }
 
+    /// The slot wire with the fewest items working on it.
     fn free_slot(&self) -> Option<usize> {
-        let used: Vec<usize> = self
-            .items
-            .iter()
-            .filter(|i| i.is_doing())
-            .filter_map(|i| i.slot)
-            .collect();
-        [0, 1].into_iter().find(|s| !used.contains(s))
+        let on = |s: usize| self.items.iter().filter(|i| i.is_doing() && i.slot == Some(s)).count();
+        if self.demo.is_some() {
+            return [0, 1].into_iter().find(|&s| on(s) == 0);
+        }
+        Some(if on(1) < on(0) { 1 } else { 0 })
     }
 
     /// Move along the route; true once at its end.
-    fn advance(wires: &[Wire; 10], travel: f32, it: &mut Item, dt: f32) -> bool {
+    fn advance(wires: &[Wire; 8], travel: f32, it: &mut Item, dt: f32) -> bool {
         let (wn, a, b) = it.route[it.seg];
         let len = (wires[wn as usize].len * (b - a).abs()).max(4.0);
         it.p += travel * dt / len;
@@ -594,6 +739,7 @@ impl Scene {
                 let last = it.route[it.route.len() - 1];
                 it.wire = last.0;
                 it.t = last.2;
+                it.route.clear();
                 return true;
             }
         }
@@ -603,88 +749,184 @@ impl Scene {
         false
     }
 
-    /// Bring the items in line with what the daemon says (live mode).
+    /// Bring the items in line with the board (live mode), diffing by task key: an item that
+    /// changed pole travels the wires to its new place; one nothing lists any more fades out.
+    /// Called every frame with the same board is a no-op.
     pub fn sync(&mut self, board: &Board) {
         self.agents = board.agents.clone();
         self.quiet = board.quiet.clone();
-        let doing_keys: Vec<&str> = board.doing.iter().map(|d| d.0.as_str()).collect();
-        let todo: Vec<&str> = board
-            .todo
-            .iter()
-            .map(String::as_str)
-            .filter(|k| !doing_keys.contains(k))
-            .collect();
-        let blocked: Vec<&str> = board.blocked.iter().map(|b| b.0.as_str()).collect();
-
-        for key in &todo {
-            if !self.items.iter().any(|i| i.key == *key && i.state != State::Fading) {
-                self.spawn(key);
-            }
+        self.note = board.note.clone();
+        self.links = board.links.clone();
+        let animate = self.motion && self.synced;
+        if board.ready {
+            self.synced = true;
         }
-        for (key, agent, started) in &board.doing {
-            let free = self.free_slot();
-            let existing = self
+
+        let wanted = |key: &str| {
+            board.todo.iter().any(|k| k == key)
+                || board.doing.iter().any(|d| d.key == key)
+                || board.blocked.iter().any(|b| b.0 == key)
+        };
+
+        /* Done: each key climbs once, from wherever it was. */
+        if let Some(done) = &board.done {
+            for (key, _) in done {
+                if wanted(key) || self.known_done.contains(key) {
+                    continue;
+                }
+                self.known_done.insert(key.clone());
+                let at = self.items.iter().position(|i| &i.key == key && i.present());
+                match (animate, at) {
+                    (true, Some(ix)) => self.finish(ix, Outcome::Done),
+                    (true, None) => {
+                        let mut it = Item::new(key, State::Leaving);
+                        it.wire = W::Done2;
+                        it.go(State::Leaving, vec![(W::Done2, 0.0, 1.0)]);
+                        it.outcome = Some(Outcome::Done);
+                        self.items.push(it);
+                    }
+                    (false, Some(ix)) => self.items[ix].state = State::Gone,
+                    (false, None) => {}
+                }
+            }
+            self.known_done.retain(|k| done.iter().any(|d| &d.0 == k) && !wanted(k));
+            let flying: Vec<&str> = self
                 .items
                 .iter()
-                .position(|i| i.key == *key && i.state != State::Fading);
-            let ix = match existing {
+                .filter(|i| i.leaving_to(Outcome::Done))
+                .map(|i| i.key.as_str())
+                .collect();
+            self.done_log = done
+                .iter()
+                .filter(|(k, _)| !flying.contains(&k.as_str()))
+                .cloned()
+                .collect();
+            self.done_count = board.done_count;
+            self.done_window = Some(board.done_window);
+        }
+
+        /* Whatever nothing lists any more fades where it is. */
+        for it in &mut self.items {
+            if it.present() && !wanted(&it.key) {
+                it.state = if animate { State::Fading } else { State::Gone };
+            }
+        }
+        self.items.retain(|i| i.state != State::Gone);
+
+        let find = |items: &[Item], key: &str| items.iter().position(|i| i.key == key && i.present());
+
+        for (n, key) in board.todo.iter().enumerate() {
+            let qt = queue_t(n);
+            let ix = match find(&self.items, key) {
                 Some(ix) => ix,
                 None => {
-                    let mut it = Item::new(key, State::Queued);
-                    it.wire = W::Ab1;
-                    it.t = 0.12;
+                    let mut it = Item::new(key, State::Arriving);
+                    if !animate {
+                        it.place(State::Queued, W::Ab1, qt);
+                    }
                     self.items.push(it);
                     self.items.len() - 1
                 }
             };
             let it = &mut self.items[ix];
-            if !it.is_doing() {
-                let slot = free.unwrap_or(0);
-                let ab = if slot == 0 { W::Ab1 } else { W::Ab2 };
-                it.route = if it.state == State::Arriving {
-                    vec![(W::In1, it.t, 1.0), (ab, 0.0, 1.0)]
-                } else {
-                    vec![(
-                        ab,
-                        if it.wire == W::Ab1 || it.wire == W::Ab2 {
-                            it.t
+            it.order = n;
+            match it.state {
+                State::Arriving | State::Queued | State::Returning => {}
+                State::Picking | State::Working if animate => {
+                    let from = if it.wire == W::Ab1 { it.t } else { 1.0 };
+                    it.go(State::Returning, vec![(W::Ab1, from, qt)]);
+                }
+                State::Blocked if animate => {
+                    let route = vec![(W::Bb, it.t, 0.0), (W::Ab1, 1.0, qt)];
+                    it.go(State::Returning, route);
+                }
+                _ => it.place(State::Queued, W::Ab1, qt),
+            }
+            it.idle = false;
+            it.slot = None;
+        }
+
+        for (n, d) in board.doing.iter().enumerate() {
+            let ix = match find(&self.items, &d.key) {
+                Some(ix) => ix,
+                None => {
+                    self.items.push(Item::new(&d.key, State::Arriving));
+                    if !animate {
+                        let last = self.items.len() - 1;
+                        self.items[last].state = State::Queued;
+                    }
+                    self.items.len() - 1
+                }
+            };
+            if !self.items[ix].is_doing() {
+                let slot = self.free_slot().unwrap_or(0);
+                let ab = slot_wire(slot);
+                let it = &mut self.items[ix];
+                match it.state {
+                    State::Arriving | State::Queued if animate => {
+                        let route = if it.state == State::Arriving && it.wire == W::In1 {
+                            vec![(W::In1, it.t, 1.0), (ab, 0.0, 1.0)]
                         } else {
-                            0.0
-                        },
-                        1.0,
-                    )]
-                };
-                it.state = State::Picking;
-                it.seg = 0;
-                it.p = 0.0;
+                            let from = if it.wire == W::Ab1 || it.wire == W::Ab2 {
+                                it.t
+                            } else {
+                                0.0
+                            };
+                            vec![(ab, from, 1.0)]
+                        };
+                        it.go(State::Picking, route);
+                    }
+                    State::Blocked | State::Leaving if animate => {
+                        let mut route = it.to_doing_pole();
+                        route.push((ab, 1.0, 1.0));
+                        it.go(State::Picking, route);
+                        it.outcome = None;
+                    }
+                    /* Mid-way back to the queue: it gets there first, and the next frame picks it up. */
+                    State::Returning if animate => continue,
+                    _ => it.place(State::Working, ab, 1.0),
+                }
                 it.slot = Some(slot);
             }
-            it.agent = Some(agent.clone());
-            it.started = *started;
-            it.started_known = true;
-        }
-        for key in &blocked {
-            if !self.items.iter().any(|i| i.key == *key && i.is_blocked()) {
-                if let Some(ix) = self.items.iter().position(|i| i.key == *key && i.is_doing()) {
-                    self.finish(ix, Outcome::Blocked);
-                } else {
-                    let mut it = Item::new(key, State::Blocked);
-                    it.wire = W::Blk1;
-                    it.t = 0.35;
-                    it.agent = board.blocked.iter().find(|b| b.0 == *key).map(|b| b.1.clone());
-                    self.items.push(it);
-                }
+            let it = &mut self.items[ix];
+            it.order = n;
+            it.agent = Some(d.agent.clone());
+            it.idle = !d.live;
+            it.started_known = d.started.is_some();
+            if let Some(s) = d.started {
+                it.started = s;
             }
         }
-        for it in &mut self.items {
-            let listed = match it.state {
-                State::Arriving | State::Queued => todo.contains(&it.key.as_str()),
-                State::Picking | State::Working => doing_keys.contains(&it.key.as_str()),
-                State::Blocked => blocked.contains(&it.key.as_str()),
-                _ => true,
+
+        for (n, (key, agent)) in board.blocked.iter().enumerate() {
+            let rest = blocked_t(n);
+            let ix = match find(&self.items, key) {
+                Some(ix) => ix,
+                None => {
+                    let mut it = Item::new(key, State::Blocked);
+                    it.place(State::Blocked, W::Bb, rest);
+                    self.items.push(it);
+                    self.items.len() - 1
+                }
             };
-            if !listed {
-                it.state = State::Fading;
+            if !self.items[ix].is_blocked() {
+                if animate
+                    && matches!(
+                        self.items[ix].state,
+                        State::Picking | State::Working | State::Queued | State::Arriving
+                    )
+                {
+                    self.finish(ix, Outcome::Blocked);
+                } else {
+                    self.items[ix].place(State::Blocked, W::Bb, rest);
+                }
+            }
+            let it = &mut self.items[ix];
+            it.order = n;
+            it.agent = Some(agent.clone());
+            it.idle = false;
+            if it.state == State::Blocked {
+                it.qt = Some(rest);
             }
         }
     }
@@ -695,7 +937,9 @@ impl Scene {
         self.last = now;
         self.now = now;
         let sdt = dt as f32;
-        self.clock += dt;
+        if self.motion {
+            self.clock += dt;
+        }
         self.wires = build_wires(&self.layout, &self.tune, self.clock as f32);
         let v = self.tune;
 
@@ -715,10 +959,20 @@ impl Scene {
         }
 
         self.queue_targets();
+        let ease = |t: &mut f32, qt: Option<f32>, motion: bool| {
+            if let Some(qt) = qt {
+                if motion {
+                    *t += (qt - *t) * (1.0 - (-sdt * v.travel / 12.0).exp());
+                } else {
+                    *t = qt;
+                }
+            }
+        };
         let mut i = 0;
         while i < self.items.len() {
             let mut ends: Option<Outcome> = None;
             let wires = &self.wires;
+            let motion = self.motion;
             let it = &mut self.items[i];
             match it.state {
                 State::Arriving => {
@@ -728,13 +982,11 @@ impl Scene {
                         it.t = 0.0;
                     }
                 }
-                State::Queued => {
-                    let qt = it.qt.unwrap_or(0.5);
-                    it.t += (qt - it.t) * (1.0 - (-sdt * v.travel / 12.0).exp());
-                }
+                State::Queued => ease(&mut it.t, Some(it.qt.unwrap_or(0.5)), motion),
                 State::Picking => {
                     if Self::advance(wires, v.travel, it, sdt) {
                         it.state = State::Working;
+                        it.wire = slot_wire(it.slot.unwrap_or(0));
                         if !it.started_known {
                             it.started = now;
                         }
@@ -749,6 +1001,8 @@ impl Scene {
                             let blocked = d.rng.next() < v.blocked_chance;
                             ends = Some(if blocked { Outcome::Blocked } else { Outcome::Done });
                         }
+                    } else {
+                        ease(&mut it.t, it.qt, motion);
                     }
                 }
                 State::Leaving => {
@@ -756,15 +1010,18 @@ impl Scene {
                         if it.outcome == Some(Outcome::Done) {
                             it.state = State::Gone;
                             let key = it.key.clone();
-                            if let Some(n) = &mut self.done_count {
-                                *n += 1;
-                            }
+                            self.done_log.retain(|d| d.0 != key);
                             self.done_log.insert(0, (key, now));
-                            self.done_log.truncate(6);
+                            if self.demo.is_some() {
+                                if let Some(n) = &mut self.done_count {
+                                    *n += 1;
+                                }
+                                self.done_log.truncate(6);
+                            }
                         } else {
                             it.state = State::Blocked;
                         }
-                    } else if it.outcome == Some(Outcome::Done) && it.wire == W::Done1 {
+                    } else if it.outcome == Some(Outcome::Done) && it.wire == W::Done2 {
                         if !it.flashed {
                             it.flashed = true;
                             self.flash_done = 1.0;
@@ -775,21 +1032,22 @@ impl Scene {
                 State::Returning => {
                     if Self::advance(wires, v.travel, it, sdt) {
                         it.state = State::Queued;
-                        it.wire = W::Ab1;
-                        it.t = 0.9;
-                        it.qt = Some(0.9);
-                        let it = self.items.remove(i);
-                        self.items.insert(0, it);
-                        break;
+                        it.qt = Some(it.t);
+                        if self.demo.is_some() {
+                            let it = self.items.remove(i);
+                            self.items.insert(0, it);
+                            break;
+                        }
                     }
                 }
                 State::Fading => {
                     it.alpha -= sdt / 0.8;
-                    if it.alpha <= 0.0 {
+                    if it.alpha <= 0.0 || !motion {
                         it.state = State::Gone;
                     }
                 }
-                State::Blocked | State::Gone => {}
+                State::Blocked => ease(&mut it.t, it.qt, motion),
+                State::Gone => {}
             }
             if let Some(outcome) = ends {
                 self.finish(i, outcome);
@@ -812,19 +1070,42 @@ impl Scene {
             if let (Some(h), Some(slot), Some(agent)) = (head, slot, agent) {
                 let it = &mut self.items[h];
                 if it.t > it.qt.unwrap_or(0.0) - 0.05 {
-                    it.state = State::Picking;
                     it.slot = Some(slot);
                     it.agent = Some(agent.to_string());
-                    it.route = vec![(if slot == 0 { W::Ab1 } else { W::Ab2 }, it.t, 1.0)];
-                    it.seg = 0;
-                    it.p = 0.0;
+                    let route = vec![(slot_wire(slot), it.t, 1.0)];
+                    it.go(State::Picking, route);
                 }
             }
         }
         self.flash_done = (self.flash_done - sdt * 0.8).max(0.0);
     }
 
+    /// Something is travelling, fading or settling: the window should draw every frame.
+    pub fn moving(&self) -> bool {
+        self.flash_done > 0.0
+            || self.items.iter().any(|i| match i.state {
+                State::Queued | State::Working | State::Blocked => {
+                    self.motion && i.qt.is_some_and(|qt| (qt - i.t).abs() > 0.002)
+                }
+                State::Gone => false,
+                _ => true,
+            })
+    }
+
+    /// Something only sways, pulses or blinks: worth drawing, but not at full rate.
+    pub fn ambient(&self) -> bool {
+        self.motion
+    }
+
+    /// A run's timer is on screen, so the text changes each second even when nothing moves.
+    pub fn ticking(&self) -> bool {
+        self.items.iter().any(|i| i.state == State::Working && !i.idle)
+    }
+
     fn blink_level(&self) -> f32 {
+        if !self.motion {
+            return 1.0;
+        }
         let v = &self.tune;
         let clock = self.clock as f32;
         let p = (clock % v.blink) / v.blink;
@@ -892,8 +1173,9 @@ impl Scene {
         }
     }
 
+    /// Runs on a task right now (a run holds it), the ones still being picked up included.
     pub fn working(&self) -> usize {
-        self.items.iter().filter(|i| i.state == State::Working).count()
+        self.items.iter().filter(|i| i.is_doing() && !i.idle).count()
     }
 
     pub fn queued(&self) -> usize {
@@ -913,14 +1195,15 @@ impl Scene {
         let cur = v.current.of(th);
         let clock = self.clock as f32;
         let pulse = |slot: usize| {
-            if !self
-                .items
-                .iter()
-                .any(|i| i.state == State::Working && i.slot == Some(slot))
+            if !self.motion
+                || !self
+                    .items
+                    .iter()
+                    .any(|i| i.state == State::Working && !i.idle && i.slot == Some(slot))
             {
                 return 0.0;
             }
-            let l = self.wire(if slot == 0 { W::Ab1 } else { W::Ab2 }).len;
+            let l = self.wire(slot_wire(slot)).len;
             (clock * v.pulse_speed / l) % 1.0
         };
         self.draw_wire(&mut r, self.wire(W::In1), tinted(th.blue), 0.0, cur);
@@ -931,34 +1214,50 @@ impl Scene {
         self.draw_wire(&mut r, self.wire(W::Bb), tinted(th.red), 0.0, cur);
         self.draw_wire(&mut r, self.wire(W::Done1), tinted(th.green), 0.0, cur);
         self.draw_wire(&mut r, self.wire(W::Done2), tinted(th.green), 0.0, cur);
-        self.draw_wire(&mut r, self.wire(W::Blk1), tinted(th.red), 0.0, cur);
-        self.draw_wire(&mut r, self.wire(W::Blk2), tinted(th.red), 0.0, cur);
 
         let bl = self.blink_level();
         let x = self.layout.x;
         let lit = |b: bool| if b { 1.0 } else { 0.0 };
-        self.draw_pole(&mut r, th, x[0], TOPM, th.blue, lit(self.queued() > 0));
+        self.draw_pole(&mut r, th, x[0], TOP, th.blue, lit(self.queued() > 0));
+        let idle = self.items.iter().any(|i| i.state == State::Working && i.idle);
         let doing = if self.working() > 0 {
-            0.85 + 0.15 * (clock * 7.0).sin()
+            if self.motion {
+                0.85 + 0.15 * (clock * 7.0).sin()
+            } else {
+                1.0
+            }
+        } else if idle {
+            0.4
         } else {
             0.0
         };
-        self.draw_pole(&mut r, th, x[1], TOPM, th.yellow, doing);
-        self.draw_pole(&mut r, th, x[2], TOPD, th.green, self.flash_done);
-        self.draw_pole(
-            &mut r,
-            th,
-            x[2],
-            TOPB,
-            th.red,
-            if self.blocked() > 0 { bl } else { 0.0 },
-        );
+        self.draw_pole(&mut r, th, x[1], TOP, th.yellow, doing);
+        let blocked = if self.blocked() > 0 { bl } else { 0.0 };
+        self.draw_pole(&mut r, th, x[2], TOP, th.red, blocked);
+        self.draw_pole(&mut r, th, x[3], TOP, th.green, self.flash_done);
 
+        /* Resting beads past MAX_BEADS a pole stay off the wire; the lists say how many more. */
+        let mut resting = [0usize; 3];
         for it in &self.items {
+            let pole = match it.state {
+                State::Queued => Some(0),
+                State::Working => Some(1),
+                State::Blocked => Some(2),
+                _ => None,
+            };
+            if let Some(p) = pole {
+                resting[p] += 1;
+                if resting[p] > MAX_BEADS {
+                    continue;
+                }
+            }
             let (bx, by) = self.wire(it.wire).at(it.t);
             let mut a = it.alpha;
             if it.state == State::Blocked {
                 a *= 0.45 + 0.55 * bl;
+            }
+            if it.is_doing() && it.idle {
+                a *= 0.45;
             }
             let c = match it.state {
                 State::Working | State::Picking | State::Returning => th.yellow,
@@ -975,76 +1274,134 @@ impl Scene {
 
     /* ---------- text ---------- */
 
-    /// The four lists: todo and doing under their poles, done and blocked beside theirs.
-    pub fn columns(&self) -> [Column; 4] {
+    fn link(&self, key: &str) -> Option<String> {
+        self.links.iter().find(|(k, _)| k == key).map(|(_, url)| url.clone())
+    }
+
+    /// The four lists, one under each pole: todo, doing, blocked, done. `chars` is how many
+    /// characters fit each one; a list shows the longest form of its lines that all of them
+    /// fit (doing drops the timer, then the agent; blocked the agent, then the mark; done the
+    /// mark), the shortest when none does.
+    pub fn columns(&self, chars: [usize; 4]) -> [Column; 4] {
         let now = self.now;
-        let cap = |mut lines: Vec<Line>, max: usize| {
-            if lines.len() > max {
-                let more = lines.len() - max + 1;
-                lines.truncate(max - 1);
-                lines.push(Line::one(format!("+{more} more"), Role::Muted));
-            }
-            lines
+        let sorted = |f: &dyn Fn(&Item) -> bool| {
+            let mut v: Vec<&Item> = self.items.iter().filter(|i| f(i)).collect();
+            v.sort_by_key(|i| i.order);
+            v
         };
-        let todo = self
-            .items
-            .iter()
-            .filter(|i| i.is_todo())
-            .map(|i| Line::one(i.key.clone(), Role::Blue))
+        let todo: Vec<Vec<Line>> = sorted(&|i: &Item| i.is_todo())
+            .into_iter()
+            .map(|i| vec![Line::one(i.key.clone(), Role::Blue).to(self.link(&i.key))])
             .collect();
         let mut doing: Vec<&Item> = self.items.iter().filter(|i| i.is_doing()).collect();
-        doing.sort_by_key(|i| i.slot);
-        let doing = doing
+        if self.demo.is_some() {
+            doing.sort_by_key(|i| i.slot);
+        } else {
+            doing.sort_by_key(|i| (i.idle, i.order));
+        }
+        let doing: Vec<Vec<Line>> = doing
             .into_iter()
             .map(|i| {
-                let elapsed = if i.state == State::Working || i.started_known {
-                    fmt(now - i.started)
+                let link = self.link(&i.key);
+                let agent = i.agent.clone().unwrap_or_default();
+                let (key_role, agent_role) = if i.idle {
+                    (Role::Muted, Role::Muted)
                 } else {
-                    "…".into()
+                    (Role::Ink, Role::Yellow)
                 };
-                Line(vec![
-                    Span::new(format!("{} ", i.key), Role::Ink),
-                    Span::new(format!("{} ", i.agent.as_deref().unwrap_or("")), Role::Yellow),
-                    Span::new(elapsed, Role::Muted),
-                ])
+                let key = Span::new(i.key.clone(), key_role);
+                let with_agent = Line(
+                    vec![key.clone(), Span::new(format!(" {agent}"), agent_role)],
+                    link.clone(),
+                );
+                let bare = Line(vec![key], link.clone());
+                if i.idle {
+                    return vec![with_agent, bare];
+                }
+                let elapsed = i.elapsed(now);
+                let mut full = with_agent.clone();
+                full.0.push(Span::new(format!(" {elapsed}"), Role::Muted));
+                vec![full, with_agent, bare]
             })
             .collect();
-        let blocked = self
-            .items
-            .iter()
-            .filter(|i| i.is_blocked())
+        let blocked: Vec<Vec<Line>> = sorted(&|i: &Item| i.is_blocked())
+            .into_iter()
             .map(|i| {
-                Line(vec![
-                    Span::new(format!("▲ {} ", i.key), Role::Red),
-                    Span::new(i.agent.clone().unwrap_or_default(), Role::Muted),
-                ])
+                let link = self.link(&i.key);
+                let mark = Line(vec![Span::new(format!("▲ {}", i.key), Role::Red)], link.clone());
+                let mut full = mark.clone();
+                full.0.push(Span::new(
+                    format!(" {}", i.agent.clone().unwrap_or_default()),
+                    Role::Muted,
+                ));
+                vec![full, mark, Line(vec![Span::new(i.key.clone(), Role::Red)], link)]
             })
             .collect();
-        let done = self
-            .done_log
-            .iter()
-            .filter(|(_, at)| now - at < 30.0)
-            .map(|(key, at)| {
-                let mut l = Line::one(format!("✓ {key}"), Role::Green);
-                l.0[0].alpha = (1.0 - (now - at) as f32 / 30.0).max(0.3);
-                l
-            })
-            .collect();
+        let done_line = |key: &str, alpha: f32| {
+            let link = self.link(key);
+            let mut a = Line(vec![Span::new(format!("✓ {key}"), Role::Green)], link.clone());
+            let mut b = Line(vec![Span::new(key, Role::Green)], link);
+            a.0[0].alpha = alpha;
+            b.0[0].alpha = alpha;
+            vec![a, b]
+        };
+        let (done, done_total, done_lit) = match self.done_window {
+            /* Live: everything done within the window, fading over it. */
+            Some(window) => {
+                let lines: Vec<Vec<Line>> = self
+                    .done_log
+                    .iter()
+                    .map(|(key, at)| done_line(key, (1.0 - ((now - at) / window.max(1.0)) as f32).max(0.3)))
+                    .collect();
+                let total = (self.done_count.unwrap_or(0) as usize).max(lines.len());
+                let newest = self.done_log.first().map(|d| now - d.1);
+                (lines, total, newest.is_some_and(|age| age < DONE_LIT))
+            }
+            None => {
+                let lines: Vec<Vec<Line>> = self
+                    .done_log
+                    .iter()
+                    .filter(|(_, at)| now - at < 30.0)
+                    .map(|(key, at)| done_line(key, (1.0 - (now - at) as f32 / 30.0).max(0.3)))
+                    .collect();
+                let n = lines.len();
+                (lines, n, false)
+            }
+        };
+        let (nt, nd, nb) = (todo.len(), doing.len(), blocked.len());
         [
-            Column::new("todo", Role::Blue, self.queued() > 0, cap(todo, LINES)),
-            Column::new("doing", Role::Yellow, self.working() > 0, cap(doing, LINES)),
-            Column::new("done", Role::Green, self.flash_done > 0.2, cap(done, 3)),
-            Column::new("blocked", Role::Red, self.blocked() > 0, cap(blocked, 3)),
+            Column::new("todo", Role::Blue, self.queued() > 0, fitted(todo, LINES, nt, chars[0])),
+            Column::new(
+                "doing",
+                Role::Yellow,
+                self.working() > 0,
+                fitted(doing, LINES, nd, chars[1]),
+            ),
+            Column::new(
+                "blocked",
+                Role::Red,
+                self.blocked() > 0,
+                fitted(blocked, SHORT_LINES, nb, chars[2]),
+            ),
+            Column::new(
+                "done",
+                Role::Green,
+                self.flash_done > 0.2 || done_lit,
+                fitted(done, SHORT_LINES, done_total, chars[3]),
+            ),
         ]
     }
 
     /// The status line under the scene.
     pub fn status(&self) -> Vec<Line> {
         if let Some(q) = &self.quiet {
-            return vec![Line(vec![
-                Span::new("nothing on the wire", Role::Muted),
-                Span::new(format!("  {q}"), Role::Faint),
-            ])];
+            return vec![Line(
+                vec![
+                    Span::new("nothing on the wire", Role::Muted),
+                    Span::new(format!("  {q}"), Role::Faint),
+                ],
+                None,
+            )];
         }
         let now = self.now;
         let mut parts: Vec<Line> = self
@@ -1054,26 +1411,35 @@ impl Scene {
                 let w = self
                     .items
                     .iter()
-                    .find(|i| i.state == State::Working && i.agent.as_deref() == Some(&a.name));
+                    .find(|i| i.is_doing() && !i.idle && i.agent.as_deref() == Some(&a.name));
                 match (w, &a.error) {
-                    (Some(w), _) => Line(vec![
-                        Span::new(format!("{} ", a.name), Role::Muted),
-                        Span::new("●", Role::Yellow),
-                        Span::new(format!(" {} {}", w.key, fmt(now - w.started)), Role::Muted),
-                    ]),
-                    (None, Some(e)) => Line(vec![
-                        Span::new(format!("{} ", a.name), Role::Muted),
-                        Span::new(format!("× {e}"), Role::Red),
-                    ]),
+                    (Some(w), _) => Line(
+                        vec![
+                            Span::new(format!("{} ", a.name), Role::Muted),
+                            Span::new("●", Role::Yellow),
+                            Span::new(format!(" {} {}", w.key, w.elapsed(now)), Role::Muted),
+                        ],
+                        None,
+                    ),
+                    (None, Some(e)) => Line(
+                        vec![
+                            Span::new(format!("{} ", a.name), Role::Muted),
+                            Span::new(format!("× {e}"), Role::Red),
+                        ],
+                        None,
+                    ),
                     (None, None) if a.stopped => Line::one(format!("{} stopped", a.name), Role::Faint),
                     (None, None) => Line::one(format!("{} ○", a.name), Role::Muted),
                 }
             })
             .collect();
-        parts.push(Line(vec![
-            Span::new(self.queued().to_string(), Role::Blue),
-            Span::new(" todo", Role::Muted),
-        ]));
+        parts.push(Line(
+            vec![
+                Span::new(self.queued().to_string(), Role::Blue),
+                Span::new(" todo", Role::Muted),
+            ],
+            None,
+        ));
         let blocked: Vec<&str> = self
             .items
             .iter()
@@ -1081,40 +1447,75 @@ impl Scene {
             .map(|i| i.key.as_str())
             .collect();
         if !blocked.is_empty() {
-            parts.push(Line(vec![
-                Span::new("▲", Role::Red),
-                Span::new(format!(" {}", blocked.join(" ")), Role::Muted),
-            ]));
+            parts.push(Line(
+                vec![
+                    Span::new("▲", Role::Red),
+                    Span::new(format!(" {}", blocked.join(" ")), Role::Muted),
+                ],
+                None,
+            ));
         }
         if let Some(n) = self.done_count {
-            parts.push(Line(vec![
-                Span::new("✓", Role::Green),
-                Span::new(format!(" {n}"), Role::Muted),
-            ]));
+            parts.push(Line(
+                vec![Span::new("✓", Role::Green), Span::new(format!(" {n}"), Role::Muted)],
+                None,
+            ));
+        }
+        if let Some((note, role)) = &self.note {
+            parts.push(Line::one(note.clone(), *role));
         }
         parts
     }
 
     /// "1 doing · 1 need you", beside the title.
     pub fn count(&self) -> String {
-        format!("{} doing · {} need you", self.working(), self.blocked())
+        let need = self.items.iter().filter(|i| i.is_blocked()).count();
+        format!("{} doing · {need} need you", self.working())
+    }
+
+    /// Where the lists start, in screen pixels from the scene's top: under the poles.
+    pub fn list_top(cell: f32) -> f32 {
+        (TOP + POLE_H) as f32 * cell + 2.0
     }
 
     /// The box's scene area in screen pixels at `cell` pixels per logo pixel.
     pub fn size(&self, cell: f32) -> (f32, f32) {
         let l = &self.layout;
-        let list_top = (TOPM + POLE_H) as f32 * cell + 2.0;
+        let list_top = Self::list_top(cell);
         (
-            l.bw as f32 * cell + TEXT_W,
+            l.bw as f32 * cell + DONE_TAIL,
             (l.bh as f32 * cell + 6.0).max(list_top + 20.0 + LINES as f32 * 15.0),
         )
     }
 }
 
-/// Minutes and seconds, "2m14".
+/// At most `max` lines of a list of `total`, the last saying how many more when they don't
+/// fit, each in the longest of its forms (given longest first) that every shown line fits
+/// in `chars`, so the list reads alike; the shortest when none does.
+fn fitted(entries: Vec<Vec<Line>>, max: usize, total: usize, chars: usize) -> Vec<Line> {
+    let shown = if total > max { max - 1 } else { max };
+    let entries: Vec<Vec<Line>> = entries.into_iter().take(shown).collect();
+    let forms = entries.iter().map(Vec::len).max().unwrap_or(0);
+    let pick = |f: usize, e: &Vec<Line>| e[f.min(e.len() - 1)].clone();
+    let form = (0..forms)
+        .find(|&f| entries.iter().all(|e| pick(f, e).chars() <= chars))
+        .unwrap_or(forms.saturating_sub(1));
+    let mut lines: Vec<Line> = entries.iter().map(|e| pick(form, e)).collect();
+    if total > lines.len() && total > max {
+        lines.push(Line::one(format!("+{} more", total - lines.len()), Role::Muted));
+    }
+    lines
+}
+
+/// Minutes and seconds, "2m14"; hours and minutes from an hour on, "1h05".
 pub fn fmt(secs: f64) -> String {
     let s = secs.max(0.0).floor() as u64;
-    format!("{}m{:02}", s / 60, s % 60)
+    let m = s / 60;
+    if m >= 60 {
+        format!("{}h{:02}", m / 60, m % 60)
+    } else {
+        format!("{}m{:02}", m, s % 60)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1134,12 +1535,23 @@ impl Span {
     }
 }
 
+/// A line of text, and the page it opens when clicked.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Line(pub Vec<Span>);
+pub struct Line(pub Vec<Span>, pub Option<String>);
 
 impl Line {
     fn one(text: impl Into<String>, role: Role) -> Self {
-        Self(vec![Span::new(text, role)])
+        Self(vec![Span::new(text, role)], None)
+    }
+
+    /// How many characters it takes.
+    pub fn chars(&self) -> usize {
+        self.0.iter().map(|s| s.text.chars().count()).sum()
+    }
+
+    fn to(mut self, link: Option<String>) -> Self {
+        self.1 = link;
+        self
     }
 }
 
@@ -1166,14 +1578,16 @@ mod tests {
     use super::*;
     use crate::theme::{DEFAULT, Theme};
 
+    const WIDE: [usize; 4] = [40; 4];
+
     #[test]
     fn layout_matches_the_prototype_defaults() {
-        let l = Layout::new(54.0);
-        assert_eq!(l.x, [10.0, 64.0, 118.0]);
-        assert_eq!(l.bw, 152);
-        assert_eq!(l.bh, 56);
+        let l = Layout::new(64.0);
+        assert_eq!(l.x, [10.0, 74.0, 106.0, 138.0]);
+        assert_eq!(l.bw, 170);
+        assert_eq!(l.bh, 22);
         let s = Scene::live(Tune::default());
-        assert_eq!(s.size(3.0), (606.0, 193.0));
+        assert_eq!(s.size(3.0), (526.0, 142.0));
     }
 
     #[test]
@@ -1181,9 +1595,15 @@ mod tests {
         assert!((dip_shape(0.0)).abs() < 1e-6);
         assert!((dip_shape(1.0)).abs() < 1e-6);
         assert!((dip_shape(0.5) - 1.0).abs() < 1e-6);
-        let w = build_wires(&Layout::new(54.0), &Tune::default(), 0.0)[W::Ab1 as usize];
-        assert_eq!(w.at(0.0), (19.0, 24.0));
-        assert!(w.at(0.5).1 > 24.0);
+        let w = build_wires(&Layout::new(64.0), &Tune::default(), 0.0)[W::Ab1 as usize];
+        assert_eq!(w.at(0.0), (19.0, 7.0));
+        assert!(w.at(0.5).1 > 7.0);
+        /* The long span to done hangs under blocked's lower arm, above its foot. */
+        let l = Layout::new(64.0);
+        let bd = build_wires(&l, &Tune::default(), 0.0)[W::Bd as usize];
+        let under = (l.x[2] + 5.0 - bd.x0) / (bd.x1 - bd.x0);
+        let y = bd.at(under).1;
+        assert!(y > (TOP + 8) as f32 && y < (TOP + POLE_H) as f32, "{y}");
     }
 
     #[test]
@@ -1201,36 +1621,167 @@ mod tests {
         assert!(!s.draw(th).runs(th.surface).is_empty());
     }
 
+    fn run(s: &mut Scene, board: &Board, from: usize, to: usize) {
+        for f in from..to {
+            s.sync(board);
+            s.step(f as f64 / 60.0);
+        }
+    }
+
+    fn doing(key: &str, live: bool) -> Doing {
+        Doing {
+            key: key.into(),
+            agent: "dev".into(),
+            started: live.then_some(0.5),
+            live,
+        }
+    }
+
     #[test]
     fn live_items_follow_the_board() {
         let mut s = Scene::live(Tune::default());
         let mut board = Board {
             todo: vec!["A-1".into(), "A-2".into()],
+            ready: true,
+            ..Default::default()
+        };
+        run(&mut s, &board, 0, 120);
+        assert_eq!(s.queued(), 2);
+        board.todo = vec!["A-2".into()];
+        board.doing = vec![doing("A-1", true)];
+        run(&mut s, &board, 120, 600);
+        assert_eq!(s.working(), 1);
+        assert_eq!(s.queued(), 1);
+        let cols = s.columns(WIDE);
+        assert_eq!(cols[1].lines[0].0[0].text, "A-1");
+        board.doing.clear();
+        run(&mut s, &board, 600, 700);
+        assert_eq!(s.working(), 0);
+        assert_eq!(s.items.len(), 1);
+    }
+
+    #[test]
+    fn the_first_board_is_placed_and_later_moves_travel() {
+        let mut s = Scene::live(Tune::default());
+        let mut board = Board {
+            todo: vec!["A-1".into()],
+            doing: vec![doing("A-2", true), doing("A-3", false)],
+            blocked: vec![("A-4".into(), "dev".into())],
+            done: Some(vec![("A-5".into(), -60.0)]),
+            done_count: Some(1),
+            done_window: 86_400.0,
+            ready: true,
             ..Default::default()
         };
         s.sync(&board);
-        for f in 0..120 {
-            s.step(f as f64 / 60.0);
-        }
+        s.step(0.0);
+        /* Nothing travels on the first board: it is how things already were. */
+        assert!(
+            !s.items
+                .iter()
+                .any(|i| matches!(i.state, State::Arriving | State::Picking | State::Leaving))
+        );
+        assert_eq!((s.queued(), s.working(), s.blocked()), (1, 1, 1));
+        let cols = s.columns(WIDE);
+        assert_eq!(cols[3].lines[0].0[0].text, "✓ A-5");
+        /* An idle doing item has no timer and doesn't count as working. */
+        assert_eq!(cols[1].lines[1].0.len(), 2);
+        assert_eq!(cols[1].lines[1].0[0].role, Role::Muted);
+
+        /* A-2 is done: it climbs, and is listed once it gets there. */
+        board.doing.remove(0);
+        board.done = Some(vec![("A-2".into(), 1.0), ("A-5".into(), -60.0)]);
+        board.done_count = Some(2);
+        s.sync(&board);
+        assert!(s.items.iter().any(|i| i.key == "A-2" && i.leaving_to(Outcome::Done)));
+        assert_eq!(s.columns(WIDE)[3].lines.len(), 1);
+        assert!(s.moving());
+        run(&mut s, &board, 1, 600);
+        assert!(!s.items.iter().any(|i| i.key == "A-2"));
+        assert_eq!(s.columns(WIDE)[3].lines[0].0[0].text, "✓ A-2");
+        assert_eq!(s.status().last().unwrap().0[1].text, " 2");
+
+        /* The blocked one is answered and goes back to todo. */
+        board.blocked.clear();
+        board.todo.push("A-4".into());
+        s.sync(&board);
+        assert!(s.items.iter().any(|i| i.key == "A-4" && i.state == State::Returning));
+        run(&mut s, &board, 600, 1200);
         assert_eq!(s.queued(), 2);
-        board.todo = vec!["A-1".into(), "A-2".into()];
-        board.doing = vec![("A-1".into(), "dev".into(), 0.5)];
+        assert!(!s.moving());
+    }
+
+    #[test]
+    fn a_todo_item_can_go_straight_to_blocked_or_done() {
+        let mut s = Scene::live(Tune::default());
+        let mut board = Board {
+            todo: vec!["A-1".into(), "A-2".into()],
+            done: Some(Vec::new()),
+            ready: true,
+            ..Default::default()
+        };
+        run(&mut s, &board, 0, 60);
+        board.todo.clear();
+        board.blocked = vec![("A-1".into(), "dev".into())];
+        board.done = Some(vec![("A-2".into(), 1.0)]);
+        run(&mut s, &board, 60, 900);
+        assert_eq!(s.blocked(), 1);
+        assert_eq!(s.queued(), 0);
+        assert_eq!(s.done_log.len(), 1);
+        assert!(!s.moving());
+    }
+
+    #[test]
+    fn without_motion_nothing_travels() {
+        let mut s = Scene::live(Tune::default());
+        s.motion = false;
+        let mut board = Board {
+            todo: vec!["A-1".into()],
+            ready: true,
+            ..Default::default()
+        };
+        run(&mut s, &board, 0, 2);
+        board.todo.clear();
+        board.doing = vec![doing("A-1", true)];
         s.sync(&board);
-        for f in 120..600 {
-            s.step(f as f64 / 60.0);
-        }
+        s.step(0.1);
         assert_eq!(s.working(), 1);
-        assert_eq!(s.queued(), 1);
-        let cols = s.columns();
-        assert_eq!(cols[1].lines[0].0[0].text, "A-1 ");
-        board.doing.clear();
-        board.todo = vec!["A-2".into()];
-        s.sync(&board);
-        for f in 600..700 {
-            s.step(f as f64 / 60.0);
-        }
-        assert_eq!(s.working(), 0);
-        assert_eq!(s.items.len(), 1);
+        assert!(!s.moving());
+        assert!(!s.ambient());
+        assert!(s.ticking());
+    }
+
+    #[test]
+    fn lines_link_to_their_board() {
+        let mut s = Scene::live(Tune::default());
+        s.sync(&Board {
+            todo: vec!["COPL-7".into()],
+            links: vec![("COPL-7".into(), "http://x/b/COPL".into())],
+            ready: true,
+            ..Default::default()
+        });
+        assert_eq!(s.columns(WIDE)[0].lines[0].1.as_deref(), Some("http://x/b/COPL"));
+    }
+
+    #[test]
+    fn narrow_lists_drop_the_timer_then_the_agent() {
+        let mut s = Scene::live(Tune::default());
+        let b = Board {
+            doing: vec![doing("COPL-12", true)],
+            blocked: vec![("COPL-13".into(), "reviewer".into())],
+            ready: true,
+            ..Default::default()
+        };
+        s.sync(&b);
+        s.step(1.0);
+        let text = |c: &Column| c.lines[0].0.iter().map(|s| s.text.as_str()).collect::<String>();
+        let wide = s.columns(WIDE);
+        assert_eq!(text(&wide[1]), "COPL-12 dev 0m00");
+        assert_eq!(text(&wide[2]), "▲ COPL-13 reviewer");
+        let narrow = s.columns([10, 12, 10, 10]);
+        assert_eq!(text(&narrow[1]), "COPL-12 dev");
+        assert_eq!(text(&narrow[2]), "▲ COPL-13");
+        assert_eq!(text(&s.columns([3; 4])[1]), "COPL-12");
     }
 
     #[test]
@@ -1240,7 +1791,7 @@ mod tests {
             todo: (1..=6).map(|n| format!("T-{n}")).collect(),
             ..Default::default()
         });
-        let todo = &s.columns()[0];
+        let todo = &s.columns(WIDE)[0];
         assert_eq!(todo.lines.len(), LINES);
         assert_eq!(todo.lines[3].0[0].text, "+3 more");
         assert_eq!(todo.head_role, Role::Blue);
@@ -1260,5 +1811,6 @@ mod tests {
     fn formats_like_the_prototype() {
         assert_eq!(fmt(134.9), "2m14");
         assert_eq!(fmt(5.0), "0m05");
+        assert_eq!(fmt(3900.0), "1h05");
     }
 }

@@ -3,6 +3,7 @@
 //! as the wired scene (COPL-33). `--demo` draws the prototype's simulation
 //! instead, with no config and no server.
 
+mod feed;
 mod scene;
 mod theme;
 mod view;
@@ -23,6 +24,7 @@ use gpui::{
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{oneshot, watch};
 
+use crate::feed::Feed;
 use crate::scene::{Scene, Tune};
 use crate::theme::Theme;
 use crate::view::{BoxView, Source};
@@ -55,11 +57,20 @@ struct Args {
     theme: Option<String>,
 }
 
-/// `theme` from the config file, read leniently, so a config the daemon refuses still sets the box's colours.
-fn theme_in(path: &Path) -> Option<String> {
+/// The config file as a plain table, read leniently, so a config the daemon refuses still sets the box's looks.
+fn table_in(path: &Path) -> Option<toml::Table> {
     let text = std::fs::read_to_string(path).ok()?;
-    let table: toml::Table = toml::from_str(&text).ok()?;
-    table.get("theme")?.as_str().map(str::to_string)
+    toml::from_str(&text).ok()
+}
+
+/// `theme` from the config file.
+fn theme_in(path: &Path) -> Option<String> {
+    table_in(path)?.get("theme")?.as_str().map(str::to_string)
+}
+
+/// `motion` from the config file: on unless it says `motion = false`.
+fn motion_in(path: &Path) -> bool {
+    table_in(path).and_then(|t| t.get("motion")?.as_bool()).unwrap_or(true)
 }
 
 fn pick_theme(args: &Args, path: &Path) -> Result<&'static Theme> {
@@ -108,7 +119,21 @@ struct Running {
 }
 
 impl Running {
-    fn start(config: Config, finished: Arc<AtomicBool>) -> Result<(Self, watch::Receiver<DaemonState>)> {
+    /// The daemon's state, and the owner's feed when the config has an owner token.
+    #[allow(clippy::type_complexity)]
+    fn start(
+        config: Config,
+        finished: Arc<AtomicBool>,
+    ) -> Result<(Self, watch::Receiver<DaemonState>, Option<watch::Receiver<Feed>>)> {
+        let owner = config.owner.clone();
+        let feed = owner.as_ref().map(|o| {
+            watch::channel(Feed {
+                url: o.url.clone(),
+                ..Default::default()
+            })
+        });
+        let feed_tx = feed.as_ref().map(|f| f.0.clone());
+        let feed_rx = feed.map(|f| f.1);
         let (state_tx, state_rx) = std::sync::mpsc::channel();
         let (stop, stop_rx) = oneshot::channel::<()>();
         let thread = std::thread::Builder::new().name("daemon".into()).spawn(move || {
@@ -132,6 +157,9 @@ impl Running {
                     }
                 };
                 let _ = state_tx.send(Ok(daemon.subscribe()));
+                if let (Some(owner), Some(tx)) = (owner, feed_tx) {
+                    tokio::spawn(feed::run(owner, tx, daemon.subscribe()));
+                }
                 let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
                 else {
                     tracing::error!("can't listen for signals");
@@ -166,6 +194,7 @@ impl Running {
                 thread: Some(thread),
             },
             state,
+            feed_rx,
         ))
     }
 
@@ -195,6 +224,7 @@ fn main() -> Result<()> {
     let path = args.config.clone().unwrap_or_else(default_config_path);
     let theme = pick_theme(&args, &path)?;
     let tune = Tune::default();
+    let motion = motion_in(&path);
 
     let mut running = None;
     let (scene, source) = if args.demo {
@@ -204,9 +234,12 @@ fn main() -> Result<()> {
             Ok(config) => {
                 tracing::info!(config = %path.display(), agents = config.agents.len(), "starting");
                 let finished = Arc::new(AtomicBool::new(false));
-                let (r, state) = Running::start(config, finished.clone())?;
+                if config.owner.is_none() {
+                    tracing::info!("no owner_token_file: drawing what the daemon knows (todo and doing)");
+                }
+                let (r, state, feed) = Running::start(config, finished.clone())?;
                 running = Some(r);
-                (Scene::live(tune), Source::Live { state, finished })
+                (Scene::live(tune), Source::Live { state, feed, finished })
             }
             Err(e) => {
                 let why = if path.exists() {
@@ -219,6 +252,8 @@ fn main() -> Result<()> {
             }
         }
     };
+    let mut scene = scene;
+    scene.motion = motion;
     let (w, h) = BoxView::window_size(&scene, tune.scale as f32);
     let mut scene = Some(scene);
     let mut source = Some(source);

@@ -2,6 +2,9 @@
 //!
 //! ```toml
 //! poll_interval = 30            # seconds, optional
+//! # The box's alone (the headless daemon ignores them): theme, motion, and your own
+//! # token for /api/wired, for the agents' url or owner_url.
+//! owner_token_file = "~/.config/copland/me.token"
 //!
 //! [[agent]]
 //! url = "https://copland.example.com"
@@ -53,8 +56,20 @@ pub struct Config {
     pub agents: Vec<AgentConfig>,
     /// The box's colour theme by name (`theme = "nord"`). Only the window reads it; the headless daemon ignores it.
     pub theme: Option<String>,
-    /// Some agent has its token written in the config itself.
+    /// The box animates (`motion = false` makes it a still picture). Only the window reads it.
+    pub motion: Option<bool>,
+    /// Your own token, for the box's view of all your agents' work. Only the window reads it.
+    pub owner: Option<Owner>,
+    /// Some token is written in the config itself.
     inline_token: bool,
+}
+
+/// The person the agents belong to, as the box reads `/api/wired` with: one token, for one instance.
+#[derive(Debug, Clone)]
+pub struct Owner {
+    /// `owner_url`, or the agents' url when they all share one; no trailing slash.
+    pub url: String,
+    pub token: Secret,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +90,10 @@ pub struct AgentConfig {
 struct RawConfig {
     poll_interval: Option<u64>,
     theme: Option<String>,
+    motion: Option<bool>,
+    owner_url: Option<String>,
+    owner_token: Option<Secret>,
+    owner_token_file: Option<String>,
     #[serde(default, rename = "agent")]
     agents: Vec<RawAgent>,
 }
@@ -169,31 +188,18 @@ impl Config {
         let mut inline_token = false;
         for (n, a) in raw.agents.into_iter().enumerate() {
             let at = format!("agent {} ({})", n + 1, a.handle);
-            let url = a.url.trim().trim_end_matches('/').to_string();
-            if !(url.starts_with("http://") || url.starts_with("https://")) {
-                bail!("{at}: url must start with http:// or https://");
-            }
+            let url = check_url(&a.url).with_context(|| format!("{at}: url"))?;
             let handle = a.handle.trim().trim_start_matches('@').to_string();
             if handle.is_empty() {
                 bail!("{at}: handle is empty");
             }
-            let token = match (a.token, a.token_file) {
-                (Some(t), None) => {
-                    inline_token = true;
-                    t
-                }
-                (None, Some(file)) => {
-                    let path = expand_home(&file);
-                    let text =
-                        read_token(&path).with_context(|| format!("{at}: reading token_file {}", path.display()))?;
-                    Secret::new(text.trim())
-                }
-                (Some(_), Some(_)) => bail!("{at}: give token or token_file, not both"),
-                (None, None) => bail!("{at}: needs token_file (or token)"),
-            };
-            if !token.expose().starts_with("cpl_") {
-                bail!("{at}: the token should be an API token (cpl_…), not a run secret or anything else");
-            }
+            let token = secret(
+                (a.token, a.token_file),
+                ("token", "token_file"),
+                &read_token,
+                &mut inline_token,
+            )
+            .with_context(|| at.clone())?;
             if a.command.is_empty() || a.command[0].trim().is_empty() {
                 bail!("{at}: command is empty");
             }
@@ -216,13 +222,79 @@ impl Config {
                 client: client.unwrap_or_else(|| DEFAULT_CLIENT.to_string()),
             });
         }
+        let owner = match (raw.owner_token, raw.owner_token_file) {
+            (None, None) => {
+                if raw.owner_url.is_some() {
+                    bail!("owner_url is set but there is no owner_token_file (or owner_token)");
+                }
+                None
+            }
+            pair => {
+                let token = secret(
+                    pair,
+                    ("owner_token", "owner_token_file"),
+                    &read_token,
+                    &mut inline_token,
+                )?;
+                let url = match &raw.owner_url {
+                    Some(u) => check_url(u).context("owner_url")?,
+                    None => {
+                        let first = &agents[0].url;
+                        if agents.iter().any(|a| &a.url != first) {
+                            bail!(
+                                "the agents are on more than one Copland, so say which one owner_token_file is for with owner_url"
+                            );
+                        }
+                        first.clone()
+                    }
+                };
+                Some(Owner { url, token })
+            }
+        };
         Ok(Config {
             poll_interval: Duration::from_secs(poll),
             agents,
             theme: raw.theme.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()),
+            motion: raw.motion,
+            owner,
             inline_token,
         })
     }
+}
+
+/// An instance's address, without a trailing slash.
+fn check_url(url: &str) -> Result<String> {
+    let url = url.trim().trim_end_matches('/').to_string();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        bail!("must start with http:// or https://");
+    }
+    Ok(url)
+}
+
+/// An API token given inline or in a file (exactly one of the two), checked to be one.
+fn secret(
+    given: (Option<Secret>, Option<String>),
+    (key, file_key): (&str, &str),
+    read_token: impl Fn(&Path) -> std::io::Result<String>,
+    inline_token: &mut bool,
+) -> Result<Secret> {
+    let token = match given {
+        (Some(t), None) => {
+            *inline_token = true;
+            t
+        }
+        (None, Some(file)) => {
+            let path = expand_home(&file);
+            let text = read_token(&path).with_context(|| format!("reading {file_key} {}", path.display()))?;
+            Secret::new(text.trim())
+        }
+        (Some(_), Some(_)) => bail!("give {key} or {file_key}, not both"),
+        (None, None) => bail!("needs {file_key} (or {key})"),
+    };
+    if !token.expose().starts_with("cpl_") {
+        bail!("the {key} should be an API token (cpl_…), not a run secret or anything else");
+    }
+    Ok(token)
 }
 
 /// The command with its placeholders filled in. Placeholders may sit inside a longer argument.
@@ -310,6 +382,35 @@ mod tests {
         assert_eq!(parse(&agent).unwrap().theme, None);
         let c = parse(&format!("theme = \"gruvbox\"\n{agent}")).unwrap();
         assert_eq!(c.theme.as_deref(), Some("gruvbox"));
+    }
+
+    #[test]
+    fn reads_the_owner_token_for_the_agents_url() {
+        let agent = |url: &str| {
+            format!(
+                "[[agent]]\nurl=\"{url}\"\nhandle=\"a\"\ntoken=\"cpl_a\"\ncommand=[\"x\"]\nworkdir=\"{}\"\n",
+                tmp()
+            )
+        };
+        let one = agent("http://x/");
+        let c = parse(&one).unwrap();
+        assert!(c.owner.is_none());
+        assert_eq!(c.motion, None);
+
+        let c = parse(&format!("owner_token_file = \"~/me\"\nmotion = false\n{one}")).unwrap();
+        let owner = c.owner.unwrap();
+        assert_eq!(owner.url, "http://x");
+        assert_eq!(owner.token.expose(), "cpl_fromfile");
+        assert_eq!(c.motion, Some(false));
+
+        let two = format!("{one}{}", agent("http://y"));
+        assert!(parse(&format!("owner_token = \"cpl_me\"\n{two}")).is_err());
+        let c = parse(&format!("owner_token = \"cpl_me\"\nowner_url = \"http://y/\"\n{two}")).unwrap();
+        assert_eq!(c.owner.unwrap().url, "http://y");
+
+        assert!(parse(&format!("owner_url = \"http://x\"\n{one}")).is_err());
+        assert!(parse(&format!("owner_token = \"cplr_me\"\n{one}")).is_err());
+        assert!(parse(&format!("owner_token = \"cpl_me\"\nowner_token_file = \"f\"\n{one}")).is_err());
     }
 
     #[test]
