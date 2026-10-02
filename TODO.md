@@ -72,7 +72,7 @@ docs/DESIGN.md under Touch.
 - [ ] Invite a friend for real and share a board; watch live updates between two people
 - [ ] A time zone setting, so "today" and "overdue" in the MCP stop meaning UTC
 - [ ] More MCP tools from the `not yet` entries in `src/worker/mcpCoverage.ts`
-      (attaching links, the notepad, history, creating boards, calendar writes)
+      (attaching links, history, creating boards, calendar writes)
 - [ ] Portfolio at the root of berkerz.dev
 - [ ] Open source it (the repo is public now): a "Deploy to Cloudflare" button if it
       can provision D1, R2 and the Durable Object, and a README pass for people
@@ -91,7 +91,7 @@ docs/DESIGN.md under Touch.
   planning (levels, parents, dependencies) on every board, attachments
   (images, files, links) checked per board, board notes and docs that the
   MCP guide lists for agents (COPL-27)
-- MCP server with OAuth and personal tokens, 13 tools, a coverage check
+- MCP server with OAuth and personal tokens, its tools, a coverage check
 - Deployed at copland.berkerz.dev with a published Google consent screen,
   privacy and terms pages, the pole mark and favicon
 - Phones: full-screen sheets and bottom sheets, a statusline menu, the
@@ -176,3 +176,15 @@ docs/DESIGN.md under Touch.
   cache, and reported to agents as `also_moved`; the guide no longer tells
   them to move parents by hand. Stage edits (recategorising or deleting a
   stage) don't re-check parents
+- The notepad on the MCP (COPL-41): `list_notes` (names and excerpts, no
+  contents), `read_note`, `write_note` (create, replace, or `append`; pass
+  `base_updated` from `read_note` to refuse if the note changed since) and
+  `delete_note`. An agent reaches its owner's notes through the `notes:read`
+  and `notes:write` grants and the guide says which it holds; with
+  `notes:write` alone it can only add new notes
+- A trust order for agents (COPL-43): the guide quotes board notes as the
+  board's conventions, context rather than authority, and ranks what an
+  agent reads (owner and its own description, Copland's rules, the user's
+  request, board notes, docs, briefs, comments, outside content). Lower-trust
+  text never widens permissions, touches identity or credentials, or puts
+  the owner's notes or calendar where others can read them

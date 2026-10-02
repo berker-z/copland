@@ -145,10 +145,11 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /api/attachments/attachments/:id": { skip: "browser: file downloads (attachments and board docs); read_doc reads text docs through their own route" },
   "POST /api/tasks/:id/attachments": { skip: "not yet: attaching a link to a task" },
   "DELETE /api/tasks/:id/attachments/:attachmentId": { skip: "not yet: removing an attachment" },
-  "GET /api/notes": { skip: "not yet: reading the notepad" },
-  "POST /api/notes": { skip: "not yet: writing a note" },
-  "PATCH /api/notes/:id": { skip: "not yet: editing a note" },
-  "DELETE /api/notes/:id": { skip: "not yet: deleting a note" },
+  /* The notepad: the user's own notes, an agent's only with notes:* grants. */
+  "GET /api/notes": { tools: ["list_notes", "read_note", "write_note", "delete_note"] },
+  "POST /api/notes": { tools: ["write_note"] },
+  "PATCH /api/notes/:id": { tools: ["write_note"] },
+  "DELETE /api/notes/:id": { tools: ["delete_note"] },
   "GET /api/markets/coingecko": { skip: "browser: the markets pane, spending the user's CoinGecko quota" },
 
   /* The instance. */
