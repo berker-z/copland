@@ -1,17 +1,23 @@
 /* ============================================================================
-   A task, opened. Every field saves on its own as soon as it changes (text
-   on blur or Enter), through the same optimistic update as a drag, so there
-   is no save button to forget. Viewers see the same modal read-only.
+   A task, opened. It opens to read: the fields as plain text, empty ones
+   left out, the notes as written. The pencil beside delete switches to the
+   form, where every field saves on its own as soon as it changes (text on
+   blur or Enter), through the same optimistic update as a drag, so there is
+   no save button to forget. The pencil again (now a tick), or Escape, goes
+   back to reading; Escape closes the modal only from there. Comments and
+   files work in both modes: adding to a task is not editing it. Viewers
+   never get the pencil.
    ========================================================================== */
 
 import { useEffect, useState, type ReactNode } from "react";
+import { Check, Pencil } from "lucide-react";
 import { Avatar, peopleFirst } from "@/ui/Avatar";
 import { LEVELS, PRIORITIES, type BoardDetail, type Task } from "@/domain/types";
 import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
 import { DeleteButton } from "@/ui/DeleteButton";
 import { ModalFrame } from "@/ui/ModalFrame";
-import { toneText } from "@/ui/tone";
+import { dueClass, PRIORITY_CLASS, shortDate, toneText } from "@/ui/tone";
 import { Attachments, useTaskAttachments } from "./Attachments";
 import { DateFields } from "./DateFields";
 import { LabelPicker } from "./LabelPicker";
@@ -20,11 +26,12 @@ import { TaskActivity } from "./TaskActivity";
 const field = "max-w-full bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent disabled:opacity-60";
 
 /* Label beside the field from sm up; above it on a phone, where 6.5rem of
-   label column leaves the field too little room. */
-function Row({ label, children }: { label: string; children: ReactNode }) {
+   label column leaves the field too little room. `text` rows hold plain
+   text, so the label is not pushed down to meet an input's padding. */
+function Row({ label, text, children }: { label: string; text?: boolean; children: ReactNode }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-[6.5rem_minmax(0,1fr)] items-start gap-1 sm:gap-3 py-1.5">
-      <span className="text-label sm:pt-2">{label}</span>
+      <span className={`text-label ${text ? "" : "sm:pt-2"}`}>{label}</span>
       <div className="min-w-0">{children}</div>
     </div>
   );
@@ -42,6 +49,8 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
   const remove = useDeleteTask(detail.board.id);
   const files = useTaskAttachments(detail.board.id, taskId);
   const canEdit = detail.board.role !== "viewer";
+  const [mode, setMode] = useState<"view" | "edit">("view");
+  const editMode = canEdit && mode === "edit";
 
   /* Text fields keep a local draft and save on blur; a live update from
      someone else replaces the draft only while this field is not focused. */
@@ -53,6 +62,27 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
     if (task && editing !== "brief") setBrief(task.brief);
   }, [task, editing]);
 
+  /* Back to reading. Blurring first saves a draft still in a text field,
+     which unmounting it would drop. */
+  const finishEditing = () => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    setMode("view");
+  };
+
+  /* Escape in the form goes back to reading instead of closing. This sits
+     on body, which the key passes before ModalFrame's listener on document;
+     a picker that already handled the key (preventDefault) keeps it. */
+  useEffect(() => {
+    if (!editMode) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.stopPropagation();
+      finishEditing();
+    };
+    document.body.addEventListener("keydown", onKey);
+    return () => document.body.removeEventListener("keydown", onKey);
+  }, [editMode]);
+
   /* Deleted, here or by someone else while it was open. */
   useEffect(() => {
     if (!task) onClose();
@@ -61,7 +91,6 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
 
   const save = (patch: TaskPatch) => update.mutate({ id: task.id, patch });
   const stage = detail.stages.find((s) => s.id === task.stageId);
-  const planning = detail.board.hasPlanning;
   const others = detail.tasks.filter((t) => t.id !== task.id);
 
   const toggleIn = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
@@ -75,14 +104,169 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
       }
       onClose={onClose}
       size="lg"
-      headerActions={canEdit && <DeleteButton onDelete={() => remove.mutate(task.id)} />}
+      headerActions={
+        canEdit && (
+          <>
+            <button
+              onClick={() => (editMode ? finishEditing() : setMode("edit"))}
+              className={`tap p-2 flex items-center gap-1.5 hover:bg-raised transition-colors ${editMode ? "text-accent" : "hover:text-accent"}`}
+              title={editMode ? "Done editing" : "Edit"}
+            >
+              {editMode ? <Check size={18} /> : <Pencil size={18} />}
+              {editMode && <span className="text-xs">done</span>}
+            </button>
+            <DeleteButton onDelete={() => remove.mutate(task.id)} />
+          </>
+        )
+      }
     >
       {(update.error ?? remove.error) && (
         <p className="text-red text-xs mb-3">{(update.error ?? remove.error)?.message}</p>
       )}
+
+      {editMode ? (
+        <TaskForm
+          detail={detail}
+          task={task}
+          others={others}
+          title={title}
+          brief={brief}
+          setTitle={setTitle}
+          setBrief={setBrief}
+          setEditing={setEditing}
+          save={save}
+          toggleIn={toggleIn}
+        />
+      ) : (
+        <TaskView detail={detail} task={task} />
+      )}
+
+      <Row label="files">
+        <Attachments items={task.attachments} canEdit={canEdit} {...files} />
+      </Row>
+
+      <TaskActivity detail={detail} taskId={task.id} />
+    </ModalFrame>
+  );
+}
+
+/* Reading: what is set, as text. Planning fields only on a planning board. */
+function TaskView({ detail, task }: { detail: BoardDetail; task: Task }) {
+  const stage = detail.stages.find((s) => s.id === task.stageId);
+  const labels = detail.labels.filter((l) => task.labelIds.includes(l.id));
+  const assignees = peopleFirst(detail.members.filter((m) => task.assigneeIds.includes(m.user.id)));
+  const parent = task.parentId ? detail.tasks.find((t) => t.id === task.parentId) : undefined;
+  const planning = detail.board.hasPlanning;
+
+  return (
+    <>
+      <h2 className="text-bright text-lg leading-snug mb-3 break-words">{task.title}</h2>
+
+      {stage && (
+        <Row label="stage" text>
+          <span className={toneText(stage.tone)}>{stage.name}</span>
+        </Row>
+      )}
+
+      <Row label="priority" text>
+        <span className={PRIORITY_CLASS[task.priority]}>{task.priority}</span>
+      </Row>
+
+      {(task.startDate || task.dueDate) && (
+        <Row label="dates" text>
+          <span className="text-ink">
+            {task.startDate && shortDate(task.startDate)}
+            {task.startDate && task.dueDate && <span className="text-faint"> → </span>}
+            {task.dueDate && (
+              <span className={dueClass(task.dueDate, !!task.completedAt)}>
+                {!task.startDate && "due "}
+                {shortDate(task.dueDate)}
+              </span>
+            )}
+          </span>
+        </Row>
+      )}
+
+      {labels.length > 0 && (
+        <Row label="labels" text>
+          <span className="flex flex-wrap gap-x-2">
+            {labels.map((l) => (
+              <span key={l.id} className={toneText(l.tone)}>
+                #{l.name}
+              </span>
+            ))}
+          </span>
+        </Row>
+      )}
+
+      {assignees.length > 0 && (
+        <Row label="assignees" text>
+          <span className="flex flex-col gap-1">
+            {assignees.map((m) => (
+              <span key={m.user.id} className="inline-flex items-center gap-1.5 text-ink">
+                <Avatar user={m.user} size={16} />
+                {m.user.handle}
+              </span>
+            ))}
+          </span>
+        </Row>
+      )}
+
+      {planning && task.level && (
+        <Row label="level" text>
+          <span className="text-ink">{task.level}</span>
+        </Row>
+      )}
+
+      {planning && task.parentId && (
+        <Row label="parent" text>
+          <span className="text-ink">{parent ? `${parent.key} ${parent.title}` : "(deleted)"}</span>
+        </Row>
+      )}
+
+      {planning && task.dependsOn.length > 0 && (
+        <Row label="after" text>
+          <span className="flex flex-col gap-0.5">
+            {task.dependsOn.map((id) => {
+              const dep = detail.tasks.find((t) => t.id === id);
+              return (
+                <span key={id} className={dep?.completedAt ? "text-green" : "text-ink"}>
+                  {dep ? `${dep.key} ${dep.title}` : "(deleted)"}
+                </span>
+              );
+            })}
+          </span>
+        </Row>
+      )}
+
+      {task.brief.trim() && (
+        <Row label="notes" text>
+          <p className="text-ink leading-relaxed whitespace-pre-wrap break-words">{task.brief}</p>
+        </Row>
+      )}
+    </>
+  );
+}
+
+interface TaskFormProps {
+  detail: BoardDetail;
+  task: Task;
+  others: Task[];
+  title: string;
+  brief: string;
+  setTitle: (title: string) => void;
+  setBrief: (brief: string) => void;
+  setEditing: (field: "title" | "brief" | null) => void;
+  save: (patch: TaskPatch) => void;
+  toggleIn: (list: string[], id: string) => string[];
+}
+
+/* Editing: every field as a control, each saving on its own. */
+function TaskForm({ detail, task, others, title, brief, setTitle, setBrief, setEditing, save, toggleIn }: TaskFormProps) {
+  return (
+    <>
       <textarea
         value={title}
-        disabled={!canEdit}
         rows={1}
         onFocus={() => setEditing("title")}
         onChange={(e) => setTitle(e.target.value.replace(/\n/g, " "))}
@@ -101,7 +285,6 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
           {detail.stages.map((s) => (
             <button
               key={s.id}
-              disabled={!canEdit}
               onClick={() => s.id !== task.stageId && save({ stageId: s.id })}
               className={`px-2 py-1 border transition-colors ${
                 s.id === task.stageId ? `border-accent ${toneText(s.tone)}` : "border-faint text-muted hover:text-ink"
@@ -114,12 +297,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
       </Row>
 
       <Row label="priority">
-        <select
-          className={field}
-          disabled={!canEdit}
-          value={task.priority}
-          onChange={(e) => save({ priority: e.target.value as Task["priority"] })}
-        >
+        <select className={field} value={task.priority} onChange={(e) => save({ priority: e.target.value as Task["priority"] })}>
           {PRIORITIES.map((p) => (
             <option key={p} value={p}>
               {p}
@@ -132,7 +310,6 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
         <DateFields
           start={task.startDate}
           due={task.dueDate}
-          disabled={!canEdit}
           onChange={({ start, due }) =>
             save({ ...(start !== undefined ? { startDate: start } : {}), ...(due !== undefined ? { dueDate: due } : {}) })
           }
@@ -140,7 +317,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
       </Row>
 
       <Row label="labels">
-        <LabelPicker detail={detail} task={task} canEdit={canEdit} onChange={(labelIds) => save({ labelIds })} />
+        <LabelPicker detail={detail} task={task} canEdit onChange={(labelIds) => save({ labelIds })} />
       </Row>
 
       {detail.members.length > 1 && (
@@ -150,7 +327,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
               <Checkbox
                 key={m.user.id}
                 checked={task.assigneeIds.includes(m.user.id)}
-                onChange={() => canEdit && save({ assigneeIds: toggleIn(task.assigneeIds, m.user.id) })}
+                onChange={() => save({ assigneeIds: toggleIn(task.assigneeIds, m.user.id) })}
                 label={
                   <span className="inline-flex items-center gap-1.5 text-ink">
                     <Avatar user={m.user} size={16} />
@@ -164,15 +341,10 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
         </Row>
       )}
 
-      {planning && (
+      {detail.board.hasPlanning && (
         <>
           <Row label="level">
-            <select
-              className={field}
-              disabled={!canEdit}
-              value={task.level ?? ""}
-              onChange={(e) => save({ level: (e.target.value || null) as Task["level"] })}
-            >
+            <select className={field} value={task.level ?? ""} onChange={(e) => save({ level: (e.target.value || null) as Task["level"] })}>
               <option value="">none</option>
               {LEVELS.map((l) => (
                 <option key={l} value={l}>
@@ -182,12 +354,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
             </select>
           </Row>
           <Row label="parent">
-            <select
-              className={`${field} w-full`}
-              disabled={!canEdit}
-              value={task.parentId ?? ""}
-              onChange={(e) => save({ parentId: e.target.value || null })}
-            >
+            <select className={`${field} w-full`} value={task.parentId ?? ""} onChange={(e) => save({ parentId: e.target.value || null })}>
               <option value="">none</option>
               {others.map((t) => (
                 <option key={t.id} value={t.id}>
@@ -203,30 +370,26 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
                 return (
                   <span key={id} className={`inline-flex items-center gap-1 border border-faint px-1.5 py-0.5 text-sm ${dep?.completedAt ? "text-green" : "text-ink"}`}>
                     {dep ? `${dep.key} ${dep.title}` : "(deleted)"}
-                    {canEdit && (
-                      <button onClick={() => save({ dependsOn: task.dependsOn.filter((x) => x !== id) })} className="tap text-muted hover:text-red" aria-label="Remove dependency">
-                        ×
-                      </button>
-                    )}
+                    <button onClick={() => save({ dependsOn: task.dependsOn.filter((x) => x !== id) })} className="tap text-muted hover:text-red" aria-label="Remove dependency">
+                      ×
+                    </button>
                   </span>
                 );
               })}
-              {canEdit && (
-                <select
-                  className={field}
-                  value=""
-                  onChange={(e) => e.target.value && save({ dependsOn: [...task.dependsOn, e.target.value] })}
-                >
-                  <option value="">+ waits on…</option>
-                  {others
-                    .filter((t) => !task.dependsOn.includes(t.id))
-                    .map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.key} {t.title}
-                      </option>
-                    ))}
-                </select>
-              )}
+              <select
+                className={field}
+                value=""
+                onChange={(e) => e.target.value && save({ dependsOn: [...task.dependsOn, e.target.value] })}
+              >
+                <option value="">+ waits on…</option>
+                {others
+                  .filter((t) => !task.dependsOn.includes(t.id))
+                  .map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.key} {t.title}
+                    </option>
+                  ))}
+              </select>
             </div>
           </Row>
         </>
@@ -235,8 +398,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
       <Row label="notes">
         <textarea
           value={brief}
-          disabled={!canEdit}
-          placeholder={canEdit ? "details, links, whatever" : ""}
+          placeholder="details, links, whatever"
           onFocus={() => setEditing("brief")}
           onChange={(e) => setBrief(e.target.value)}
           onBlur={() => {
@@ -246,12 +408,6 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
           className={`${field} w-full min-h-28 resize-y leading-relaxed`}
         />
       </Row>
-
-      <Row label="files">
-        <Attachments items={task.attachments} canEdit={canEdit} {...files} />
-      </Row>
-
-      <TaskActivity detail={detail} taskId={task.id} />
-    </ModalFrame>
+    </>
   );
 }

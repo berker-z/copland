@@ -517,7 +517,7 @@ ${who} Today is ${today()} (UTC).${
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
 - **Planning.** Boards with planning switched on add: level (epic > story > task, plus milestone), parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). Other boards refuse these fields.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
-- **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, and being @mentioned in a comment, land there. Read it with inbox, then mark_read what you have dealt with (or dismiss it). A mention is how to hand something to someone: "@sam can you check this".
+- **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, and being @mentioned in a comment, land there. Read it with inbox, then mark_read what you have dealt with (or dismiss it). A mention is how to hand something to someone: "@sam can you check this". A handle inside \`code\`, a \`\`\` block or a > quoted line notifies nobody.
 - **Labels** (tags like #frontend) belong to a board and are given by name; create_label adds one, update_label renames or recolours it. Priority is low, normal, high or urgent.`);
 
   out.push(`## Your boards`);
@@ -539,6 +539,7 @@ ${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_
 
 - Tasks: a key like CPL-12. People: handle (with or without the @), email, or "me"; assignees must be members of the task's board. Stages: name, position number, or a category ("done" finds the board's done stage). Labels: existing names on that board. Partial names work when unambiguous; an unknown or ambiguous name returns the options.
 - Dates: YYYY-MM-DD, real calendar days; "none" clears a date. A start date cannot be after the due date. overdue means past due and still open.
+- New tasks: leave start out and it is today, which is what the user wants unless they say otherwise. Pass start: null only when the user explicitly asks for no start date.
 - Arguments: pass only those a tool lists. An unknown argument, or a planning field on a board without planning, is refused with an error, never silently dropped.
 - Errors come back as the tool's text: read them, they say what to do instead.
 - Ask before deleting or bulk-changing things the user did not explicitly ask for.
@@ -791,7 +792,7 @@ const TOOLS: Tool[] = [
     name: "create_task",
     title: "Create a task",
     description:
-      "Open a task. Without board it goes in your inbox (for an agent, its owner's inbox, once the owner has added it there). It starts in the board's first stage unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on only on boards with planning; they are refused elsewhere. Dates must be real YYYY-MM-DD days, start on or before due; start defaults to today (UTC) unless given, and start: null leaves it undated. Returns { created: summary }.",
+      "Open a task. Without board it goes in your inbox (for an agent, its owner's inbox, once the owner has added it there). It starts in the board's first stage unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on only on boards with planning; they are refused elsewhere. Dates must be real YYYY-MM-DD days, start on or before due; leave start out and it is today (UTC), which is right unless the user says otherwise; pass start: null only when the user explicitly asks for no start date. Returns { created: summary }.",
     inputSchema: {
       type: "object",
       properties: {
@@ -800,7 +801,7 @@ const TOOLS: Tool[] = [
         brief: { type: "string", description: "Markdown" },
         stage: STAGE,
         priority: PRIORITY,
-        start: { type: ["string", "null"], description: "YYYY-MM-DD; defaults to today, null for none" },
+        start: { type: ["string", "null"], description: "YYYY-MM-DD. Leave it out to start today, the usual choice. null means no start date: only when the user explicitly asks for that." },
         due: { type: "string", description: "YYYY-MM-DD" },
         assignees: PEOPLE,
         labels: { type: "array", items: S, description: "Existing label names on that board" },
@@ -919,7 +920,7 @@ const TOOLS: Tool[] = [
     name: "comment_on_task",
     title: "Comment on a task",
     description:
-      "Write in a task's comment thread, as the connected principal. Markdown. Anyone on the board may comment, viewers included. @handle (or @owner/agent) mentions a member of the task's board and puts the comment in their inbox; a name that is not on the board mentions nobody. Returns the thread's length and who was mentioned.",
+      "Write in a task's comment thread, as the connected principal. Markdown. Anyone on the board may comment, viewers included. @handle (or @owner/agent) mentions a member of the task's board and puts the comment in their inbox; a name that is not on the board mentions nobody, and neither does one inside `code`, a ``` block or a > quoted line, so quote or code-format a handle to talk about someone without notifying them. Returns the thread's length and who was mentioned.",
     inputSchema: {
       type: "object",
       properties: { task: TASK, text: { type: "string", description: "Markdown" } },

@@ -42,3 +42,6 @@ export function when(iso: string): string {
     ? d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
     : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
 }
+
+/** A priority's colour, wherever it is written out (the list view, a task being read). */
+export const PRIORITY_CLASS = { urgent: "text-red", high: "text-orange", normal: "text-muted", low: "text-faint" } as const;

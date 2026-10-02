@@ -88,7 +88,10 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   backdrop `bg-black/70` (no blur). ESC + overlay click to close. No footer:
   a view's actions (edit, `DeleteButton`) are icons in `headerActions` beside
   the X, and a form ends with `FormActions` (cancel, then the action) inside
-  the body, as nord-dash did.
+  the body, as nord-dash did. Something you open opens to read: the task
+  modal shows its fields as text, and the pencil beside delete (a tick with
+  "done" while editing) switches to the form; Escape leaves the form first,
+  then the modal.
 - `src/features/shell/StatusLine.tsx` — statusline, theme menu, phone menu.
 - `src/ui/Avatar.tsx` — someone's picture, or their initials in a
   `border-faint text-muted` square when they have none. Square like

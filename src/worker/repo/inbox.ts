@@ -5,25 +5,24 @@
      assigned   routes/tasks.ts, when someone else puts you on a task
      mentioned  routes/comments.ts, when a comment names you
 
-   A mention is "@handle" or "@owner/agent", matched against the members of
-   the task's board, case-insensitive, and only them: someone who cannot see
-   the task gets nothing, so a mention can never leak a task's title.
+   A mention is "@handle" or "@owner/agent" outside code and quotes (the rule
+   is domain/mentions.ts, shared with the browser's highlight), matched
+   against the members of the task's board, case-insensitive, and only them:
+   someone who cannot see the task gets nothing, so a mention can never leak
+   a task's title.
    Nobody is told about their own doing.
    ========================================================================== */
 
 import type { BoardMember } from "@/domain/types";
+import { mentionMatches } from "@/domain/mentions";
 import { currentVia } from "../tokens";
-
-/* A person's handle, optionally followed by "/agent". Not after a letter or
-   digit, so "me@example.com" is not a mention of "example". */
-const MENTION = /(?<![a-z0-9])@([a-z0-9][a-z0-9-]*[a-z0-9](?:\/[a-z0-9][a-z0-9-]*[a-z0-9])?)/gi;
 
 /** The members a comment's text names, by id, each once. */
 export function mentionedIn(text: string, members: BoardMember[]): string[] {
   const byHandle = new Map(members.map((m) => [m.user.handle.toLowerCase(), m.user.id]));
   const ids = new Set<string>();
-  for (const match of text.matchAll(MENTION)) {
-    const id = byHandle.get(match[1].toLowerCase());
+  for (const match of mentionMatches(text)) {
+    const id = byHandle.get(match.handle.toLowerCase());
     if (id) ids.add(id);
   }
   return [...ids];

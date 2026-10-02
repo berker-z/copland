@@ -6,9 +6,8 @@
 
 import type { BoardDetail } from "@/domain/types";
 import { tasksIn } from "@/lib/tasks";
-import { dueClass, isDraft, shortDate, toneText } from "@/ui/tone";
+import { dueClass, isDraft, PRIORITY_CLASS, shortDate, toneText } from "@/ui/tone";
 
-const PRIORITY_CLASS = { urgent: "text-red", high: "text-orange", normal: "text-muted", low: "text-faint" } as const;
 
 export function ListView({ detail, onOpen }: { detail: BoardDetail; onOpen: (taskId: string) => void }) {
   const name = (id: string) => detail.members.find((m) => m.user.id === id)?.user.handle ?? "?";

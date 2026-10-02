@@ -2,8 +2,9 @@
    Mentions in comments: showing them, and typing them.
    ----------------------------------------------------------------------------
    The Worker decides who a comment mentions (repo/inbox.ts) and sends them
-   with the comment. CommentText lights up those names in the text. A name
-   that is not on the board stays plain, which tells the writer nobody heard.
+   with the comment. CommentText lights up those names in the text, found by
+   the same rule (domain/mentions.ts: nothing in code or quotes). A name that
+   is not on the board, or is quoted, stays plain: nobody heard it.
 
    MentionTextarea is a textarea that, after "@", lists the board's members
    whose handle starts with what follows: arrows to move, Enter or Tab to
@@ -12,19 +13,17 @@
 
 import { useState, type KeyboardEvent, type TextareaHTMLAttributes } from "react";
 import type { BoardMember, Comment } from "@/domain/types";
+import { mentionMatches } from "@/domain/mentions";
 import { Avatar, peopleFirst } from "@/ui/Avatar";
-
-/* The same shape the Worker matches; kept in step with repo/inbox.ts. */
-const MENTION = /(?<![a-z0-9])@([a-z0-9][a-z0-9-]*[a-z0-9](?:\/[a-z0-9][a-z0-9-]*[a-z0-9])?)/gi;
 
 export function CommentText({ comment }: { comment: Pick<Comment, "text" | "mentions"> }) {
   const named = new Set(comment.mentions.map((m) => m.handle.toLowerCase()));
   const parts: (string | { handle: string })[] = [];
   let last = 0;
-  for (const match of comment.text.matchAll(MENTION)) {
-    if (!named.has(match[1].toLowerCase())) continue;
-    parts.push(comment.text.slice(last, match.index), { handle: match[0] });
-    last = (match.index ?? 0) + match[0].length;
+  for (const match of mentionMatches(comment.text)) {
+    if (!named.has(match.handle.toLowerCase())) continue;
+    parts.push(comment.text.slice(last, match.index), { handle: match.text });
+    last = match.index + match.text.length;
   }
   parts.push(comment.text.slice(last));
   return (
