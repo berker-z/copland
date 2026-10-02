@@ -140,6 +140,41 @@ export interface BoardDetail {
   stages: Stage[];
   labels: Label[];
   tasks: Task[];
+  /** The board's rules for working on it: markdown, '' when there are none. */
+  notes: string;
+  /** Its docs, metadata only; the bytes are fetched one at a time. */
+  docs: BoardDoc[];
+}
+
+/** Longest a board's notes may be, in characters. */
+export const MAX_BOARD_NOTES = 1000;
+
+/** A reference file that belongs to a board (routes/docs.ts). */
+export interface BoardDoc {
+  id: string;
+  name: string;
+  /** MIME type. */
+  type: string;
+  size: number;
+  /** R2 key; the file is at /api/attachments/<key>. */
+  key: string;
+  /** What the uploader says it is; '' when they said nothing. */
+  description: string;
+  /** From a text doc: its first heading or opening lines; '' otherwise. */
+  excerpt: string;
+  /** Handle of whoever added it, when they still exist. */
+  addedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /api/boards/:id/docs/:docId: one doc, with its text when it is a text doc. */
+export interface BoardDocContent {
+  doc: BoardDoc;
+  /** The text, for text/plain, text/markdown and text/csv; null for anything else. */
+  text: string | null;
+  /** True when text stops short of the whole file. */
+  truncated: boolean;
 }
 
 /* ------------------------------------------------------------- admin ------ */

@@ -55,13 +55,22 @@ async function downscaleImage(file: File): Promise<Blob> {
   }
 }
 
+/** Text files browsers often send without a type (a .md on most of them). */
+const TEXT_EXTENSIONS: Record<string, string> = { md: "text/markdown", markdown: "text/markdown", txt: "text/plain", csv: "text/csv" };
+
+function typeOf(file: File): string {
+  if (file.type) return file.type;
+  const ext = /\.([a-z0-9]+)$/i.exec(file.name)?.[1]?.toLowerCase() ?? "";
+  return TEXT_EXTENSIONS[ext] ?? "application/octet-stream";
+}
+
 export async function uploadFile(file: File): Promise<UploadedFile> {
   if (file.size > MAX_UPLOAD_BYTES) {
     throw new UploadError(`“${file.name}” is too big (the limit is ${Math.floor(MAX_UPLOAD_BYTES / 1024 / 1024)} MB)`);
   }
   const body = await downscaleImage(file);
   /* A downscaled image is a JPEG whatever went in. */
-  const type = body === file ? file.type || "application/octet-stream" : "image/jpeg";
+  const type = body === file ? typeOf(file) : "image/jpeg";
   const { file: uploaded } = await api<{ file: UploadedFile }>("/uploads", {
     method: "POST",
     body,

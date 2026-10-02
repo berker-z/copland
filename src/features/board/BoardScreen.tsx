@@ -15,17 +15,20 @@
 
    The header's "share" (owners and editors) opens ShareModal: members, and
    adding people or your agents by handle. The gear (owners only) opens
-   BoardSettingsModal: stages, labels, name, key, archive.
+   BoardSettingsModal: stages, labels, name, key, archive. The book (everyone
+   on the board) opens BoardDocsModal: the board's notes and docs, written by
+   owners and editors.
    ========================================================================== */
 
 import { useRef, useState, type DragEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { ArrowLeft, Plus, Settings2, UserPlus, Users } from "lucide-react";
+import { ArrowLeft, BookOpen, Plus, Settings2, UserPlus, Users } from "lucide-react";
 import { rankBetween } from "@/domain/tasks";
 import type { BoardDetail, Stage } from "@/domain/types";
 import { useBoard, useBoards } from "@/lib/queries";
 import { tasksIn, useCreateTask, useUpdateTask } from "@/lib/tasks";
 import { todayLocal, toneText } from "@/ui/tone";
+import { BoardDocsModal } from "./BoardDocsModal";
 import { BoardSettingsModal } from "./BoardSettingsModal";
 import { GanttView } from "./GanttView";
 import { ListView } from "./ListView";
@@ -215,6 +218,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   const [moving, setMoving] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [docsOpen, setDocsOpen] = useState(false);
   const [newTask, setNewTask] = useState<{ stageId?: string } | null>(null);
   const [params, setParams] = useSearchParams();
   const view = VIEWS.includes(params.get("view") as View) ? (params.get("view") as View) : "kanban";
@@ -267,6 +271,14 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
             <Users size={14} /> {detail.members.length}
           </span>
         )}
+        <button
+          onClick={() => setDocsOpen(true)}
+          className="tap text-muted hover:text-accent flex items-center gap-1.5"
+          title="Notes & docs"
+        >
+          <BookOpen size={14} />
+          {detail.docs.length > 0 && <span className="text-xs tabular-nums">{detail.docs.length}</span>}
+        </button>
         {detail.board.role !== "viewer" && (
           <button
             onClick={() => setShareOpen(true)}
@@ -307,6 +319,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
       )}
       {settingsOpen && <BoardSettingsModal detail={detail} onClose={() => setSettingsOpen(false)} />}
       {shareOpen && <ShareModal detail={detail} onClose={() => setShareOpen(false)} />}
+      {docsOpen && <BoardDocsModal detail={detail} onClose={() => setDocsOpen(false)} />}
     </div>
   );
 }

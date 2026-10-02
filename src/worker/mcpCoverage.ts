@@ -42,7 +42,23 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   /* Boards and tasks, the heart of it. load() in mcp.ts reads the board
      list and each board; loadTask() reads a task by key and its board. */
   "GET /api/boards": {
-    tools: ["guide", "whoami", "list_boards", "get_board", "list_tasks", "create_task", "my_work", "create_label", "update_label", "delete_label"],
+    tools: [
+      "guide",
+      "whoami",
+      "list_boards",
+      "get_board",
+      "list_tasks",
+      "create_task",
+      "my_work",
+      "create_label",
+      "update_label",
+      "delete_label",
+      "set_board_notes",
+      "list_docs",
+      "read_doc",
+      "write_doc",
+      "delete_doc",
+    ],
   },
   "GET /api/boards/:id": {
     tools: [
@@ -59,6 +75,11 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
       "create_label",
       "update_label",
       "delete_label",
+      "set_board_notes",
+      "list_docs",
+      "read_doc",
+      "write_doc",
+      "delete_doc",
     ],
   },
   "GET /api/tasks/mine": { tools: ["my_work"] },
@@ -69,11 +90,21 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /api/boards/:id/tasks": { tools: ["create_task"] },
   /* create_task sets dependencies with a second write: creation takes none. */
   "PATCH /api/tasks/:id": { tools: ["create_task", "update_task", "move_task"] },
-  "DELETE /api/tasks/:id": { tools: ["delete_task"] },  "GET /api/tasks/:id/comments": { tools: ["get_task"] },
+  "DELETE /api/tasks/:id": { tools: ["delete_task"] },
+  "GET /api/tasks/:id/comments": { tools: ["get_task"] },
   "POST /api/tasks/:id/comments": { tools: ["comment_on_task"] },
   "PATCH /api/comments/:id": { skip: "not yet: editing a comment" },
   "DELETE /api/comments/:id": { skip: "not yet: deleting a comment" },
   "GET /api/tasks/:id/events": { skip: "not yet: a task's history" },
+
+  /* A board's notes and docs. The doc list rides on GET /api/boards/:id;
+     write_doc creates a text doc or rewrites one by name. Uploading a file's
+     bytes stays in the browser (POST /api/uploads). */
+  "PUT /api/boards/:id/notes": { tools: ["set_board_notes"] },
+  "POST /api/boards/:id/docs": { tools: ["write_doc"] },
+  "GET /api/boards/:id/docs/:docId": { tools: ["read_doc"] },
+  "PATCH /api/boards/:id/docs/:docId": { tools: ["write_doc"] },
+  "DELETE /api/boards/:id/docs/:docId": { tools: ["delete_doc"] },
 
   /* Board setup. */
   "POST /api/boards": { skip: "not yet: creating a board" },
@@ -110,8 +141,8 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PUT /api/calendar/events/:calendarId/:eventId": { skip: "not yet: editing an event" },
   "DELETE /api/calendar/events/:calendarId/:eventId": { skip: "not yet: deleting an event" },
   /* Attachments. Files are bytes a JSON-RPC tool cannot carry well. */
-  "POST /api/uploads": { skip: "browser: raw file bytes, uploaded from the task screen" },
-  "GET /api/attachments/attachments/:id": { skip: "browser: file downloads" },
+  "POST /api/uploads": { skip: "browser: raw file bytes, uploaded from the task screen and the board's docs; write_doc writes text docs without it" },
+  "GET /api/attachments/attachments/:id": { skip: "browser: file downloads (attachments and board docs); read_doc reads text docs through their own route" },
   "POST /api/tasks/:id/attachments": { skip: "not yet: attaching a link to a task" },
   "DELETE /api/tasks/:id/attachments/:attachmentId": { skip: "not yet: removing an attachment" },
   "GET /api/notes": { skip: "not yet: reading the notepad" },

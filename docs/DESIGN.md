@@ -106,6 +106,15 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   are fixed columns: avatar, handle, a fixed-width role, and a fixed
   right-aligned slot for leave/remove that stays even when empty, so every
   row lines up. Inviting by email sits behind a quiet link at the bottom.
+- `src/features/board/BoardDocsModal.tsx`: a board's notes and docs, behind
+  the book icon in the board header, which everyone on the board sees (the
+  gear is owners only, and editors write these). Notes read as plain
+  pre-wrapped text with a pencil to edit, and a `n/1000` counter while
+  editing. Docs are list rows like attachments: icon, name, size and date,
+  then the description or excerpt on a `text-muted` line under it; the
+  pencil and the remove X appear on hover. A text doc opens in place as a
+  `bg-raised` `<pre>` with a back arrow; anything else opens through the
+  attachment route in a new tab.
 - `src/ui/Avatar.tsx` — someone's picture, or their initials in a
   `border-faint text-muted` square when they have none. Square like
   everything else, sized in px to sit on a text line (16 in rows, 18 in

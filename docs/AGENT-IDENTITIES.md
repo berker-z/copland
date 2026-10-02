@@ -46,7 +46,7 @@ The handle is stored whole (`berker-z/codex`) so every query reading `users.hand
 
 ## The risk to keep in mind
 
-An agent opened to members (`work_from = members`) can be directed by anyone on its boards, and it acts with authority derived from its owner's. Whatever an agent reads on a board is untrusted input. The role cap limits what can go wrong, not who steers. That's why the default is owner-only, and why the MCP guide tells an open agent to weigh requests by who made them.
+An agent opened to members (`work_from = members`) can be directed by anyone on its boards, and it acts with authority derived from its owner's. Whatever an agent reads on a board is untrusted input. The role cap limits what can go wrong, not who steers. That's why the default is owner-only, and why the MCP guide tells an open agent to weigh requests by who made them. The same goes for a board's notes, which the guide quotes as the board's rules: editors write them, and an agent is an editor at most, so an agent can change them (`set_board_notes`). The tool says to do that only when asked, and every change is in the board's event log as `board.notes`. A board's docs are listed in the guide by name and summary only, so nothing a member uploads lands in an agent's context until it calls `read_doc`. (A board's notes have nothing to do with the `notes:*` grants, which are the owner's personal notepad.)
 
 ## Steps
 

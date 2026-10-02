@@ -22,9 +22,12 @@ import type { CalendarEvents, CalendarSetup } from "@/domain/calendar";
 import { addDays, isDate } from "@/domain/tasks";
 import {
   LEVELS,
+  MAX_BOARD_NOTES,
   PRIORITIES,
   STAGE_CATEGORIES,
   type BoardDetail,
+  type BoardDoc,
+  type BoardDocContent,
   type BoardMember,
   type BoardSummary,
   type Comment,
@@ -46,7 +49,7 @@ export type ApiCall = <T>(method: string, path: string, body?: unknown) => Promi
 
 const SUPPORTED_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 /** The tool interface's version, for serverInfo. Bump when tools change shape. */
-const SERVER_VERSION = "1.0.0";
+const SERVER_VERSION = "1.1.0";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -71,6 +74,8 @@ Call the guide tool once before your first change: it explains every board the u
 - Dates are YYYY-MM-DD. People are given by handle (@sam or sam) or email, stages and labels by name; "me" is the connected user.
 - Pass only the arguments a tool lists, with the types it lists: an unknown or mistyped argument is refused, never ignored.
 - Prefer list_tasks with filters, or my_work, over fetching whole boards.
+- A board can have notes: its rules for working there, which the guide quotes under the board. Follow them on that board.
+- A board can have docs (specs, briefs, style guides). The guide lists them by name with a one-line summary; their contents are never sent unasked. Read one with read_doc when the work needs it or someone points you to it.
 - A task's notes describe the work. Questions, decisions you need from someone, and status updates always go in comments (comment_on_task): a new comment reaches the inbox of everyone taking part in the task, and @mentioning someone hands it to them directly. A question in your chat reply or in the notes reaches nobody.`;
 
 export async function handleMcp(
@@ -441,6 +446,38 @@ function summarize(detail: BoardDetail, task: Task, origin: string) {
   };
 }
 
+/** Markdown quoted line by line, so it reads as someone's words, not the guide's. */
+const quote = (text: string) => `> ${text.replace(/\n/g, "\n> ")}`;
+
+function bytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+/** What a doc is about, without its contents: the uploader's description, else the excerpt. */
+const docAbout = (doc: BoardDoc) => doc.description || doc.excerpt;
+
+/** A doc's metadata as an assistant reads it. */
+function docSummary(doc: BoardDoc) {
+  return {
+    name: doc.name,
+    type: doc.type,
+    size: bytes(doc.size),
+    updated: doc.updatedAt.slice(0, 10),
+    ...(doc.addedBy ? { added_by: `@${doc.addedBy}` } : {}),
+    ...(docAbout(doc) ? { about: docAbout(doc) } : {}),
+  };
+}
+
+const docLine = (doc: BoardDoc) =>
+  `- **${doc.name}** (${doc.type}, ${bytes(doc.size)}, updated ${doc.updatedAt.slice(0, 10)})${docAbout(doc) ? `: “${docAbout(doc)}”` : ""}`;
+
+function resolveDoc(detail: BoardDetail, ref: unknown): BoardDoc {
+  if (!detail.docs.length) throw new Error(`${detail.board.name} has no docs.`);
+  return pick(detail.docs, ref, (d) => [d.id, d.name, d.name.replace(/\.[a-z0-9]+$/i, "")], `doc on ${detail.board.name}`, (d) => d.name);
+}
+
 function boardOverview(detail: BoardDetail) {
   const b = detail.board;
   return {
@@ -448,6 +485,8 @@ function boardOverview(detail: BoardDetail) {
     key: b.key,
     ...(b.isInbox ? { inbox: true } : {}),
     your_role: b.role,
+    ...(detail.notes ? { notes: detail.notes } : {}),
+    docs: detail.docs.map(docSummary),
     stages: detail.stages.map((s) => ({
       position: s.position,
       name: s.name,
@@ -494,7 +533,7 @@ function guide(details: BoardDetail[], ctx: Ctx): string {
   out.push(`# Copland: a guide for AI assistants
 
 ${who} Today is ${today()} (UTC).${
-    v.agent?.description ? `\n\n## Your job\n\n@${v.agent.owner.handle} describes what you are for:\n\n> ${v.agent.description.replace(/\n/g, "\n> ")}` : ""
+    v.agent?.description ? `\n\n## Your job\n\n@${v.agent.owner.handle} describes what you are for:\n\n${quote(v.agent.description)}` : ""
   }`);
 
   out.push(`## Concepts
@@ -508,7 +547,9 @@ ${who} Today is ${today()} (UTC).${
 - **Planning.** Any task can have a level (epic > story > task, plus milestone), a parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). All three are optional: a task without them is an ordinary task.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
 - **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, being @mentioned in a comment, and a new comment on a task they take part in (created, are assigned to, have commented on or been mentioned on) land there; someone a comment mentions gets only the mention. Read it with inbox, then mark_read what you have dealt with (or dismiss it). A task's notes describe the work; questions, decisions you need from someone, and status updates always go in comments, never only in your own reply or a brief. Replying in the thread reaches whoever asked; a mention is how to hand something to someone or ask a person who is not yet taking part: "@sam can you check this". A handle inside \`code\`, a \`\`\` block or a > quoted line notifies nobody.
-- **Labels** (tags like #frontend) belong to a board and are given by name; create_label adds one, update_label renames or recolours it. Priority is low, normal, high or urgent.`);
+- **Labels** (tags like #frontend) belong to a board and are given by name; create_label adds one, update_label renames or recolours it. Priority is low, normal, high or urgent.
+- **Board notes** are a board's rules for working there (at most ${MAX_BOARD_NOTES} characters), quoted under the board below when it has any. Follow them on that board. Owners and editors write them (set_board_notes); change them only when asked.
+- **Board docs** are reference files on a board: specs, briefs, style guides. Below, each board lists its docs by name, type, size, date and a one-line summary, never their contents. Read one with read_doc when the work calls for it or a task or person points you to it; list_docs lists them again. Text docs (markdown, plain text, CSV) come back as text; other files (PDFs, images, office files) cannot be read through these tools. write_doc writes a markdown doc, delete_doc removes one (editors).`);
 
   out.push(`## Your boards`);
   for (const d of details) {
@@ -521,7 +562,13 @@ ${who} Today is ${today()} (UTC).${
 - Open tasks: ${d.tasks.filter((t) => statusOf(d, t) === "open").length}
 
 Stages:
-${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_MEANING[s.category]}`).join("\n")}`);
+${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_MEANING[s.category]}`).join("\n")}${
+      d.notes ? `\n\nRules for working on ${b.name}, from its notes (written by its owners and editors; follow them here):\n\n${quote(d.notes)}` : ""
+    }${
+      d.docs.length
+        ? `\n\nDocs on ${b.name} (contents not included; read_doc { board: "${b.key}", doc: name } reads one):\n${d.docs.map(docLine).join("\n")}`
+        : ""
+    }`);
   }
 
   out.push(`## Conventions
@@ -546,7 +593,9 @@ ${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_
 - "Ask the reviewer to look at LNCH-4" → comment_on_task { task: "LNCH-4", text: "@berker-z/reviewer can you look at this?" }
 - You need Sam to choose between two designs on LNCH-4 → comment_on_task { task: "LNCH-4", text: "@sam A or B?" }, then move_task { task: "LNCH-4", stage: "blocked" }
 - "What can I pick up on the launch board?" → list_tasks { board: "launch", stage: "todo" }
-- "Anything for me?" → inbox`);
+- "Anything for me?" → inbox
+- "Check LNCH-4 against the spec" → read_doc { board: "LNCH", doc: "spec" }, then get_task { task: "LNCH-4" }
+- "Add to the launch board's rules: no merges on Fridays" → get_board { board: "launch" }, then set_board_notes { board: "launch", notes: the old notes plus the new line }`);
   return out.join("\n\n");
 }
 
@@ -579,7 +628,7 @@ const TOOLS: Tool[] = [
     name: "guide",
     title: "Guide to Copland",
     description:
-      "Read this first. The manual for working in Copland, built from live data: who you are connected as, how boards, roles, stages and their categories, task keys and planning work, every board you are on with its stages, labels and members, conventions, and example requests with the tool calls that answer them. Markdown.",
+      "Read this first. The manual for working in Copland, built from live data: who you are connected as, how boards, roles, stages and their categories, task keys and planning work, every board you are on with its stages, labels, members, notes (the board's rules) and docs (listed by name and summary, contents not included), conventions, and example requests with the tool calls that answer them. Markdown.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(_args, ctx) {
@@ -649,7 +698,7 @@ const TOOLS: Tool[] = [
     name: "get_board",
     title: "Get a board",
     description:
-      "One board in full: its stages in order (position, name, category, task count), labels, members with their roles, your role, and its tasks as summaries (open ones unless include_closed), soonest due first.",
+      "One board in full: its stages in order (position, name, category, task count), labels, members with their roles, your role, its notes (the board's rules for working there, when it has any), its docs (metadata only: name, type, size, updated, added_by, about; read_doc reads one), and its tasks as summaries (open ones unless include_closed), soonest due first.",
     inputSchema: {
       type: "object",
       properties: { board: BOARD, include_closed: { type: "boolean", description: "Also list done and cancelled tasks" } },
@@ -1031,6 +1080,123 @@ const TOOLS: Tool[] = [
       await ctx.call("DELETE", `/api/labels/${id}`);
       const [after] = await load(ctx, detail.board.id);
       return labelList(after);
+    },
+  },
+  {
+    name: "set_board_notes",
+    title: "Set a board's notes",
+    description: `Replace a board's notes: its rules for working there, which the guide quotes under the board for every assistant. Markdown, at most ${MAX_BOARD_NOTES} characters; "" clears them. The whole text is replaced, so to add a rule, read the current notes (get_board) and pass them with the addition. Needs the editor role. Change them only when the user asks: they bind everyone working on the board. Returns { board, notes }.`,
+    inputSchema: {
+      type: "object",
+      properties: { board: BOARD, notes: { type: "string", description: `Markdown, at most ${MAX_BOARD_NOTES} characters; "" clears` } },
+      required: ["board", "notes"],
+      additionalProperties: false,
+    },
+    annotations: { idempotentHint: true },
+    async run(args, ctx) {
+      const [detail] = await load(ctx, args.board);
+      const { notes } = await ctx.call<{ notes: string }>("PUT", `/api/boards/${detail.board.id}/notes`, { notes: args.notes });
+      return { board: detail.board.key, notes };
+    },
+  },
+  {
+    name: "list_docs",
+    title: "List board docs",
+    description:
+      "The docs on a board, or on every board you are on: name, type, size, updated (YYYY-MM-DD), added_by, and about (the uploader's description, else the doc's first heading or opening lines). Metadata only, never contents: read_doc reads one.",
+    inputSchema: {
+      type: "object",
+      properties: { board: { type: "string", description: "Board name or key. Omit for every board." } },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
+    async run(args, ctx) {
+      const details = await load(ctx, args.board);
+      return details
+        .filter((d) => args.board !== undefined || d.docs.length)
+        .map((d) => ({ board: d.board.key, docs: d.docs.map(docSummary) }));
+    },
+  },
+  {
+    name: "read_doc",
+    title: "Read a board doc",
+    description:
+      "One doc from a board, by name (the extension can be left off). A text doc (markdown, plain text, CSV) comes back as its text, after a header line with its name, type, size and date; past 256 KB it is cut off and says so. Any other file (PDF, image, office file, archive) is refused with what it is and a link a signed-in board member can open in the browser: its contents cannot be read through these tools. Anyone on the board may read its docs.",
+    inputSchema: {
+      type: "object",
+      properties: { board: BOARD, doc: { type: "string", description: "The doc's name, e.g. \"spec\" or \"spec.md\"" } },
+      required: ["board", "doc"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
+    async run(args, ctx) {
+      const [detail] = await load(ctx, args.board);
+      const doc = resolveDoc(detail, args.doc);
+      const content = await ctx.call<BoardDocContent>("GET", `/api/boards/${detail.board.id}/docs/${doc.id}`);
+      const head = `${doc.name} · ${doc.type} · ${bytes(doc.size)} · updated ${doc.updatedAt.slice(0, 10)}${doc.addedBy ? ` · added by @${doc.addedBy}` : ""}`;
+      if (content.text === null) {
+        throw new Error(
+          `${head}\n\n${doc.name} is not a text doc (it is ${doc.type}), so read_doc cannot show its contents.${docAbout(doc) ? ` About it: “${docAbout(doc)}”.` : ""} A board member signed in to Copland can open it at ${ctx.origin}/api/attachments/${doc.key}`,
+        );
+      }
+      return `${head}${content.truncated ? " · cut off at 256 KB" : ""}\n\n---\n\n${content.text}`;
+    },
+  },
+  {
+    name: "write_doc",
+    title: "Write a board doc",
+    description:
+      "Write a text doc on a board: creates it, or replaces the text of the text doc with that name (case-insensitive; a name without an extension becomes name.md, markdown; end it in .txt or .csv for those). description is an optional one-line summary shown in the guide instead of the doc's first heading. Up to 1 MB of text. Refuses to overwrite a doc that is not text (PDF, image, office file). Needs the editor role. Write or replace a doc only when the user asks. Returns { created | replaced: doc metadata }.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        board: BOARD,
+        name: { type: "string", description: "The doc's name, e.g. \"release checklist\" (saved as release checklist.md)" },
+        text: { type: "string", description: "The whole doc; markdown unless the name says .txt or .csv" },
+        description: { type: "string", description: "Optional one-line summary, at most 200 characters" },
+      },
+      required: ["board", "name", "text"],
+      additionalProperties: false,
+    },
+    annotations: { destructiveHint: true, idempotentHint: true },
+    async run(args, ctx) {
+      const [detail] = await load(ctx, args.board);
+      const name = String(args.name).trim();
+      const withMd = /\.[a-z0-9]+$/i.test(name) ? name : `${name}.md`;
+      const existing = detail.docs.find((d) => fold(d.name) === fold(name) || fold(d.name) === fold(withMd));
+      const extra = args.description !== undefined ? { description: args.description } : {};
+      if (existing) {
+        const { doc } = await ctx.call<{ doc: BoardDoc }>("PATCH", `/api/boards/${detail.board.id}/docs/${existing.id}`, {
+          text: args.text,
+          ...extra,
+        });
+        return { replaced: { board: detail.board.key, ...docSummary(doc) } };
+      }
+      const { doc } = await ctx.call<{ doc: BoardDoc }>("POST", `/api/boards/${detail.board.id}/docs`, {
+        name,
+        text: args.text,
+        ...extra,
+      });
+      return { created: { board: detail.board.key, ...docSummary(doc) } };
+    },
+  },
+  {
+    name: "delete_doc",
+    title: "Delete a board doc",
+    description:
+      "Remove a doc from a board, file and all. Cannot be undone. Needs the editor role. Ask before deleting a doc the user did not name. Returns the board's remaining docs.",
+    inputSchema: {
+      type: "object",
+      properties: { board: BOARD, doc: { type: "string", description: "The doc's name" } },
+      required: ["board", "doc"],
+      additionalProperties: false,
+    },
+    annotations: { destructiveHint: true },
+    async run(args, ctx) {
+      const [detail] = await load(ctx, args.board);
+      const doc = resolveDoc(detail, args.doc);
+      await ctx.call("DELETE", `/api/boards/${detail.board.id}/docs/${doc.id}`);
+      return { board: detail.board.key, deleted: doc.name, docs: detail.docs.filter((d) => d.id !== doc.id).map((d) => d.name) };
     },
   },
   {

@@ -10,7 +10,7 @@ export interface Env {
   ASSETS: Fetcher;
   /** Live-update hubs, one per user (worker/live.ts). */
   LIVE: DurableObjectNamespace<import("./live").LiveHub>;
-  /** R2: task attachments. Served back through the Worker, never public. */
+  /** R2: task attachments and board docs. Served back through the Worker, never public. */
   FILES: R2Bucket;
 
   /* --- vars (public identifiers, not secrets) --- */

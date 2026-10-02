@@ -44,6 +44,10 @@ docs/DESIGN.md under Touch.
       (better-auth) and D1 sync. It is phone-shaped already, and the phone
       groundwork (sheets, long press, touch sizing) is in. Read its docs/HANDOFF.md and docs/ROADMAP.md first.
 - [ ] Old test data in the local dev database (LNCH board and such); harmless.
+- [ ] Board notes and docs (COPL-27) were tested through the API and `/mcp`,
+      not in a browser: open the book icon on a board, write notes, drop a
+      .md and a PDF, open both, describe one, delete one, and look at it as
+      a viewer.
 - [ ] Boards from before migration 0012 got a backlog stage but no blocked
       one, so agents there can only comment when they need an answer. Add a
       blocked stage by hand in board settings where agents work.
@@ -60,7 +64,7 @@ docs/DESIGN.md under Touch.
 - [ ] Layout as a setting (which panes, which column) instead of the fixed grid
 - [ ] A time zone setting, so "today" and "overdue" in the MCP stop meaning UTC
 - [ ] More MCP tools from the `not yet` entries in `src/worker/mcpCoverage.ts`
-      (attaching links, labels, notes, history, creating boards, calendar writes)
+      (attaching links, the notepad, history, creating boards, calendar writes)
 - [ ] Portfolio at the root of berkerz.dev
 - [ ] Open source it (the repo is public now): a "Deploy to Cloudflare" button if it
       can provision D1, R2 and the Durable Object, and a README pass for people
@@ -77,7 +81,8 @@ docs/DESIGN.md under Touch.
   drop, list and Gantt views, new-task form (start today, +1d/+3d/+1w),
   quick add, labels, comments, history, editable stages and board keys,
   planning (levels, parents, dependencies) on every board, attachments
-  (images, files, links) checked per board
+  (images, files, links) checked per board, board notes and docs that the
+  MCP guide lists for agents (COPL-27)
 - MCP server with OAuth and personal tokens, 13 tools, a coverage check
 - Deployed at copland.berkerz.dev with a published Google consent screen,
   privacy and terms pages, the pole mark and favicon

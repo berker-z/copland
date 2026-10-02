@@ -55,6 +55,7 @@ import {
   removeEvent,
 } from "./routes/calendar";
 import { deleteTaskAttachment, getAttachment, postTaskAttachment, postUpload } from "./routes/attachments";
+import { deleteBoardDoc, getBoardDoc, patchBoardDoc, postBoardDoc, putBoardNotes } from "./routes/docs";
 import { deleteComment, getComments, getTaskEvents, patchComment, postComment } from "./routes/comments";
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
 import { deleteTask, getTask, patchTask, postTask } from "./routes/tasks";
@@ -206,6 +207,20 @@ const api = new Router<Ctx>()
   )
   .on("DELETE", "/api/boards/:id/members/:userId", ({ env, viewer, changes }, p) =>
     deleteMember(env, viewer, p.id, p.userId, changes),
+  )
+  /* A board's rules and reference docs: editors write, anyone on it reads (routes/docs.ts). */
+  .on("PUT", "/api/boards/:id/notes", ({ request, env, viewer, changes }, { id }) =>
+    putBoardNotes(request, env, viewer, id, changes),
+  )
+  .on("POST", "/api/boards/:id/docs", ({ request, env, viewer, changes }, { id }) =>
+    postBoardDoc(request, env, viewer, id, changes),
+  )
+  .on("GET", "/api/boards/:id/docs/:docId", ({ env, viewer }, p) => getBoardDoc(env, viewer, p.id, p.docId))
+  .on("PATCH", "/api/boards/:id/docs/:docId", ({ request, env, viewer, changes }, p) =>
+    patchBoardDoc(request, env, viewer, p.id, p.docId, changes),
+  )
+  .on("DELETE", "/api/boards/:id/docs/:docId", ({ env, viewer, changes }, p) =>
+    deleteBoardDoc(env, viewer, p.id, p.docId, changes),
   )
   /* The share picker's search: handles and pictures, never emails; people only (requirePerson). */
   .on("GET", "/api/people", ({ env, viewer, url }) => getPeople(env, viewer, url))

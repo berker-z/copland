@@ -20,6 +20,10 @@
 
    An upload that is never attached leaves an R2 object with no row: cheap,
    unreachable except by its uploader, and sweepable by prefix and age.
+
+   Board docs (routes/docs.ts) are the same primitive: the same upload, the
+   same key space, the same GET below. A key belongs to a task attachment or
+   to a board doc, never both (claimUpload).
    ========================================================================== */
 
 import type { Attachment, UploadedFile, Viewer } from "@/domain/types";
@@ -32,7 +36,7 @@ import { eventStatement, findTask } from "../repo/tasks";
 
 /** Just under the 100 MB Free-plan request body cap. */
 export const MAX_UPLOAD_BYTES = 90 * 1024 * 1024;
-const PREFIX = "attachments/";
+export const PREFIX = "attachments/";
 const MAX_LINK_NAME = 120;
 const MAX_URL = 2000;
 const MAX_PER_TASK = 50;
@@ -114,8 +118,11 @@ const INLINE_TYPES = [/^image\/(png|jpeg|gif|webp|avif|bmp)$/, /^video\/(mp4|qui
 
 /** GET /api/attachments/attachments/:id */
 export async function getAttachment(env: Env, viewer: Viewer, key: string, download: boolean): Promise<Response> {
+  /* A task's attachment or a board's doc: either way its board decides. */
   const row = await env.DB.prepare(
-    `SELECT t.board_id FROM attachments a JOIN tasks t ON t.id = a.task_id WHERE a.key = ?1`,
+    `SELECT t.board_id FROM attachments a JOIN tasks t ON t.id = a.task_id WHERE a.key = ?1
+     UNION ALL
+     SELECT d.board_id FROM board_docs d WHERE d.key = ?1`,
   )
     .bind(key)
     .first<{ board_id: string }>();
@@ -193,24 +200,43 @@ function parseLink(body: Record<string, unknown>): NewAttachment {
   };
 }
 
-/** An uploaded key, checked against R2 and against being used already. */
-async function parseUpload(env: Env, viewer: Viewer, body: Record<string, unknown>): Promise<NewAttachment> {
-  const key = body.key;
+/**
+ * An uploaded key about to go on a task or a board: checked against R2,
+ * against being the caller's own upload, and against being in use already
+ * by an attachment or a board doc. What R2 knows of it.
+ */
+export async function claimUpload(
+  env: Env,
+  viewer: Viewer,
+  key: unknown,
+): Promise<{ key: string; name: string | null; mime: string; size: number }> {
   if (typeof key !== "string" || !key.startsWith(PREFIX)) throw badRequest("Invalid file key");
-  const used = await env.DB.prepare(`SELECT 1 FROM attachments WHERE key = ?1`).bind(key).first();
+  const used = await env.DB.prepare(`SELECT 1 FROM attachments WHERE key = ?1 UNION ALL SELECT 1 FROM board_docs WHERE key = ?1`)
+    .bind(key)
+    .first();
   if (used) throw badRequest("That file is already attached somewhere; upload it again");
   const object = await env.FILES.head(key);
   if (!object) throw badRequest("The uploaded file was not found; try again");
   /* Only your own uploads: a key someone else uploaded is not yours to attach. */
   if (object.customMetadata?.uploadedBy !== viewer.user.id) throw badRequest("Invalid file key");
-  const mime = object.httpMetadata?.contentType ?? "application/octet-stream";
+  return {
+    key,
+    name: object.customMetadata?.name ?? null,
+    mime: object.httpMetadata?.contentType ?? "application/octet-stream",
+    size: object.size,
+  };
+}
+
+/** An uploaded key, as a task attachment. */
+async function parseUpload(env: Env, viewer: Viewer, body: Record<string, unknown>): Promise<NewAttachment> {
+  const upload = await claimUpload(env, viewer, body.key);
   return {
     id: crypto.randomUUID(),
-    kind: mime.startsWith("image/") ? "image" : "file",
-    name: object.customMetadata?.name ?? (typeof body.name === "string" && body.name.trim() ? body.name.trim() : "file"),
-    type: mime,
-    size: object.size,
-    key,
+    kind: upload.mime.startsWith("image/") ? "image" : "file",
+    name: upload.name ?? (typeof body.name === "string" && body.name.trim() ? body.name.trim() : "file"),
+    type: upload.mime,
+    size: upload.size,
+    key: upload.key,
     url: null,
   };
 }
