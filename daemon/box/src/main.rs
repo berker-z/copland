@@ -1,0 +1,307 @@
+//! `copland-box`: the Copland daemon with a window. It runs the same agents'
+//! loop as `copland-daemon --headless`, in this process, and draws its state
+//! as the wired scene (COPL-33). `--demo` draws the prototype's simulation
+//! instead, with no config and no server.
+
+mod scene;
+mod theme;
+mod view;
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+
+use anyhow::{Context as _, Result};
+use clap::Parser;
+use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
+use copland_daemon_core::{Config, Daemon, DaemonState, Paths};
+use gpui::{
+    AppContext as _, Application, Bounds, SharedString, WindowBounds, WindowDecorations, WindowKind, WindowOptions, px,
+    size,
+};
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::{oneshot, watch};
+
+use crate::scene::{Scene, Tune};
+use crate::theme::Theme;
+use crate::view::{BoxView, Source};
+
+/// The Wayland app id and X11 WM class, for compositor rules.
+const APP_ID: &str = "copland-box";
+
+/// The first of these the system has; else fontconfig's monospace, else a common one.
+const PREFERRED_FONTS: [&str; 3] = [
+    "JetBrains Mono",
+    "JetBrainsMono Nerd Font Mono",
+    "JetBrainsMono Nerd Font",
+];
+const FALLBACK_FONTS: [&str; 4] = ["DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "Ubuntu Mono"];
+
+#[derive(Parser)]
+#[command(
+    version,
+    about = "The Copland daemon with a window: runs the agents in daemon.toml and draws them as wires and poles"
+)]
+struct Args {
+    /// The config file [default: $XDG_CONFIG_HOME/copland/daemon.toml]
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
+    /// Draw a simulation instead of the daemon: no config, no server, nothing launched.
+    #[arg(long)]
+    demo: bool,
+    /// A Copland theme, over the config's `theme` (nord, tokyo-night, dracula, catppuccin, gruvbox, one-dark, solarized).
+    #[arg(long, value_name = "NAME")]
+    theme: Option<String>,
+}
+
+/// `theme` from the config file, read leniently, so a config the daemon refuses still sets the box's colours.
+fn theme_in(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let table: toml::Table = toml::from_str(&text).ok()?;
+    table.get("theme")?.as_str().map(str::to_string)
+}
+
+fn pick_theme(args: &Args, path: &Path) -> Result<&'static Theme> {
+    if let Some(name) = &args.theme {
+        return Theme::named(name).with_context(|| {
+            format!(
+                "no theme {name}; there are {}",
+                Theme::names().collect::<Vec<_>>().join(", ")
+            )
+        });
+    }
+    let Some(name) = theme_in(path) else {
+        return Ok(Theme::named(theme::DEFAULT).expect("the default theme"));
+    };
+    Ok(Theme::named(&name).unwrap_or_else(|| {
+        tracing::warn!("no theme {name}; using {}", theme::DEFAULT);
+        Theme::named(theme::DEFAULT).expect("the default theme")
+    }))
+}
+
+/// fontconfig's answer for "monospace", if `fc-match` is there.
+fn system_monospace() -> Option<String> {
+    let out = std::process::Command::new("fc-match")
+        .args(["-f", "%{family[0]}", "monospace"])
+        .output()
+        .ok()?;
+    let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (out.status.success() && !name.is_empty()).then_some(name)
+}
+
+fn pick_font(available: &[String]) -> String {
+    let has = |name: &str| available.iter().any(|f| f == name);
+    PREFERRED_FONTS
+        .iter()
+        .map(|s| s.to_string())
+        .chain(system_monospace())
+        .chain(FALLBACK_FONTS.iter().map(|s| s.to_string()))
+        .find(|f| has(f))
+        .unwrap_or_else(|| "monospace".into())
+}
+
+/// The daemon on its own thread and Tokio runtime; GPUI has the main thread.
+struct Running {
+    stop: Option<oneshot::Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Running {
+    fn start(config: Config, finished: Arc<AtomicBool>) -> Result<(Self, watch::Receiver<DaemonState>)> {
+        let (state_tx, state_rx) = std::sync::mpsc::channel();
+        let (stop, stop_rx) = oneshot::channel::<()>();
+        let thread = std::thread::Builder::new().name("daemon".into()).spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = state_tx.send(Err(anyhow::Error::from(e)));
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let paths = Paths {
+                    state_dir: default_state_dir(),
+                    runtime_dir: default_runtime_dir(),
+                };
+                let mut daemon = match Daemon::start(config, paths) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let _ = state_tx.send(Err(e));
+                        return;
+                    }
+                };
+                let _ = state_tx.send(Ok(daemon.subscribe()));
+                let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
+                else {
+                    tracing::error!("can't listen for signals");
+                    return;
+                };
+                tokio::select! {
+                    _ = term.recv() => tracing::info!("SIGTERM: stopping"),
+                    _ = int.recv() => tracing::info!("SIGINT: stopping"),
+                    _ = stop_rx => tracing::info!("window closed: stopping"),
+                    _ = daemon.join() => {
+                        tracing::error!("no agent left to watch");
+                        finished.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+                daemon.shutdown();
+                /* As the headless daemon: a second signal means now. */
+                tokio::select! {
+                    _ = daemon.join() => {}
+                    _ = term.recv() => { tracing::warn!("second signal: exiting without waiting"); std::process::exit(1); }
+                    _ = int.recv() => { tracing::warn!("second signal: exiting without waiting"); std::process::exit(130); }
+                }
+                finished.store(true, Ordering::Relaxed);
+            });
+        })?;
+        let state = state_rx
+            .recv()
+            .context("the daemon's thread ended before it started")??;
+        Ok((
+            Self {
+                stop: Some(stop),
+                thread: Some(thread),
+            },
+            state,
+        ))
+    }
+
+    /// Stop the agents (runs finish as cancelled) and wait for them.
+    fn stop(mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        /* GPUI and its renderer log a page at info on every start; the daemon's own lines are what matter here. */
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_env("COPLAND_LOG")
+                .unwrap_or_else(|_| "warn,copland_box=info,copland_daemon_core=info".into()),
+        )
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .init();
+    let args = Args::parse();
+    let path = args.config.clone().unwrap_or_else(default_config_path);
+    let theme = pick_theme(&args, &path)?;
+    let tune = Tune::default();
+
+    let mut running = None;
+    let (scene, source) = if args.demo {
+        (Scene::demo(tune, 0x5eed_c0b1), Source::Demo)
+    } else {
+        match Config::load(&path) {
+            Ok(config) => {
+                tracing::info!(config = %path.display(), agents = config.agents.len(), "starting");
+                let finished = Arc::new(AtomicBool::new(false));
+                let (r, state) = Running::start(config, finished.clone())?;
+                running = Some(r);
+                (Scene::live(tune), Source::Live { state, finished })
+            }
+            Err(e) => {
+                let why = if path.exists() {
+                    format!("{:#}", e)
+                } else {
+                    format!("no config at {}", path.display())
+                };
+                tracing::warn!("{why}");
+                (Scene::live(tune), Source::Quiet(why))
+            }
+        }
+    };
+    let (w, h) = BoxView::window_size(&scene, tune.scale as f32);
+    let mut scene = Some(scene);
+    let mut source = Some(source);
+    Application::new().run(move |cx| {
+        let font: SharedString = pick_font(&cx.text_system().all_font_names()).into();
+        tracing::debug!(%font, theme = theme.name, "drawing");
+        let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
+        let opened = cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: None,
+                kind: WindowKind::Normal,
+                is_resizable: false,
+                is_minimizable: false,
+                app_id: Some(APP_ID.into()),
+                window_decorations: Some(WindowDecorations::Client),
+                window_min_size: Some(size(px(w), px(h))),
+                ..Default::default()
+            },
+            |window, cx| {
+                let view = cx.new(|cx| {
+                    BoxView::new(
+                        scene.take().expect("one window"),
+                        theme,
+                        font,
+                        source.take().expect("one window"),
+                        cx,
+                    )
+                });
+                window.focus(view.read(cx).focus_handle());
+                view
+            },
+        );
+        if let Err(e) = opened {
+            tracing::error!("opening the window: {e:#}");
+            cx.quit();
+            return;
+        }
+        cx.on_window_closed(|cx| cx.quit()).detach();
+    });
+    if let Some(r) = running {
+        r.stop();
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefers_jetbrains_mono_then_falls_back() {
+        let fonts = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            pick_font(&fonts(&["DejaVu Sans Mono", "JetBrains Mono"])),
+            "JetBrains Mono"
+        );
+        assert_eq!(pick_font(&fonts(&[])), "monospace");
+    }
+
+    #[test]
+    fn reads_the_theme_from_a_config_it_cannot_otherwise_use() {
+        let dir = std::env::temp_dir().join(format!("copland-box-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("daemon.toml");
+        std::fs::write(&file, "theme = \"dracula\"\n").unwrap();
+        assert_eq!(theme_in(&file).as_deref(), Some("dracula"));
+        let args = Args {
+            config: None,
+            demo: false,
+            theme: None,
+        };
+        assert_eq!(pick_theme(&args, &file).unwrap().name, "dracula");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn refuses_an_unknown_theme_flag() {
+        let args = Args {
+            config: None,
+            demo: false,
+            theme: Some("nope".into()),
+        };
+        assert!(pick_theme(&args, Path::new("/nonexistent")).is_err());
+    }
+}

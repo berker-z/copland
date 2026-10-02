@@ -38,6 +38,8 @@ Shipped themes: `nord` (default), `tokyo-night`, `dracula`, `catppuccin`
 
 **To add a theme:** add one `[data-theme="x"]` block in `src/styles/themes.css` (all 17
 variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component changes.
+The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add it there too
+(its test reads themes.css and fails when the two differ).
 
 ## Visual Language
 

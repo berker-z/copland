@@ -23,6 +23,9 @@ pub struct AgentState {
     /// The last thing that went wrong, cleared by the next good poll.
     pub last_error: Option<String>,
     pub last_run: Option<RunSummary>,
+    /// Tasks with unread items for the agent at the last poll, oldest first: what the box draws as todo.
+    /// The task a run is on stays listed until the next poll after it, so a reader leaves that one out.
+    pub waiting: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +61,7 @@ impl AgentState {
             unread: 0,
             last_error: None,
             last_run: None,
+            waiting: Vec::new(),
         }
     }
 }

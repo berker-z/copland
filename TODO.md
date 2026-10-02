@@ -70,8 +70,10 @@ docs/DESIGN.md under Touch.
 
 ## Later
 
-- [ ] The daemon (COPL-9) beyond headless: a GPUI window on the same
-      loop (COPL-33), a second runtime (Codex) to prove the binding, and
+- [ ] The daemon (COPL-9) beyond headless: the GPUI window on the same
+      loop (COPL-33) is scaffolded as `copland-box` (todo and doing from the
+      daemon; done and blocked still empty until it reads stages from
+      Copland), a second runtime (Codex) to prove the binding, and
       backoff for a runtime that keeps failing. Known gaps are in
       daemon/README.md.
 - [ ] Data export: everything a person has, as one download from settings.

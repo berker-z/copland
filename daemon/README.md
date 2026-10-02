@@ -75,7 +75,7 @@ About the Claude Code flags, as of Claude Code 2.1: `--tools ""` takes away ever
 
 ## Building
 
-It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. The split is for COPL-33, a GPUI window that will sit on top of the same loop: `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, last run) as a `tokio::sync::watch` receiver, which the headless binary ignores and a window would draw.
+It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. `box` is `copland-box`, the same loop with a GPUI window (below). `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, waiting tasks, last run) as a `tokio::sync::watch` receiver, which the headless binary ignores and the box draws. The workspace's `default-members` are `core` and `cli`, so plain `cargo` here builds and checks the headless daemon only, with no GPUI anywhere in its graph.
 
 ```sh
 cd daemon
@@ -85,7 +85,72 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-TLS is rustls with ring, so there is no OpenSSL and no cmake to find; on NixOS plain `cargo` builds it. `--headless` is accepted and is the only mode for now.
+TLS is rustls with ring, so there is no OpenSSL and no cmake to find; on NixOS plain `cargo` builds it. `--headless` is accepted and is the only mode `copland-daemon` has; the window is the separate `copland-box` binary.
+
+## The box
+
+`copland-box` is the daemon with a window (COPL-33). It runs the same loop as `copland-daemon`, in the same process, and draws the daemon's state as the wired scene from `docs/research/wired-prototype.html`: tickets wait on the wire into todo, a run picks one up at doing while current runs along its wire, and two branches leave doing, up to done and down to blocked. The geometry, the default tuning and the per-frame update are a port of the prototype's script, kept close enough to read side by side. All of it is in `box/src/scene.rs`: the pole and wire layout is the constants and `Layout`/`build_wires` at the top, plus where `draw` puts the poles and where `view.rs` puts the lists.
+
+The scene is drawn on a 152×56 grid at 3 screen pixels per cell, rounded to whole device pixels on scaled outputs. Each frame it is composited in software the way the prototype's canvas is, then painted as one GPUI quad per horizontal run of same-coloured cells, a few hundred quads. The lists and the status line are text in JetBrains Mono when the system has it, else fontconfig's monospace, else DejaVu Sans Mono. No font is bundled.
+
+What it shows, live:
+
+- todo: tasks with unread items for an agent (`AgentState::waiting`, published on every poll), minus any a run is on.
+- doing: each agent's current run, with the task key, the agent and how long it has run.
+- done and blocked: nothing yet. Those are task stages, and the daemon doesn't read stages. A later step reads them from Copland's API, the same data the web widget uses.
+
+A task the daemon has already run stays in todo while its items are unread, because that is what the inbox says. Without a usable config (no file, no agents, a refused one) the box shows the empty scene and "nothing on the wire" with the reason. `--demo` drives it with the prototype's simulation instead: no config, no server, nothing launched. In the demo `n` adds an item, `a` answers a blocked one and `f` finishes a run; `q` or Esc quits anywhere.
+
+Closing the window, SIGINT or SIGTERM stop the daemon as the headless one stops: runtimes get SIGTERM and their runs finish as cancelled. The title bar drags the window (GPUI's `start_window_move`).
+
+The colours are Copland's seven themes, copied from `src/styles/themes.css` into `box/src/theme.rs`. They have to be kept in step by hand; a test reads the CSS and fails when they differ. Pick one with `theme = "nord"` at the top of `daemon.toml` (the headless daemon ignores the key) or `--theme`. Later it should come from your Copland settings.
+
+### Hyprland
+
+The window is a normal toplevel with app id `copland-box`, no title and no server-side decorations, sized 628×247. Hyprland tiles it unless told otherwise. With the Lua config (Hyprland 0.55 and later):
+
+```lua
+hl.window_rule({
+	match = { class = "^(copland-box)$" },
+	float = true,
+	pin = true,
+	size = { 628, 247 },
+	move = { "monitor_w-652", "monitor_h-295" },
+	border_size = 0,
+	rounding = 0,
+	no_shadow = true,
+})
+```
+
+The move puts it 24px from the right and 48px from the bottom. Use constants there, not `window_w`: the rule is evaluated against the size the window would have had tiled, which changes with whatever else is on the workspace. With an older `hyprland.conf`:
+
+```
+windowrulev2 = float, class:^(copland-box)$
+windowrulev2 = pin, class:^(copland-box)$
+windowrulev2 = size 628 247, class:^(copland-box)$
+windowrulev2 = move 100%-652 100%-295, class:^(copland-box)$
+windowrulev2 = noborder, class:^(copland-box)$
+windowrulev2 = rounding 0, class:^(copland-box)$
+windowrulev2 = noshadow, class:^(copland-box)$
+```
+
+The Lua rule was checked on Hyprland 0.56; the `windowrulev2` lines weren't.
+
+### Building the box
+
+GPUI needs native libraries NixOS doesn't put on a library path: the Vulkan loader, Wayland, X11, xkbcommon, fontconfig and freetype. `daemon/flake.nix` has a dev shell with them and `LD_LIBRARY_PATH` set. It brings no Rust toolchain, so cargo is whatever is on your PATH and builds inside and outside the shell share `target/`. nixpkgs is pinned to a rev in the flake itself, and `flake.lock` holds the hash.
+
+```sh
+cd daemon
+nix develop -c cargo build -p copland-box --release   # target/release/copland-box
+nix develop -c ./target/release/copland-box --demo
+nix develop -c cargo test --workspace
+nix develop -c cargo clippy --workspace --all-targets -- -D warnings
+```
+
+The binary runs outside the shell only if the libraries can be found some other way, so start it through `nix develop -c` for now. A Nix package with a wrapper is for later. Nix only sees files git tracks, so a fresh `flake.nix` needs at least `git add -N` before `nix develop` finds it.
+
+GPUI is `gpui = "=0.2.2"` from crates.io, the newest published release. Everything under it comes from crates.io too, so that line and `Cargo.lock` pin the whole graph; no git dependencies. Pins move only when something forces it (see AGENTS.md).
 
 ## Testing it against a local Copland
 

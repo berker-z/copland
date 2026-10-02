@@ -222,11 +222,13 @@ impl AgentLoop {
     async fn tick(&mut self) -> Result<bool> {
         let me = self.identity().await?;
         let (unread, items) = self.unread().await?;
+        let plan: Plan = plan(&me, &items);
+        let waiting: Vec<String> = plan.wakes.iter().map(|w| w.task_key.clone()).collect();
         self.update(|s| {
             s.last_poll = Some(SystemTime::now());
             s.unread = unread;
+            s.waiting = waiting;
         });
-        let plan: Plan = plan(&me, &items);
         for id in &plan.taskless {
             if self.noted.insert(id.clone()) {
                 tracing::info!("inbox item {id} has no task; nothing handles those yet");

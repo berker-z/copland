@@ -51,6 +51,8 @@ impl fmt::Debug for Secret {
 pub struct Config {
     pub poll_interval: Duration,
     pub agents: Vec<AgentConfig>,
+    /// The box's colour theme by name (`theme = "nord"`). Only the window reads it; the headless daemon ignores it.
+    pub theme: Option<String>,
     /// Some agent has its token written in the config itself.
     inline_token: bool,
 }
@@ -72,6 +74,7 @@ pub struct AgentConfig {
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     poll_interval: Option<u64>,
+    theme: Option<String>,
     #[serde(default, rename = "agent")]
     agents: Vec<RawAgent>,
 }
@@ -216,6 +219,7 @@ impl Config {
         Ok(Config {
             poll_interval: Duration::from_secs(poll),
             agents,
+            theme: raw.theme.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()),
             inline_token,
         })
     }
@@ -295,6 +299,17 @@ mod tests {
         );
         assert!(parse(&format!("poll_interval = 1\n[[agent]]\nurl=\"http://x\"\nhandle=\"a\"\ntoken=\"cpl_a\"\ncommand=[\"x\"]\nworkdir=\"{w}\"\n")).is_err());
         assert!(parse("poll_interval = 30\n").is_err());
+    }
+
+    #[test]
+    fn reads_the_box_theme() {
+        let agent = format!(
+            "[[agent]]\nurl=\"http://x\"\nhandle=\"a\"\ntoken=\"cpl_a\"\ncommand=[\"x\"]\nworkdir=\"{}\"\n",
+            tmp()
+        );
+        assert_eq!(parse(&agent).unwrap().theme, None);
+        let c = parse(&format!("theme = \"gruvbox\"\n{agent}")).unwrap();
+        assert_eq!(c.theme.as_deref(), Some("gruvbox"));
     }
 
     #[test]
