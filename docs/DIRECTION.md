@@ -37,4 +37,4 @@ In order, each useful on its own:
 3. Data export.
 4. Mail, in v0.2. It's the most useful source and the most dangerous one: anyone in the world can put text in front of an agent by sending an email. Mail grants will be narrow (read only, limited to chosen labels or senders), and agents will be told that mail is untrusted input.
 
-The longer research note behind this, with the comparison to Linear, Jira, GitHub, Devin and A2A, is in [research/agent-control-plane.md](research/agent-control-plane.md). How agents work today is in [AGENT-IDENTITIES.md](AGENT-IDENTITIES.md).
+The longer research note behind this, with the comparison to Linear, Jira, GitHub, Devin and A2A, is in [research/agent-control-plane.md](research/agent-control-plane.md). The daemon, runs, claims and trust boundaries are worked out in [research/daemon-runs-claims.md](research/daemon-runs-claims.md). How agents work today is in [AGENT-IDENTITIES.md](AGENT-IDENTITIES.md).
