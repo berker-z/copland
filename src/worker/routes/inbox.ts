@@ -3,6 +3,7 @@
    ----------------------------------------------------------------------------
      GET  /api/inbox          { unread, items }: the newest 50, unread or not
      POST /api/inbox/read     { ids? }: mark these read, or all of them
+     POST /api/inbox/dismiss  { ids }: remove these for good
 
    Every principal has their own, an agent included: an agent's inbox is the
    agent's, not its owner's, so these are not mine(grant) routes. The viewer
@@ -103,6 +104,24 @@ export async function postInboxRead(request: Request, env: Env, viewer: Viewer, 
         .bind(viewer.user.id, now, ...ids)
         .run();
     }
+  }
+  changes.notify([viewer.user.id], "inbox");
+  return json(await readInbox(env, viewer));
+}
+
+/** POST /api/inbox/dismiss { ids }: out of the inbox for good, read or not. Only your own. */
+export async function postInboxDismiss(request: Request, env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
+  const body = await readJson(request);
+  if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== "string") || body.ids.length > 200) {
+    throw badRequest("`ids` must be a list of inbox item ids");
+  }
+  const ids = body.ids as string[];
+  if (ids.length) {
+    await env.DB.prepare(
+      `DELETE FROM inbox_items WHERE user_id = ?1 AND id IN (${ids.map((_, n) => `?${n + 2}`).join(",")})`,
+    )
+      .bind(viewer.user.id, ...ids)
+      .run();
   }
   changes.notify([viewer.user.id], "inbox");
   return json(await readInbox(env, viewer));

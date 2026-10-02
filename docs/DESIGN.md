@@ -57,13 +57,13 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   ground; columns are `flex flex-col gap-px`; every pane is `bg-surface` so
   the 1px gaps read as tmux splits. Below `lg` the columns are `contents`
   and the panes stack edge to edge in one column, ordered with `order-*`
-  for a phone: agenda, tasks, boards, calendar, notepad, markets.
+  for a phone: agenda, tasks, inbox, boards, calendar, notepad, markets.
+  The middle column is tasks, boards, then inbox.
 - The statusline (`src/features/shell/StatusLine.tsx`) is fixed to the top,
   `h-11 bg-bar text-base`, `z-[55]` (above the login overlay z-50, below
   modals z-[60]); `main` gets `pt-11` to clear it. Left: the pole mark,
   `copland`, your avatar and handle (opens settings › profile). Right: theme
   switcher (menu opens downward), weather, city, moon phase, date, clock,
-  the inbox bell (unread count in `accent`, a list that opens downward),
   settings, logout. Below `sm` it keeps the
   mark, weather, clock and settings, and a `⋯` menu holds date, moon,
   themes and logout.

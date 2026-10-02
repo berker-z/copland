@@ -517,7 +517,7 @@ ${who} Today is ${today()} (UTC).${
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
 - **Planning.** Boards with planning switched on add: level (epic > story > task, plus milestone), parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). Other boards refuse these fields.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
-- **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, and being @mentioned in a comment, land there. Read it with inbox, then mark_read what you have dealt with. A mention is how to hand something to someone: "@sam can you check this".
+- **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, and being @mentioned in a comment, land there. Read it with inbox, then mark_read what you have dealt with (or dismiss it). A mention is how to hand something to someone: "@sam can you check this".
 - **Labels** (tags like #frontend) belong to a board and are given by name; create_label adds one, update_label renames or recolours it. Priority is low, normal, high or urgent.`);
 
   out.push(`## Your boards`);
@@ -1082,21 +1082,28 @@ const TOOLS: Tool[] = [
   },
   {
     name: "mark_read",
-    title: "Mark inbox items read",
+    title: "Mark inbox items read, or dismiss them",
     description:
-      "Mark inbox items as dealt with: the ids given (from inbox), or everything with all: true. One of the two is required. Read items stay in the inbox, marked read. Needs a read and write connection. Returns how many are still unread.",
+      "Mark inbox items as dealt with: the ids given (from inbox), or everything with all: true. One of the two is required. Read items stay in the inbox, marked read; with dismiss: true they are removed from it instead, for good (all: true then clears the latest 50). Needs a read and write connection. Returns how many are still unread.",
     inputSchema: {
       type: "object",
       properties: {
         ids: { type: "array", items: S, description: "Inbox item ids" },
-        all: { type: "boolean", description: "Mark everything read" },
+        all: { type: "boolean", description: "Every item" },
+        dismiss: { type: "boolean", description: "Remove them from the inbox instead of marking them read" },
       },
       additionalProperties: false,
     },
     annotations: { idempotentHint: true },
     async run(args, ctx) {
       if (args.all === true && args.ids !== undefined) throw new Error("Give ids or all: true, not both.");
-      if (args.all !== true && args.ids === undefined) throw new Error("Give the ids to mark read, or all: true.");
+      if (args.all !== true && args.ids === undefined) throw new Error("Give the ids, or all: true.");
+      if (args.dismiss === true) {
+        const ids =
+          args.all === true ? (await ctx.call<Inbox>("GET", "/api/inbox")).items.map((i) => i.id) : list(args.ids);
+        const inbox = await ctx.call<Inbox>("POST", "/api/inbox/dismiss", { ids });
+        return { unread: inbox.unread };
+      }
       const inbox = await ctx.call<Inbox>("POST", "/api/inbox/read", args.all === true ? {} : { ids: list(args.ids) });
       return { unread: inbox.unread };
     },

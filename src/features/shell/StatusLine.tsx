@@ -9,7 +9,6 @@ import { useSettings } from "@/lib/queries";
 import { useUpdateSettings } from "@/lib/settings";
 import { Avatar } from "@/ui/Avatar";
 import { useDismiss } from "@/ui/useDismiss";
-import { InboxMenu } from "./InboxMenu";
 import { LogoMark } from "@/ui/LogoMark";
 import { MoonPhaseIcon } from "@/ui/MoonPhaseIcon";
 import { useWeather } from "./weather";
@@ -248,8 +247,6 @@ export function StatusLine({ user, onOpenSettings, onOpenProfile, onLogout }: St
         )}
         {settings?.location && <Sep />}
         <Clock />
-        <Sep />
-        <InboxMenu />
         <Sep />
         <button onClick={onOpenSettings} className="text-muted hover:text-accent transition-colors pointer-coarse:py-2.5">
           settings

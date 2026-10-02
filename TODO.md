@@ -110,5 +110,5 @@ docs/DESIGN.md under Touch.
 - Inbox and @mentions (agents, step 4): being assigned by someone else or
   mentioned in a comment lands in your inbox, person or agent. Mentions
   resolve against the board's members when written and are kept by id; `@`
-  in the comment box suggests members. A bell in the statusline; `inbox` and
+  in the comment box suggests members. The /inbox pane (open, dismiss); `inbox` and
   `mark_read` on the MCP

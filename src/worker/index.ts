@@ -57,7 +57,7 @@ import { deleteComment, getComments, getTaskEvents, patchComment, postComment } 
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
 import { deleteTask, getTask, patchTask, postTask } from "./routes/tasks";
 import { getMyWork } from "./routes/work";
-import { getInbox, postInboxRead } from "./routes/inbox";
+import { getInbox, postInboxDismiss, postInboxRead } from "./routes/inbox";
 import { deleteToken, getTokens, postToken } from "./routes/tokens";
 import { handleIntegration, isIntegrationPath } from "./integrations";
 import { bearerFrom, requireWriteScope, touchStatement, viaContext } from "./tokens";
@@ -109,6 +109,7 @@ const api = new Router<Ctx>()
   /* Not mine(grant): an agent's inbox is its own, not its owner's. */
   .on("GET", "/api/inbox", ({ env, viewer }) => getInbox(env, viewer))
   .on("POST", "/api/inbox/read", ({ request, env, viewer, changes }) => postInboxRead(request, env, viewer, changes))
+  .on("POST", "/api/inbox/dismiss", ({ request, env, viewer, changes }) => postInboxDismiss(request, env, viewer, changes))
 
   .on("GET", "/api/settings", mine(null, ({ env, viewer }) => getSettings(env, viewer)))
   .on("PATCH", "/api/settings", mine(null, ({ request, env, viewer, changes }) => patchSettings(request, env, viewer, changes)))

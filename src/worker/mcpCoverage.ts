@@ -62,8 +62,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
     ],
   },
   "GET /api/tasks/mine": { tools: ["my_work"] },
-  "GET /api/inbox": { tools: ["inbox"] },
+  "GET /api/inbox": { tools: ["inbox", "mark_read"] },
   "POST /api/inbox/read": { tools: ["mark_read"] },
+  "POST /api/inbox/dismiss": { tools: ["mark_read"] },
   "GET /api/tasks/:id": { tools: ["get_task", "update_task", "move_task", "comment_on_task", "delete_task"] },
   "POST /api/boards/:id/tasks": { tools: ["create_task"] },
   /* create_task sets dependencies with a second write: creation takes none. */
