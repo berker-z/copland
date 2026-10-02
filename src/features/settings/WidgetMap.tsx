@@ -391,6 +391,18 @@ function Sketch({ id }: { id: PaneId }) {
           ))}
         </div>
       );
+    case "wired":
+      return (
+        <div className="flex items-start gap-[9px] pt-[3px]" aria-hidden>
+          {["bg-blue", "bg-yellow", "bg-green"].map((lamp, i) => (
+            <span key={i} className="relative w-[8px] h-[13px]">
+              <span className={`absolute left-[3px] -top-[3px] w-[2px] h-[2px] ${lamp}`} />
+              <span className="absolute left-[3px] top-0 w-[2px] h-[13px] bg-faint/70" />
+              <span className="absolute left-0 top-[2px] w-[8px] h-[2px] bg-faint/70" />
+            </span>
+          ))}
+        </div>
+      );
     case "markets":
       return (
         <div className="space-y-[5px]" aria-hidden>

@@ -11,7 +11,7 @@
    to right, one after the other.
    ========================================================================== */
 
-export const PANE_IDS = ["calendar", "agenda", "notepad", "tasks", "boards", "inbox", "markets"] as const;
+export const PANE_IDS = ["calendar", "agenda", "notepad", "tasks", "boards", "inbox", "markets", "wired"] as const;
 export const TOPBAR_IDS = ["weather", "moon", "clock", "inbox-badge"] as const;
 
 export type PaneId = (typeof PANE_IDS)[number];
@@ -65,6 +65,12 @@ export const PANES: PaneSpec[] = [
     defaultOn: false,
     enhancedBy: "coingecko",
   },
+  {
+    id: "wired",
+    name: "wired",
+    description: "Your agents' work as poles and wires: waiting, being worked on, blocked on you, done.",
+    defaultOn: true,
+  },
 ];
 
 export const TOPBAR: TopbarSpec[] = [
@@ -91,8 +97,12 @@ export interface DashboardLayout {
 
 export const DEFAULT_LAYOUT: DashboardLayout = {
   columns: [
-    ["calendar", "agenda", "notepad"],
-    ["tasks", "boards", "inbox"],
+    /* wired alone on the left: with no agents yet it is where making one
+       starts. A phone reads left to right, so the work comes before the
+       calendars. */
+    ["wired"],
+    ["boards", "tasks", "inbox"],
+    ["agenda", "calendar", "notepad"],
   ],
   topbar: TOPBAR.filter((t) => t.defaultOn).map((t) => t.id),
 };

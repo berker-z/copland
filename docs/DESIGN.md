@@ -74,8 +74,11 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   `flex flex-col gap-4`; every pane is `bg-surface`. Below `lg` the columns
   are `contents` and the panes stack in one column with `gap-2` between
   them, edge to edge sideways below `sm`, in reading order: the first
-  column top to bottom, then the next. By default there are two columns:
-  calendar, agenda, notepad, and tasks, boards, inbox. A pane switched on
+  column top to bottom, then the next. By default there are three columns:
+  wired alone; boards, tasks, inbox; and agenda, calendar, notepad. Wired
+  comes first because with no agents yet it is where making one starts, and
+  a phone gets the work before the calendars. Changing the default never
+  touches a layout someone has saved. A pane switched on
   by a click rather than a drop lands at the end of the shortest column
   (the rightmost of equals).
 - The statusline (`src/features/shell/StatusLine.tsx`) is fixed to the top,
@@ -184,6 +187,25 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   agent's settings page lists its latest runs with the status in a hue:
   running `text-ink`, stale `text-yellow`, failed `text-red`, completed
   `text-muted`, cancelled `text-faint`.
+- `src/features/wired/`: the /wired pane, the one place the app draws
+  pixel art. `scene.ts` draws on a canvas in logo pixels (LogoMark's
+  16-unit grid: the same rectangles, a 2×2 lamp on each head) and the
+  canvas is scaled by a whole number with `image-rendering: pixelated`:
+  the largest of 2 to 4 that fits the column with the done and blocked
+  lists beside it, else the largest that fits alone with those lists under
+  it. Colours are the role variables, read with `getComputedStyle` and
+  re-read when `<html>` changes theme; nothing is hard-coded. Wires are
+  `muted` mixed into `surface`, tinted 30% toward the hue of where they
+  lead; poles are `ink` at 55%. Beads (2×2) and lamps take the stage hues:
+  todo blue, doing yellow, blocked red (blinking), done green (fading as it
+  rides off). Current along a working wire is yellow. The tuning came from
+  `docs/research/wired-prototype.html` and is fixed in constants. All text
+  is DOM in the app font at 11px: headers `text-faint`, lit in their hue
+  when the pole has something; todo keys `text-blue`, doing `text-ink`
+  with the agent `text-yellow` and the timer `text-muted`, blocked
+  `text-red`, done `text-green` fading with age; a ticket opens its task.
+  A `bg-bar` strip under it sums up each agent. Under reduced motion it is
+  a still picture, drawn only when the data changes.
 - `src/ui/Avatar.tsx` — someone's picture, or their initials in a
   `border-faint text-muted` square when they have none. Square like
   everything else, sized in px to sit on a text line (16 in rows, 18 in
@@ -271,7 +293,7 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   `[1][2][3]` column-count radio above it. A pane is a `bg-surface` block
   with a pane-style rule title (`/name` in `text-blue`, accent on hover),
   a grip, and a little sketch of what it shows in `faint` bars (calendar
-  today in `accent`, markets ticks in green/red as data). Always-on
+  today in `accent`, markets ticks in green/red and the wired poles' lamps in their stage hues, as data). Always-on
   widgets carry a `Lock` in `text-faint`. An empty lane is a dashed
   `outline-faint` box saying "drop panes here". Switched-off widgets sit
   in a dashed tray below: name, kind, description, and a `+`.

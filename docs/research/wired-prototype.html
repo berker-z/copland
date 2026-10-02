@@ -1,0 +1,436 @@
+<title>Copland Wires</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --surface: 38 43 53; --raised: 49 56 71; --bar: 30 42 58; --divider: 23 28 38;
+  --ink: 216 222 233; --bright: 236 239 244; --muted: 97 110 136; --faint: 76 86 106;
+  --accent: 136 192 208; --red: 191 97 106; --orange: 208 135 112; --yellow: 235 203 139;
+  --green: 163 190 140; --magenta: 180 142 173; --blue: 129 161 193; --cyan: 136 192 208; --teal: 143 188 187;
+  color-scheme: dark;
+  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { background: rgb(var(--divider)); color: rgb(var(--ink)); font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", "DejaVu Sans Mono", Menlo, Consolas, monospace; }
+button, select, textarea, input, output, label { font-family: inherit; }
+body { font-size: 13px; line-height: 1.5; padding-inline: 16px; padding-block: 24px 48px; }
+.page { max-width: 1180px; margin: 0 auto; display: grid; gap: 1px; grid-template-columns: minmax(0, 1fr) 340px; align-items: start; }
+@media (max-width: 860px) { .page { grid-template-columns: minmax(0, 1fr); } }
+.pane { background: rgb(var(--surface)); padding: 16px 18px 18px; }
+.ptitle { display: flex; align-items: center; gap: 10px; color: rgb(var(--blue)); font-size: 15px; letter-spacing: .14em; margin-bottom: 14px; }
+.ptitle::before { content: "—"; color: rgb(var(--faint)); letter-spacing: 0; }
+.ptitle::after { content: ""; flex: 1; height: 1px; background: rgb(var(--faint) / .6); }
+.ptitle small { color: rgb(var(--muted)); font-size: 12px; letter-spacing: .04em; }
+.lede { color: rgb(var(--muted)); max-width: 64ch; margin: 0 0 18px; }
+.lede b { color: rgb(var(--ink)); font-weight: 400; }
+
+.desk { position: relative; padding: 40px 16px; background:
+  repeating-linear-gradient(0deg, rgb(var(--divider)) 0 1px, transparent 1px 4px), rgb(var(--divider) / .55);
+  display: flex; justify-content: center; overflow-x: auto; }
+.box { background: rgb(var(--surface)); outline: 1px solid rgb(var(--faint) / .7); display: inline-flex; flex-direction: column; }
+.box-title { display: flex; align-items: center; gap: 8px; padding: 6px 10px 2px; font-size: 12px; color: rgb(var(--blue)); letter-spacing: .14em; }
+.box-title::before { content: "—"; color: rgb(var(--faint)); letter-spacing: 0; }
+.box-title::after { content: ""; flex: 1; height: 1px; background: rgb(var(--faint) / .55); }
+.box-title .count { color: rgb(var(--muted)); letter-spacing: .04em; order: 2; }
+.box-title .close { order: 3; color: rgb(var(--faint)); letter-spacing: 0; }
+.scene { position: relative; margin: 2px 10px 0; }
+.scene canvas { display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+.overlay { position: absolute; inset: 0; pointer-events: none; }
+.tag { position: absolute; transform: translate(-50%, 0); font-size: 11px; white-space: nowrap; letter-spacing: .04em; line-height: 1.2; }
+.tag.stage { color: rgb(var(--faint)); }
+.tag.stage.lit-todo { color: rgb(var(--blue)); }
+.tag.stage.lit-doing { color: rgb(var(--yellow)); }
+.tag.stage.lit-blocked { color: rgb(var(--red)); }
+.tag.stage.lit-done { color: rgb(var(--green)); }
+.tag.item { font-size: 10px; }
+.tag.queued { color: rgb(var(--muted)); }
+.tag.working { color: rgb(var(--ink)); }
+.tag.working i { color: rgb(var(--yellow)); font-style: normal; }
+.tag.blocked { color: rgb(var(--red)); }
+.tag.done { color: rgb(var(--green)); }
+.col { position: absolute; transform: translate(-50%, 0); display: flex; flex-direction: column; align-items: center; gap: 1px; font-size: 11px; line-height: 1.35; white-space: nowrap; letter-spacing: .03em; }
+.col .t-todo { color: rgb(var(--blue)); }
+.col .t-doing { color: rgb(var(--ink)); }
+.col .t-doing i { color: rgb(var(--yellow)); font-style: normal; }
+.col .t-doing em { color: rgb(var(--muted)); font-style: normal; }
+.col .t-blocked { color: rgb(var(--red)); }
+.col .t-done { color: rgb(var(--green)); }
+.col .t-more { color: rgb(var(--muted)); }
+.col .t-head { color: rgb(var(--faint)); margin-bottom: 2px; }
+.col .t-head.on-todo { color: rgb(var(--blue)); }
+.col .t-head.on-doing { color: rgb(var(--yellow)); }
+.col .t-head.on-done { color: rgb(var(--green)); }
+.col .t-head.on-blocked { color: rgb(var(--red)); }
+.col .t-blocked em { color: rgb(var(--muted)); font-style: normal; }
+.col.side { transform: none; align-items: flex-start; }
+.box-status { display: flex; gap: 10px; align-items: center; font-size: 11px; padding: 4px 10px 6px; margin-top: 4px; background: rgb(var(--bar)); color: rgb(var(--muted)); white-space: nowrap; overflow: hidden; }
+.box-status .sep { color: rgb(var(--faint)); }
+.box-status .y { color: rgb(var(--yellow)); }
+.box-status .r { color: rgb(var(--red)); }
+.box-status .g { color: rgb(var(--green)); }
+.box-status .b { color: rgb(var(--blue)); }
+.below { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 14px; color: rgb(var(--muted)); font-size: 12px; }
+.below b { font-weight: 400; }
+
+.group { border-top: 1px solid rgb(var(--divider)); padding-top: 10px; margin-top: 12px; }
+.group:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
+.glabel { font-size: 11px; color: rgb(var(--muted)); letter-spacing: .12em; text-transform: uppercase; margin-bottom: 6px; }
+.row { display: grid; grid-template-columns: 112px minmax(0, 1fr) 44px; gap: 8px; align-items: center; min-height: 26px; }
+.row label { color: rgb(var(--ink)); font-size: 12px; }
+.row output { color: rgb(var(--muted)); font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: rgb(var(--accent)); }
+select, textarea { background: rgb(var(--raised)); color: rgb(var(--ink)); border: 1px solid rgb(var(--faint)); border-radius: 0; font: inherit; font-size: 12px; padding: 3px 6px; }
+select:focus-visible, input:focus-visible, textarea:focus-visible, button:focus-visible { outline: 1px solid rgb(var(--accent)); outline-offset: 1px; }
+.checks { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; margin-top: 8px; }
+.checks label { display: inline-flex; gap: 6px; align-items: center; }
+button { background: rgb(var(--raised)); color: rgb(var(--ink)); border: 1px solid rgb(var(--faint)); border-radius: 0; font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: rgb(var(--accent)); color: rgb(var(--accent)); }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; }
+textarea { width: 100%; height: 110px; resize: vertical; font-size: 11px; margin-top: 8px; color: rgb(var(--muted)); }
+.copied { color: rgb(var(--green)); font-size: 11px; align-self: center; }
+</style>
+
+<div class="page">
+  <section class="pane">
+    <div class="ptitle">wired <small>box prototype</small></div>
+    <p class="lede">The box shows what the daemon picked up from your boards. Items wait on the wire into <b>todo</b>, get picked up at <b>doing</b>, where a run holds them while current flows in, and leave doing by one of two branches: the upper wire climbs to <b>done</b> and runs off the edge, the lower wire drops to <b>blocked</b>, where it waits for you. Each pole lists its tickets; lamps and beads take the stage colours.</p>
+    <div class="desk">
+      <div class="box">
+        <div class="box-title">wired <span class="count" id="count"></span><span class="close">×</span></div>
+        <div class="scene" id="scene">
+          <canvas id="cv"></canvas>
+          <div class="overlay" id="overlay"></div>
+        </div>
+        <div class="box-status" id="status"></div>
+      </div>
+    </div>
+    <div class="below">
+      <span><b style="color:rgb(var(--blue))">todo</b> waiting to be picked up</span>
+      <span><b style="color:rgb(var(--yellow))">doing</b> claimed by a run</span>
+      <span><b style="color:rgb(var(--red))">blocked</b> waiting on you</span>
+      <span><b style="color:rgb(var(--green))">done</b> upper branch, off the edge</span>
+    </div>
+  </section>
+
+  <aside class="pane">
+    <div class="ptitle">tune</div>
+    <div class="group">
+      <div class="glabel">play</div>
+      <div class="btns"><button id="add">new item</button><button id="answer">answer blocked</button><button id="finish">finish one</button></div>
+      <div class="checks"><label><input type="checkbox" id="stream" checked> items keep arriving</label><label><input type="checkbox" id="animate" checked> animate</label></div>
+    </div>
+    <div class="group">
+      <div class="glabel">look</div>
+      <div class="row"><label for="theme">theme</label><select id="theme"></select><span></span></div>
+      <div class="row"><label for="current">current colour</label>
+        <select id="current"><option value="yellow">yellow (doing)</option><option value="cyan">cyan</option><option value="accent">accent</option><option value="bright">white</option></select><span></span></div>
+    </div>
+    <div class="group" id="sliders"></div>
+    <div class="group">
+      <div class="glabel">values</div>
+      <div class="btns"><button id="copy">copy values</button><button id="reset">reset</button><span class="copied" id="copied" hidden>copied</span></div>
+      <textarea id="out" readonly aria-label="Current values as JSON"></textarea>
+    </div>
+  </aside>
+</div>
+
+<script>
+const THEMES = {"nord":{"surface":"38,43,53","raised":"49,56,71","bar":"30,42,58","divider":"23,28,38","ink":"216,222,233","bright":"236,239,244","muted":"97,110,136","faint":"76,86,106","accent":"136,192,208","red":"191,97,106","orange":"208,135,112","yellow":"235,203,139","green":"163,190,140","magenta":"180,142,173","blue":"129,161,193","cyan":"136,192,208","teal":"143,188,187"},"tokyo-night":{"surface":"26,27,38","raised":"36,40,59","bar":"22,22,30","divider":"14,14,21","ink":"169,177,214","bright":"192,202,245","muted":"86,95,137","faint":"59,66,97","accent":"122,162,247","red":"247,118,142","orange":"255,158,100","yellow":"224,175,104","green":"158,206,106","magenta":"187,154,247","blue":"122,162,247","cyan":"125,207,255","teal":"115,218,202"},"dracula":{"surface":"40,42,54","raised":"52,55,70","bar":"33,34,44","divider":"25,26,33","ink":"248,248,242","bright":"255,255,255","muted":"98,114,164","faint":"68,71,90","accent":"189,147,249","red":"255,85,85","orange":"255,184,108","yellow":"241,250,140","green":"80,250,123","magenta":"255,121,198","blue":"98,114,164","cyan":"139,233,253","teal":"139,233,253"},"catppuccin":{"surface":"30,30,46","raised":"49,50,68","bar":"24,24,37","divider":"17,17,27","ink":"186,194,222","bright":"205,214,244","muted":"108,112,134","faint":"69,71,90","accent":"203,166,247","red":"243,139,168","orange":"250,179,135","yellow":"249,226,175","green":"166,227,161","magenta":"245,194,231","blue":"137,180,250","cyan":"137,220,235","teal":"148,226,213"},"gruvbox":{"surface":"40,40,40","raised":"60,56,54","bar":"29,32,33","divider":"20,22,23","ink":"235,219,178","bright":"251,241,199","muted":"146,131,116","faint":"80,73,69","accent":"254,128,25","red":"251,73,52","orange":"254,128,25","yellow":"250,189,47","green":"184,187,38","magenta":"211,134,155","blue":"131,165,152","cyan":"142,192,124","teal":"142,192,124"},"one-dark":{"surface":"40,44,52","raised":"47,52,63","bar":"33,37,43","divider":"24,27,32","ink":"171,178,191","bright":"215,218,224","muted":"92,99,112","faint":"62,68,82","accent":"97,175,239","red":"224,108,117","orange":"209,154,102","yellow":"229,192,123","green":"152,195,121","magenta":"198,120,221","blue":"97,175,239","cyan":"86,182,194","teal":"86,182,194"},"solarized":{"surface":"0,43,54","raised":"7,54,66","bar":"0,33,43","divider":"0,18,23","ink":"131,148,150","bright":"147,161,161","muted":"88,110,117","faint":"23,68,79","accent":"38,139,210","red":"220,50,47","orange":"203,75,22","yellow":"181,137,0","green":"133,153,0","magenta":"211,54,130","blue":"38,139,210","cyan":"42,161,152","teal":"42,161,152"}};
+
+const SLIDERS = [
+  ["scene"],
+  ["scale", "pixel size", 2, 5, 1, 3, "×"],
+  ["spacing", "pole spacing", 34, 80, 1, 54, "u"],
+  ["sag", "sag", 0.02, 0.3, 0.01, 0.08, ""],
+  ["swayAmp", "sway", 0, 0.5, 0.01, 0.12, ""],
+  ["swaySpeed", "sway speed", 0.05, 2, 0.05, 0.3, "Hz"],
+  ["poleTone", "pole brightness", 0, 1, 0.05, 0.55, ""],
+  ["idle", "wire brightness", 0.1, 1, 0.05, 0.45, ""],
+  ["tint", "stage tint", 0, 1, 0.05, 0.3, ""],
+  ["current"],
+  ["pulseSpeed", "pulse speed", 4, 120, 1, 22, "u/s"],
+  ["pulseLen", "pulse length", 1, 30, 1, 6, "u"],
+  ["glow", "glow", 0, 1, 0.05, 0.35, ""],
+  ["flow"],
+  ["travel", "item speed", 4, 80, 1, 22, "u/s"],
+  ["work", "work time", 2, 30, 1, 9, "s"],
+  ["blockedChance", "blocked share", 0, 1, 0.05, 0.3, ""],
+  ["arrive", "arrival gap", 2, 30, 1, 8, "s"],
+  ["lamps"],
+  ["blink", "blink period", 0.3, 3, 0.05, 1.2, "s"],
+  ["duty", "blink on", 0.1, 0.9, 0.05, 0.35, ""],
+  ["soft", "blink softness", 0, 1, 0.05, 0.3, ""],
+];
+const AGENTS = ["dev", "review"];
+const POOL = ["COPL-54", "COPL-55", "COPL-56", "COPL-57", "COPL-58", "COPL-59", "COPL-60", "COPL-61", "COPL-62", "COPL-63"];
+
+const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+const defaults = () => Object.fromEntries(SLIDERS.filter(s => s.length > 1).map(s => [s[0], s[5]]));
+let V = Object.assign(defaults(), store.get("wired2.values") || {});
+let theme = store.get("wired2.theme") || "nord";
+let currentRole = store.get("wired2.current") || "yellow";
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+let C = {};
+function applyTheme() {
+  const t = THEMES[theme];
+  for (const [k, v] of Object.entries(t)) document.documentElement.style.setProperty("--" + k, v.replace(/,/g, " "));
+  C = Object.fromEntries(Object.entries(t).map(([k, v]) => [k, v.split(",").map(Number)]));
+}
+const mix = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const css = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+
+/* ---------- controls ---------- */
+const slidersEl = document.getElementById("sliders");
+function buildSliders() {
+  slidersEl.innerHTML = "";
+  for (const s of SLIDERS) {
+    if (s.length === 1) { const g = document.createElement("div"); g.className = "glabel"; g.style.marginTop = slidersEl.children.length ? "12px" : "0"; g.textContent = s[0]; slidersEl.append(g); continue; }
+    const [key, label, min, max, step, , unit] = s;
+    const row = document.createElement("div"); row.className = "row";
+    row.innerHTML = `<label for="s-${key}">${label}</label><input type="range" id="s-${key}" min="${min}" max="${max}" step="${step}"><output></output>`;
+    slidersEl.append(row);
+    const input = row.querySelector("input"), out = row.querySelector("output");
+    input.value = V[key];
+    const show = () => { out.textContent = (+V[key]).toFixed(step < 1 ? (step < 0.1 ? 2 : 1) : 0) + unit; };
+    show();
+    input.addEventListener("input", () => { V[key] = +input.value; show(); save(); if (key === "scale" || key === "spacing") layout(); });
+  }
+}
+const themeSel = document.getElementById("theme");
+themeSel.innerHTML = Object.keys(THEMES).map(t => `<option value="${t}">${t}</option>`).join("");
+themeSel.value = theme;
+themeSel.onchange = () => { theme = themeSel.value; applyTheme(); save(); };
+const currentSel = document.getElementById("current");
+currentSel.value = currentRole;
+currentSel.onchange = () => { currentRole = currentSel.value; save(); };
+const animateBox = document.getElementById("animate"); animateBox.checked = !reduce;
+const streamBox = document.getElementById("stream");
+function save() {
+  store.set("wired2.values", V); store.set("wired2.theme", theme); store.set("wired2.current", currentRole);
+  document.getElementById("out").value = JSON.stringify({ theme, current: currentRole, ...V }, null, 1);
+}
+document.getElementById("copy").onclick = () => {
+  const out = document.getElementById("out"), done = document.getElementById("copied");
+  const flash = () => { done.hidden = false; setTimeout(() => (done.hidden = true), 1200); };
+  const p = navigator.clipboard?.writeText(out.value);
+  if (p) p.then(flash, () => { out.select(); flash(); }); else { out.select(); flash(); }
+};
+document.getElementById("reset").onclick = () => { V = defaults(); theme = "nord"; currentRole = "yellow"; themeSel.value = theme; currentSel.value = currentRole; applyTheme(); buildSliders(); save(); layout(); };
+
+/* ---------- geometry (units = logo pixels) ----------
+   The doing pole forks: its upper wire climbs to the done pole, its lower
+   wire drops to the blocked pole. Two outcomes, two branches. */
+const POLE_H = 16, TOPD = 4, TOPM = 21, TOPB = 38, BH = TOPB + POLE_H + 2;
+let BW = 0, X = [];
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const overlay = document.getElementById("overlay");
+const LINES = 4; let colHtml = ["", "", "", ""]; const doneLog = [{ key: "COPL-46", at: performance.now() - 4000 }];
+const TEXT_W = 150;
+function layout() {
+  const sp = V.spacing;
+  X = [10, 10 + sp, 10 + 2 * sp];
+  BW = X[2] + 10 + Math.round(sp * 0.45);
+  cv.width = BW; cv.height = BH;
+  cv.style.width = BW * V.scale + "px"; cv.style.height = BH * V.scale + "px";
+  const scene = document.getElementById("scene");
+  scene.style.width = BW * V.scale + TEXT_W + "px";
+  const listTop = (TOPM + POLE_H) * V.scale + 2;
+  scene.style.height = Math.max(BH * V.scale + 6, listTop + 20 + LINES * 15) + "px";
+  overlay.innerHTML = "";
+  [["todo", 0], ["doing", 1]].forEach(([s, i]) => {
+    const c = document.createElement("div"); c.className = "col"; c.id = "col-" + i;
+    c.style.left = (X[i] + 5) * V.scale + "px"; c.style.top = listTop + "px";
+    c.dataset.head = s;
+    overlay.append(c);
+  });
+  [["done", 2, TOPD], ["blocked", 3, TOPB]].forEach(([s, i, top]) => {
+    const c = document.createElement("div"); c.className = "col side"; c.id = "col-" + i;
+    c.style.left = BW * V.scale + 8 + "px"; c.style.top = top * V.scale - 2 + "px";
+    c.dataset.head = s;
+    overlay.append(c);
+  });
+  colHtml = ["", "", "", ""];
+}
+const K = 1.3, CK = Math.cosh(K);
+const dipShape = t => (CK - Math.cosh(K * (2 * t - 1))) / (CK - 1);
+let W = {};
+function buildWires(clock) {
+  const sway = ph => 1 + V.swayAmp * Math.sin(clock * V.swaySpeed * 6.283 + ph);
+  const mk = (x0, y0, x1, y1, ph, k = 1) => ({ x0, y0, x1, y1, dip: V.sag * Math.abs(x1 - x0) * k * sway(ph), len: Math.hypot(x1 - x0, y1 - y0) });
+  const [a, b, c] = X, E = BW + 8;
+  W = {
+    in1: mk(-8, TOPM + 6, a, TOPM + 3, 0.4), in2: mk(-8, TOPM + 12, a + 2, TOPM + 8, 1.1, 1.2),
+    ab1: mk(a + 9, TOPM + 3, b, TOPM + 3, 2.0), ab2: mk(a + 7, TOPM + 8, b + 2, TOPM + 8, 2.7, 1.25),
+    bd: mk(b + 9, TOPM + 3, c, TOPD + 3, 3.3, 0.8), bb: mk(b + 7, TOPM + 8, c, TOPB + 3, 4.1, 0.8),
+    done1: mk(c + 9, TOPD + 3, E, TOPD + 8, 5.0), done2: mk(c + 7, TOPD + 8, E, TOPD + 13, 5.4, 1.2),
+    blk1: mk(c + 9, TOPB + 3, E, TOPB + 8, 5.7), blk2: mk(c + 7, TOPB + 8, E, TOPB + 12, 6.1, 1.2),
+  };
+}
+const at = (w, t) => [w.x0 + (w.x1 - w.x0) * t, w.y0 + (w.y1 - w.y0) * t + w.dip * dipShape(t)];
+
+/* ---------- items ---------- */
+let items = [], poolIx = 0, doneCount = 3, flashDone = 0;
+const nextKey = () => POOL[poolIx++ % POOL.length];
+function spawn(key, state = "arriving") {
+  const it = { key, state, route: [], seg: 0, p: 0, wire: "in1", t: 0, agent: null, slot: null, started: 0, until: 0, alpha: 1 };
+  if (state === "arriving") it.route = [["in1", 0, 1]];
+  items.push(it); return it;
+}
+function seed() {
+  items = []; poolIx = 0;
+  const w = spawn("COPL-33", "working"); w.agent = "dev"; w.slot = 0; w.wire = "ab1"; w.t = 1; w.started = performance.now() - 134000; w.until = performance.now() + 6000;
+  const q1 = spawn("COPL-31", "queued"); q1.wire = "ab1"; q1.t = 0.55;
+  const q2 = spawn("COPL-44", "queued"); q2.wire = "ab1"; q2.t = 0.3;
+  const bl = spawn("COPL-48", "blocked"); bl.wire = "blk1"; bl.t = 0.35; bl.agent = "review";
+}
+function queueTargets() { const q = items.filter(i => i.state === "queued"); q.forEach((it, i) => (it.qt = Math.max(0.12, 0.7 - i * 0.2))); return q; }
+function freeSlot() { const used = items.filter(i => i.state === "working" || i.state === "picking").map(i => i.slot); return [0, 1].find(s => !used.includes(s)); }
+function freeAgent() { const busy = items.filter(i => i.state === "working" || i.state === "picking").map(i => i.agent); return AGENTS.find(a => !busy.includes(a)); }
+function finish(it, outcome) {
+  it.state = "leaving"; it.outcome = outcome;
+  it.route = outcome === "done" ? [["bd", 0, 1], ["done1", 0, 1]] : [["bb", 0, 1], ["blk1", 0, Math.min(0.85, 0.35 + 0.17 * items.filter(i => i.state === "blocked").length)]];
+  it.seg = 0; it.p = 0;
+}
+document.getElementById("add").onclick = () => spawn(nextKey());
+document.getElementById("answer").onclick = () => {
+  const b = items.find(i => i.state === "blocked"); if (!b) return;
+  b.state = "returning"; b.route = [["blk1", b.t, 0], ["bb", 1, 0]]; b.seg = 0; b.p = 0;
+};
+document.getElementById("finish").onclick = () => { const w = items.find(i => i.state === "working"); if (w) finish(w, Math.random() < V.blockedChance ? "blocked" : "done"); };
+
+function advance(it, dt) {
+  const [wn, a, b] = it.route[it.seg];
+  const len = Math.max(4, W[wn].len * Math.abs(b - a));
+  it.p += (V.travel * dt) / len;
+  if (it.p >= 1) { it.seg++; it.p = 0; if (it.seg >= it.route.length) { const last = it.route[it.route.length - 1]; it.wire = last[0]; it.t = last[2]; return true; } }
+  const [wn2, a2, b2] = it.route[it.seg]; it.wire = wn2; it.t = a2 + (b2 - a2) * it.p;
+  return false;
+}
+
+/* ---------- loop ---------- */
+let last = performance.now(), clock = 0, nextArrival = 0;
+function plot(x, y, c, a = 1) { if (x < 0 || y < 0 || x >= BW || y >= BH || a <= 0) return; ctx.fillStyle = css(c, Math.min(1, a)); ctx.fillRect(x, y, 1, 1); }
+function drawWire(w, base, pulse) {
+  const steps = Math.ceil(w.len * 3), seen = new Set(), pts = [];
+  for (let s = 0; s <= steps; s++) { const t = s / steps, [x, y] = at(w, t), px = Math.round(x), py = Math.round(y), k = px + "," + py; if (!seen.has(k)) { seen.add(k); pts.push([px, py, t]); } }
+  const lv = pts.map(([, , t]) => { if (!pulse) return 0; const d = Math.abs(t - pulse) / ((V.pulseLen / w.len) / 2); return d < 1 ? Math.pow(1 - d, 1.6) : 0; });
+  const cur = C[currentRole];
+  if (V.glow > 0) pts.forEach(([x, y], j) => { if (lv[j] > 0.05) { plot(x, y - 1, cur, lv[j] * V.glow * 0.55); plot(x, y + 1, cur, lv[j] * V.glow * 0.55); } });
+  pts.forEach(([x, y], j) => plot(x, y, mix(base, cur, lv[j])));
+}
+function blinkLevel() {
+  const p = (clock % V.blink) / V.blink, hard = p < V.duty ? 1 : 0;
+  const soft = 0.5 - 0.5 * Math.cos(2 * Math.PI * Math.min(1, p / Math.max(0.01, V.duty * 2)));
+  return animateBox.checked ? hard * (1 - V.soft) + soft * V.soft : 1;
+}
+function drawPole(x, top, lampCol, lamp) {
+  ctx.fillStyle = css(mix(C.surface, C.ink, V.poleTone));
+  ctx.fillRect(x + 4, top, 2, POLE_H); ctx.fillRect(x, top + 3, 10, 2); ctx.fillRect(x + 2, top + 8, 6, 1);
+  ctx.fillStyle = css(mix(mix(C.surface, C.faint, 0.8), lampCol, lamp)); ctx.fillRect(x + 4, top - 2, 2, 2);
+  if (lamp > 0.6 && V.glow > 0) { ctx.fillStyle = css(lampCol, (lamp - 0.6) * V.glow); ctx.fillRect(x + 3, top - 3, 4, 1); ctx.fillRect(x + 3, top, 1, 1); ctx.fillRect(x + 6, top, 1, 1); }
+}
+
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const moving = animateBox.checked;
+  const sdt = moving ? dt : 0;
+  clock += sdt;
+  buildWires(clock);
+
+  if (moving && streamBox.checked && now > nextArrival) {
+    nextArrival = now + V.arrive * 1000 * (0.6 + Math.random() * 0.8);
+    if (items.filter(i => i.state === "queued" || i.state === "arriving").length < 4) spawn(nextKey());
+  }
+
+  queueTargets();
+  for (const it of items) {
+    if (it.state === "arriving" && advance(it, sdt)) { it.state = "queued"; it.wire = "ab1"; it.t = 0; }
+    else if (it.state === "queued") it.t += ((it.qt ?? 0.5) - it.t) * (1 - Math.exp(-sdt * V.travel / 12));
+    else if (it.state === "picking" && advance(it, sdt)) { it.state = "working"; it.started = now; it.until = now + V.work * 1000 * (0.6 + Math.random() * 0.8); }
+    else if (it.state === "working" && moving && now > it.until) finish(it, Math.random() < V.blockedChance ? "blocked" : "done");
+    else if (it.state === "leaving" && advance(it, sdt)) { if (it.outcome === "done") { it.state = "gone"; doneCount++; doneLog.unshift({ key: it.key, at: now }); doneLog.length = Math.min(doneLog.length, 6); } else it.state = "blocked"; }
+    else if (it.state === "leaving" && it.outcome === "done" && it.wire === "done1") { if (!it.flashed) { it.flashed = true; flashDone = 1; } it.alpha = 1 - Math.max(0, (it.t - 0.5) / 0.5); }
+    else if (it.state === "returning" && advance(it, sdt)) { it.state = "queued"; it.wire = "ab1"; it.t = 0.9; it.qt = 0.9; items.splice(items.indexOf(it), 1); items.unshift(it); break; }
+  }
+  items = items.filter(i => i.state !== "gone");
+  const head = queueTargets()[0], slot = freeSlot(), agent = freeAgent();
+  if (moving && head && slot !== undefined && agent && head.t > (head.qt ?? 0) - 0.05) {
+    head.state = "picking"; head.slot = slot; head.agent = agent;
+    head.route = [[slot === 0 ? "ab1" : "ab2", head.t, 1]]; head.seg = 0; head.p = 0;
+  }
+  flashDone = Math.max(0, flashDone - sdt * 0.8);
+
+  // draw
+  ctx.fillStyle = css(C.surface); ctx.fillRect(0, 0, BW, BH);
+  const base = mix(C.surface, C.muted, V.idle);
+  const tinted = role => mix(base, C[role], V.tint);
+  const working = items.filter(i => i.state === "working");
+  const pulse = slot => { const w = working.find(i => i.slot === slot); if (!w) return 0; const L = W[slot === 0 ? "ab1" : "ab2"].len; return (clock * V.pulseSpeed / L) % 1; };
+  drawWire(W.in1, tinted("blue")); drawWire(W.in2, tinted("blue"));
+  drawWire(W.ab1, base, pulse(0)); drawWire(W.ab2, base, pulse(1));
+  drawWire(W.bd, tinted("green")); drawWire(W.bb, tinted("red"));
+  drawWire(W.done1, tinted("green")); drawWire(W.done2, tinted("green"));
+  drawWire(W.blk1, tinted("red")); drawWire(W.blk2, tinted("red"));
+
+  const bl = blinkLevel();
+  const blockedN = items.filter(i => i.state === "blocked").length;
+  const queuedN = items.filter(i => i.state === "queued" || i.state === "arriving").length;
+  drawPole(X[0], TOPM, C.blue, queuedN ? 1 : 0);
+  drawPole(X[1], TOPM, C.yellow, working.length ? 0.85 + 0.15 * Math.sin(clock * 7) : 0);
+  drawPole(X[2], TOPD, C.green, flashDone);
+  drawPole(X[2], TOPB, C.red, blockedN ? bl : 0);
+
+  const beadCol = it => it.state === "working" || it.state === "picking" || it.state === "returning" ? C.yellow
+    : it.state === "blocked" || (it.state === "leaving" && it.outcome === "blocked") ? C.red
+    : it.state === "leaving" ? C.green : C.blue;
+  for (const it of items) {
+    const [x, y] = at(W[it.wire], it.t);
+    let a = it.alpha;
+    if (it.state === "blocked") a *= 0.45 + 0.55 * bl;
+    const c = beadCol(it);
+    ctx.fillStyle = css(c, a); ctx.fillRect(Math.round(x) - 1, Math.round(y) + 1, 2, 2);
+    ctx.fillStyle = css(c, a * 0.5); ctx.fillRect(Math.round(x) - 1, Math.round(y), 2, 1);
+  }
+
+  renderCols(now, { queuedN, working: working.length, blockedN });
+  renderStatus(now);
+  requestAnimationFrame(frame);
+}
+
+function renderCols(now, lit) {
+  const cap = (arr, max) => arr.length > max ? arr.slice(0, max - 1).concat([`<span class="t-more">+${arr.length - max + 1} more</span>`]) : arr;
+  const head = (s, on) => `<span class="t-head${on ? " on-" + s : ""}">${s}</span>`;
+  const todo = items.filter(i => i.state === "queued" || i.state === "arriving").map(i => `<span class="t-todo">${i.key}</span>`);
+  const doing = items.filter(i => i.state === "working" || i.state === "picking").sort((a, b) => a.slot - b.slot)
+    .map(i => `<span class="t-doing">${i.key} <i>${i.agent}</i> <em>${i.state === "working" ? fmt(Math.floor((now - i.started) / 1000)) : "…"}</em></span>`);
+  const blocked = items.filter(i => i.state === "blocked" || (i.state === "leaving" && i.outcome === "blocked")).map(i => `<span class="t-blocked">▲ ${i.key} <em>${i.agent ?? ""}</em></span>`);
+  const done = doneLog.filter(d => now - d.at < 30000).map(d => `<span class="t-done" style="opacity:${Math.max(0.3, 1 - (now - d.at) / 30000).toFixed(2)}">✓ ${d.key}</span>`);
+  const cols = [
+    [head("todo", lit.queuedN), ...cap(todo, LINES)],
+    [head("doing", lit.working), ...cap(doing, LINES)],
+    [head("done", flashDone > 0.2), ...cap(done, 3)],
+    [head("blocked", lit.blockedN), ...cap(blocked, 3)],
+  ];
+  cols.forEach((c, i) => { const h = c.join(""); if (h !== colHtml[i]) { colHtml[i] = h; const el = document.getElementById("col-" + i); if (el) el.innerHTML = h; } });
+}
+
+function fmt(s) { return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}`; }
+function renderStatus(now) {
+  const working = items.filter(i => i.state === "working");
+  const parts = AGENTS.map(a => { const w = working.find(i => i.agent === a); return w ? `<span>${a} <span class="y">●</span> ${w.key} ${fmt(Math.floor((now - w.started) / 1000))}</span>` : `<span>${a} ○</span>`; });
+  const q = items.filter(i => i.state === "queued" || i.state === "arriving").length;
+  const b = items.filter(i => i.state === "blocked");
+  parts.push(`<span><span class="b">${q}</span> todo</span>`);
+  if (b.length) parts.push(`<span><span class="r">▲</span> ${b.map(i => i.key).join(" ")}</span>`);
+  parts.push(`<span><span class="g">✓</span> ${doneCount}</span>`);
+  const html = parts.join('<span class="sep">│</span>');
+  const st = document.getElementById("status");
+  if (st.dataset.h !== html) { st.innerHTML = html; st.dataset.h = html; }
+  document.getElementById("count").textContent = `${working.length} doing · ${b.length} need you`;
+}
+
+applyTheme(); buildSliders(); save(); layout(); seed(); buildWires(0);
+requestAnimationFrame(frame);
+</script>

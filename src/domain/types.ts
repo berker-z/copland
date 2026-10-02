@@ -172,6 +172,37 @@ export interface MyWork {
   delegated: { taskId: string; boardId: string }[];
 }
 
+/** One task on the /wired pane's wires (routes/wired.ts). */
+export interface WiredTask {
+  id: string;
+  boardId: string;
+  key: string;
+  title: string;
+  /** The agent it is on: the claimer when a run holds it, else the first of the owner's agents assigned. */
+  agentId: string;
+  /**
+   * doing: when the live claim was taken (null when no run holds it).
+   * done: when it was completed. Otherwise when the task last changed.
+   */
+  since: string | null;
+  /** doing only: a run of the agent holds a live claim on it right now. */
+  live: boolean;
+}
+
+/** GET /api/wired: what the signed-in person's agents have on, by pole (routes/wired.ts). */
+export interface Wired {
+  agents: { id: string; handle: string; name: string; paused: boolean }[];
+  todo: WiredTask[];
+  /** Live claims first (oldest claim first), then active tasks no run holds. */
+  doing: WiredTask[];
+  blocked: WiredTask[];
+  /** Done within the window, newest first, at most DONE_LIMIT of them. */
+  done: WiredTask[];
+  /** How many were done within the window, all of them. */
+  doneCount: number;
+  doneWindowHours: number;
+}
+
 /** GET /api/boards/:id — everything a board screen draws. */
 export interface BoardDetail {
   board: BoardSummary;

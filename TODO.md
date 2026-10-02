@@ -53,6 +53,10 @@ docs/DESIGN.md under Touch.
       finger lands on a block elsewhere. A layout saved under COPL-29 keeps
       its three columns, so an empty third one now shows as a gap until
       the column count is set to 2.
+- [ ] /wired (COPL-54) was checked in desktop Chrome, headless Chrome and
+      a 390px iframe, with tasks moved by curl. Not yet on a real phone, and
+      not with the daemon driving it. A claim that lapses sends no live
+      update, so the pane only notices on its one-minute poll.
 - [ ] Board notes and docs (COPL-27) were tested through the API and `/mcp`,
       not in a browser: open the book icon on a board, write notes, drop a
       .md and a PDF, open both, describe one, delete one, and look at it as
@@ -227,3 +231,11 @@ docs/DESIGN.md under Touch.
   ceiling (run failed), tells its own inbox items apart by actor id, and
   refuses a read-only token at startup and in `--check` (`/api/me` now
   says the token's `access`).
+- /wired (COPL-54): the utility-pole scene from
+  `docs/research/wired-prototype.html` as a pane, on by default alone in
+  the left column, showing your agents' work from `GET /api/wired`:
+  todo, doing (a live claim, or active with no run on it, dimmer), blocked,
+  and done in the last 24 hours. Beads slide between poles when the data
+  changes; reduced motion gets a still picture. The default layout is now
+  three columns: wired; boards, tasks, inbox; agenda, calendar, notepad.
+  Saved layouts are left alone

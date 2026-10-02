@@ -15,6 +15,7 @@ import { NotepadPane } from "@/features/notepad/NotepadPane";
 import type { SettingsPage } from "@/features/settings/SettingsModal";
 import { ClockItem, MoonItem, WeatherItem } from "@/features/shell/topbar";
 import { TasksPane } from "@/features/tasks/TasksPane";
+import { WiredPane } from "@/features/wired/WiredPane";
 
 /** What the dashboard hands every pane: a way to open settings at a page. */
 export interface PaneProps {
@@ -29,6 +30,7 @@ export const PANE_COMPONENTS: Record<PaneId, (props: PaneProps) => ReactNode> = 
   boards: () => <BoardsPane />,
   inbox: () => <InboxPane />,
   markets: ({ openSettings }) => <MarketsPane onOpenSettings={openSettings} />,
+  wired: ({ openSettings }) => <WiredPane onOpenSettings={openSettings} />,
 };
 
 export const TOPBAR_COMPONENTS: Record<TopbarId, () => ReactNode> = {

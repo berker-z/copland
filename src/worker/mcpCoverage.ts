@@ -167,6 +167,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PATCH /api/notes/:id": { tools: ["write_note"] },
   "DELETE /api/notes/:id": { tools: ["delete_note"] },
   "GET /api/markets/coingecko": { skip: "browser: the markets pane, spending the user's CoinGecko quota" },
+  "GET /api/wired": { skip: "browser: the /wired pane's scene of your agents' work; my_work already lists what was handed to them" },
 
   /* The instance. */
   "GET /api/admin/users": { skip: "admin: the instance's users" },

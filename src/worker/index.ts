@@ -60,6 +60,7 @@ import { deleteComment, getComments, getTaskEvents, patchComment, postComment } 
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
 import { deleteTask, getTask, patchTask, postTask } from "./routes/tasks";
 import { getMyWork } from "./routes/work";
+import { getWired } from "./routes/wired";
 import { deleteClaim, getRun, postClaim, postRun, postRunFinish } from "./routes/runs";
 import { getInbox, postInboxDismiss, postInboxRead } from "./routes/inbox";
 import { deleteToken, getTokens, postToken } from "./routes/tokens";
@@ -157,6 +158,8 @@ const api = new Router<Ctx>()
   )
   .on("DELETE", "/api/notes/:id", mine("notes:write", ({ env, viewer, changes }, { id }) => deleteNote(env, viewer, id, changes)))
   .on("GET", "/api/markets/coingecko", mine(null, ({ env, viewer }) => getMarketExtras(env, viewer)))
+  /* The /wired pane: what your agents have on. Yours alone; an agent reads its own work through my_work. */
+  .on("GET", "/api/wired", mine(null, ({ env, viewer }) => getWired(env, viewer)))
 
   .on("GET", "/api/calendar", mine("calendar:read", ({ env, viewer }) => getCalendarSetup(env, viewer)))
   .on(

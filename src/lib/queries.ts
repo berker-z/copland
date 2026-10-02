@@ -7,7 +7,7 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import type { MarketExtras, Note } from "@/domain/panes";
 import type { Settings, VaultEntry } from "@/domain/settings";
-import type { Agent, ApiToken, BoardDetail, BoardSummary, Inbox, Invite, Me, MyWork, Person, User } from "@/domain/types";
+import type { Agent, ApiToken, BoardDetail, BoardSummary, Inbox, Invite, Me, MyWork, Person, User, Wired } from "@/domain/types";
 import { api } from "./api";
 import { isLive } from "./liveState";
 
@@ -20,6 +20,8 @@ export const KEYS = {
   boardAll: ["board"],
   /* Under "board" on purpose: whatever changes a board can change whose work is whose. */
   myWork: ["board", "~mine"],
+  /* The same, for the /wired pane: task moves, claims and run endings all arrive as "board". */
+  wired: ["board", "~wired"],
   admin: ["admin"],
   adminUsers: ["admin", "users"],
   adminInvites: ["admin", "invites"],
@@ -54,6 +56,13 @@ export const useBoards = () =>
 /** What is yours and what you handed to your agents: ids only; the tasks come from their boards. */
 export const useMyWork = () =>
   useQuery({ queryKey: KEYS.myWork, queryFn: () => api<MyWork>("/tasks/mine"), refetchInterval: fallbackPoll(60_000) });
+
+/**
+ * Your agents' work by pole, for the /wired pane. Polled every minute even
+ * while live, since a claim lapsing sends nothing.
+ */
+export const useWired = () =>
+  useQuery({ queryKey: KEYS.wired, queryFn: () => api<Wired>("/wired"), refetchInterval: 60_000 });
 
 /** One board's query, for useBoard and for the panes that read several boards at once. */
 export const boardQuery = (id: string) => ({
