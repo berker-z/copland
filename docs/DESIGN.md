@@ -62,33 +62,37 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 
 - What is on the dashboard and in the statusline comes from the widget
   registry: `src/domain/widgets.ts` lists every pane and statusline item
-  (id, name, default on or off, always-on, default column, phone order,
-  what it needs), and `src/app/widgets.tsx` maps each id to its component.
-  The personal `dashboard` setting says which are on and, for panes, in
-  which column and order. A new pane is an entry in each file.
-- `App.tsx` renders the columns that have panes in them as a
-  `grid lg:grid-cols-{n} gap-4` on a `bg-divider` page ground; columns are
+  (id, name, default on or off, always-on, what it needs), and
+  `src/app/widgets.tsx` maps each id to its component. The personal
+  `dashboard` setting is the arrangement: `columns`, one to three of them
+  (the count is the person's choice), each the panes in it top to bottom,
+  and `topbar`, the statusline left to right. A new pane is an entry in
+  each file.
+- `App.tsx` renders exactly the setting's columns as a
+  `grid lg:grid-cols-{n} gap-4` on a `bg-divider` page ground, an empty
+  column included (it keeps its width, as on the map); columns are
   `flex flex-col gap-4`; every pane is `bg-surface`. Below `lg` the columns
   are `contents` and the panes stack in one column with `gap-2` between
-  them, edge to edge sideways below `sm`, ordered by each pane's
-  `phoneOrder` (a `--phone-order` variable read by `order-(--phone-order)`):
-  agenda, tasks, inbox, boards, calendar, notepad, markets. By default the
-  first column is calendar, agenda, notepad, the second tasks, boards,
-  inbox, and markets (off by default) goes in a third.
+  them, edge to edge sideways below `sm`, in reading order: the first
+  column top to bottom, then the next. By default there are two columns:
+  calendar, agenda, notepad, and tasks, boards, inbox. A pane switched on
+  by a click rather than a drop lands at the end of the shortest column
+  (the rightmost of equals).
 - The statusline (`src/features/shell/StatusLine.tsx`) is fixed to the top,
   `h-11 bg-bar text-base`, `z-[55]` (above the login overlay z-50, below
   modals z-[60]); `main` gets `pt-11` to clear it. Left: the pole mark,
   `copland`, your avatar and handle (opens settings › profile), and when
   the Worker answers with a newer build than the tab runs, "new version ·
   reload" in `accent` (a reload icon standing in for the mark on a phone;
-  it never reloads by itself). Right, in registry order and only when on:
-  weather and city (needs a place), moon phase, then date and clock, all
-  `│`-separated readouts; then icon buttons without separators: the inbox
+  it never reloads by itself). Right, in the setting's order and only when
+  on: the readouts (weather, which needs a place; moon phase; date and
+  clock), `│`-separated; then icon buttons without separators: the inbox
   bell (unread count beside it in `accent`, quiet `text-muted` with none;
-  opens the inbox list in a modal on any screen), settings (gear) and log
-  out (`hover:text-red`), each with a `title` and `aria-label`. Below `sm`
-  it keeps the mark, weather, clock and the icons, and a `⋯` menu holds
-  the date and, when on, the moon.
+  opens the inbox list in a modal on any screen), customize (opens
+  settings › widgets), settings (gear) and log out (`hover:text-red`),
+  each with a `title` and `aria-label`. Below `sm` it keeps the mark,
+  weather, clock and the icons but customize, and a `⋯` menu holds the
+  date, the moon when on, and "customize dashboard".
 - Moon phase glyph (`components/ui/MoonPhaseIcon.tsx`): 16px SVG, dark disc
   `fill-bar stroke-faint`, lit region in `currentColor` (`text-ink`). The lit
   shape is limb arc + half-ellipse terminator so it morphs continuously
@@ -159,7 +163,9 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
 - No HTML5 drag on a touchscreen. A long press (`src/ui/useLongPress.ts`,
   touch pointers only) stands in for it: on a board card it opens MoveSheet,
   a "move to…" list of stages. The Gantt is read-only on touch; a tap opens
-  the task.
+  the task. The dashboard map drags with pointer events instead, so it
+  works by finger, but only from a block's grip (`touch-none`), leaving
+  the rest of the block to scroll the page.
 - Short menus pass `fit` to `ModalFrame`: a bottom sheet on a phone instead
   of the full screen.
 - The board on a phone: kanban columns are an `85vw` scroll-snap strip with
@@ -211,12 +217,29 @@ variables, RGB triplets) + one entry in `src/domain/themes.ts`. No component cha
   that can still show something adds one `text-xs text-faint` line that
   opens settings on click (`hover:text-accent`); a pane that can show
   nothing without it explains in `text-muted` and offers `[ OPEN_SETTINGS ]`.
-- Settings › widgets: one row per widget that can be switched, a
-  `role="switch"` button with the checkbox glyphs (green `CheckSquare` on,
-  muted `Square` off), the name, and a `text-muted` line saying what it
-  shows. A widget that needs a setting asks for it inline under its row:
-  switching on the weather without a place opens the city search there,
-  and picking one switches it on.
+- Settings › widgets is a map of the dashboard
+  (`src/features/settings/WidgetMap.tsx`, loaded lazily): a
+  `border-faint bg-divider` miniature screen with a `bg-bar` strip of
+  statusline chips on top and one lane per column under it, and a
+  `[1][2][3]` column-count radio above it. A pane is a `bg-surface` block
+  with a pane-style rule title (`/name` in `text-blue`, accent on hover),
+  a grip, and a little sketch of what it shows in `faint` bars (calendar
+  today in `accent`, markets ticks in green/red as data). Always-on
+  widgets carry a `Lock` in `text-faint`. An empty lane is a dashed
+  `outline-faint` box saying "drop panes here". Switched-off widgets sit
+  in a dashed tray below: name, kind, description, and a `+`.
+  Dragging (pointer events; a mouse anywhere on a block, a finger by the
+  grip) draws a ghost of the block tilted 1.5° with an `accent` outline,
+  and the map reflows around a dashed `border-accent bg-accent/5` slot
+  where it would land, blocks gliding there (160ms FLIP, off under reduced
+  motion); the target lane's outline turns `accent`, and the tray turns
+  `border-red` with "… is always on" for a widget that cannot go. Each
+  block is focusable (`focus-visible:border-accent`): arrow keys move it,
+  Delete switches it off, Enter switches a tray block on, and its `⋯`
+  menu (hover-revealed under a mouse) does the same by tap. The weather
+  dropped in without a place shows as a dashed `yellow` chip while the
+  city search opens under the strip; picking a place saves both, and a
+  line under the map shows the place with change and clear.
 - Search-and-pick (the weather city search): a standard input; results as
   flat rows below it (`border-b border-divider`, `hover:bg-raised`), name in
   `text-bright`, detail in `text-muted`, coordinates `text-faint` tabular on

@@ -7,11 +7,11 @@
    app/widgets.tsx). /b/KEY swaps it for a board screen.
    ========================================================================== */
 
-import { useState, type CSSProperties } from "react";
+import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useMatch } from "react-router";
 import { DEFAULT_SETTINGS } from "@/domain/settings";
-import { paneSpec, type DashboardLayout } from "@/domain/widgets";
+import type { DashboardLayout } from "@/domain/widgets";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { BoardScreen } from "@/features/board/BoardScreen";
 import { SettingsModal, type SettingsPage } from "@/features/settings/SettingsModal";
@@ -26,26 +26,21 @@ import { PANE_COMPONENTS, type PaneProps } from "./widgets";
 const GRID_COLS = ["lg:grid-cols-1", "lg:grid-cols-1", "lg:grid-cols-2", "lg:grid-cols-3"];
 
 /**
- * The panes, in their columns. Below lg the columns dissolve (`contents`)
- * into one, and each pane's phone order from the registry puts what a phone
- * is opened for first: today's agenda and tasks, your inbox, then the rest,
- * markets last. A column with nothing on it takes no room.
+ * The panes, in their columns: exactly what the map in settings › widgets
+ * shows. The column count is the setting's, so a column with nothing in it
+ * still takes its width. Below lg the columns dissolve (`contents`) into
+ * one, read left to right: the first column top to bottom, then the next.
  */
 function Dashboard({ layout, openSettings }: { layout: DashboardLayout; openSettings: PaneProps["openSettings"] }) {
-  const columns = layout.columns.filter((c) => c.length > 0);
   return (
     <div
-      className={`flex flex-col lg:grid ${GRID_COLS[columns.length]} items-stretch lg:items-start gap-2 sm:gap-4 w-full max-w-[1500px] mx-auto px-0 py-2 sm:px-4 sm:py-4 md:px-8 md:py-6`}
+      className={`flex flex-col lg:grid ${GRID_COLS[layout.columns.length]} items-stretch lg:items-start gap-2 sm:gap-4 w-full max-w-[1500px] mx-auto px-0 py-2 sm:px-4 sm:py-4 md:px-8 md:py-6`}
     >
-      {columns.map((column, i) => (
+      {layout.columns.map((column, i) => (
         <div key={i} className="contents lg:flex lg:flex-col lg:gap-4 min-w-0">
           {column.map((id) => {
             const Pane = PANE_COMPONENTS[id];
-            return (
-              <div key={id} className="order-(--phone-order) lg:order-none" style={{ "--phone-order": paneSpec(id).phoneOrder } as CSSProperties}>
-                <Pane openSettings={openSettings} />
-              </div>
-            );
+            return <Pane key={id} openSettings={openSettings} />;
           })}
         </div>
       ))}
@@ -82,6 +77,7 @@ export function App() {
       <StatusLine
         user={me.data.user}
         onOpenSettings={() => setSettings("start")}
+        onCustomize={() => setSettings("widgets")}
         onOpenProfile={() => setSettings("profile")}
         onLogout={logout}
       />

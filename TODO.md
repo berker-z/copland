@@ -47,6 +47,12 @@ docs/DESIGN.md under Touch.
 - [ ] Widgets (COPL-29) not yet seen in a browser: the /boards line for
       someone with only an inbox, the phone `⋯` menu with the moon on, and
       the inbox bell on a real phone.
+- [ ] The dashboard map (COPL-30) was driven with synthetic pointer events
+      in desktop Chrome and a 390px iframe, not with a real finger: drag a
+      pane by its grip on a phone, and check the page still scrolls when a
+      finger lands on a block elsewhere. A layout saved under COPL-29 keeps
+      its three columns, so an empty third one now shows as a gap until
+      the column count is set to 2.
 - [ ] Board notes and docs (COPL-27) were tested through the API and `/mcp`,
       not in a browser: open the book icon on a board, write notes, drop a
       .md and a PDF, open both, describe one, delete one, and look at it as
@@ -64,11 +70,6 @@ docs/DESIGN.md under Touch.
 - [ ] GitHub on boards: PRs that mention a task key show up on the task, a
       merge can close it. Undecided; the options are in docs/GITHUB.md.
 - [ ] Invite a friend for real and share a board; watch live updates between two people
-- [ ] Dashboard edit mode (COPL-30): drag panes between and within columns,
-      add and remove them in place. The `dashboard` setting already stores
-      columns in order (`src/domain/widgets.ts`); edit mode writes the same
-      shape. Empty columns are hidden today and will need to show as drop
-      targets while editing.
 - [ ] A time zone setting, so "today" and "overdue" in the MCP stop meaning UTC
 - [ ] More MCP tools from the `not yet` entries in `src/worker/mcpCoverage.ts`
       (attaching links, the notepad, history, creating boards, calendar writes)
@@ -148,3 +149,10 @@ docs/DESIGN.md under Touch.
   icons, panes have real gutters, the inbox bell is back in the statusline
   on every screen (opens the inbox in a modal), and /boards always shows
   "+ new board"
+- The dashboard map (COPL-30): settings › widgets is a miniature of the
+  dashboard, opened from the customize button in the statusline too. One to
+  three columns, chosen; drag panes within and between them, statusline
+  readouts along the top, widgets in from a tray to switch on and out to
+  switch off; arrow keys, Delete and a ⋯ menu do the same without dragging.
+  The dashboard draws exactly the map, empty columns included, and a phone
+  reads it left to right

@@ -1,8 +1,8 @@
 import { useCallback, useRef, useState } from "react";
 import { Link } from "react-router";
-import { LogOut, MoreHorizontal, RotateCw, Settings as SettingsIcon } from "lucide-react";
+import { LayoutDashboard, LogOut, MoreHorizontal, RotateCw, Settings as SettingsIcon } from "lucide-react";
 import { DEFAULT_SETTINGS } from "@/domain/settings";
-import { TOPBAR, requirementMet, topbarOn } from "@/domain/widgets";
+import { requirementMet, topbarOn, topbarSpec } from "@/domain/widgets";
 import type { User } from "@/domain/types";
 import { TOPBAR_COMPONENTS } from "@/app/widgets";
 import { useSettings } from "@/lib/queries";
@@ -15,9 +15,10 @@ import { Sep, formatDate, useMoon } from "./topbar";
 
 /**
  * Below sm the statusline has room for the mark, weather, clock and the
- * icons; the date, and the moon when it is on, move in here.
+ * icons; the date, the moon when it is on, and "customize dashboard" move
+ * in here.
  */
-function PhoneMenu({ moon }: { moon: boolean }) {
+function PhoneMenu({ moon, onCustomize }: { moon: boolean; onCustomize: () => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
   const close = useCallback(() => setOpen(false), []);
@@ -35,12 +36,20 @@ function PhoneMenu({ moon }: { moon: boolean }) {
       >
         <MoreHorizontal size={18} />
       </button>
-      {open && <PhoneMenuPanel moon={moon} />}
+      {open && (
+        <PhoneMenuPanel
+          moon={moon}
+          onCustomize={() => {
+            setOpen(false);
+            onCustomize();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function PhoneMenuPanel({ moon: showMoon }: { moon: boolean }) {
+function PhoneMenuPanel({ moon: showMoon, onCustomize }: { moon: boolean; onCustomize: () => void }) {
   /* Opened for a glance, so no ticking: the date and moon as of opening. */
   const dayKey = formatDate(new Date());
   const { moon, label } = useMoon(dayKey);
@@ -58,6 +67,13 @@ function PhoneMenuPanel({ moon: showMoon }: { moon: boolean }) {
           </>
         )}
       </div>
+      <button
+        onClick={onCustomize}
+        className="w-full flex items-center gap-2.5 px-3.5 py-3 border-t border-divider text-muted hover:text-accent hover:bg-raised transition-colors"
+      >
+        <LayoutDashboard size={16} aria-hidden />
+        customize dashboard
+      </button>
     </div>
   );
 }
@@ -84,6 +100,8 @@ function NewVersion() {
 interface StatusLineProps {
   user: User;
   onOpenSettings: () => void;
+  /** Settings straight at the widgets page, with the dashboard's map. */
+  onCustomize: () => void;
   onOpenProfile: () => void;
   onLogout: () => void;
 }
@@ -93,13 +111,13 @@ const iconButton = "tap flex items-center text-muted transition-colors";
 /**
  * tmux-style statusline: global state lives here instead of a header. The
  * readouts and the inbox badge come from the widget registry
- * (domain/widgets.ts), in its order, as far as the dashboard setting has
- * them on; settings and logout are always there.
+ * (domain/widgets.ts), the ones the dashboard setting has on, in its order;
+ * customize, settings and logout are always there.
  */
-export function StatusLine({ user, onOpenSettings, onOpenProfile, onLogout }: StatusLineProps) {
+export function StatusLine({ user, onOpenSettings, onCustomize, onOpenProfile, onLogout }: StatusLineProps) {
   const { data: settings = DEFAULT_SETTINGS } = useSettings();
   const newVersion = useNewVersion();
-  const on = TOPBAR.filter((t) => topbarOn(settings.dashboard, t.id) && requirementMet(t, settings));
+  const on = settings.dashboard.topbar.map(topbarSpec).filter((t) => requirementMet(t, settings));
   const readouts = on.filter((t) => !t.icon);
   const icons = on.filter((t) => t.icon);
 
@@ -139,13 +157,21 @@ export function StatusLine({ user, onOpenSettings, onOpenProfile, onLogout }: St
             const Item = TOPBAR_COMPONENTS[t.id];
             return <Item key={t.id} />;
           })}
+          <button
+            onClick={onCustomize}
+            className={`${iconButton} hidden sm:flex hover:text-accent`}
+            title="Customize the dashboard"
+            aria-label="Customize the dashboard"
+          >
+            <LayoutDashboard size={16} aria-hidden />
+          </button>
           <button onClick={onOpenSettings} className={`${iconButton} hover:text-accent`} title="Settings" aria-label="Settings">
             <SettingsIcon size={16} aria-hidden />
           </button>
           <button onClick={onLogout} className={`${iconButton} hover:text-red`} title="Log out" aria-label="Log out">
             <LogOut size={16} aria-hidden />
           </button>
-          <PhoneMenu moon={topbarOn(settings.dashboard, "moon")} />
+          <PhoneMenu moon={topbarOn(settings.dashboard, "moon")} onCustomize={onCustomize} />
         </span>
       </div>
     </header>
