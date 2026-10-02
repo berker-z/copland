@@ -20,6 +20,7 @@ use tokio::sync::watch;
 use crate::feed::Feed;
 use crate::scene::{AgentLabel, Board, DONE_TAIL, Doing, Layout, Line, Role, Scene};
 use crate::theme::{Rgb, Theme};
+use crate::wizard::{Panel, Wizard};
 
 pub fn color(c: Rgb, a: f32) -> Hsla {
     Rgba {
@@ -43,6 +44,8 @@ const AMBIENT: Duration = Duration::from_millis(50);
 const TICK: Duration = Duration::from_secs(1);
 /// Otherwise, now and then, for the done list's slow fade.
 const IDLE: Duration = Duration::from_secs(30);
+/// While setup waits on something: the dots after "waiting".
+const DOTS: Duration = Duration::from_millis(250);
 
 /// Where the box's data comes from.
 pub enum Source {
@@ -58,6 +61,8 @@ pub enum Source {
     },
     /// Nothing to watch, and why.
     Quiet(String),
+    /// Setting the box up: no usable config yet, or `--setup`. Becomes `Live` once it is written.
+    Setup(Box<Wizard>),
 }
 
 pub struct BoxView {
@@ -81,14 +86,8 @@ impl BoxView {
         source: Source,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut watchers = Vec::new();
-        if let Source::Live { state, feed, .. } = &source {
-            watchers.push(redraw_on(state.clone(), cx));
-            if let Some(feed) = feed {
-                watchers.push(redraw_on(feed.clone(), cx));
-            }
-        }
-        Self {
+        let watchers = watch_source(&source, cx);
+        let mut view = Self {
             scene,
             theme,
             font,
@@ -97,7 +96,26 @@ impl BoxView {
             focus: cx.focus_handle(),
             timer: None,
             _watchers: watchers,
+        };
+        if let Some(w) = view.wizard() {
+            w.begin(cx);
         }
+        view
+    }
+
+    /// The setup in progress, if that is what the window shows.
+    pub fn wizard(&mut self) -> Option<&mut Wizard> {
+        match &mut self.source {
+            Source::Setup(w) => Some(w),
+            _ => None,
+        }
+    }
+
+    /// Setup is done and the daemon runs: draw it from here on.
+    fn go_live(&mut self, source: Source, cx: &mut Context<Self>) {
+        self._watchers = watch_source(&source, cx);
+        self.source = source;
+        cx.notify();
     }
 
     pub fn focus_handle(&self) -> &FocusHandle {
@@ -113,6 +131,10 @@ impl BoxView {
     fn board(&self, now: f64) -> Option<Board> {
         match &self.source {
             Source::Demo => None,
+            Source::Setup(_) => Some(Board {
+                ready: true,
+                ..Default::default()
+            }),
             Source::Quiet(why) => Some(Board {
                 quiet: Some(why.clone()),
                 ..Default::default()
@@ -172,6 +194,53 @@ impl BoxView {
             None => row,
         }
     }
+
+    /// Setup's step under the poles: its lines on the left, the text field with its cursor,
+    /// and a code to approve drawn large on the right.
+    fn panel(&self, p: &Panel, top: f32, width: f32) -> gpui::Div {
+        let th = self.theme;
+        let lines = p.lines.iter().enumerate().map(|(i, l)| match &p.input {
+            Some((at, before, after)) if *at == i => div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(div().text_color(color(th.blue, 1.0)).child("› "))
+                .child(div().text_color(color(th.ink, 1.0)).child(before.clone()))
+                .child(div().w(px(1.5)).h(px(13.)).bg(color(th.ink, 0.9)))
+                .child(div().text_color(color(th.ink, 1.0)).child(after.clone())),
+            _ => self.row(l),
+        });
+        let mut d = div()
+            .absolute()
+            .left(px(0.))
+            .top(px(top))
+            .w(px(width))
+            .overflow_hidden()
+            .flex()
+            .flex_row()
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .children(lines),
+            );
+        if let Some(code) = &p.code {
+            d = d.child(
+                div()
+                    .flex_none()
+                    .pl(px(16.))
+                    .pt(px(10.))
+                    .text_size(px(26.))
+                    .line_height(px(30.))
+                    .text_color(color(th.yellow, 1.0))
+                    .child(code.clone()),
+            );
+        }
+        d
+    }
 }
 
 /// One character of the lists (11px JetBrains Mono is about 6.6px), rounded up.
@@ -193,6 +262,18 @@ pub fn budgets(l: &Layout, spacing: f32, cell: f32) -> [f32; 4] {
         (spacing - 10.0) * cell - 2.0 * GAP,
         (l.bw as f32 - l.x[3]) * cell + DONE_TAIL - 2.0,
     ]
+}
+
+/// Redraw on whatever the source publishes.
+fn watch_source(source: &Source, cx: &mut Context<BoxView>) -> Vec<Task<()>> {
+    let mut watchers = Vec::new();
+    if let Source::Live { state, feed, .. } = source {
+        watchers.push(redraw_on(state.clone(), cx));
+        if let Some(feed) = feed {
+            watchers.push(redraw_on(feed.clone(), cx));
+        }
+    }
+    watchers
 }
 
 /// Notify the view whenever `rx` changes, until its sender is gone.
@@ -385,6 +466,10 @@ impl Render for BoxView {
         } else {
             self.redraw_in(IDLE, cx);
         }
+        let panel = self.wizard().map(|w| (w.animating(), w.panel()));
+        if let Some((true, _)) = &panel {
+            self.redraw_in(DOTS, cx);
+        }
 
         let th = self.theme;
         /* Whole device pixels per logo pixel, so every cell is the same size on any output scale. */
@@ -465,7 +550,10 @@ impl Render for BoxView {
             .child(div().text_color(color(th.faint, 1.0)).child("—"))
             .child(div().text_color(color(th.blue, 1.0)).child("wired"))
             .child(div().flex_1().h(px(1.)).bg(color(th.faint, 0.55)))
-            .child(div().text_color(color(th.muted, 1.0)).child(self.scene.count()))
+            .child(div().text_color(color(th.muted, 1.0)).child(match &panel {
+                Some(_) => "setup".to_string(),
+                None => self.scene.count(),
+            }))
             .child(
                 div()
                     .id("close")
@@ -480,7 +568,10 @@ impl Render for BoxView {
             )
             .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move());
 
-        let status = self.scene.status();
+        let status = match &panel {
+            Some((_, p)) => p.keys.clone(),
+            None => self.scene.status(),
+        };
         let mut bar = div()
             .h(px(STATUS_H))
             .mt(px(4.))
@@ -504,6 +595,12 @@ impl Render for BoxView {
             .id("box")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this: &mut Self, e: &KeyDownEvent, _, cx| {
+                if let Some(w) = this.wizard() {
+                    if let Some(source) = w.key(e, cx) {
+                        this.go_live(source, cx);
+                    }
+                    return;
+                }
                 match e.keystroke.key.as_str() {
                     "n" => this.scene.add(),
                     "a" => this.scene.answer(),
@@ -532,10 +629,10 @@ impl Render for BoxView {
                     .h(px(scene_h))
                     .whitespace_nowrap()
                     .child(pixels)
-                    .child(list(0))
-                    .child(list(1))
-                    .child(list(2))
-                    .child(list(3)),
+                    .children(match &panel {
+                        Some((_, p)) => vec![self.panel(p, list_top, scene_w).into_any_element()],
+                        None => (0..4).map(|i| list(i).into_any_element()).collect(),
+                    }),
             )
             .child(bar)
     }

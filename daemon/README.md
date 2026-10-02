@@ -40,7 +40,7 @@ This applies to failed runs too, so a runtime that crashes on start doesn't get 
 
 ## Config
 
-`~/.config/copland/daemon.toml` (`$XDG_CONFIG_HOME/copland/daemon.toml`), or `--config <file>`. Unknown keys are refused.
+`~/.config/copland/daemon.toml` (`$XDG_CONFIG_HOME/copland/daemon.toml`), or `--config <file>`. Unknown keys are refused. `copland-box --setup` writes one for you (see "Setting it up" under the box); this is what it writes, and how to write it by hand.
 
 ```toml
 poll_interval = 30   # seconds; optional, 30 by default
@@ -114,7 +114,18 @@ What it shows, live, with `owner_token_file`:
 - Clicking a ticket opens its board in the browser, `<url>/b/<BOARD>`, the board key being the task key's prefix.
 - An agent's token given as `owner_token_file` is refused (the route is a person's own) and the box says so in the status line and stops reading; so does any other refusal. A failed read (the server down) keeps the last picture and says why.
 
-Without `owner_token_file` it draws what the daemon alone knows, and the status line says to add the key: todo is the tasks with unread items for an agent (`AgentState::waiting`, published on every poll), doing is each agent's current run, and done and blocked stay empty. A task the daemon has already run stays in todo there while its items are unread, because that is what the inbox says. Without a usable config (no file, no agents, a refused one) the box shows the empty scene and "nothing on the wire" with the reason. `--demo` drives it with the prototype's simulation instead: no config, no server, nothing launched. In the demo `n` adds an item, `a` answers a blocked one and `f` finishes a run; `q` or Esc quits anywhere.
+Without `owner_token_file` it draws what the daemon alone knows, and the status line says to add the key: todo is the tasks with unread items for an agent (`AgentState::waiting`, published on every poll), doing is each agent's current run, and done and blocked stay empty. A task the daemon has already run stays in todo there while its items are unread, because that is what the inbox says. With no config it sets itself up (below); with one it can't use (no agents, a refused key) it shows the empty scene and "nothing on the wire" with the reason. `--demo` drives it with the prototype's simulation instead: no config, no server, nothing launched. In the demo `n` adds an item, `a` answers a blocked one and `f` finishes a run; `q` or Esc quits anywhere.
+
+### Setting it up
+
+A box started without a config sets itself up in its window instead (COPL-47); `copland-box --setup` does the same over an existing one, which is kept as `daemon.toml.bak` (or `.bak.2`, …). A config that is there but broken is not replaced by itself: the status line says why and points at `--setup`. `copland-daemon` without a config says to run `copland-box --setup`.
+
+1. **Address.** Type your Copland's address; `https://` is added when there's no scheme, and anything after the host is dropped. `--url <address>` fills it in. Enter connects, ctrl+v pastes, Esc quits. It's a one-line field of the box's own (`setup::LineInput`), since GPUI 0.2.2 has no text input.
+2. **Approve.** The box asks `POST /api/device/start` for a code, shows it large, and opens `/device?code=…` in your browser once (`o` opens it again). It polls `POST /api/device/poll` every `interval` seconds, slower when asked to (`slow_down`). Denied or expired says so; `r` tries again, `b` goes back to the address.
+3. **Runtimes.** Once approved, the tokens are written at once, since the server hands them over only once: `me.token` (yours, read-only) and `<agent>.token` per agent, beside the config, the directory 0700 and the files 0600, plus a note `daemon.toml.setup` of what still needs saying. A box closed now picks up here next time. It looks on PATH for `claude` and `codex` and reads their `--version` (three seconds at most). Every agent gets the first found, Claude Code before Codex, working in `~/agents/<name>`. ↑↓ picks an agent, space changes its runtime. With none found it says what to install; `r` looks again.
+4. **Save.** Enter writes `daemon.toml`, makes the working directories, and starts the daemon in the same window, without a restart.
+
+The commands come from `box/src/runtime.rs`, one template per runtime. Claude Code's is the narrow one above: Copland's MCP tools and nothing else. What agents may do beyond that is not decided yet, and the written config says so; widen a command by hand. Codex has no flag for an MCP config file, so its command is a small `sh` that reads the run's secret out of `{mcp_config}` into `COPLAND_RUN_SECRET`, and runs `codex exec --ephemeral --skip-git-repo-check --ignore-user-config --sandbox read-only` with Copland as an HTTP MCP server reading its bearer token from that variable, kept out of Codex's own shell. That one hasn't been run against Copland yet, and the config says that too.
 
 Closing the window, SIGINT or SIGTERM stop the daemon as the headless one stops: runtimes get SIGTERM and their runs finish as cancelled. The title bar drags the window (GPUI's `start_window_move`).
 

@@ -4,13 +4,16 @@
 //! instead, with no config and no server.
 
 mod feed;
+mod runtime;
 mod scene;
+mod setup;
 mod theme;
 mod view;
+mod wizard;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use anyhow::{Context as _, Result};
@@ -28,6 +31,7 @@ use crate::feed::Feed;
 use crate::scene::{Scene, Tune};
 use crate::theme::Theme;
 use crate::view::{BoxView, Source};
+use crate::wizard::Wizard;
 
 /// The Wayland app id and X11 WM class, for compositor rules.
 const APP_ID: &str = "copland-box";
@@ -52,6 +56,14 @@ struct Args {
     /// Draw a simulation instead of the daemon: no config, no server, nothing launched.
     #[arg(long)]
     demo: bool,
+    /// Set the box up in its window: your Copland's address, approving this machine there,
+    /// the runtimes to use. What a box without a config does by itself; with one, it is kept
+    /// as daemon.toml.bak.
+    #[arg(long, conflicts_with = "demo")]
+    setup: bool,
+    /// Your Copland's address, filled in for setup.
+    #[arg(long, value_name = "ADDRESS")]
+    url: Option<String>,
     /// A Copland theme, over the config's `theme` (nord, tokyo-night, dracula, catppuccin, gruvbox, one-dark, solarized).
     #[arg(long, value_name = "NAME")]
     theme: Option<String>,
@@ -226,28 +238,39 @@ fn main() -> Result<()> {
     let tune = Tune::default();
     let motion = motion_in(&path);
 
-    let mut running = None;
+    /* The daemon, once there is one: started here, or by setup when it has written the config. */
+    let running: Arc<Mutex<Option<Running>>> = Arc::default();
+    let launch = {
+        let running = running.clone();
+        move |config: Config| -> Result<Source> {
+            tracing::info!(agents = config.agents.len(), "starting");
+            if config.owner.is_none() {
+                tracing::info!("no owner_token_file: drawing what the daemon knows (todo and doing)");
+            }
+            let finished = Arc::new(AtomicBool::new(false));
+            let (r, state, feed) = Running::start(config, finished.clone())?;
+            *running.lock().expect("one writer") = Some(r);
+            Ok(Source::Live { state, feed, finished })
+        }
+    };
+    /* No config (or one setup left half done) sets the box up; a broken one is shown, not replaced. */
+    let wants_setup = !args.demo && (args.setup || !path.exists());
     let (scene, source) = if args.demo {
         (Scene::demo(tune, 0x5eed_c0b1), Source::Demo)
+    } else if wants_setup {
+        tracing::info!(config = %path.display(), "setting up");
+        let wizard = Wizard::new(path.clone(), args.url.as_deref(), Box::new(launch))?;
+        (Scene::live(tune), Source::Setup(Box::new(wizard)))
     } else {
         match Config::load(&path) {
             Ok(config) => {
-                tracing::info!(config = %path.display(), agents = config.agents.len(), "starting");
-                let finished = Arc::new(AtomicBool::new(false));
-                if config.owner.is_none() {
-                    tracing::info!("no owner_token_file: drawing what the daemon knows (todo and doing)");
-                }
-                let (r, state, feed) = Running::start(config, finished.clone())?;
-                running = Some(r);
-                (Scene::live(tune), Source::Live { state, feed, finished })
+                tracing::info!(config = %path.display(), "read");
+                (Scene::live(tune), launch(config)?)
             }
             Err(e) => {
-                let why = if path.exists() {
-                    format!("{:#}", e)
-                } else {
-                    format!("no config at {}", path.display())
-                };
-                tracing::warn!("{why}");
+                tracing::warn!("{e:#}; copland-box --setup sets it up again, keeping it as a backup");
+                /* The status line is short: the cause, not the path it was found in. */
+                let why = format!("copland-box --setup redoes it · {}", e.root_cause());
                 (Scene::live(tune), Source::Quiet(why))
             }
         }
@@ -294,7 +317,7 @@ fn main() -> Result<()> {
         }
         cx.on_window_closed(|cx| cx.quit()).detach();
     });
-    if let Some(r) = running {
+    if let Some(r) = running.lock().expect("one writer").take() {
         r.stop();
     }
     Ok(())
@@ -324,6 +347,8 @@ mod tests {
         let args = Args {
             config: None,
             demo: false,
+            setup: false,
+            url: None,
             theme: None,
         };
         assert_eq!(pick_theme(&args, &file).unwrap().name, "dracula");
@@ -335,6 +360,8 @@ mod tests {
         let args = Args {
             config: None,
             demo: false,
+            setup: false,
+            url: None,
             theme: Some("nope".into()),
         };
         assert!(pick_theme(&args, Path::new("/nonexistent")).is_err());

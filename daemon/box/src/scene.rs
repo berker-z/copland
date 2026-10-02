@@ -1526,7 +1526,7 @@ pub struct Span {
 }
 
 impl Span {
-    fn new(text: impl Into<String>, role: Role) -> Self {
+    pub fn new(text: impl Into<String>, role: Role) -> Self {
         Self {
             text: text.into(),
             role,
@@ -1540,7 +1540,7 @@ impl Span {
 pub struct Line(pub Vec<Span>, pub Option<String>);
 
 impl Line {
-    fn one(text: impl Into<String>, role: Role) -> Self {
+    pub fn one(text: impl Into<String>, role: Role) -> Self {
         Self(vec![Span::new(text, role)], None)
     }
 

@@ -65,10 +65,16 @@ docs/DESIGN.md under Touch.
       in the browser only the card marker and the history line were looked
       at. The runs list on an agent's settings page hasn't been seen.
 - [ ] Device login (COPL-47) was tested with curl and a node script
-      against the dev server, and `/device` looked at in headless Chrome.
-      Not yet with the box's side driving it, and not the sign-in detour
-      (localhost is always the dev user): open a `/device?code=` link signed
-      out on the live site and check it comes back with the code.
+      against the dev server, and once end to end with `copland-box --setup`
+      against the dev server, approved on `/device` in Chrome, through to
+      the live view. Not yet the sign-in detour (localhost is always the dev
+      user): open a `/device?code=` link signed out on the live site and
+      check it comes back with the code.
+- [ ] The box's setup writes a Codex command (`box/src/runtime.rs`) that
+      has never run against Copland: check that `codex exec` reaches the
+      MCP with the run's secret and may call its tools without asking. Paste
+      (ctrl+v) in setup's address field was only tested as editing logic,
+      not against a real Wayland clipboard.
 - [ ] Boards from before migration 0012 got a backlog stage but no blocked
       one, so agents there can only comment when they need an answer. Add a
       blocked stage by hand in board settings where agents work.

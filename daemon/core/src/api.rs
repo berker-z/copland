@@ -1,6 +1,8 @@
 //! Copland's HTTP API, the only way the daemon reaches it. Every call carries
 //! a credential: the agent's own token, or a run's secret for what the run
-//! does itself (claiming, keeping alive). Shapes follow `src/domain/types.ts`.
+//! does itself (claiming, keeping alive). The exception is the device flow the
+//! box's setup uses to get those tokens in the first place (`device_start`,
+//! `device_poll`). Shapes follow `src/domain/types.ts`.
 
 use std::fmt;
 use std::sync::Once;
@@ -158,6 +160,48 @@ pub struct Wired {
     pub done_window_hours: u32,
 }
 
+/// POST /api/device/start: a code for the person to approve in the browser (COPL-47).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceStart {
+    /// What this machine polls with. Not shown to anyone.
+    pub device_code: String,
+    /// What the person sees and checks in the browser.
+    pub user_code: String,
+    pub verify_url: String,
+    /// Seconds between polls.
+    pub interval: u64,
+    /// Seconds until the code lapses.
+    pub expires_in: u64,
+}
+
+/// One identity handed over by an approved device code, with its token (given once).
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceIdentity {
+    pub handle: String,
+    pub token: Secret,
+}
+
+/// POST /api/device/poll.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum DevicePoll {
+    /// `slow_down` asks for a longer interval (polled too fast), as in RFC 8628.
+    Pending {
+        #[serde(default)]
+        slow_down: bool,
+    },
+    Denied,
+    Expired,
+    /// The tokens are delivered on this answer only; a later poll will not repeat them.
+    Approved {
+        url: String,
+        owner: DeviceIdentity,
+        #[serde(default)]
+        agents: Vec<DeviceIdentity>,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ending {
     Completed,
@@ -227,6 +271,21 @@ struct ErrorBody {
     error: Option<String>,
 }
 
+/// An error and its causes, "error sending request: connection refused", without repeats.
+fn chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        let s = c.to_string();
+        if !out.contains(&s) {
+            out.push_str(": ");
+            out.push_str(&s);
+        }
+        cause = c.source();
+    }
+    out
+}
+
 static TLS: Once = Once::new();
 
 /// One instance's API.
@@ -258,12 +317,15 @@ impl Api {
     }
 
     async fn send<T: DeserializeOwned>(&self, req: reqwest::RequestBuilder, cred: &Secret) -> ApiResult<T> {
+        self.send_as(req.bearer_auth(cred.expose())).await
+    }
+
+    async fn send_as<T: DeserializeOwned>(&self, req: reqwest::RequestBuilder) -> ApiResult<T> {
         let res = req
-            .bearer_auth(cred.expose())
             .send()
             .await
             /* reqwest's errors carry the URL, never headers, so they are safe to show. */
-            .map_err(|e| ApiError::Transport(e.without_url().to_string()))?;
+            .map_err(|e| ApiError::Transport(chain(&e.without_url())))?;
         let status = res.status();
         if status.is_success() {
             return res
@@ -286,6 +348,20 @@ impl Api {
 
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base, path)
+    }
+
+    /// Ask for a device code: the one call made with no credential, since getting one is what it is for.
+    pub async fn device_start(&self, client: &str, host: &str) -> ApiResult<DeviceStart> {
+        let body = json!({ "client": client, "host": host });
+        self.send_as(self.http.post(self.url("/api/device/start")).json(&body))
+            .await
+    }
+
+    /// Whether the person has approved the code yet. The device code is the credential here.
+    pub async fn device_poll(&self, device_code: &str) -> ApiResult<DevicePoll> {
+        let body = json!({ "deviceCode": device_code });
+        self.send_as(self.http.post(self.url("/api/device/poll")).json(&body))
+            .await
     }
 
     pub async fn me(&self, cred: &Secret) -> ApiResult<Me> {
@@ -344,5 +420,36 @@ impl Api {
             run_secret,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_device_flow_answers() {
+        let s: DeviceStart = serde_json::from_str(
+            r#"{"deviceCode":"d1","userCode":"WXYZ-1234","verifyUrl":"http://x/device","interval":5,"expiresIn":600}"#,
+        )
+        .unwrap();
+        assert_eq!((s.user_code.as_str(), s.interval, s.expires_in), ("WXYZ-1234", 5, 600));
+        let p: DevicePoll = serde_json::from_str(r#"{"status":"pending"}"#).unwrap();
+        assert!(matches!(p, DevicePoll::Pending { slow_down: false }));
+        let p: DevicePoll = serde_json::from_str(r#"{"status":"pending","slow_down":true}"#).unwrap();
+        assert!(matches!(p, DevicePoll::Pending { slow_down: true }));
+        let p: DevicePoll = serde_json::from_str(r#"{"status":"expired"}"#).unwrap();
+        assert!(matches!(p, DevicePoll::Expired));
+        let p: DevicePoll = serde_json::from_str(
+            r#"{"status":"approved","url":"http://x","owner":{"handle":"me","token":"cpl_o"},"agents":[{"handle":"me/dev","token":"cpl_a"}]}"#,
+        )
+        .unwrap();
+        let DevicePoll::Approved { url, owner, agents } = p else {
+            panic!("not approved")
+        };
+        assert_eq!((url.as_str(), owner.handle.as_str()), ("http://x", "me"));
+        assert_eq!(agents[0].token.expose(), "cpl_a");
+        assert!(!format!("{:?}", agents[0]).contains("cpl_a"));
+        assert!(serde_json::from_str::<DevicePoll>(r#"{"status":"maybe"}"#).is_err());
     }
 }

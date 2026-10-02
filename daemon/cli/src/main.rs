@@ -38,6 +38,13 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let _ = args.headless;
     let path = args.config.unwrap_or_else(default_config_path);
+    if !path.exists() {
+        anyhow::bail!(
+            "no config at {}: `copland-box --setup` makes one (approve this machine in Copland, pick runtimes), \
+             or write it by hand as daemon/README.md says",
+            path.display()
+        );
+    }
     let config = Config::load(&path).with_context(|| "loading the config")?;
     if args.check {
         /* Ask each instance who the token is, so a bad or read-only token shows now, not at the first poll. */
