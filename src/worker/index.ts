@@ -56,6 +56,7 @@ import { deleteTaskAttachment, getAttachment, postTaskAttachment, postUpload } f
 import { deleteComment, getComments, getTaskEvents, patchComment, postComment } from "./routes/comments";
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
 import { deleteTask, getTask, patchTask, postTask } from "./routes/tasks";
+import { getMyWork } from "./routes/work";
 import { deleteToken, getTokens, postToken } from "./routes/tokens";
 import { handleIntegration, isIntegrationPath } from "./integrations";
 import { bearerFrom, requireWriteScope, touchStatement, viaContext } from "./tokens";
@@ -203,6 +204,8 @@ const api = new Router<Ctx>()
   .on("POST", "/api/boards/:id/tasks", ({ request, env, viewer, changes }, { id }) =>
     postTask(request, env, viewer, id, changes),
   )
+  /* Before /api/tasks/:id, which would otherwise take "mine" for a task. */
+  .on("GET", "/api/tasks/mine", ({ env, viewer }) => getMyWork(env, viewer))
   .on("GET", "/api/tasks/:id", ({ env, viewer }, { id }) => getTask(env, viewer, id))
   .on("PATCH", "/api/tasks/:id", ({ request, env, viewer, changes }, { id }) =>
     patchTask(request, env, viewer, id, changes),

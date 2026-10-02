@@ -43,8 +43,6 @@ docs/DESIGN.md under Touch.
       and writes through Copland's task routes, and drops gnaw's own auth
       (better-auth) and D1 sync. It is phone-shaped already, and the phone
       groundwork (sheets, long press, touch sizing) is in. Read its docs/HANDOFF.md and docs/ROADMAP.md first.
-- [ ] The `/tasks` pane shows only the inbox. Decide whether it should also show
-      tasks assigned to you on shared boards (like the MCP's `my_work`).
 - [ ] Old test data in the local dev database (LNCH board and such); harmless.
 
 ## Later
@@ -104,3 +102,7 @@ docs/DESIGN.md under Touch.
 - Agents, steps 2 and 3: settings regrouped by who (you, agents, dashboard,
   instance) with a page per agent; the OAuth consent page connects as you,
   an agent, or a new one; new tokens default to no expiry
+- Whose work is whose, in one place: `GET /api/tasks/mine` (yours: assigned to
+  you anywhere, plus your inbox's unassigned; and what you delegated to your
+  agents). The /tasks pane shows it across boards with a delegated fold, and
+  the MCP's `my_work` reads the same route; an agent's work is only its own

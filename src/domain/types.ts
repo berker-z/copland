@@ -115,6 +115,13 @@ export interface Task {
   updatedAt: string;
 }
 
+/** GET /api/tasks/mine: which tasks are yours and which you handed to your agents (routes/work.ts). */
+export interface MyWork {
+  mine: { taskId: string; boardId: string }[];
+  /** Always empty for an agent. */
+  delegated: { taskId: string; boardId: string }[];
+}
+
 /** GET /api/boards/:id — everything a board screen draws. */
 export interface BoardDetail {
   board: BoardSummary;

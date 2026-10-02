@@ -31,6 +31,7 @@ import {
   type Label,
   type Level,
   type Me,
+  type MyWork,
   type Priority,
   type Stage,
   type Task,
@@ -939,27 +940,20 @@ const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(_args, ctx) {
-      const details = await load(ctx);
-      const me = ctx.viewer.user.id;
+      /* Whose work is whose is the route's call (routes/work.ts), shared with the /tasks pane. */
+      const [details, work] = await Promise.all([load(ctx), ctx.call<MyWork>("GET", "/api/tasks/mine")]);
       const agent = !!ctx.viewer.agent;
       const day = today();
       const week = addDays(day, 7);
-      const open = details
-        .flatMap((d) => d.tasks.filter((t) => statusOf(d, t) === "open").map((t) => ({ d, t })))
-        .sort((a, b) => byDue(a.t, b.t));
-      /* An agent's work is what it was given, nothing implied. A person's
-         inbox items with nobody on them are still implicitly theirs. */
-      const mine = open.filter(
-        ({ d, t }) => t.assigneeIds.includes(me) || (!agent && d.board.isInbox && t.assigneeIds.length === 0),
-      );
-      const myAgents = (d: BoardDetail) =>
-        new Set(d.members.filter((m) => m.user.kind === "agent" && m.user.ownerId === me).map((m) => m.user.id));
-      const delegated = agent
-        ? []
-        : open.filter(({ d, t }) => {
-            const ours = myAgents(d);
-            return !t.assigneeIds.includes(me) && t.assigneeIds.some((id) => ours.has(id));
-          });
+      const openOf = (refs: MyWork["mine"]) =>
+        refs
+          .flatMap(({ taskId, boardId }) => {
+            const d = details.find((x) => x.board.id === boardId);
+            const t = d?.tasks.find((x) => x.id === taskId);
+            return d && t && statusOf(d, t) === "open" ? [{ d, t }] : [];
+          })
+          .sort((a, b) => byDue(a.t, b.t));
+      const mine = openOf(work.mine);
       const group = (test: (due: string | null) => boolean) =>
         mine.filter(({ t }) => test(t.dueDate)).map(({ d, t }) => summarize(d, t, ctx.origin));
       return {
@@ -969,7 +963,7 @@ const TOOLS: Tool[] = [
         this_week: group((due) => due !== null && due > day && due <= week),
         later: group((due) => due !== null && due > week),
         no_date: group((due) => due === null),
-        ...(agent ? {} : { delegated: delegated.map(({ d, t }) => summarize(d, t, ctx.origin)) }),
+        ...(agent ? {} : { delegated: openOf(work.delegated).map(({ d, t }) => summarize(d, t, ctx.origin)) }),
       };
     },
   },

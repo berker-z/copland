@@ -73,6 +73,8 @@ function settle(queryClient: QueryClient, boardId: string) {
   void queryClient.invalidateQueries({ queryKey: KEYS.board(boardId) });
   /* Open-task counts in the boards list. */
   void queryClient.invalidateQueries({ queryKey: KEYS.boards });
+  /* An assignee changed, or a task came or went: whose work is whose may have too. */
+  void queryClient.invalidateQueries({ queryKey: KEYS.myWork });
 }
 
 export function useCreateTask(boardId: string) {
@@ -127,21 +129,28 @@ export function useCreateTask(boardId: string) {
   });
 }
 
-export function useUpdateTask(boardId: string) {
+/**
+ * Change a task on `boardId`, or, with no board given here, on the board
+ * each call names (`boardId` in the variables): the /tasks pane holds tasks
+ * from several boards.
+ */
+export function useUpdateTask(boardId?: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: TaskPatch }) => send<Task>("PATCH", `/tasks/${id}`, patch),
-    onMutate: async ({ id, patch }) => {
-      const previous = await editBoard(queryClient, boardId, (detail) => ({
+    mutationFn: ({ id, patch }: { id: string; patch: TaskPatch; boardId?: string }) =>
+      send<Task>("PATCH", `/tasks/${id}`, patch),
+    onMutate: async ({ id, patch, boardId: on }) => {
+      const board = on ?? boardId ?? "";
+      const previous = await editBoard(queryClient, board, (detail) => ({
         ...detail,
         tasks: detail.tasks.map((t) => (t.id === id ? applyPatch(detail, t, patch) : t)),
       }));
-      return { previous };
+      return { previous, board };
     },
     onError: (_error, _vars, context) => {
-      if (context?.previous) queryClient.setQueryData(KEYS.board(boardId), context.previous);
+      if (context?.previous) queryClient.setQueryData(KEYS.board(context.board), context.previous);
     },
-    onSettled: () => settle(queryClient, boardId),
+    onSettled: (_data, _error, vars) => settle(queryClient, vars.boardId ?? boardId ?? ""),
   });
 }
 

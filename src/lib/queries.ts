@@ -7,7 +7,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { MarketExtras, Note } from "@/domain/panes";
 import type { Settings, VaultEntry } from "@/domain/settings";
-import type { Agent, ApiToken, BoardDetail, BoardSummary, Invite, Me, User } from "@/domain/types";
+import type { Agent, ApiToken, BoardDetail, BoardSummary, Invite, Me, MyWork, User } from "@/domain/types";
 import { api } from "./api";
 import { isLive } from "./liveState";
 
@@ -18,6 +18,8 @@ export const KEYS = {
   boards: ["boards"],
   board: (id: string) => ["board", id],
   boardAll: ["board"],
+  /* Under "board" on purpose: whatever changes a board can change whose work is whose. */
+  myWork: ["board", "~mine"],
   admin: ["admin"],
   adminUsers: ["admin", "users"],
   adminInvites: ["admin", "invites"],
@@ -47,13 +49,18 @@ export const useBoards = () =>
     refetchInterval: fallbackPoll(60_000),
   });
 
-export const useBoard = (id: string | null) =>
-  useQuery({
-    queryKey: KEYS.board(id ?? ""),
-    queryFn: () => api<BoardDetail>(`/boards/${id}`),
-    enabled: id !== null,
-    refetchInterval: fallbackPoll(60_000),
-  });
+/** What is yours and what you handed to your agents: ids only; the tasks come from their boards. */
+export const useMyWork = () =>
+  useQuery({ queryKey: KEYS.myWork, queryFn: () => api<MyWork>("/tasks/mine"), refetchInterval: fallbackPoll(60_000) });
+
+/** One board's query, for useBoard and for the panes that read several boards at once. */
+export const boardQuery = (id: string) => ({
+  queryKey: KEYS.board(id),
+  queryFn: () => api<BoardDetail>(`/boards/${id}`),
+  refetchInterval: fallbackPoll(60_000),
+});
+
+export const useBoard = (id: string | null) => useQuery({ ...boardQuery(id ?? ""), enabled: id !== null });
 
 export const useAdminUsers = () =>
   useQuery({
