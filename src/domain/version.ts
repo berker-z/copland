@@ -12,7 +12,7 @@
 /* Replaced at build time by vite.config.ts's `define`. */
 declare const __COPLAND_VERSION__: string;
 
-/** This build's id: the commit and when it was built. */
+/** This build's id: the commit it was built from. */
 export const VERSION: string = typeof __COPLAND_VERSION__ === "string" ? __COPLAND_VERSION__ : "unstamped";
 
 /** The response header the Worker reports its version in. */

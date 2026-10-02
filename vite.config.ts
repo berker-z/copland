@@ -6,18 +6,18 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
 /**
- * One id for this build, read once here so the browser bundle and the Worker
- * get the same value (src/domain/version.ts). The time is in it because a
- * deploy is not always a new commit; `npm run dev` gets a new id per start.
+ * One id for this build, so the browser bundle and the Worker can tell they
+ * match (src/domain/version.ts): the commit. Nothing that changes between
+ * evaluations, because the build reads this file once for the bundle and
+ * again for the Worker; a timestamp here made them never agree (COPL-25).
+ * The same commit is the same code, so redeploying it asks nobody to reload.
  */
 function buildVersion(): string {
-  let commit = "nogit";
   try {
-    commit = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+    return execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
   } catch {
-    /* not a checkout; the time alone still tells builds apart */
+    return "nogit";
   }
-  return `${commit}-${Date.now().toString(36)}`;
 }
 
 /**
