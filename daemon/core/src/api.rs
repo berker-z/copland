@@ -130,8 +130,44 @@ pub struct BoardTask {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct BoardRepo {
-    /// "owner/name".
+    /// The name shown: "owner/name" on GitHub, the remote without scheme and ".git" otherwise.
     pub repo: String,
+    /// github, or git for a plain remote (COPL-95); an older server sends neither and means github.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// What to clone; an older server leaves it out for GitHub.
+    #[serde(default)]
+    pub remote: Option<String>,
+}
+
+/// Where a board's code is, as the daemon uses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeSource {
+    /// The clone's folder under `repos/`: "owner/name", or "git/…" for a plain remote.
+    pub dir: String,
+    pub remote: String,
+    /// Integrated through PRs (GitHub); a plain remote integrates by fast-forward.
+    pub pull_requests: bool,
+}
+
+impl BoardRepo {
+    pub fn source(&self) -> CodeSource {
+        match (self.kind.as_deref(), &self.remote) {
+            (Some("git"), Some(remote)) => CodeSource {
+                dir: crate::workspace::git_dir_name(&self.repo),
+                remote: remote.clone(),
+                pull_requests: false,
+            },
+            _ => CodeSource {
+                dir: self.repo.clone(),
+                remote: self
+                    .remote
+                    .clone()
+                    .unwrap_or_else(|| crate::workspace::github_remote(&self.repo)),
+                pull_requests: true,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

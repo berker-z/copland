@@ -697,7 +697,7 @@ pub fn role_of(code_command: bool, repo: bool, level: Option<&str>, has_children
 struct TaskInfo {
     role: Role,
     task: Option<crate::api::Task>,
-    repo: Option<String>,
+    source: Option<crate::api::CodeSource>,
 }
 
 /// What a run tells its loop when it is over.
@@ -900,7 +900,7 @@ impl RunCtx {
             return Ok(TaskInfo {
                 role: Role::Workdir,
                 task: None,
-                repo: None,
+                source: None,
             });
         }
         let task = self
@@ -918,29 +918,31 @@ impl RunCtx {
         }
         let has_children = board.tasks.iter().any(|t| t.parent_id.as_deref() == Some(task_id));
         let role = role_of(true, !board.repos.is_empty(), task.level.as_deref(), has_children);
-        let repo = board.repos.into_iter().next().map(|r| r.repo);
+        let source = board.repos.first().map(|r| r.source());
         Ok(TaskInfo {
             role,
             task: Some(task),
-            repo,
+            source,
         })
     }
 
     /// Where the run works: a worker's worktree, a lead's read-only view of the repo, or none
     /// (the agent's `workdir`).
     async fn workspace(&self, task_id: &str, key: &str) -> Result<Option<Workspace>> {
-        let TaskInfo { role, task, repo } = self.lookup(task_id, key).await?;
-        let (Some(task), Some(repo)) = (task, repo) else {
+        let TaskInfo { role, task, source } = self.lookup(task_id, key).await?;
+        let (Some(task), Some(src)) = (task, source) else {
             return Ok(None);
         };
-        let (dir, remote) = (&self.agent.code_dir, workspace::github_remote(&repo));
-        match role {
-            Role::Worker => workspace::realize(dir, &remote, &repo, key, &task.title)
-                .await
-                .map(Some),
-            Role::Lead => workspace::view(dir, &remote, &repo, key).await.map(Some),
-            Role::Workdir | Role::Skip => Ok(None),
-        }
+        let dir = &self.agent.code_dir;
+        let ws = match role {
+            Role::Worker => workspace::realize(dir, &src.remote, &src.dir, key, &task.title).await?,
+            Role::Lead => workspace::view(dir, &src.remote, &src.dir, key).await?,
+            Role::Workdir | Role::Skip => return Ok(None),
+        };
+        Ok(Some(Workspace {
+            pull_requests: src.pull_requests,
+            ..ws
+        }))
     }
 
     fn summary(&self, run: &str, task: &str, outcome: String) {

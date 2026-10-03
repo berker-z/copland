@@ -1,6 +1,6 @@
 /* ============================================================================
-   Board settings, for owners (the gear): its stages and labels, the GitHub
-   repos connected to it (RepoEditor.tsx), what it is called, and archiving it. The inbox is private, so it
+   Board settings, for owners (the gear): its stages and labels, its code, a GitHub
+   repo or a plain git remote (RepoEditor.tsx), what it is called, and archiving it. The inbox is private, so it
    has no archive section. Who is on the board, and adding people or agents,
    is the share dialog (ShareModal.tsx).
    ========================================================================== */
@@ -77,7 +77,7 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
         <LabelEditor detail={detail} />
       </Section>
 
-      <Section title="github">
+      <Section title="code">
         <RepoEditor detail={detail} />
       </Section>
 

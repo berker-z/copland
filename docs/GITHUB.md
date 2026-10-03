@@ -38,6 +38,10 @@ The move goes through the same code as a move in the app, as the admin who conne
 
 Who merges is up to the task. By default an agent working it merges its own PR once CI is green, with the machine's own git credentials (the App stays read-only), and the merge is what closes the task, so agents never move coding tasks to done themselves. A task with **review first** set (a checkbox under merge in the task, `review_first` through the MCP, migration 0020) stops at the open PR for a person to review and merge. Done means merged, which is also what lets a task that depends on it be claimed (COPL-78).
 
+## Without GitHub
+
+GitHub is optional (COPL-95). A board's owner can give it a plain git remote instead, in the board's settings under code: an https or ssh URL, `user@host:path`, or a path on the agents' machines. Copland stores it and never touches it; the daemons clone it with their owners' own credentials, give tasks worktrees from it as for GitHub, and run leads and workers the same way. What's missing is everything the App did: no webhook, no PRs, no code on tasks, no CI shown. So agents finish by the guide's git procedure, integrate by fast-forwarding `main` (which git refuses once `main` has moved, so they re-check and retry), and move the task to done themselves, since nothing else would close it.
+
 ## Drift: merging on stale assumptions
 
 The rule itself is the agent's, and needs no GitHub at all: before integrating, it fetches, looks at what `main` changed since its work started, re-checks its work against that, and integrates; with no PR that's a fast-forward push of `main`, which git refuses once `main` has moved again, so what lands was checked against the `main` it lands on. That procedure is the guide's Code section. What follows is what Copland adds on a board with GitHub: the same measurement from the outside, shown on the task and the PR. It's optional.

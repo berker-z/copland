@@ -26,7 +26,7 @@
    Everything else only annotates.
    ========================================================================== */
 
-import { ciFrom, parseRepo, pullRefs, keysIn, verifySignature, type CodeRef, type PullState } from "@/domain/github";
+import { ciFrom, parseRemote, parseRepo, pullRefs, keysIn, verifySignature, type CodeRef, type PullState } from "@/domain/github";
 import type { AppManifestForm, BoardRepo, RepoChoices, Viewer } from "@/domain/types";
 import { requireAdmin, requireBoard } from "../access";
 import { cookie, readCookie, redirect } from "../auth";
@@ -112,11 +112,18 @@ export async function getAvailableRepos(env: Env, viewer: Viewer, boardId: strin
   return json(out);
 }
 
-/** POST /api/boards/:id/repos { repo }: an admin who owns the board, and a repo the App is installed on. */
+/**
+ * POST /api/boards/:id/repos: { repo } connects a GitHub repo the App is
+ * installed on, for an admin who owns the board; { remote } a plain git
+ * remote (COPL-95), for the board's owner: Copland never touches it, only
+ * daemons clone it, with their owners' credentials.
+ */
 export async function postRepo(request: Request, env: Env, viewer: Viewer, boardId: string, changes: Changes): Promise<Response> {
+  const body = await readJson(request);
+  if (body.remote !== undefined) return postRemote(env, viewer, boardId, body.remote, changes);
   requireAdmin(viewer);
   await requireBoard(env.DB, viewer, boardId, "owner");
-  const repo = parseRepo((await readJson(request)).repo);
+  const repo = parseRepo(body.repo);
   if (!repo) throw badRequest("`repo` must be a GitHub repo as owner/name");
   if (!(await githubApp(env.DB))) throw conflict("This instance has no GitHub App yet: an admin makes one in settings › instance › github");
   if (!(await installedRepos(env)).includes(repo)) throw badRequest(`The GitHub App isn't installed on ${repo}`);
@@ -133,6 +140,24 @@ export async function postRepo(request: Request, env: Env, viewer: Viewer, board
       nowIso(),
     ),
     eventStatement(env.DB, { boardId, taskId: null, actorId: viewer.user.id, kind: "board.repo", after: { repo } }),
+  ]);
+  changes.notify(await boardAudience(env.DB, boardId), "board");
+  const out: BoardRepo = (await findRepo(env.DB, id))!;
+  return json(out, { status: 201 });
+}
+
+async function postRemote(env: Env, viewer: Viewer, boardId: string, raw: unknown, changes: Changes): Promise<Response> {
+  await requireBoard(env.DB, viewer, boardId, "owner");
+  const parsed = parseRemote(raw);
+  if (!parsed) throw badRequest("`remote` must be a git remote: an https or ssh URL, user@host:path, or an absolute path");
+  const taken = await env.DB.prepare(`SELECT 1 FROM board_repos WHERE board_id = ?1 AND repo = ?2`).bind(boardId, parsed.name).first();
+  if (taken) throw conflict(`${parsed.name} is already this board's code`);
+  const id = crypto.randomUUID();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO board_repos (id, board_id, repo, kind, remote, connected_by, created_at) VALUES (?1, ?2, ?3, 'git', ?4, ?5, ?6)`,
+    ).bind(id, boardId, parsed.name, parsed.remote, viewer.user.id, nowIso()),
+    eventStatement(env.DB, { boardId, taskId: null, actorId: viewer.user.id, kind: "board.repo", after: { repo: parsed.name } }),
   ]);
   changes.notify(await boardAudience(env.DB, boardId), "board");
   const out: BoardRepo = (await findRepo(env.DB, id))!;
@@ -214,14 +239,14 @@ export async function postWebhook(request: Request, env: Env, ctx: ExecutionCont
   if (!repo) return json({ ok: true, event, touched: false });
   const { results: hooks } = await env.DB.prepare(
     `SELECT r.id, r.board_id, b.key AS board_key, r.repo, r.connected_by
-       FROM board_repos r JOIN boards b ON b.id = r.board_id WHERE r.repo = ?1 AND b.archived_at IS NULL`,
+       FROM board_repos r JOIN boards b ON b.id = r.board_id WHERE r.repo = ?1 AND r.kind = 'github' AND b.archived_at IS NULL`,
   )
     .bind(repo)
     .all<HookRow>();
   if (!hooks.length) return json({ ok: true, event, touched: false });
 
   const now = nowIso();
-  await env.DB.prepare(`UPDATE board_repos SET last_delivery_at = ?2, last_event = ?3 WHERE repo = ?1`).bind(repo, now, event).run();
+  await env.DB.prepare(`UPDATE board_repos SET last_delivery_at = ?2, last_event = ?3 WHERE repo = ?1 AND kind = 'github'`).bind(repo, now, event).run();
 
   let touched = false;
   for (const hook of hooks) {
