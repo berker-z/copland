@@ -115,8 +115,9 @@ docs/DESIGN.md under Touch.
       (COPL-87). Drift between parallel work is
       measured and gates merges (COPL-75). A run that dies puts its task back
       in todo, or blocked after three in a row (COPL-97), from the finish or
-      the Worker's five-minute cron. Still to do (epic COPL-96): a conflict the
-      agent can't resolve becomes a sibling task (COPL-98), and showing
+      the Worker's five-minute cron. A conflict
+      the agent can't resolve becomes a sibling integration task (COPL-98).
+      Still to do (epic COPL-96): showing
       overlaps between tasks still being worked on, before any PR exists, so
       a lead can sequence them (COPL-99). The cron and the put-back have run
       against the dev server only (`/cdn-cgi/handler/scheduled`); the installed
