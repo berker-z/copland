@@ -86,7 +86,7 @@ owner_url = "https://copland.example.com"       # only when the agents are on mo
 
 ## Building
 
-It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. `box` is `copland-box`, the same loop with a GPUI window (below). `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, waiting tasks, last run) as a `tokio::sync::watch` receiver, which the headless binary ignores and the box draws. The workspace's `default-members` are `core` and `cli`, so plain `cargo` here builds and checks the headless daemon only, with no GPUI anywhere in its graph.
+It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. `box` is `copland-box`, the same loop with a GPUI window (below). `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, waiting tasks, last run) as a `tokio::sync::watch` receiver, which the headless binary ignores and the box draws. `Daemon::reload(config)` changes the agents it runs in place (see "The agents screen"); only the box calls it, and the headless daemon still reads its config once, at start. The workspace's `default-members` are `core` and `cli`, so plain `cargo` here builds and checks the headless daemon only, with no GPUI anywhere in its graph.
 
 ```sh
 cd daemon
@@ -128,6 +128,19 @@ A box started without a config sets itself up in its window instead (COPL-47); `
 4. **Save.** Enter writes `daemon.toml`, makes the working directories, and starts the daemon in the same window, without a restart.
 
 The commands come from `box/src/runtime.rs`, one template per runtime. Claude Code's is the narrow one above: Copland's MCP tools and nothing else. What agents may do beyond that is not decided yet, and the written config says so; widen a command by hand. Codex has no flag for an MCP config file, so its command is a small `sh` that reads the run's secret out of `{mcp_config}` into `COPLAND_RUN_SECRET`, and runs `codex exec --ephemeral --skip-git-repo-check --ignore-user-config --sandbox read-only` with Copland as an HTTP MCP server reading its bearer token from that variable, kept out of Codex's own shell. That one hasn't been run against Copland yet, and the config says that too.
+
+### The agents screen
+
+`a` in the live view (the status line says so) opens the agents screen in the same window, the poles staying behind it as they do for setup (COPL-55). It lists every agent you have in Copland, from the `agents` that `/api/wired` already sends with your read-only token (paused ones too), so without `owner_token_file` it lists only what this machine runs. Each agent is one of two kinds:
+
+- **Runs here**: its name, runtime (Claude Code or Codex, or "(own)" for a command that isn't one of setup's templates, a widened one say), working folder, and what it is doing: watching, a task it has a run on, an error, or "changes after this run". Space (or ← →) cycles the runtime through those found on PATH, marked as a change; Enter saves the changes. `x` twice stops running it here.
+- **Not on this machine**: Enter asks Copland for that agent's token with a device login that names it (`agents` on `POST /api/device/start`), so `/device` ticks that agent alone; the box shows the code and opens the page, as setup does. Once approved, it writes `<name>.token` beside the config (another name if that file exists) and an `[[agent]]` table with the first runtime found, working in `~/agents/<name>`. Because the request names agents, the approval makes only their tokens: the box already has the read-only one for you.
+
+↑↓ picks an agent, Esc goes back, and changes not saved are dropped. Paused agents say so.
+
+Saving edits `daemon.toml` in place (`box/src/edit.rs`): only the changed agent's table, and in it only `client`, `command` and the untested-template note, so comments and hand edits elsewhere stay. The file is checked the way the daemon reads it before anything is written, the old one is kept as `daemon.toml.bak` (or `.bak.2`, …, never over an older backup), and the new one is written whole with mode 0600. Stopping an agent here removes its table and leaves its token file, so the backup still works; the token stays valid until you revoke it in settings › agents. The last agent can't be stopped here (a config without one isn't a config); `--setup` starts over instead.
+
+Then the running daemon takes the new config without a restart (`Daemon::reload`, `core/src/daemon.rs`, the diff in `core/src/reload.rs`). An agent is the same agent across the two when its instance and handle are; one whose command, workdir, client or token changed is rebound, one that's gone is stopped, one that's new is started, and the rest are left alone (all are rebound when `poll_interval` changed). Each agent's loop runs under a supervising task that holds its binding. A rebind or a stop bumps the binding's generation, which the loop looks at only between polls and before starting a run; it is never passed to a runtime. So an idle loop ends at once, and a loop in a run lets the run finish, claim, keepalives, `finish_run` and all, under its old binding, then ends; only then does the supervisor start the agent again with the new one (or drop it). An agent never has two loops, so never two runs. The wake guard's memory goes from the old loop to the new, so a rebind doesn't relaunch on items already handled. If a reload comes between the check and a launch, that one run still uses the old binding; the next one uses the new.
 
 Closing the window, SIGINT or SIGTERM stop the daemon as the headless one stops: runtimes get SIGTERM and their runs finish as cancelled. The title bar drags the window (GPUI's `start_window_move`).
 

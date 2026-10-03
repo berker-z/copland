@@ -14,7 +14,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MonitorSmartphone, TriangleAlert } from "lucide-react";
 import { useSearchParams } from "react-router";
-import { normalizeUserCode, type DeviceRequestInfo } from "@/domain/device";
+import { normalizeUserCode, preselectAgents, type DeviceRequestInfo } from "@/domain/device";
 import { api, ApiError, send } from "@/lib/api";
 import { KEYS, useAgents } from "@/lib/queries";
 import { Checkbox } from "@/ui/Checkbox";
@@ -95,10 +95,14 @@ function Approve({ code, request }: { code: string; request: DeviceRequestInfo }
   const queryClient = useQueryClient();
   const agents = useAgents();
   const [ticked, setTicked] = useState<Set<string> | null>(null);
-  /* Everything ticked but the paused ones, once the list is in. */
+  /* Once the list is in: the agents the box asked for, when it named any (a box that runs
+     some already, asking for one more), else everything but the paused ones. */
   useEffect(() => {
-    if (agents.data && ticked === null) setTicked(new Set(agents.data.filter((a) => !a.pausedAt).map((a) => a.user.id)));
-  }, [agents.data, ticked]);
+    if (agents.data && ticked === null) {
+      const mine = agents.data.map((a) => ({ id: a.user.id, handle: a.user.handle, paused: a.pausedAt !== null }));
+      setTicked(preselectAgents(mine, request.agents));
+    }
+  }, [agents.data, ticked, request.agents]);
 
   const answer = useMutation({
     mutationFn: (approve: boolean) =>
@@ -138,6 +142,12 @@ function Approve({ code, request }: { code: string; request: DeviceRequestInfo }
       </div>
 
       <h4 className="text-label mb-2">agents it may run</h4>
+      {request.agents && (
+        <p className="text-xs text-muted mb-2 leading-relaxed">
+          The box asked for {request.agents.map((a) => `@${a}`).join(", ")}, so only {request.agents.length === 1 ? "that one is" : "those are"} ticked. It keeps the agents it
+          already runs either way.
+        </p>
+      )}
       {agents.isPending ? (
         <p className="text-xs text-muted mb-4">Loading your agents…</p>
       ) : agents.error ? (
@@ -169,9 +179,11 @@ function Approve({ code, request }: { code: string; request: DeviceRequestInfo }
 
       <div className="text-xs text-muted leading-relaxed mb-5 space-y-1.5">
         <p>Approving creates:</p>
-        <p>
-          <span className="text-blue">a read-only token for you</span>, so the box can show your agents' work;
-        </p>
+        {!request.agents?.length && (
+          <p>
+            <span className="text-blue">a read-only token for you</span>, so the box can show your agents' work;
+          </p>
+        )}
         <p>
           <span className="text-yellow">a read and write token for each agent you tick</span>, so the box can start their
           runs.

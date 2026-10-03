@@ -264,3 +264,11 @@ docs/DESIGN.md under Touch.
   under VAULT_KEY and are handed over once; an approval nobody collects in
   ten minutes loses its tokens. Per-IP and pending caps on the two open
   routes. Migration 0016
+- The box's agents screen (COPL-55): `a` in the live view lists every
+  agent of yours (from `/api/wired`), what runs here with its runtime,
+  folder and state, and what doesn't. Change an agent's runtime, stop
+  running it here, or bring one here through a device login that names it
+  (`agents` on `POST /api/device/start`, which `/device` pre-ticks;
+  migration 0017). `daemon.toml` is edited in place with a backup and the
+  daemon reloads without a restart: an agent in a run finishes it under
+  its old binding first (`Daemon::reload`, daemon/README.md).

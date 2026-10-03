@@ -12,10 +12,11 @@ pub mod api;
 pub mod config;
 pub mod daemon;
 pub mod guard;
+pub mod reload;
 pub mod runner;
 pub mod state;
 
 pub use agent::Paths;
 pub use config::Config;
-pub use daemon::Daemon;
+pub use daemon::{Daemon, Reloaded};
 pub use state::{AgentState, DaemonState, Phase};

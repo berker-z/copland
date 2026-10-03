@@ -3,6 +3,8 @@
 //! as the wired scene (COPL-33). `--demo` draws the prototype's simulation
 //! instead, with no config and no server.
 
+mod agents;
+mod edit;
 mod feed;
 mod hyprland;
 mod runtime;
@@ -28,8 +30,9 @@ use gpui::{
     size,
 };
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
+use crate::agents::{Control, Reload};
 use crate::feed::Feed;
 use crate::scene::{Scene, Tune};
 use crate::theme::Theme;
@@ -138,12 +141,19 @@ struct Running {
 }
 
 impl Running {
-    /// The daemon's state, and the owner's feed when the config has an owner token.
+    /// The daemon's state, the owner's feed when the config has an owner token, and what the
+    /// agents screen changes the running daemon through.
     #[allow(clippy::type_complexity)]
     fn start(
         config: Config,
+        path: PathBuf,
         finished: Arc<AtomicBool>,
-    ) -> Result<(Self, watch::Receiver<DaemonState>, Option<watch::Receiver<Feed>>)> {
+    ) -> Result<(
+        Self,
+        watch::Receiver<DaemonState>,
+        Option<watch::Receiver<Feed>>,
+        Control,
+    )> {
         let owner = config.owner.clone();
         let feed = owner.as_ref().map(|o| {
             watch::channel(Feed {
@@ -154,7 +164,8 @@ impl Running {
         let feed_tx = feed.as_ref().map(|f| f.0.clone());
         let feed_rx = feed.map(|f| f.1);
         let (state_tx, state_rx) = std::sync::mpsc::channel();
-        let (stop, stop_rx) = oneshot::channel::<()>();
+        let (stop, mut stop_rx) = oneshot::channel::<()>();
+        let (reload_tx, mut reload_rx) = mpsc::unbounded_channel::<Reload>();
         let thread = std::thread::Builder::new().name("daemon".into()).spawn(move || {
             let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
                 Ok(r) => r,
@@ -175,7 +186,7 @@ impl Running {
                         return;
                     }
                 };
-                let _ = state_tx.send(Ok(daemon.subscribe()));
+                let _ = state_tx.send(Ok((daemon.subscribe(), tokio::runtime::Handle::current())));
                 if let (Some(owner), Some(tx)) = (owner, feed_tx) {
                     tokio::spawn(feed::run(owner, tx, daemon.subscribe()));
                 }
@@ -184,14 +195,24 @@ impl Running {
                     tracing::error!("can't listen for signals");
                     return;
                 };
-                tokio::select! {
-                    _ = term.recv() => tracing::info!("SIGTERM: stopping"),
-                    _ = int.recv() => tracing::info!("SIGINT: stopping"),
-                    _ = stop_rx => tracing::info!("window closed: stopping"),
-                    _ = daemon.join() => {
-                        tracing::error!("no agent left to watch");
-                        finished.store(true, Ordering::Relaxed);
-                        return;
+                loop {
+                    tokio::select! {
+                        _ = term.recv() => { tracing::info!("SIGTERM: stopping"); break }
+                        _ = int.recv() => { tracing::info!("SIGINT: stopping"); break }
+                        _ = &mut stop_rx => { tracing::info!("window closed: stopping"); break }
+                        /* The agents screen changed daemon.toml: run what it says now, here. */
+                        Some(req) = reload_rx.recv() => {
+                            let done = daemon.reload(req.config);
+                            if let Err(e) = &done {
+                                tracing::error!("reload: {e:#}");
+                            }
+                            let _ = req.reply.send(done);
+                        }
+                        _ = daemon.join() => {
+                            tracing::error!("no agent left to watch");
+                            finished.store(true, Ordering::Relaxed);
+                            return;
+                        }
                     }
                 }
                 daemon.shutdown();
@@ -204,7 +225,7 @@ impl Running {
                 finished.store(true, Ordering::Relaxed);
             });
         })?;
-        let state = state_rx
+        let (state, rt) = state_rx
             .recv()
             .context("the daemon's thread ended before it started")??;
         Ok((
@@ -214,6 +235,11 @@ impl Running {
             },
             state,
             feed_rx,
+            Control {
+                config: path,
+                rt,
+                reload: reload_tx,
+            },
         ))
     }
 
@@ -254,15 +280,21 @@ fn main() -> Result<()> {
     let running: Arc<Mutex<Option<Running>>> = Arc::default();
     let launch = {
         let running = running.clone();
+        let path = path.clone();
         move |config: Config| -> Result<Source> {
             tracing::info!(agents = config.agents.len(), "starting");
             if config.owner.is_none() {
                 tracing::info!("no owner_token_file: drawing what the daemon knows (todo and doing)");
             }
             let finished = Arc::new(AtomicBool::new(false));
-            let (r, state, feed) = Running::start(config, finished.clone())?;
+            let (r, state, feed, control) = Running::start(config, path.clone(), finished.clone())?;
             *running.lock().expect("one writer") = Some(r);
-            Ok(Source::Live { state, feed, finished })
+            Ok(Source::Live {
+                state,
+                feed,
+                finished,
+                control: Some(control),
+            })
         }
     };
     /* No config (or one setup left half done) sets the box up; a broken one is shown, not replaced. */

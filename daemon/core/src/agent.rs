@@ -63,14 +63,38 @@ pub async fn whoami(api: &Api, agent: &AgentConfig) -> Result<Me> {
     Ok(me)
 }
 
+/// What an agent's loop should be running, as a reload says: its binding (none once removed) and
+/// the poll interval, and a generation that moves on with every change.
+#[derive(Debug, Clone)]
+pub struct Wanted {
+    pub generation: u64,
+    pub agent: Option<AgentConfig>,
+    pub poll: Duration,
+}
+
+/// Whether a reload has changed or removed the agent: the generation of its wanted binding has
+/// moved on from the one this loop was started with. Looked at between polls and before a run
+/// only, and never handed to a runtime, so a run in progress always finishes first.
+pub struct Retire {
+    pub rx: watch::Receiver<Wanted>,
+    pub generation: u64,
+}
+
+impl Retire {
+    fn now(&self) -> bool {
+        self.rx.borrow().generation != self.generation
+    }
+}
+
 pub struct AgentLoop {
-    index: usize,
+    slot: u64,
     agent: AgentConfig,
     api: Api,
     poll: Duration,
     paths: Arc<Paths>,
     state: watch::Sender<DaemonState>,
     shutdown: watch::Receiver<bool>,
+    retire: Retire,
     /// Who the token is, once the server has said.
     me: Option<Identity>,
     guard: WakeGuard,
@@ -85,38 +109,54 @@ enum Outcome {
 }
 
 impl AgentLoop {
+    /// `guard` is what an earlier loop for the same agent remembered (see `run`).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        index: usize,
+        slot: u64,
         agent: AgentConfig,
         poll: Duration,
         paths: Arc<Paths>,
         state: watch::Sender<DaemonState>,
         shutdown: watch::Receiver<bool>,
+        retire: Retire,
+        guard: WakeGuard,
     ) -> Result<Self> {
         let api = Api::new(&agent.url)?;
         Ok(Self {
-            index,
+            slot,
             agent,
             api,
             poll,
             paths,
             state,
             shutdown,
+            retire,
             me: None,
-            guard: WakeGuard::default(),
+            guard,
             noted: Default::default(),
         })
     }
 
     fn update(&self, f: impl FnOnce(&mut AgentState)) {
-        self.state.send_modify(|s| f(&mut s.agents[self.index]));
+        let slot = self.slot;
+        self.state
+            .send_if_modified(|s| match s.agents.iter_mut().find(|a| a.slot == slot) {
+                Some(a) => {
+                    f(a);
+                    true
+                }
+                None => false,
+            });
     }
 
+    /// Shutting down, or this loop's binding has been replaced: start nothing new.
     fn stopping(&self) -> bool {
-        *self.shutdown.borrow()
+        *self.shutdown.borrow() || self.retire.now()
     }
 
-    pub async fn run(mut self) {
+    /// Poll until shutdown or a reload retires it. Gives back what the wake guard remembers, so
+    /// the loop that takes over the agent after a reload doesn't relaunch on items already seen.
+    pub async fn run(mut self) -> WakeGuard {
         /* The same failure every poll (server down) is said once, until it changes. */
         let mut last_error: Option<String> = None;
         while !self.stopping() {
@@ -154,13 +194,22 @@ impl AgentLoop {
                 continue;
             }
             let mut shutdown = self.shutdown.clone();
+            let mut retire = self.retire.rx.clone();
+            let generation = self.retire.generation;
             tokio::select! {
                 _ = tokio::time::sleep(self.poll) => {}
                 _ = shutdown.wait_for(|stop| *stop) => {}
+                _ = retire.wait_for(|w| w.generation != generation) => {}
             }
         }
-        self.update(|s| s.phase = Phase::Stopped);
-        tracing::info!("stopped");
+        if self.retire.now() && !*self.shutdown.borrow() {
+            /* The daemon starts whatever replaces it; the agent isn't stopped, so the window doesn't say so. */
+            tracing::info!("handing over after a reload");
+        } else {
+            self.update(|s| s.phase = Phase::Stopped);
+            tracing::info!("stopped");
+        }
+        self.guard
     }
 
     /// Who the token is, from the server. The config's handle is only a label.
@@ -188,9 +237,10 @@ impl AgentLoop {
             id: me.user.id,
             handle: me.user.handle,
         };
-        let handle = identity.handle.clone();
+        let (handle, id) = (identity.handle.clone(), identity.id.clone());
         self.update(|s| {
             s.handle = handle;
+            s.user_id = Some(id);
             s.phase = Phase::Idle;
         });
         self.me = Some(identity.clone());

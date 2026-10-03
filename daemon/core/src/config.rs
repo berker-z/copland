@@ -72,7 +72,7 @@ pub struct Owner {
     pub token: Secret,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentConfig {
     /// The instance, without a trailing slash.
     pub url: String,

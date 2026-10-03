@@ -32,4 +32,44 @@ export interface DeviceRequestInfo {
   host: string;
   createdAt: string;
   status: DeviceStatus;
+  /** The agents the box asked for (handles or ids), when it named any: the page ticks those. */
+  agents?: string[];
+}
+
+/** At most this many agents named in one request (approving takes at most as many too). */
+export const MAX_DEVICE_AGENTS = 20;
+const MAX_AGENT_REF = 100;
+
+/**
+ * `agents` on POST /api/device/start: the agents the box asks for, by handle
+ * ("owner/name", an "@" allowed) or user id, which the approval page ticks to
+ * begin with. Missing or empty is null: the page's own default. Anything else
+ * that isn't a short list of strings is an error, said in `error`.
+ */
+export function parseWantedAgents(raw: unknown): { wanted: string[] | null } | { error: string } {
+  if (raw === undefined || raw === null) return { wanted: null };
+  if (!Array.isArray(raw)) return { error: "`agents` must be a list of agent handles or ids" };
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") return { error: "`agents` must be a list of agent handles or ids" };
+    const ref = item.trim().replace(/^@/, "");
+    if (!ref || ref.length > MAX_AGENT_REF || /[\s\p{Cc}]/u.test(ref)) return { error: "`agents` holds something that isn't a handle or an id" };
+    if (!out.some((o) => o.toLowerCase() === ref.toLowerCase())) out.push(ref);
+  }
+  if (out.length > MAX_DEVICE_AGENTS) return { error: `At most ${MAX_DEVICE_AGENTS} agents per box` };
+  return { wanted: out.length ? out : null };
+}
+
+/**
+ * Which of the person's agents the approval page ticks to begin with: exactly
+ * those the box asked for (by id or handle, case aside), paused or not, when
+ * it named any; else every one that isn't paused.
+ */
+export function preselectAgents(
+  agents: ReadonlyArray<{ id: string; handle: string; paused: boolean }>,
+  wanted: readonly string[] | undefined,
+): Set<string> {
+  if (!wanted?.length) return new Set(agents.filter((a) => !a.paused).map((a) => a.id));
+  const refs = new Set(wanted.map((w) => w.replace(/^@/, "").toLowerCase()));
+  return new Set(agents.filter((a) => refs.has(a.id.toLowerCase()) || refs.has(a.handle.toLowerCase())).map((a) => a.id));
 }

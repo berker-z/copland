@@ -228,7 +228,7 @@ pub fn backup_path(config: &Path) -> PathBuf {
         .expect("some free name")
 }
 
-fn private_dir(dir: &Path) -> Result<()> {
+pub(crate) fn private_dir(dir: &Path) -> Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -238,7 +238,7 @@ fn private_dir(dir: &Path) -> Result<()> {
 }
 
 /// Write `text` to `path` with mode 0600, replacing it whole (through a temporary file).
-fn private_write(path: &Path, text: &str) -> Result<()> {
+pub(crate) fn private_write(path: &Path, text: &str) -> Result<()> {
     let tmp = {
         let mut p = path.as_os_str().to_owned();
         p.push(".tmp");
@@ -322,7 +322,8 @@ fn q(s: &str) -> String {
 pub fn render_config(saved: &Saved, choices: &[Choice]) -> String {
     let mut out = String::new();
     out.push_str("# Written by copland-box --setup. Edit it freely: the daemon reads it at start.\n");
-    out.push_str("# copland-box --setup writes it again, keeping this one as daemon.toml.bak.\n\n");
+    out.push_str("# The box's agents screen (a) changes agents in place, and copland-box --setup\n");
+    out.push_str("# writes it again; either keeps the version before as daemon.toml.bak (.bak.2, ...).\n\n");
     out.push_str(&format!(
         "# Your own token (@{}), for the box's view of all your agents' work.\n",
         saved.owner
@@ -335,24 +336,45 @@ pub fn render_config(saved: &Saved, choices: &[Choice]) -> String {
          # have decided what it may touch; setup will keep writing the narrow one.\n",
     );
     for (a, c) in saved.agents.iter().zip(choices) {
-        out.push_str("\n[[agent]]\n");
-        out.push_str(&format!("url = {}\n", q(&saved.url)));
-        out.push_str(&format!("handle = {}\n", q(&a.handle)));
-        out.push_str(&format!("token_file = {}\n", q(&tilde(&a.token_file))));
-        out.push_str(&format!("workdir = {}\n", q(&c.workdir)));
-        out.push_str(&format!("client = {}\n", q(c.runtime.name())));
-        if !c.runtime.tested() {
-            out.push_str(&format!(
-                "# The {} template hasn't been run against Copland yet: check it before relying on it.\n",
-                c.runtime.name()
-            ));
-        }
-        out.push_str("command = [\n");
-        for arg in c.runtime.command() {
-            out.push_str(&format!("  {},\n", q(&arg)));
-        }
-        out.push_str("]\n");
+        out.push('\n');
+        out.push_str(&render_agent(&saved.url, &a.handle, &a.token_file, c));
     }
+    out
+}
+
+/// The lines saying which runtime an agent uses: `client`, a warning when the template is
+/// untested, and `command`, one argument a line.
+pub fn render_binding(runtime: Runtime) -> String {
+    let mut out = format!("client = {}\n", q(runtime.name()));
+    if !runtime.tested() {
+        out.push_str(&untested_note(runtime));
+    }
+    out.push_str("command = [\n");
+    for arg in runtime.command() {
+        out.push_str(&format!("  {},\n", q(&arg)));
+    }
+    out.push_str("]\n");
+    out
+}
+
+fn untested_note(runtime: Runtime) -> String {
+    format!(
+        "{UNTESTED_START}{} template hasn't been run against Copland yet: check it before relying on it.\n",
+        runtime.name()
+    )
+}
+
+/// How the untested-template note starts, so a rebind can take it out again.
+pub(crate) const UNTESTED_START: &str = "# The ";
+
+/// One `[[agent]]` table as setup writes it.
+pub fn render_agent(url: &str, handle: &str, token_file: &Path, choice: &Choice) -> String {
+    let mut out = String::from("[[agent]]\n");
+    out.push_str(&format!("url = {}\n", q(url)));
+    out.push_str(&format!("handle = {}\n", q(handle)));
+    out.push_str(&format!("token_file = {}\n", q(&tilde(token_file))));
+    out.push_str(&format!("workdir = {}\n", q(&choice.workdir)));
+    out.push_str(&render_binding(choice.runtime));
     out
 }
 

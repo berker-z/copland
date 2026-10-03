@@ -13,6 +13,12 @@ pub struct DaemonState {
 
 #[derive(Debug, Clone)]
 pub struct AgentState {
+    /// Which of the daemon's agents this is: stable across reloads, unlike its place in the list.
+    pub slot: u64,
+    /// The handle as `daemon.toml` has it, which is how a reload finds the agent again.
+    pub configured: String,
+    /// The agent's user id, once the server has said who the token is.
+    pub user_id: Option<String>,
     /// "owner/name": the configured handle until the server has said.
     pub handle: String,
     pub url: String,
@@ -26,6 +32,9 @@ pub struct AgentState {
     /// Tasks with unread items for the agent at the last poll, oldest first: what the box draws as todo.
     /// The task a run is on stays listed until the next poll after it, so a reader leaves that one out.
     pub waiting: Vec<String>,
+    /// A reload changed or removed this agent and its loop is winding down: at once when idle,
+    /// after the run when one is going. Cleared when its new binding starts.
+    pub retiring: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +63,9 @@ pub struct RunSummary {
 impl AgentState {
     pub fn new(handle: &str, url: &str) -> Self {
         Self {
+            slot: 0,
+            configured: handle.to_string(),
+            user_id: None,
             handle: handle.to_string(),
             url: url.to_string(),
             phase: Phase::Starting,
@@ -62,6 +74,7 @@ impl AgentState {
             last_error: None,
             last_run: None,
             waiting: Vec::new(),
+            retiring: false,
         }
     }
 }

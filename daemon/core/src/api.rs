@@ -196,7 +196,9 @@ pub enum DevicePoll {
     /// The tokens are delivered on this answer only; a later poll will not repeat them.
     Approved {
         url: String,
-        owner: DeviceIdentity,
+        /// Absent when the box asked for named agents: it already has its owner's token.
+        #[serde(default)]
+        owner: Option<DeviceIdentity>,
         #[serde(default)]
         agents: Vec<DeviceIdentity>,
     },
@@ -351,8 +353,13 @@ impl Api {
     }
 
     /// Ask for a device code: the one call made with no credential, since getting one is what it is for.
-    pub async fn device_start(&self, client: &str, host: &str) -> ApiResult<DeviceStart> {
-        let body = json!({ "client": client, "host": host });
+    /// `agents` (handles or ids) are the ones the approval page ticks to begin with; empty leaves it
+    /// to the page (every agent that isn't paused). A server older than COPL-55 ignores it.
+    pub async fn device_start(&self, client: &str, host: &str, agents: &[String]) -> ApiResult<DeviceStart> {
+        let mut body = json!({ "client": client, "host": host });
+        if !agents.is_empty() {
+            body["agents"] = json!(agents);
+        }
         self.send_as(self.http.post(self.url("/api/device/start")).json(&body))
             .await
     }
@@ -447,7 +454,7 @@ mod tests {
         let DevicePoll::Approved { url, owner, agents } = p else {
             panic!("not approved")
         };
-        assert_eq!((url.as_str(), owner.handle.as_str()), ("http://x", "me"));
+        assert_eq!((url.as_str(), owner.unwrap().handle.as_str()), ("http://x", "me"));
         assert_eq!(agents[0].token.expose(), "cpl_a");
         assert!(!format!("{:?}", agents[0]).contains("cpl_a"));
         assert!(serde_json::from_str::<DevicePoll>(r#"{"status":"maybe"}"#).is_err());

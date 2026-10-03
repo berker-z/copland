@@ -84,7 +84,7 @@ pub struct Wizard {
     since: Instant,
 }
 
-fn key(k: &str, what: &str) -> Line {
+pub(crate) fn key(k: &str, what: &str) -> Line {
     Line(
         vec![Span::new(k, Role::Ink), Span::new(format!("  {what}"), Role::Muted)],
         None,
@@ -190,7 +190,7 @@ impl Wizard {
         self.job(
             async move {
                 let api = Api::new(&at).map_err(|e| format!("{e:#}"))?;
-                api.device_start(setup::CLIENT, &host).await.map_err(|e| match &e {
+                api.device_start(setup::CLIENT, &host, &[]).await.map_err(|e| match &e {
                     ApiError::Status { status: 404 | 405, .. } => {
                         format!("{at} has no device setup: not a Copland, or one older than this box")
                     }
@@ -269,7 +269,15 @@ impl Wizard {
                         }
                         Ok(DevicePoll::Denied) => w.set_wait(Wait::Denied),
                         Ok(DevicePoll::Expired) => w.set_wait(Wait::Expired),
-                        Ok(DevicePoll::Approved { url, owner, agents }) => w.approved(&url, &owner, &agents, cx),
+                        Ok(DevicePoll::Approved {
+                            url,
+                            owner: Some(owner),
+                            agents,
+                        }) => w.approved(&url, &owner, &agents, cx),
+                        /* Setup never names agents, so the server always sends the owner's token here. */
+                        Ok(DevicePoll::Approved { owner: None, .. }) => w.set_wait(Wait::Failed(
+                            "the approval came without a token for you; try again".into(),
+                        )),
                         Err(e) if e.is_refusal() => w.set_wait(Wait::Failed(e.to_string())),
                         Err(e) => {
                             w.set_note(Some(e.to_string()));

@@ -1,9 +1,9 @@
 /* ============================================================================
    Device login: the box connects without anyone copying tokens (COPL-47).
    ----------------------------------------------------------------------------
-     POST /api/device/start      { client, host }, no auth
+     POST /api/device/start      { client, host, agents? }, no auth
                                  → { deviceCode, userCode, verifyUrl, interval, expiresIn }
-     GET  /api/device/:userCode  a person in the app → { client, host, createdAt, status }
+     GET  /api/device/:userCode  a person in the app → { client, host, createdAt, status, agents? }
      POST /api/device/approve    a person in the app, { userCode, agentIds }
      POST /api/device/deny       a person in the app, { userCode }
      POST /api/device/poll       { deviceCode }, no auth
@@ -31,6 +31,13 @@
    ten minutes in; the sweep below also revokes them. On delivery they lose
    that expiry and last until revoked.
 
+   A box that already runs some agents asks for one more the same way,
+   naming it in `agents` (COPL-55): the approval page then ticks exactly
+   those of the person's agents to begin with. It is only the page's
+   starting point; approving takes what the person ticks, checked as ever.
+   Such a box already holds its owner's read-only token, so the approval
+   mints only the agents' tokens and `owner` comes back null.
+
    Two routes take no credentials, so they are limited: a few requests per
    IP every ten minutes, a ceiling on everything pending, and a poll faster
    than once a second answers pending with slow_down rather than doing work.
@@ -41,7 +48,9 @@
 import {
   DEVICE_EXPIRES_IN,
   DEVICE_INTERVAL,
+  MAX_DEVICE_AGENTS,
   normalizeUserCode,
+  parseWantedAgents,
   USER_CODE_ALPHABET,
   type DeviceRequestInfo,
   type DeviceStatus,
@@ -59,7 +68,7 @@ const DEVICE_PREFIX = "cpld_";
 
 const MAX_CLIENT = 40;
 const MAX_HOST = 48;
-const MAX_AGENTS = 20;
+const MAX_AGENTS = MAX_DEVICE_AGENTS;
 /** Starts per IP per window, and requests pending at once on the whole instance. */
 const PER_IP = 10;
 const IP_WINDOW_MS = 10 * 60 * 1000;
@@ -81,10 +90,13 @@ interface DeviceRow {
   payload_cipher: string | null;
   token_ids: string | null;
   last_polled_at: string | null;
+  /** JSON array of the agents the box asked for, or null. */
+  wanted_agents: string | null;
 }
 
 interface Payload {
-  owner: { handle: string; token: string };
+  /** Null when the box asked for named agents: it already holds a read-only token for its owner. */
+  owner: { handle: string; token: string } | null;
   agents: Array<{ handle: string; token: string }>;
 }
 
@@ -100,7 +112,8 @@ function statusOf(row: DeviceRow): DeviceStatus {
 }
 
 function info(row: DeviceRow): DeviceRequestInfo {
-  return { client: row.client, host: row.host, createdAt: row.created_at, status: statusOf(row) };
+  const base: DeviceRequestInfo = { client: row.client, host: row.host, createdAt: row.created_at, status: statusOf(row) };
+  return row.wanted_agents ? { ...base, agents: JSON.parse(row.wanted_agents) as string[] } : base;
 }
 
 /** A short line for the approval page: printable, one line, capped. */
@@ -190,11 +203,18 @@ function requirePending(row: DeviceRow): void {
 
 /* ------------------------------------------------------------------ box --- */
 
-/** POST /api/device/start { client, host }: no credentials; a code to show and one to keep. */
+/**
+ * POST /api/device/start { client, host, agents? }: no credentials; a code to
+ * show and one to keep. `agents` (handles or ids) are what the approval page
+ * ticks to begin with, kept with the request; they grant nothing by themselves.
+ */
 export async function postDeviceStart(request: Request, env: Env, url: URL, changes: Changes): Promise<Response> {
   const body = await readJson(request);
   const client = label(body.client, "client", MAX_CLIENT);
   const host = label(body.host, "host", MAX_HOST);
+  const parsed = parseWantedAgents(body.agents);
+  if ("error" in parsed) throw badRequest(parsed.error);
+  const wanted = parsed.wanted ? JSON.stringify(parsed.wanted) : null;
   await sweep(env, changes);
 
   const db = env.DB;
@@ -219,10 +239,10 @@ export async function postDeviceStart(request: Request, env: Env, url: URL, chan
     try {
       await db
         .prepare(
-          `INSERT INTO device_requests (id, device_hash, user_code, client, host, expires_at, ip_hash)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+          `INSERT INTO device_requests (id, device_hash, user_code, client, host, expires_at, ip_hash, wanted_agents)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
         )
-        .bind(crypto.randomUUID(), deviceHash, userCode, client, host, expiresAt, ipHash)
+        .bind(crypto.randomUUID(), deviceHash, userCode, client, host, expiresAt, ipHash, wanted)
         .run();
       return json({
         deviceCode,
@@ -322,14 +342,15 @@ export async function postDeviceApprove(request: Request, env: Env, viewer: View
   const ordered = agentIds.map((id) => agents.find((a) => a.id === id)!);
 
   /* The same tokens settings makes; then they expire with the request and say they are the box's. */
-  const owner = await createPersonalToken(db, viewer.user.id, { name: `${row.host} box`, scope: "read", days: null });
+  /* A box asking for named agents is adding them to its setup and already has its owner's read-only token. */
+  const owner = row.wanted_agents ? null : await createPersonalToken(db, viewer.user.id, { name: `${row.host} box`, scope: "read", days: null });
   const minted = [];
   for (const agent of ordered) {
     minted.push({ handle: agent.handle, ...(await createPersonalToken(db, agent.id, { name: row.host, scope: "write", days: null })) });
   }
-  const ids = [owner.token.id, ...minted.map((m) => m.token.id)];
+  const ids = [...(owner ? [owner.token.id] : []), ...minted.map((m) => m.token.id)];
   const payload: Payload = {
-    owner: { handle: viewer.user.handle, token: owner.secret },
+    owner: owner ? { handle: viewer.user.handle, token: owner.secret } : null,
     agents: minted.map((m) => ({ handle: m.handle, token: m.secret })),
   };
   const sealed = await seal(env, sealContext(row.id), JSON.stringify(payload));

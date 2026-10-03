@@ -17,6 +17,7 @@ use gpui::{
 };
 use tokio::sync::watch;
 
+use crate::agents::{Agents, Control, Key};
 use crate::feed::Feed;
 use crate::scene::{AgentLabel, Board, DONE_TAIL, Doing, Layout, Line, Role, Scene};
 use crate::theme::{Rgb, Theme};
@@ -61,6 +62,8 @@ pub enum Source {
         feed: Option<watch::Receiver<Feed>>,
         /// Set once the daemon has stopped by itself (a signal, or no agent left).
         finished: Arc<AtomicBool>,
+        /// For the agents screen: the config file and the way to the running daemon.
+        control: Option<Control>,
     },
     /// Nothing to watch, and why.
     Quiet(String),
@@ -79,6 +82,8 @@ pub struct BoxView {
     timer: Option<(Instant, Task<()>)>,
     /// Redraw when the daemon's state or the feed changes.
     _watchers: Vec<Task<()>>,
+    /// The agents screen, while it is open over the live view.
+    agents: Option<Agents>,
 }
 
 impl BoxView {
@@ -99,6 +104,7 @@ impl BoxView {
             focus: cx.focus_handle(),
             timer: None,
             _watchers: watchers,
+            agents: None,
         };
         if let Some(w) = view.wizard() {
             w.begin(cx);
@@ -110,6 +116,21 @@ impl BoxView {
     pub fn wizard(&mut self) -> Option<&mut Wizard> {
         match &mut self.source {
             Source::Setup(w) => Some(w),
+            _ => None,
+        }
+    }
+
+    /// The agents screen, when it is open.
+    pub fn agents(&mut self) -> Option<&mut Agents> {
+        self.agents.as_mut()
+    }
+
+    /// The daemon's state and the owner's feed as they are now, in live mode.
+    fn live(&self) -> Option<(DaemonState, Option<Feed>)> {
+        match &self.source {
+            Source::Live { state, feed, .. } => {
+                Some((state.borrow().clone(), feed.as_ref().map(|f| f.borrow().clone())))
+            }
             _ => None,
         }
     }
@@ -494,8 +515,14 @@ impl Render for BoxView {
         } else {
             self.redraw_in(IDLE, cx);
         }
-        let panel = self.wizard().map(|w| (w.animating(), w.panel()));
-        if let Some((true, _)) = &panel {
+        if self.agents.is_some() && !matches!(self.source, Source::Live { .. }) {
+            self.agents = None;
+        }
+        let panel = match (&self.agents, self.live()) {
+            (Some(a), Some((st, feed))) => Some((a.animating(), a.panel(&st, feed.as_ref()), "agents")),
+            _ => self.wizard().map(|w| (w.animating(), w.panel(), "setup")),
+        };
+        if let Some((true, _, _)) = &panel {
             self.redraw_in(DOTS, cx);
         }
 
@@ -585,7 +612,7 @@ impl Render for BoxView {
             .child(div().text_color(color(th.blue, 1.0)).child("wired"))
             .child(div().flex_1().h(px(1.)).bg(color(th.faint, 0.55)))
             .child(div().text_color(color(th.muted, 1.0)).child(match &panel {
-                Some(_) => "setup".to_string(),
+                Some((_, _, title)) => title.to_string(),
                 None => self.scene.count(),
             }))
             .child(
@@ -603,8 +630,20 @@ impl Render for BoxView {
             .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move());
 
         let status = match &panel {
-            Some((_, p)) => p.keys.clone(),
-            None => self.scene.status(),
+            Some((_, p, _)) => p.keys.clone(),
+            None => {
+                let mut parts = self.scene.status();
+                /* The way to the agents screen, before the last word (which can be long and get cut off). */
+                if matches!(self.source, Source::Live { control: Some(_), .. }) {
+                    let at = if self.scene.has_note() {
+                        parts.len().saturating_sub(1)
+                    } else {
+                        parts.len()
+                    };
+                    parts.insert(at, crate::wizard::key("a", "agents"));
+                }
+                parts
+            }
         };
         let mut bar = div()
             .flex_none()
@@ -635,7 +674,23 @@ impl Render for BoxView {
                     }
                     return;
                 }
+                if this.agents.is_some() {
+                    let Some((st, feed)) = this.live() else { return };
+                    let Some(a) = this.agents.as_mut() else { return };
+                    match a.key(e, &st, feed.as_ref(), cx) {
+                        Key::Close => this.agents = None,
+                        Key::Handled => {}
+                        Key::Ignored => return,
+                    }
+                    cx.notify();
+                    return;
+                }
+                let control = match &this.source {
+                    Source::Live { control, .. } => control.clone(),
+                    _ => None,
+                };
                 match e.keystroke.key.as_str() {
+                    "a" if control.is_some() => this.agents = control.map(|c| Agents::open(c, cx)),
                     "n" => this.scene.add(),
                     "a" => this.scene.answer(),
                     "f" => this.scene.finish_one(),
@@ -674,7 +729,7 @@ impl Render for BoxView {
                             .whitespace_nowrap()
                             .child(pixels)
                             .children(match &panel {
-                                Some((_, p)) => vec![self.panel(p, list_top, scene_w, z).into_any_element()],
+                                Some((_, p, _)) => vec![self.panel(p, list_top, scene_w, z).into_any_element()],
                                 None => (0..4).map(|i| list(i).into_any_element()).collect(),
                             }),
                     ),

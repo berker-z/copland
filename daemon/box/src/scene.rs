@@ -1469,6 +1469,11 @@ impl Scene {
         parts
     }
 
+    /// Whether the status line ends with a note (how to see more, or why it can't).
+    pub fn has_note(&self) -> bool {
+        self.quiet.is_none() && self.note.is_some()
+    }
+
     /// "1 doing · 1 need you", beside the title.
     pub fn count(&self) -> String {
         let need = self.items.iter().filter(|i| i.is_blocked()).count();
