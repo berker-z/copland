@@ -1,6 +1,6 @@
 /* ============================================================================
    Overlap: the files each task's work has changed (migrations/0024_task_files.sql,
-   COPL-99, COPL-102).
+   COPL-99, COPL-102), and which open tasks share them (COPL-104).
    ----------------------------------------------------------------------------
    The daemon reports what a task's worktree changed against where the work
    started, while a run is on it and once at the end, with
@@ -11,7 +11,9 @@
    other.
 
    This file is what can be checked without a database: what a report may
-   say, how it is capped, and who may send one.
+   say, how it is capped, who may send one, and which tasks share files.
+   repo/tasks.ts reads the lists of a board's open tasks; a task's summary
+   and GET /api/tasks/:id/overlap (worker/routes/files.ts) show the result.
    ========================================================================== */
 
 /** How many paths a task keeps. A report with more keeps the first this many, sorted, and says it was truncated. */
@@ -108,4 +110,49 @@ export function reportRefusal(
 /** Whether a report says anything new: if not, only when it was heard from moves. */
 export function sameReport(a: FileReport, b: FileReport): boolean {
   return a.base === b.base && a.truncated === b.truncated && a.files.length === b.files.length && a.files.every((f, i) => f === b.files[i]);
+}
+
+/* ---------------------------------------------------------- overlap --- */
+
+/** Another task a task shares files with, and which. */
+export interface Overlap {
+  taskId: string;
+  /** The paths both lists have, sorted. */
+  shared: string[];
+}
+
+/**
+ * Which tasks share files, from the latest lists of the open tasks on one
+ * board (the daemon works in a board's first repo, so one board is one repo).
+ * Each task with any overlap maps to the others it shares files with, most
+ * shared first, then in the order given; a task sharing nothing is absent.
+ * Only what was kept counts: a truncated list can hide more.
+ */
+export function overlaps(tasks: ReadonlyArray<{ id: string; files: readonly string[] }>): Map<string, Overlap[]> {
+  /* Who changed each file, so the work is the total number of paths, not the pairs. */
+  const byFile = new Map<string, number[]>();
+  tasks.forEach((task, i) => {
+    for (const file of new Set(task.files)) {
+      const who = byFile.get(file);
+      if (who) who.push(i);
+      else byFile.set(file, [i]);
+    }
+  });
+  const shared = new Map<number, Map<number, string[]>>();
+  for (const [file, who] of byFile) {
+    if (who.length < 2) continue;
+    for (const a of who) {
+      const mine = shared.get(a) ?? new Map<number, string[]>();
+      shared.set(a, mine);
+      for (const b of who) if (b !== a) (mine.get(b) ?? mine.set(b, []).get(b)!).push(file);
+    }
+  }
+  const out = new Map<string, Overlap[]>();
+  for (const [a, others] of shared) {
+    const list = [...others]
+      .sort(([i, x], [j, y]) => y.length - x.length || i - j)
+      .map(([b, files]) => ({ taskId: tasks[b].id, shared: files.sort() }));
+    out.set(tasks[a].id, list);
+  }
+  return out;
 }
