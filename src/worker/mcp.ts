@@ -21,7 +21,7 @@
 import type { CalendarEvents, CalendarSetup } from "@/domain/calendar";
 import { NOTE_CONTENT_MAX, NOTE_NAME_MAX, type Note } from "@/domain/panes";
 import { RUN_ENDINGS, RUN_LEASE_MS, shortRunId, type ClaimRefusal } from "@/domain/runs";
-import { addDays, descendantIds, isDate } from "@/domain/tasks";
+import { addDays, descendantIds, isDate, taskPath } from "@/domain/tasks";
 import {
   LEVELS,
   MAX_BOARD_NOTES,
@@ -471,7 +471,7 @@ function summarize(detail: BoardDetail, task: Task, origin: string) {
     /* A run is on it right now (claim_task). */
     ...(task.claim ? { claimed_by: person(task.claim.userId), run: task.claim.run } : {}),
     comments: task.commentCount,
-    url: `${origin}/b/${detail.board.key}`,
+    url: `${origin}${taskPath(task.key)}`,
   };
 }
 
@@ -632,7 +632,7 @@ ${who}${run} Today is ${today()} (UTC).${
 - **Waiting on someone.** When you need an answer or a decision, comment with an @mention of the person who can give it (a question only in a brief, or only in your reply to the user, reaches nobody), and move the task to the board's blocked stage (move_task { stage: "blocked" }). Once answered, move it back to an active stage and carry on. On a board without a blocked stage, just comment.
 - **Runs and claims.** A run is one working session of a principal. Whatever launched you (a daemon, a script) may have started one and connected you through it; whoami says so. Every call through a run keeps it alive and goes into the task history with it ("dev via Codex · run 8f31"); a run not heard from for ${RUN_LEASE_MS / 60_000} minutes shows as stale. A claim is a run's hold on a task, so two runs never work the same one: a task has at most one live claim, claim_task refuses while another run holds it, and refuses a task assigned to someone other than you. A claim lasts while your run keeps calling (any call renews it) and ends by itself when the run goes quiet for ${RUN_LEASE_MS / 60_000} minutes or ends, the task closes, or you come off its assignees; release_task lets go of one without closing the task. A summary's claimed_by and run say who is on a task right now. Blocked is not crashed: when you need an answer, comment with an @mention, move the task to blocked, and you may end your run with finish_run; the task stays assigned to you, and a later run picks it up again with claim_task once answered. finish_run is a connection's last call: after it, the run's credential stops working.
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
-- **Planning.** Any task can have a level (epic > story > task, plus milestone), a parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). All three are optional: a task without them is an ordinary task. Breaking work down means creating the pieces as tasks with parent set, never writing them as a list in the parent's brief: the board shows a task's children, and a list in a brief goes stale the moment one moves. An epic's brief says what it is for and why; its stories are its children. list_tasks with parent lists a task's children, with under its whole subtree.
+- **Planning.** Any task can have a level (epic > story > task, plus milestone), a parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). All three are optional: a task without them is an ordinary task. Breaking work down means creating the pieces as tasks with parent set, never writing them as a list in the parent's brief: the board shows a task's children, and a list in a brief goes stale the moment one moves. An epic's brief says what it is for and why; its stories are its children. Children are work: a record that starts out done (a decision, a note) filed as a child can close an open parent, so keep such records as tasks of their own that name the work in their brief. list_tasks with parent lists a task's children, with under its whole subtree.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
 - **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, being @mentioned in a comment, and a new comment on a task they take part in (created, are assigned to, have commented on or been mentioned on) land there; someone a comment mentions gets only the mention. Read it with inbox, a page at a time (it pages by next until next is null, so older unread items are never out of reach), then mark_read what you have dealt with (or dismiss it); marking something already read again is harmless. A task's notes describe the work; questions, decisions you need from someone, and status updates always go in comments, never only in your own reply or a brief. Replying in the thread reaches whoever asked; a mention is how to hand something to someone or ask a person who is not yet taking part: "@sam can you check this". A handle inside \`code\`, a \`\`\` block or a > quoted line notifies nobody.
 - **Labels** (tags like #frontend) belong to a board and are given by name; create_label adds one, update_label renames or recolours it. Priority is low, normal, high or urgent.
@@ -816,7 +816,7 @@ const TOOLS: Tool[] = [
     name: "list_tasks",
     title: "List tasks",
     description:
-      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, category (the stage's: backlog|todo|active|blocked|done|cancelled), status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields (level, parent, depends_on, children: a count) when set, claimed_by and run when a run is on it right now (claim_task), comment count and the board's url. Filters combine. parent lists a task's direct children; under lists everything below it at any depth (its children, their children and so on, not the task itself), which is how to see what is left of an epic. Both refuse a key that is on none of your boards. status still applies, so pass status: \"all\" to include closed work under a task.",
+      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, category (the stage's: backlog|todo|active|blocked|done|cancelled), status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields (level, parent, depends_on, children: a count) when set, claimed_by and run when a run is on it right now (claim_task), comment count and url (the task's own link: its board with the task open). Filters combine. parent lists a task's direct children; under lists everything below it at any depth (its children, their children and so on, not the task itself), which is how to see what is left of an epic. Both refuse a key that is on none of your boards. status still applies, so pass status: \"all\" to include closed work under a task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1362,7 +1362,7 @@ const TOOLS: Tool[] = [
     name: "inbox",
     title: "Your inbox",
     description:
-      "What needs the connected principal's attention: tasks someone else assigned to them, comments that @mentioned them, and new comments on tasks they take part in (created, are assigned to, have commented on or been mentioned on). One page at a time, newest first (by time, ties by id), filtered on the server. Returns { unread, items, next }: unread is the total unread count, not this page's; each item has its id (for mark_read), kind (assigned, mentioned or commented; a comment that mentions you is only mentioned), the task's key, title and board, who did it and through what client, the comment's text for mentioned and commented, when, and whether it was read. next is null on the last page; otherwise pass it back as cursor (with the same unread) for the page after. A cursor is a position, so marking items read between pages skips nothing. To work through everything unread: read a page, deal with it, mark_read its ids, and repeat (from next, or from the start) until next is null. unread defaults to true: only what has not been marked read. limit is items per page, 1 to 200 (default 50). An agent's inbox is its own, not its owner's. A cursor from somewhere else is refused.",
+      "What needs the connected principal's attention: tasks someone else assigned to them, comments that @mentioned them, and new comments on tasks they take part in (created, are assigned to, have commented on or been mentioned on). One page at a time, newest first (by time, ties by id), filtered on the server. Returns { unread, items, next }: unread is the total unread count, not this page's; each item has its id (for mark_read), kind (assigned, mentioned or commented; a comment that mentions you is only mentioned), the task's key, title, board and url (its own link), who did it and through what client, the comment's text for mentioned and commented, when, and whether it was read. next is null on the last page; otherwise pass it back as cursor (with the same unread) for the page after. A cursor is a position, so marking items read between pages skips nothing. To work through everything unread: read a page, deal with it, mark_read its ids, and repeat (from next, or from the start) until next is null. unread defaults to true: only what has not been marked read. limit is items per page, 1 to 200 (default 50). An agent's inbox is its own, not its owner's. A cursor from somewhere else is refused.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1388,6 +1388,7 @@ const TOOLS: Tool[] = [
           id: i.id,
           kind: i.kind,
           task: i.task.key,
+          url: `${ctx.origin}${taskPath(i.task.key)}`,
           title: i.task.title,
           board: i.task.boardName,
           by: `@${i.actor.handle}${i.via ? ` via ${i.via}` : ""}`,

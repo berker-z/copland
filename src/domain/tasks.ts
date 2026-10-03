@@ -51,6 +51,16 @@ export function rankBetween(before: number | null, after: number | null): number
 export const TITLE_MAX = 200;
 export const BRIEF_MAX = 20_000;
 
+/**
+ * A task's own link, from the site root: its board with its modal open
+ * (BoardScreen's ?task=). A key is always BOARD-N, so the board is the key
+ * up to its last dash. The box builds the same link (daemon/box view.rs).
+ */
+export function taskPath(taskKey: string): string {
+  const dash = taskKey.lastIndexOf("-");
+  return `/b/${dash > 0 ? taskKey.slice(0, dash) : taskKey}?task=${taskKey}`;
+}
+
 /* ---------------------------------------------------------- calendar days -- */
 
 const DAY_MS = 86_400_000;

@@ -7,12 +7,19 @@
    back to reading; Escape closes the modal only from there. Comments and
    files work in both modes: adding to a task is not editing it. Viewers
    never get the pencil.
+
+   Everyone gets the link button, which copies the task's own link
+   (taskPath: its board with this modal open). Opened over the dashboard
+   (tasks, inbox, /wired), the key in the header is that link too, to go
+   and see the task where it lives.
    ========================================================================== */
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Check, Pencil } from "lucide-react";
+import { Link, useMatch } from "react-router";
+import { Check, Link2, Pencil } from "lucide-react";
 import { Avatar, peopleFirst } from "@/ui/Avatar";
 import { LEVELS, PRIORITIES, type BoardDetail, type Task } from "@/domain/types";
+import { taskPath } from "@/domain/tasks";
 import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
 import { DeleteButton } from "@/ui/DeleteButton";
@@ -52,6 +59,13 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
   const canEdit = detail.board.role !== "viewer";
   const [mode, setMode] = useState<"view" | "edit">("view");
   const editMode = canEdit && mode === "edit";
+  const onBoard = useMatch("/b/:key") !== null;
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
 
   /* Text fields keep a local draft and save on blur; a live update from
      someone else replaces the draft only while this field is not focused. */
@@ -100,26 +114,46 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
     <ModalFrame
       title={
         <span>
-          <span className="text-faint">{task.key}</span> <span className={toneText(stage?.tone ?? 0)}>{stage?.name}</span>
+          {onBoard ? (
+            <span className="text-faint">{task.key}</span>
+          ) : (
+            <Link to={taskPath(task.key)} className="text-faint hover:text-accent hover:underline" title="Open on its board">
+              {task.key}
+            </Link>
+          )}{" "}
+          <span className={toneText(stage?.tone ?? 0)}>{stage?.name}</span>
           <LevelPill level={task.level} className="ml-2.5" />
         </span>
       }
       onClose={onClose}
       size="lg"
       headerActions={
-        canEdit && (
-          <>
-            <button
-              onClick={() => (editMode ? finishEditing() : setMode("edit"))}
-              className={`tap p-2 flex items-center gap-1.5 hover:bg-raised transition-colors ${editMode ? "text-accent" : "hover:text-accent"}`}
-              title={editMode ? "Done editing" : "Edit"}
-            >
-              {editMode ? <Check size={18} /> : <Pencil size={18} />}
-              {editMode && <span className="text-xs">done</span>}
-            </button>
-            <DeleteButton onDelete={() => remove.mutate(task.id)} />
-          </>
-        )
+        <>
+          <button
+            onClick={() =>
+              void navigator.clipboard.writeText(location.origin + taskPath(task.key)).then(() => setCopied(true), () => undefined)
+            }
+            className={`tap p-2 flex items-center gap-1.5 hover:bg-raised transition-colors ${copied ? "text-green" : "hover:text-accent"}`}
+            title="Copy link to this task"
+            aria-label="Copy link to this task"
+          >
+            {copied ? <Check size={18} /> : <Link2 size={18} />}
+            {copied && <span className="text-xs">copied</span>}
+          </button>
+          {canEdit && (
+            <>
+              <button
+                onClick={() => (editMode ? finishEditing() : setMode("edit"))}
+                className={`tap p-2 flex items-center gap-1.5 hover:bg-raised transition-colors ${editMode ? "text-accent" : "hover:text-accent"}`}
+                title={editMode ? "Done editing" : "Edit"}
+              >
+                {editMode ? <Check size={18} /> : <Pencil size={18} />}
+                {editMode && <span className="text-xs">done</span>}
+              </button>
+              <DeleteButton onDelete={() => remove.mutate(task.id)} />
+            </>
+          )}
+        </>
       }
     >
       {(update.error ?? remove.error) && (

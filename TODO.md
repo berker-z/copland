@@ -188,6 +188,15 @@ docs/DESIGN.md under Touch.
   filtered board is a link. Scope to a task's subtree from a picker or a
   card's `↑ KEY`; closed tasks show only from the last 14 days unless asked.
   The MCP's `list_tasks` takes `under` for a whole subtree
+- A task is a link (COPL-63): `/b/BOARD?task=KEY` opens the board with
+  that task's modal over it, cold, on reload or shared; the key ignores
+  case and filters, and one the board lacks leaves a one-line notice.
+  Opening a task adds one history entry, so Back closes it, and closing or
+  switching tasks never adds more (COPL-67). The task modal
+  copies the link anywhere, and over the dashboard its key goes there.
+  The MCP's task summaries and inbox items carry it as `url`, and a ticket
+  in the box opens it. Built from the key alone (`taskPath`), since a key
+  is always its board's key and a number
 - Swimlanes by epic (COPL-39): `?group=epic` ("by epic" next to the views)
   gives the kanban a lane per epic under one sticky row of stage headers;
   tasks sit in their nearest epic's lane, the rest in "no epic". Lanes fold

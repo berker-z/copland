@@ -122,7 +122,11 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   the body, as nord-dash did. Something you open opens to read: the task
   modal shows its fields as text, and the pencil beside delete (a tick with
   "done" while editing) switches to the form; Escape leaves the form first,
-  then the modal.
+  then the modal. Its header starts with a link icon for everyone that
+  copies the task's own link (a green tick and "copied" for a moment), and
+  opened over the dashboard its key is that link, `text-faint` going
+  accent on hover. A `?task=` key the board doesn't have shows as one
+  `text-yellow` line under the filter bar with an × to drop it.
 - `src/features/shell/StatusLine.tsx` — statusline and phone menu; its
   readouts are in `topbar.tsx`, the inbox bell in
   `src/features/inbox/InboxBadge.tsx` (the same `InboxItems` list as the

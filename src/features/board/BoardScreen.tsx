@@ -15,6 +15,17 @@
    epic: LanesView from sm up, sections inside each column on a phone
    (lanes.ts has the rules).
 
+   ?task=KEY is the open task (taskPath in domain/tasks.ts), so a task is a
+   link: /b/CPL?task=CPL-12 opens the board with that task's modal over it,
+   cold, on reload, or from someone else's chat. The key is matched without
+   regard to case against the whole board, filters or not; a key the board
+   does not have leaves the board showing with a one-line notice. Opening a
+   task from the board pushes one history entry, so Back (a phone's above all)
+   closes the modal; closing it from the modal goes back over that entry,
+   and opening another task while one is open replaces it, so a session of
+   looking at tasks still costs one Back, never one per task. A task opened
+   from a link has no entry of ours to go back over, so closing it replaces.
+
    On a touchscreen there is no HTML5 drag: a long press on a card opens
    MoveSheet instead, and on a phone the columns become a swipeable strip.
 
@@ -26,8 +37,8 @@
    ========================================================================== */
 
 import { useRef, useState, type DragEvent } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router";
-import { ArrowLeft, BookOpen, Plus, Settings2, UserPlus, Users } from "lucide-react";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
+import { ArrowLeft, BookOpen, Plus, Settings2, UserPlus, Users, X } from "lucide-react";
 import { rankBetween } from "@/domain/tasks";
 import type { BoardDetail, Stage, Task } from "@/domain/types";
 import { useBoard, useBoards, useMe } from "@/lib/queries";
@@ -272,10 +283,10 @@ type View = (typeof VIEWS)[number];
 
 export function BoardScreen({ boardKey }: { boardKey: string }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const boards = useBoards();
   const summary = boards.data?.find((b) => b.key === boardKey.toUpperCase());
   const board = useBoard(summary?.id ?? null);
-  const [openTask, setOpenTask] = useState<string | null>(null);
   const [moving, setMoving] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -285,6 +296,9 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   const view = VIEWS.includes(params.get("view") as View) ? (params.get("view") as View) : "kanban";
   const filters = readFilters(params);
   const byEpic = params.get("group") === "epic";
+  const taskKey = params.get("task")?.trim().toUpperCase() || null;
+  /** The task last shown open, so one deleted while open closes rather than turning into the notice. */
+  const shownTask = useRef<{ key: string; id: string } | null>(null);
   const me = useMe();
   const phone = usePhone();
 
@@ -308,12 +322,33 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   /* Every view draws the filtered board; modals and the move sheet get the whole one. */
   const result = applyFilters(detail, filters, me.data?.user.id);
   const shown: BoardDetail = { ...detail, tasks: result.tasks };
-  const setFilters = (next: typeof filters) => setParams((prev) => writeFilters(prev, next), { replace: true });
+  const setFilters = (next: typeof filters) => setParams((prev) => writeFilters(prev, next), { replace: true, state: location.state });
   const byId = new Map(detail.tasks.map((t) => [t.id, t]));
   const hierarchy: Hierarchy = {
     parentKey: (task) => (task.parentId ? (byId.get(task.parentId)?.key ?? null) : null),
     onScope: (key) => setFilters({ ...filters, under: key }),
   };
+  /* The open task lives in ?task=KEY; ids stay inside the screen. */
+  const openTask = taskKey ? (detail.tasks.find((t) => t.key.toUpperCase() === taskKey) ?? null) : null;
+  if (openTask) shownTask.current = { key: taskKey!, id: openTask.id };
+  /* Gone while open: the modal stays mounted for one render and closes itself (TaskModal). */
+  const modalTaskId = openTask?.id ?? (shownTask.current?.key === taskKey ? shownTask.current?.id : null);
+  /* Whether the open task's history entry is ours (pushed by open below), so closing can go back over it. */
+  const pushedTask = (location.state as { taskPushed?: boolean } | null)?.taskPushed === true;
+  const setTaskKey = (key: string | null) => {
+    if (!key && pushedTask) return navigate(-1);
+    const push = !!key && !taskKey;
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (key) next.set("task", key);
+        else next.delete("task");
+        return next;
+      },
+      push ? { state: { taskPushed: true } } : { replace: true, state: key ? location.state : null },
+    );
+  };
+  const open = (taskId: string) => setTaskKey(byId.get(taskId)?.key ?? null);
   const setGroup = (on: boolean) =>
     setParams(
       (prev) => {
@@ -322,7 +357,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
         else next.delete("group");
         return next;
       },
-      { replace: true },
+      { replace: true, state: location.state },
     );
   /* On a phone the lanes are sections inside the swipeable columns; from sm up, LanesView. */
   const phoneLanes = (() => {
@@ -358,7 +393,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
                     else next.set("view", v);
                     return next;
                   },
-                  { replace: true },
+                  { replace: true, state: location.state },
                 )
               }
               className={`tap flex-1 sm:flex-none px-2 py-0.5 transition-colors ${view === v ? "text-accent bg-raised" : "text-muted hover:text-ink"}`}
@@ -408,23 +443,31 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
       </div>
 
       <FilterBar detail={detail} filters={filters} result={result} onChange={setFilters} />
+      {taskKey && !modalTaskId && (
+        <p className="flex items-center gap-2 px-4 md:px-8 py-1.5 bg-surface border-b border-divider text-sm text-yellow">
+          No task {taskKey} on this board.
+          <button onClick={() => setTaskKey(null)} className="tap text-muted hover:text-accent" title="Dismiss" aria-label="Dismiss">
+            <X size={14} />
+          </button>
+        </p>
+      )}
 
       {view === "kanban" && byEpic && !phone ? (
-        <LanesView detail={detail} shown={shown} hierarchy={hierarchy} onOpen={setOpenTask} onNew={(stageId) => setNewTask({ stageId })} />
+        <LanesView detail={detail} shown={shown} hierarchy={hierarchy} onOpen={open} onNew={(stageId) => setNewTask({ stageId })} />
       ) : (
         view === "kanban" && (
           <Kanban
             detail={shown}
             hierarchy={hierarchy}
             grouping={phoneLanes}
-            onOpen={setOpenTask}
+            onOpen={open}
             onNew={(stageId) => setNewTask({ stageId })}
             onMoveMenu={setMoving}
           />
         )
       )}
-      {view === "list" && <ListView detail={shown} hierarchy={hierarchy} onOpen={setOpenTask} />}
-      {view === "gantt" && <GanttView detail={shown} hierarchy={hierarchy} onOpen={setOpenTask} />}
+      {view === "list" && <ListView detail={shown} hierarchy={hierarchy} onOpen={open} />}
+      {view === "gantt" && <GanttView detail={shown} hierarchy={hierarchy} onOpen={open} />}
 
       {moving && (
         <MoveSheet
@@ -433,11 +476,11 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
           onClose={() => setMoving(null)}
           onOpen={() => {
             setMoving(null);
-            setOpenTask(moving);
+            open(moving);
           }}
         />
       )}
-      {openTask && <TaskModal detail={detail} taskId={openTask} onClose={() => setOpenTask(null)} />}
+      {modalTaskId && <TaskModal detail={detail} taskId={modalTaskId} onClose={() => setTaskKey(null)} />}
       {newTask && (
         <NewTaskModal detail={detail} stageId={newTask.stageId} onClose={() => setNewTask(null)} />
       )}
