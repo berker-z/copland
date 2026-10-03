@@ -1,7 +1,13 @@
 //! One agent's loop: poll its unread inbox, and for a task that needs it,
 //! start a run, claim the task, launch the runtime, finish the run.
-//! At most one run at a time, so the loop simply waits for it.
+//!
+//! Runs go on their own (RunCtx::work), so an agent can have several at once
+//! (COPL-82), up to its `max_runs`. Only coding tasks run side by side, each in
+//! its own worktree; anything else shares the agent's `workdir`, one at a time.
+//! A task is never in two runs from one loop. The loop hears each run's end
+//! (Done) and remembers it in the wake guard, as before.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,7 +15,7 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, anyhow};
 use tokio::sync::{Notify, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{Id, JoinError, JoinHandle, JoinSet};
 use tracing::Instrument;
 
 use crate::api::{Api, ApiError, Ending, InboxItem, Me};
@@ -127,6 +133,10 @@ pub struct AgentLoop {
     guard: WakeGuard,
     /// Task-less items already logged, so each is said once.
     noted: std::collections::HashSet<String>,
+    /// The tasks with a run going, by id, and whether that run uses `workdir` (not a worktree).
+    inflight: HashMap<String, bool>,
+    /// Which task each spawned run is for, by its join id, for a run that panics.
+    spawned: HashMap<Id, String>,
 }
 
 /// What the live socket has heard since the loop last looked. Flags rather than counts: one poll
@@ -186,12 +196,6 @@ impl Drop for Live {
     }
 }
 
-/// What became of one wake.
-enum Outcome {
-    Ran,
-    Skipped,
-}
-
 impl AgentLoop {
     /// `guard` is what an earlier loop for the same agent remembered (see `run`).
     #[allow(clippy::too_many_arguments)]
@@ -220,6 +224,8 @@ impl AgentLoop {
             me: None,
             guard,
             noted: Default::default(),
+            inflight: HashMap::new(),
+            spawned: HashMap::new(),
         })
     }
 
@@ -235,6 +241,41 @@ impl AgentLoop {
             });
     }
 
+    fn ctx(&self) -> RunCtx {
+        RunCtx {
+            slot: self.slot,
+            agent: self.agent.clone(),
+            api: self.api.clone(),
+            paths: self.paths.clone(),
+            state: self.state.clone(),
+            shutdown: self.shutdown.clone(),
+            stop_run: self.stop_run.clone(),
+        }
+    }
+
+    /// A run is over: it no longer holds its task, and the guard remembers what it saw.
+    fn done(&mut self, ended: Result<(Id, Done), JoinError>) {
+        match ended {
+            Ok((id, d)) => {
+                self.spawned.remove(&id);
+                self.inflight.remove(&d.wake.task_id);
+                if let Some((updated, held)) = d.remember {
+                    self.guard.remember(&d.wake, updated, held);
+                }
+                if let Some(e) = d.error {
+                    tracing::warn!("{e}");
+                    self.update(|s| s.last_error = Some(e));
+                }
+            }
+            Err(e) => {
+                if let Some(task) = self.spawned.remove(&e.id()) {
+                    self.inflight.remove(&task);
+                }
+                tracing::error!("a run ended without saying how: {e}");
+            }
+        }
+    }
+
     /// Shutting down, or this loop's binding has been replaced: start nothing new.
     fn stopping(&self) -> bool {
         *self.shutdown.borrow() || self.retire.now()
@@ -246,15 +287,18 @@ impl AgentLoop {
         let live = self.listen();
         /* The same failure every poll (server down) is said once, until it changes. */
         let mut last_error: Option<String> = None;
+        let mut runs: JoinSet<Done> = JoinSet::new();
         while !self.stopping() {
+            while let Some(ended) = runs.try_join_next_with_id() {
+                self.done(ended);
+            }
             live.wakes.clear();
-            let launched = match self.tick().await {
-                Ok(launched) => {
+            match self.tick(&mut runs).await {
+                Ok(()) => {
                     if last_error.take().is_some() {
                         tracing::info!("working again");
                     }
                     self.update(|s| s.last_error = None);
-                    launched
                 }
                 Err(e) => {
                     let message = format!("{e:#}");
@@ -271,17 +315,22 @@ impl AgentLoop {
                     }
                     self.update(|s| s.last_error = Some(message.clone()));
                     last_error = Some(message);
-                    false
                 }
-            };
+            }
             if self.stopping() {
                 break;
             }
-            /* After a run, look again at once: the inbox has likely moved on. */
-            if launched {
-                continue;
+            /* A run that ends wakes the wait, so the next poll comes at once: the inbox has likely moved on. */
+            if let Some(ended) = self.wait(&live, &mut runs).await {
+                self.done(ended);
             }
-            self.wait(&live).await;
+        }
+        /* Runs going finish under this binding, as one always did; only then does it hand over or stop. */
+        if !runs.is_empty() {
+            tracing::info!("waiting for {} run(s) to finish", runs.len());
+        }
+        while let Some(ended) = runs.join_next_with_id().await {
+            self.done(ended);
         }
         if self.retire.now() && !*self.shutdown.borrow() {
             /* The daemon starts whatever replaces it; the agent isn't stopped, so the window doesn't say so. */
@@ -332,8 +381,9 @@ impl AgentLoop {
     }
 
     /// Between polls: until the poll is due (seldom while the socket is up, at `poll_interval`
-    /// while it is down), the socket says there is something, or the loop should stop.
-    async fn wait(&self, live: &Live) {
+    /// while it is down), the socket says there is something, a run ends (given back), or the
+    /// loop should stop.
+    async fn wait(&self, live: &Live, runs: &mut JoinSet<Done>) -> Option<Result<(Id, Done), JoinError>> {
         let mut shutdown = self.shutdown.clone();
         let mut retire = self.retire.rx.clone();
         let generation = self.retire.generation;
@@ -351,17 +401,18 @@ impl AgentLoop {
                 self.poll
             };
             tokio::select! {
-                _ = tokio::time::sleep_until(since + every) => return,
-                _ = async { let _ = shutdown.wait_for(|stop| *stop).await; } => return,
-                _ = async { let _ = retire.wait_for(|w| w.generation != generation).await; } => return,
+                ended = runs.join_next_with_id(), if !runs.is_empty() => return ended,
+                _ = tokio::time::sleep_until(since + every) => return None,
+                _ = async { let _ = shutdown.wait_for(|stop| *stop).await; } => return None,
+                _ = async { let _ = retire.wait_for(|w| w.generation != generation).await; } => return None,
                 _ = async { tokio::time::sleep_until(board_due.expect("guarded")).await }, if board_due.is_some() => {
                     tracing::debug!("woken by the live socket (a board change)");
-                    return;
+                    return None;
                 }
                 _ = live.wakes.notify.notified() => {
                     if live.wakes.inbox() {
                         tracing::debug!("woken by the live socket");
-                        return;
+                        return None;
                     }
                     if board_due.is_none() && live.wakes.due(board) {
                         board_due = Some((since + BOARD_SPACING).max(tokio::time::Instant::now()));
@@ -371,11 +422,11 @@ impl AgentLoop {
                     if changed.is_err() {
                         /* The listener is gone (it never ends by itself): poll on the clock. */
                         tokio::time::sleep_until(since + self.poll).await;
-                        return;
+                        return None;
                     }
                     /* Down: a message may have been lost on the way, so look now, then poll on the clock. */
                     if *link.borrow() == Link::Reconnecting && connected {
-                        return;
+                        return None;
                     }
                 }
             }
@@ -439,7 +490,8 @@ impl AgentLoop {
     }
 
     /// One poll. True when a run was launched (or tried), so the caller looks again at once.
-    async fn tick(&mut self) -> Result<bool> {
+    /// One poll: start a run for each task that needs one, as far as `max_runs` and the workdir allow.
+    async fn tick(&mut self, runs: &mut JoinSet<Done>) -> Result<()> {
         let me = self.identity().await?;
         let (unread, items) = self.unread().await?;
         let plan: Plan = plan(&me, &items);
@@ -460,7 +512,15 @@ impl AgentLoop {
         self.guard.retain(&plan);
         for wake in &plan.wakes {
             if self.stopping() {
-                return Ok(false);
+                return Ok(());
+            }
+            /* A run on it already: it sees these items itself, or the next poll after it does. */
+            if self.inflight.contains_key(&wake.task_id) {
+                continue;
+            }
+            if self.inflight.len() >= self.agent.max_runs {
+                tracing::debug!(task = %wake.task_key, "{} runs going, the most it may; next time", self.inflight.len());
+                break;
             }
             if let Check::Seen { updated_at, held } = self.guard.check(wake) {
                 let current = match self.api.task(&self.agent.token, &wake.task_id).await {
@@ -483,12 +543,68 @@ impl AgentLoop {
                     tracing::info!(task = %wake.task_key, "changed since the last run; waking");
                 }
             }
-            match self.work(&me.handle, wake).await? {
-                Outcome::Ran => return Ok(true),
-                Outcome::Skipped => continue,
+            /* Coding work has a worktree of its own; anything else shares workdir, one run at a time.
+            A run that turns out to answer without a claim also uses workdir, without waiting for it. */
+            let workdir = self.ctx().repos(&wake.task_id, &wake.task_key).await?.is_none();
+            if workdir && self.inflight.values().any(|w| *w) {
+                tracing::debug!(task = %wake.task_key, "another run has the workdir; next time");
+                continue;
             }
+            self.inflight.insert(wake.task_id.clone(), workdir);
+            let (ctx, handle, wake) = (self.ctx(), me.handle.clone(), wake.clone());
+            let task_id = wake.task_id.clone();
+            let id = runs
+                .spawn(async move { ctx.work(&handle, wake).await }.in_current_span())
+                .id();
+            self.spawned.insert(id, task_id);
         }
-        Ok(false)
+        Ok(())
+    }
+}
+
+/// What a run tells its loop when it is over.
+struct Done {
+    wake: Wake,
+    /// For the guard: the task as the run left it, and whether another run held it. None when it
+    /// went wrong before there was anything to remember (the run couldn't start or claim).
+    remember: Option<(Option<String>, bool)>,
+    /// What went wrong, for the agent's error line.
+    error: Option<String>,
+}
+
+impl Done {
+    fn failed(wake: Wake, error: String) -> Self {
+        Self {
+            wake,
+            remember: None,
+            error: Some(error),
+        }
+    }
+}
+
+/// What one run needs of its loop, cloned, so it can go on while the loop polls and starts others.
+#[derive(Clone)]
+struct RunCtx {
+    slot: u64,
+    agent: AgentConfig,
+    api: Api,
+    paths: Arc<Paths>,
+    state: watch::Sender<DaemonState>,
+    shutdown: watch::Receiver<bool>,
+    stop_run: watch::Receiver<StopRequest>,
+}
+
+impl RunCtx {
+    fn update(&self, f: impl FnOnce(&mut AgentState)) {
+        let slot = self.slot;
+        self.state
+            .send_if_modified(|s| match s.agents.iter_mut().find(|a| a.slot == slot) {
+                Some(a) => {
+                    f(a);
+                    true
+                }
+                None => false,
+            });
     }
 
     /// The task as it is now, for the guard's memory.
@@ -510,30 +626,25 @@ impl AgentLoop {
         }
     }
 
-    async fn work(&mut self, me: &str, wake: &Wake) -> Result<Outcome> {
+    /// One run on one task, start to finish: start it, claim, make the workspace when it is coding
+    /// work, launch the runtime and wait for it, finish the run.
+    async fn work(self, me: &str, wake: Wake) -> Done {
         let key = wake.task_key.clone();
         tracing::info!(task = %key, items = wake.items.len(), "waking for {key}");
-        let started = self
-            .api
-            .start_run(&self.agent.token, &self.agent.client)
-            .await
-            .map_err(|e| anyhow!("starting a run for {key}: {e}"))?;
+        let started = match self.api.start_run(&self.agent.token, &self.agent.client).await {
+            Ok(s) => s,
+            Err(e) => return Done::failed(wake, format!("starting a run for {key}: {e}")),
+        };
         let run_id = started.run.id.clone();
         let short = started.run.short.clone();
-        self.update(|s| {
-            s.phase = Phase::Running {
-                run: short.clone(),
-                task: key.clone(),
-                since: SystemTime::now(),
-            }
-        });
+        self.update(|s| s.run_started(&short, &key));
 
         let brief = match self.api.claim(&started.secret, &wake.task_id).await {
             Ok(task) => {
                 tracing::info!(run = %short, task = %task.key, "claimed");
                 Brief::Work
             }
-            Err(e @ ApiError::Status { .. }) if e.is_refusal() => match refused(e.code(), wake) {
+            Err(e @ ApiError::Status { .. }) if e.is_refusal() => match refused(e.code(), &wake) {
                 Refused::Answer(brief) => {
                     /* Not the agent's to take, but something was said to it there: answer, without a claim. */
                     tracing::info!(run = %short, task = %key, "not claimed ({e}); launching to answer, without a claim");
@@ -541,7 +652,7 @@ impl AgentLoop {
                 }
                 why => {
                     let ending = self.finish(&run_id, Ending::Cancelled).await;
-                    self.update(|s| s.phase = Phase::Idle);
+                    self.update(|s| s.run_ended(&short));
                     let held = why == Refused::Hold;
                     if held {
                         tracing::info!(run = %short, task = %key, "another run holds it; coming back when that run ends: {e}");
@@ -549,15 +660,18 @@ impl AgentLoop {
                         tracing::info!(run = %short, task = %key, "claim refused, skipping: {e}");
                     }
                     let updated = self.updated_at(&wake.task_id).await;
-                    self.guard.remember(wake, updated, held);
                     self.summary(&short, &key, format!("skipped ({ending}): {e}"));
-                    return Ok(Outcome::Skipped);
+                    return Done {
+                        wake,
+                        remember: Some((updated, held)),
+                        error: None,
+                    };
                 }
             },
             Err(e) => {
                 self.finish(&run_id, Ending::Cancelled).await;
-                self.update(|s| s.phase = Phase::Idle);
-                return Err(anyhow!("claiming {key}: {e}"));
+                self.update(|s| s.run_ended(&short));
+                return Done::failed(wake, format!("claiming {key}: {e}"));
             }
         };
 
@@ -568,11 +682,14 @@ impl AgentLoop {
                 Err(e) => {
                     tracing::warn!(run = %short, task = %key, "its workspace could not be made: {e:#}");
                     let ending = self.finish(&run_id, Ending::Failed).await;
-                    self.update(|s| s.phase = Phase::Idle);
+                    self.update(|s| s.run_ended(&short));
                     let updated = self.updated_at(&wake.task_id).await;
-                    self.guard.remember(wake, updated, false);
                     self.summary(&short, &key, format!("{ending}: no workspace ({e})"));
-                    return Ok(Outcome::Skipped);
+                    return Done {
+                        wake,
+                        remember: Some((updated, false)),
+                        error: None,
+                    };
                 }
             }
         } else {
@@ -625,20 +742,22 @@ impl AgentLoop {
         }
         /* Remembered whatever the ending, a ceiling included, so it isn't launched again for the same items. */
         let updated = self.updated_at(&wake.task_id).await;
-        self.guard.remember(wake, updated, false);
         let outcome = if exit == Exit::TimedOut {
             format!("{status} (stopped at the {} ceiling)", runner::span(runner::CEILING))
         } else {
             status
         };
         self.summary(&short, &key, outcome);
-        self.update(|s| s.phase = Phase::Idle);
-        Ok(Outcome::Ran)
+        self.update(|s| s.run_ended(&short));
+        Done {
+            wake,
+            remember: Some((updated, false)),
+            error: None,
+        }
     }
 
-    /// The task's workspace when it is coding work: the agent has a `code_command` and the task's
-    /// board has a repo. A board with several repos uses the first, for now.
-    async fn workspace(&self, task_id: &str, key: &str) -> Result<Option<Workspace>> {
+    /// The board's repos when the task is coding work for this agent (it has a `code_command`), else none.
+    async fn repos(&self, task_id: &str, key: &str) -> Result<Option<(crate::api::Task, Vec<String>)>> {
         if self.agent.code_command.is_none() {
             return Ok(None);
         }
@@ -652,9 +771,16 @@ impl AgentLoop {
             .board_repos(&self.agent.token, &task.board_id)
             .await
             .map_err(|e| anyhow!("reading {key}'s board: {e}"))?;
-        let Some(repo) = repos.first() else {
+        Ok((!repos.is_empty()).then_some((task, repos)))
+    }
+
+    /// The task's workspace when it is coding work: the agent has a `code_command` and the task's
+    /// board has a repo. A board with several repos uses the first, for now.
+    async fn workspace(&self, task_id: &str, key: &str) -> Result<Option<Workspace>> {
+        let Some((task, repos)) = self.repos(task_id, key).await? else {
             return Ok(None);
         };
+        let repo = &repos[0];
         if repos.len() > 1 {
             tracing::info!(task = %key, "its board has {} repos; working in the first, {repo}", repos.len());
         }

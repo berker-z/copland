@@ -169,7 +169,9 @@ pub fn rows(configured: &[AgentConfig], st: &DaemonState, wired: Option<&[WiredA
             None => Doing::Starting,
             Some(s) => match (&s.phase, s.retiring) {
                 (Phase::Running { .. }, true) => Doing::AfterRun,
-                (Phase::Running { task, .. }, false) => Doing::Running(task.clone()),
+                (Phase::Running { .. }, false) => {
+                    Doing::Running(s.runs.iter().map(|r| r.task.as_str()).collect::<Vec<_>>().join(", "))
+                }
                 (_, true) => Doing::Starting,
                 (Phase::Stopped, _) => match &s.last_error {
                     Some(e) => Doing::Error(e.clone()),
@@ -950,6 +952,7 @@ mod tests {
             code_command: None,
             writable: Vec::new(),
             code_dir: "/tmp/copland-code".into(),
+            max_runs: 10,
         }
     }
 
@@ -977,11 +980,7 @@ mod tests {
         let configured = [agent("me/dev", Some(Runtime::ClaudeCode)), agent("me/old-name", None)];
         let mut dev = AgentState::new("me/dev", "http://x");
         dev.user_id = Some("u1".into());
-        dev.phase = Phase::Running {
-            run: "8f31".into(),
-            task: "T-1".into(),
-            since: std::time::SystemTime::now(),
-        };
+        dev.run_started("8f31", "T-1");
         /* Renamed in copland: found by the id its token answers to. */
         let mut renamed = AgentState::new("me/old-name", "http://x");
         renamed.user_id = Some("u2".into());
@@ -1022,11 +1021,7 @@ mod tests {
         let configured = [agent("me/dev", Some(Runtime::Codex))];
         let mut dev = AgentState::new("me/dev", "http://x");
         dev.retiring = true;
-        dev.phase = Phase::Running {
-            run: "8f31".into(),
-            task: "T-1".into(),
-            since: std::time::SystemTime::now(),
-        };
+        dev.run_started("8f31", "T-1");
         let st = DaemonState {
             agents: vec![dev],
             stopping: false,

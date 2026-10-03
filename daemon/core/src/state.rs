@@ -24,7 +24,10 @@ pub struct AgentState {
     /// "owner/name": the configured handle until the server has said.
     pub handle: String,
     pub url: String,
+    /// Running while any run is going (the oldest one); see `runs` for all of them.
     pub phase: Phase,
+    /// Every run going now, oldest first (COPL-82: an agent may run several at once).
+    pub runs: Vec<ActiveRun>,
     pub last_poll: Option<SystemTime>,
     /// Unread items in the agent's inbox at the last poll.
     pub unread: u64,
@@ -56,6 +59,14 @@ pub enum Phase {
     Stopped,
 }
 
+/// One run going now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRun {
+    pub run: String,
+    pub task: String,
+    pub since: SystemTime,
+}
+
 #[derive(Debug, Clone)]
 pub struct RunSummary {
     pub run: String,
@@ -66,6 +77,37 @@ pub struct RunSummary {
 }
 
 impl AgentState {
+    /// A run started.
+    pub fn run_started(&mut self, run: &str, task: &str) {
+        self.runs.push(ActiveRun {
+            run: run.to_string(),
+            task: task.to_string(),
+            since: SystemTime::now(),
+        });
+        self.sync_phase();
+    }
+
+    /// A run ended, however it did.
+    pub fn run_ended(&mut self, run: &str) {
+        self.runs.retain(|r| r.run != run);
+        self.sync_phase();
+    }
+
+    /// `phase` from `runs`: the oldest run while any is going, idle once none is.
+    fn sync_phase(&mut self) {
+        match self.runs.first() {
+            Some(r) => {
+                self.phase = Phase::Running {
+                    run: r.run.clone(),
+                    task: r.task.clone(),
+                    since: r.since,
+                }
+            }
+            None if matches!(self.phase, Phase::Running { .. }) => self.phase = Phase::Idle,
+            None => {}
+        }
+    }
+
     pub fn new(handle: &str, url: &str) -> Self {
         Self {
             slot: 0,
@@ -74,6 +116,7 @@ impl AgentState {
             handle: handle.to_string(),
             url: url.to_string(),
             phase: Phase::Starting,
+            runs: Vec::new(),
             last_poll: None,
             unread: 0,
             last_error: None,
@@ -82,5 +125,28 @@ impl AgentState {
             retiring: false,
             live: Link::Connecting,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_phase_follows_the_oldest_run_going() {
+        let mut a = AgentState::new("me/dev", "http://x");
+        a.phase = Phase::Idle;
+        a.run_started("aaaa", "T-1");
+        a.run_started("bbbb", "T-2");
+        assert_eq!(a.runs.len(), 2);
+        assert!(matches!(&a.phase, Phase::Running { run, task, .. } if run == "aaaa" && task == "T-1"));
+        a.run_ended("aaaa");
+        assert!(matches!(&a.phase, Phase::Running { run, .. } if run == "bbbb"));
+        a.run_ended("bbbb");
+        assert_eq!(a.phase, Phase::Idle);
+        /* Ending a run never wakes a stopped agent. */
+        a.phase = Phase::Stopped;
+        a.run_ended("cccc");
+        assert_eq!(a.phase, Phase::Stopped);
     }
 }

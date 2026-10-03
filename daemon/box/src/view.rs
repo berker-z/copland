@@ -109,14 +109,13 @@ pub struct RunHere {
 pub fn runs_here(st: &DaemonState) -> Vec<RunHere> {
     st.agents
         .iter()
-        .filter_map(|a| match &a.phase {
-            Phase::Running { run, task, .. } => Some(RunHere {
+        .flat_map(|a| {
+            a.runs.iter().map(|r| RunHere {
                 slot: a.slot,
-                run: run.clone(),
-                key: task.clone(),
+                run: r.run.clone(),
+                key: r.task.clone(),
                 agent: a.handle.rsplit('/').next().unwrap_or(&a.handle).to_string(),
-            }),
-            _ => None,
+            })
         })
         .collect()
 }
@@ -808,10 +807,8 @@ pub fn board_from(st: &DaemonState, feed: Option<&Feed>, now: f64, wall: SystemT
     }
 
     /* The daemon's own runs: shown at once, before the server says so. */
-    for a in &st.agents {
-        let Phase::Running { task, since, .. } = &a.phase else {
-            continue;
-        };
+    for (a, r) in st.agents.iter().flat_map(|a| a.runs.iter().map(move |r| (a, r))) {
+        let (task, since) = (&r.task, &r.since);
         board.todo.retain(|k| k != task);
         board.blocked.retain(|b| &b.0 != task);
         if let Some(done) = &mut board.done {
@@ -1377,6 +1374,14 @@ mod tests {
 
     fn daemon(phase: Phase, waiting: &[&str]) -> DaemonState {
         let mut a = AgentState::new("me/dev", "http://x");
+        /* A running phase is one run going, as the daemon records it. */
+        if let Phase::Running { run, task, since } = &phase {
+            a.runs.push(copland_daemon_core::state::ActiveRun {
+                run: run.clone(),
+                task: task.clone(),
+                since: *since,
+            });
+        }
         a.phase = phase;
         a.waiting = waiting.iter().map(|s| s.to_string()).collect();
         DaemonState {

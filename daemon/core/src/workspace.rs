@@ -81,21 +81,41 @@ fn valid_key(key: &str) -> bool {
     }
 }
 
-/// The branch a task's work goes on: its key, lowercased, then its title as a slug, so
-/// Copland's webhook finds the task by the key and a person can tell branches apart.
+/// How long a branch's slug may be: whole words, up to this many characters.
+const SLUG_MAX: usize = 40;
+
+/// The branch a task's work goes on: its key, lowercased, then its title as a slug of whole
+/// words, so Copland's webhook finds the task by the key and a person can tell branches apart.
 pub fn branch_name(key: &str, title: &str) -> String {
     let mut slug = String::new();
-    for c in title.chars().flat_map(char::to_lowercase) {
+    let mut word = String::new();
+    for c in title.chars().flat_map(char::to_lowercase).chain([' ']) {
         if c.is_ascii_alphanumeric() {
-            slug.push(c);
-        } else if !slug.ends_with('-') && !slug.is_empty() {
-            slug.push('-');
+            word.push(c);
+            continue;
         }
-        if slug.len() >= 40 {
+        if word.is_empty() {
+            continue;
+        }
+        let joined = if slug.is_empty() {
+            word.len()
+        } else {
+            slug.len() + 1 + word.len()
+        };
+        if joined > SLUG_MAX {
+            /* A first word longer than the whole slug is cut; any later one ends it. */
+            if slug.is_empty() {
+                slug = word[..SLUG_MAX].to_string();
+            }
             break;
         }
+        if !slug.is_empty() {
+            slug.push('-');
+        }
+        slug.push_str(&word);
+        word.clear();
     }
-    let slug = slug.trim_end_matches('-');
+    let slug = slug.as_str();
     let key = key.to_lowercase();
     if slug.is_empty() { key } else { format!("{key}-{slug}") }
 }
@@ -283,6 +303,12 @@ mod tests {
             "copl-79-daemon-realize-a-task-s-workspace"
         );
         assert_eq!(branch_name("COPL-1", "  ...  "), "copl-1");
+        /* Whole words: the one that would pass 40 characters is left out, not cut. */
+        assert_eq!(
+            branch_name("COPL-81", "Level pill: the level's colour on its leftmost filled dot"),
+            "copl-81-level-pill-the-level-s-colour-on-its"
+        );
+        assert_eq!(branch_name("A-1", &"x".repeat(60)), format!("a-1-{}", "x".repeat(40)));
         assert_eq!(branch_name("A-2", "Ünïcode & émoji 🎉 ok"), "a-2-n-code-moji-ok");
         assert!(branch_name("COPL-3", &"word ".repeat(30)).len() <= "copl-3-".len() + 40);
         assert!(!branch_name("COPL-3", &"word ".repeat(30)).ends_with('-'));

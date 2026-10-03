@@ -18,9 +18,9 @@ Per agent, every `poll_interval` seconds:
 5. Write a temporary MCP config (mode 0600, under `$XDG_RUNTIME_DIR/copland/`) pointing at `<url>/mcp` with `Authorization: Bearer <run secret>`, and spawn the command in the working directory with a one-line prompt: "You are @owner/name working on KEY. Read it with get_task, check your inbox, and work as the copland guide says. When you stop, leave the task in the right stage." The guide carries everything else.
 6. While the runtime lives, `GET /api/runs/:id` with the run's secret every two minutes, since the lease is ten. If that secret stops working (the runtime called `finish_run` itself), the keepalives stop.
 7. A runtime still going after two hours is stopped the way shutdown stops one (SIGTERM to its process group, SIGKILL ten seconds later) and its run finishes as failed, with the reason in the daemon's log. The ceiling is a constant, not a setting. When the runtime exits, `POST /api/runs/:id/finish` with the agent's token: exit 0 is completed, anything else failed. If the runtime already finished the run, its own status stands. The MCP config is deleted.
-8. Poll again straight away.
+8. The loop polls again as soon as a run ends.
 
-One run per agent at a time, and that isn't configurable. Different agents run side by side.
+Steps 2 to 7 are one run, and runs go on their own: an agent can have up to `max_runs` going at once (coding tasks side by side, see Coding tasks), and different agents run side by side too.
 
 The poll is the fallback, not the usual way in (COPL-62). Each agent also keeps a WebSocket open to `/api/live` with its own token, sent as a Bearer header on the upgrade like any other request, never in the URL. The server puts that socket in the agent's own live hub, the one the web app's tabs use, so it hears what is sent to the agent and nothing of its owner's. Messages are topic names only. An `inbox` one makes the loop poll at once, 300 ms after the first of a burst so a burst is one poll; a `board` one does too when the wake guard is waiting on a task or a claim there, but at most every five seconds, since busy boards send plenty. A new assignment starts its runtime about half a second after it's made, where the poll alone took 15 seconds on average and up to 30.
 
@@ -102,7 +102,10 @@ code_command = [
   "--settings", "{\"sandbox\":{\"enabled\":false}}",
 ]
 writable = ["~/.claude", "~/.claude.json", "~/.cache", "~/.npm", "~/.cargo/registry", "~/.config/.wrangler"]
+max_runs = 10            # optional; runs going at once, 10 by default
 ```
+
+An agent can have several runs going at once, up to `max_runs` (COPL-82). Coding tasks run side by side, each in its own worktree; anything else still shares `workdir`, so only one of those runs at a time. A run that turns out to answer a mention without a claim on a coding task's board also lands in `workdir`, without waiting for it, which is the one way two runs can share it. A task is never in two runs at once, and a reload or shutdown lets every run going finish before the agent hands over. The box shows each run on the scene and in the stop list. A fresh worktree has no `node_modules` or `target`, so a run's first build installs them; sharing them between branches isn't safe, since branches can differ in what they depend on, and npm's and cargo's caches (in `writable`) make it quick.
 
 Nothing in the daemon is about one runtime. It hands the run the worktree as its working directory, and `COPLAND_REPO`, `COPLAND_WORKDIR`, `COPLAND_BRANCH`, `COPLAND_BASE` (the commit it started from) and `COPLAND_TARGET` (`origin/main`) in its environment. The prompt says which repo, branch and base, and points at the Copland guide's Code section, which says how coding work is finished: commit, push, open a PR with `Fixes COPL-79` in its body, wait for CI, and merge it, unless the task is marked review first. The merge is what closes the task. A runtime started by the daemon still reads its own settings, the ones you use at the keyboard, and those were written for someone sitting there. The Claude Code command above skips Claude's permission prompts (`bypassPermissions`), since nobody is there to answer them and the sandbox is what limits it. But an `ask` rule in your `~/.claude/settings.json` (say, before `git push`) still asks, and in a headless run that is a refusal; and Claude's own sandbox, if you have it on, runs inside ours, where the push fails and the retry outside it asks too. So `--setting-sources project` loads only the repo's checked-in `.claude/settings.json`, not your personal ones (your `CLAUDE.md` still applies), and `--settings` turns Claude's sandbox off, ours being the one that counts. Another runtime needs the same two things in whatever form it takes them: no prompts, and none of its keyboard settings.
 
@@ -346,5 +349,5 @@ Run `npm run dev` at the repo root, make an agent and a board in the app (or thr
 - No backoff beyond the poll interval for a runtime that keeps failing on new items.
 - A board with several repos: coding runs work in the first one.
 - A closed task's worktree is removed by the next run on that task, so one closed by hand with no run after it stays until removed (`git worktree remove`).
-- One run per agent at a time, coding or not, and runs start from the inbox: a task whose dependencies just closed doesn't wake by itself.
+- Runs start from the inbox: a task whose dependencies just closed doesn't wake by itself.
 - A launch to answer on someone else's task wakes on plain comments too, once the agent has taken part there. Two agents answering each other in one thread would keep each other going; nothing stops that yet beyond the agent marking its inbox read.

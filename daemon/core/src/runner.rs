@@ -418,6 +418,7 @@ mod tests {
             code_command: None,
             writable: Vec::new(),
             code_dir: "/tmp/copland-code".into(),
+            max_runs: 10,
         };
         let api = Api::new(&agent.url).unwrap();
         let (_tx, shutdown) = watch::channel(false);
@@ -461,6 +462,7 @@ mod tests {
             code_command: None,
             writable: Vec::new(),
             code_dir: "/tmp/copland-code".into(),
+            max_runs: 10,
         };
         let api = Api::new(&agent.url).unwrap();
         let (_tx, shutdown) = watch::channel(false);

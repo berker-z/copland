@@ -137,19 +137,16 @@ pub fn links_up(st: &DaemonState, feed: Option<&Feed>) -> Option<bool> {
     }
 }
 
-/// Which run each agent is on: a change means a run started or ended.
-fn runs(st: &DaemonState) -> Vec<Option<String>> {
+/// The runs each agent has going: a change means a run started or ended.
+fn runs(st: &DaemonState) -> Vec<Vec<String>> {
     st.agents
         .iter()
-        .map(|a| match &a.phase {
-            Phase::Running { run, .. } => Some(run.clone()),
-            _ => None,
-        })
+        .map(|a| a.runs.iter().map(|r| r.run.clone()).collect())
         .collect()
 }
 
 /// Resolves once some agent's run has started or ended (never, once the daemon is gone).
-async fn run_changed(daemon: &mut watch::Receiver<DaemonState>, seen: &mut Vec<Option<String>>) {
+async fn run_changed(daemon: &mut watch::Receiver<DaemonState>, seen: &mut Vec<Vec<String>>) {
     loop {
         if daemon.changed().await.is_err() {
             std::future::pending::<()>().await;

@@ -18,6 +18,7 @@
 //! # inside a sandbox (sandbox.rs) where only the worktree and `writable` can be written.
 //! code_command = ["claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config"]
 //! writable = ["~/.claude", "~/.claude.json", "~/.cache"]
+//! max_runs = 10                 # optional; runs going at once (coding tasks side by side)
 //! ```
 //!
 //! `code_dir = "~/copland"` (top level, optional) is where repos are cloned and tasks'
@@ -34,6 +35,8 @@ use serde::Deserialize;
 
 pub const DEFAULT_POLL_SECS: u64 = 30;
 pub const DEFAULT_CODE_DIR: &str = "~/copland";
+/// How many runs an agent may have going at once, unless its config says (COPL-82).
+pub const DEFAULT_MAX_RUNS: usize = 10;
 pub const DEFAULT_CLIENT: &str = "Claude Code";
 pub const PROMPT: &str = "{prompt}";
 pub const MCP_CONFIG: &str = "{mcp_config}";
@@ -108,6 +111,8 @@ pub struct AgentConfig {
     pub writable: Vec<PathBuf>,
     /// The config's `code_dir`, the same for every agent.
     pub code_dir: PathBuf,
+    /// Runs going at once, at most. Only coding tasks run side by side; the rest share `workdir`, one at a time.
+    pub max_runs: usize,
 }
 
 #[derive(Deserialize)]
@@ -140,6 +145,7 @@ struct RawAgent {
     code_command: Option<Vec<String>>,
     #[serde(default)]
     writable: Vec<String>,
+    max_runs: Option<usize>,
 }
 
 /// `~/…` against $HOME. Anything else as written.
@@ -246,6 +252,10 @@ impl Config {
                 bail!("{at}: workdir {} is not a directory", workdir.display());
             }
             let client = a.client.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
+            let max_runs = a.max_runs.unwrap_or(DEFAULT_MAX_RUNS);
+            if !(1..=50).contains(&max_runs) {
+                bail!("{at}: max_runs must be between 1 and 50");
+            }
             if let Some(code) = &a.code_command {
                 if code.is_empty() || code[0].trim().is_empty() {
                     bail!("{at}: code_command is empty");
@@ -261,6 +271,7 @@ impl Config {
                 code_command: a.code_command,
                 writable: a.writable.iter().map(|w| expand_home(w)).collect(),
                 code_dir: code_dir.clone(),
+                max_runs,
             });
         }
         let owner = match (raw.owner_token, raw.owner_token_file) {
@@ -404,9 +415,35 @@ mod tests {
     }
 
     #[test]
+    fn coding_keys_have_defaults_and_bounds() {
+        let w = tmp();
+        let base =
+            format!("[[agent]]\nurl=\"http://x\"\nhandle=\"a\"\ntoken=\"cpl_a\"\ncommand=[\"x\"]\nworkdir=\"{w}\"\n");
+        let plain = parse(&base).unwrap();
+        let a = &plain.agents[0];
+        assert_eq!(a.max_runs, DEFAULT_MAX_RUNS);
+        assert!(a.code_command.is_none() && a.writable.is_empty());
+        assert_eq!(a.code_dir, expand_home(DEFAULT_CODE_DIR));
+        let coding = parse(&format!(
+            "code_dir=\"/c\"\n{base}code_command=[\"y\",\"{{prompt}}\"]\nwritable=[\"/s\"]\nmax_runs=3\n"
+        ))
+        .unwrap();
+        let a = &coding.agents[0];
+        assert_eq!(
+            a.code_command.as_deref(),
+            Some(&["y".to_string(), "{prompt}".to_string()][..])
+        );
+        assert_eq!(a.writable, vec![PathBuf::from("/s")]);
+        assert_eq!((a.max_runs, a.code_dir.clone()), (3, PathBuf::from("/c")));
+        assert!(parse(&format!("{base}max_runs=0\n")).is_err());
+        assert!(parse(&format!("{base}max_runs=51\n")).is_err());
+        assert!(parse(&format!("{base}code_command=[]\n")).is_err());
+    }
+
+    #[test]
     fn refuses_unknown_keys_and_bad_values() {
         let w = tmp();
-        assert!(parse(&format!("[[agent]]\nurl=\"http://x\"\nhandle=\"a\"\ntoken=\"cpl_a\"\ncommand=[\"x\"]\nworkdir=\"{w}\"\nmax_runs=2\n")).is_err());
+        assert!(parse(&format!("[[agent]]\nurl=\"http://x\"\nhandle=\"a\"\ntoken=\"cpl_a\"\ncommand=[\"x\"]\nworkdir=\"{w}\"\nmax_jobs=2\n")).is_err());
         assert!(
             parse(&format!(
                 "[[agent]]\nurl=\"ftp://x\"\nhandle=\"a\"\ntoken=\"cpl_a\"\ncommand=[\"x\"]\nworkdir=\"{w}\"\n"

@@ -333,6 +333,7 @@ mod tests {
             code_command: None,
             writable: Vec::new(),
             code_dir: "/tmp/copland-code".into(),
+            max_runs: 10,
         }
     }
 
