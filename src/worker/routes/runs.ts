@@ -17,8 +17,10 @@
    life and lands in the history with the run. Starting a run is a write, so
    a read-only token cannot, and a run's own secret cannot start another.
 
-   One lease length (RUN_LEASE_MS, domain/runs.ts) and nothing that sweeps: a
-   run gone quiet reads as stale, and its claims lapse, when someone looks.
+   One lease length (RUN_LEASE_MS, domain/runs.ts): a run gone quiet reads as
+   stale, and its claims lapse, when someone looks. The cron's sweep
+   (deadRuns.ts) ends a quiet supervised run a few minutes later, so its
+   tasks go back; an interactive one is only ever read as stale.
 
    That is a supervised run. A chat session (Claude Code, Codex in a
    terminal) has no launcher to start one, so a claim made with a token and
@@ -44,6 +46,10 @@
    disabled), with an explicit release, when its task closes, is deleted or
    goes to a blocked stage, and when the claimer comes off the task's
    assignees (routes/tasks.ts).
+
+   A supervised run that dies (failed, cancelled, or past its lease, which
+   the cron's sweep ends as failed) puts the tasks it held back where the
+   next run, or a person, will find them (deadRuns.ts, COPL-97).
    ========================================================================== */
 
 import { clientLabel } from "@/domain/clients";
@@ -52,6 +58,7 @@ import type { StartedRun, Viewer } from "@/domain/types";
 import { personOf } from "../access";
 import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } from "../http";
+import { claimedBy, deathOf, putBack } from "../deadRuns";
 import type { Changes } from "../live";
 import { boardAudience } from "../repo/boards";
 import { claimUntil, finishRunStatements, findRun, interactiveRun, LIVE_CLAIM } from "../repo/runs";
@@ -112,9 +119,12 @@ export async function getRun(env: Env, viewer: Viewer, id: string): Promise<Resp
 }
 
 /**
- * POST /api/runs/:id/finish { status }: the run is over, its claims are
- * released, and its secret stops working. Finishing one already over
- * changes nothing and answers with it as it is, so a retry is harmless.
+ * POST /api/runs/:id/finish { status, interrupted? }: the run is over, its
+ * claims are released, and its secret stops working. A supervised run that
+ * did not complete puts back the tasks it held (deadRuns.ts): `interrupted`
+ * says a cancel was its launcher's own (shutting down, reloading), not a
+ * person stopping the work. Finishing one already over changes nothing and
+ * answers with it as it is, so a retry is harmless.
  */
 export async function postRunFinish(request: Request, env: Env, viewer: Viewer, id: string, changes: Changes) {
   const db = env.DB;
@@ -122,7 +132,9 @@ export async function postRunFinish(request: Request, env: Env, viewer: Viewer, 
   if (!(RUN_ENDINGS as readonly unknown[]).includes(body.status)) {
     throw badRequest(`\`status\` must be one of ${RUN_ENDINGS.join(", ")}`);
   }
-  await ownRun(db, viewer, id);
+  if (body.interrupted !== undefined && typeof body.interrupted !== "boolean") throw badRequest("`interrupted` must be a boolean");
+  const started = await ownRun(db, viewer, id);
+  const held = await claimedBy(db, id);
   const { results: boards } = await db
     .prepare(
       `SELECT DISTINCT t.board_id FROM task_claims c JOIN runs r ON r.id = c.run_id JOIN tasks t ON t.id = c.task_id
@@ -130,7 +142,11 @@ export async function postRunFinish(request: Request, env: Env, viewer: Viewer, 
     )
     .bind(id)
     .all<{ board_id: string }>();
-  await db.batch(finishRunStatements(db, id, body.status as RunEnding));
+  const [ended] = await db.batch(finishRunStatements(db, id, body.status as RunEnding));
+  const death = deathOf(body.status as RunEnding, body.interrupted === true);
+  if (ended.meta.changes && started.kind === "supervised" && death) {
+    await putBack(env, { id, userId: started.userId }, death, held, changes);
+  }
   for (const b of boards) changes.notify(await boardAudience(db, b.board_id), "board");
   if (viewer.agent) changes.notify([personOf(viewer)], "agents");
   const { userId: _userId, ...run } = await ownRun(db, viewer, id);

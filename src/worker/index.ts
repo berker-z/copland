@@ -30,6 +30,7 @@ import type { AgentGrant, Viewer } from "@/domain/types";
 import { VERSION, VERSION_HEADER } from "@/domain/version";
 import { personalViewer } from "./access";
 import { finishLogin, logout, startCalendarConnect, startLogin } from "./auth";
+import { sweepStaleRuns } from "./deadRuns";
 import type { Env } from "./env";
 import { errorResponse, HttpError, notFound } from "./http";
 import { Changes, connectLive } from "./live";
@@ -474,5 +475,10 @@ export default {
     } catch (error) {
       return withSecurityHeaders(errorResponse(error));
     }
+  },
+
+  /* The cron in wrangler.jsonc: supervised runs gone quiet put their tasks back (COPL-97). */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    await sweepStaleRuns(env, ctx);
   },
 } satisfies ExportedHandler<Env>;

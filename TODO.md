@@ -113,9 +113,15 @@ docs/DESIGN.md under Touch.
       first are done (COPL-74). The daemon also pulls ready work
       (COPL-86). Leads plan epics and stories into tasks
       (COPL-87). Drift between parallel work is
-      measured and gates merges (COPL-75). Still to do: showing overlaps
-      between tasks still being worked on, before any PR exists, so a lead can
-      sequence them (COPL-48).
+      measured and gates merges (COPL-75). A run that dies puts its task back
+      in todo, or blocked after three in a row (COPL-97), from the finish or
+      the Worker's five-minute cron. Still to do (epic COPL-96): a conflict the
+      agent can't resolve becomes a sibling task (COPL-98), and showing
+      overlaps between tasks still being worked on, before any PR exists, so
+      a lead can sequence them (COPL-99). The cron and the put-back have run
+      against the dev server only (`/cdn-cgi/handler/scheduled`); the installed
+      box 0.2.0 still finishes runs as plain cancelled on shutdown, which now
+      parks their tasks in backlog, until a box release sends `interrupted`.
 - [ ] Invite a friend for real and share a board; watch live updates between two people
 - [ ] A time zone setting, so "today" and "overdue" in the MCP stop meaning UTC
 - [ ] More MCP tools from the `not yet` entries in `src/worker/mcpCoverage.ts`
@@ -264,8 +270,8 @@ docs/DESIGN.md under Touch.
   filters don't change it. The lane header's card count reads `· 4 shown`
 - Runs and claims (COPL-7, COPL-8): `POST /api/runs` with a token gives a
   run and its own secret, which acts as the same principal and scope and
-  stamps `run_id` on events ("via Codex · run 8f31"). One ten-minute lease,
-  nothing sweeps: a quiet run reads as stale and its claims lapse. One live
+  stamps `run_id` on events ("via Codex · run 8f31"). One ten-minute lease:
+  a quiet run reads as stale and its claims lapse. One live
   claim per task (`claim_task`): assigns an unassigned task, moves it to
   active, parents follow, and two racing runs can't both win. Released by
   finishing, closing, unassigning, pausing. MCP: `claim_task`,
