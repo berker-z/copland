@@ -41,8 +41,9 @@
    Two routes take no credentials, so they are limited: a few requests per
    IP every ten minutes, a ceiling on everything pending, and a poll faster
    than once a second answers pending with slow_down rather than doing work.
-   Nothing sweeps on a timer; every call here tidies first: expired
-   approvals lose their tokens, and requests older than a day are deleted.
+   Every call here tidies first, and so does the cron (index.ts scheduled),
+   so nobody has to poll for it: expired approvals lose their tokens, and
+   requests older than a day are deleted.
    ========================================================================== */
 
 import {
@@ -162,11 +163,11 @@ function revokeStatement(db: D1Database, ids: string[]): D1PreparedStatement {
 }
 
 /**
- * Tidy before anything else: an approval nobody picked up in time loses its
+ * Tidy before anything else, and on the cron: an approval nobody picked up in time loses its
  * tokens (they had already expired with it; this makes them revoked too and
  * drops the sealed secrets), and a day-old request is forgotten.
  */
-async function sweep(env: Env, changes: Changes): Promise<void> {
+export async function sweepDeviceRequests(env: Env, changes: Changes): Promise<void> {
   const db = env.DB;
   const now = nowIso();
   const { results } = await db
@@ -215,7 +216,7 @@ export async function postDeviceStart(request: Request, env: Env, url: URL, chan
   const parsed = parseWantedAgents(body.agents);
   if ("error" in parsed) throw badRequest(parsed.error);
   const wanted = parsed.wanted ? JSON.stringify(parsed.wanted) : null;
-  await sweep(env, changes);
+  await sweepDeviceRequests(env, changes);
 
   const db = env.DB;
   const ipHash = await sha256Hex(`device:${request.headers.get("cf-connecting-ip") ?? "unknown"}`);
@@ -268,7 +269,7 @@ export async function postDevicePoll(request: Request, env: Env, url: URL, chang
   if (typeof body.deviceCode !== "string" || !body.deviceCode.startsWith(DEVICE_PREFIX) || body.deviceCode.length > 100) {
     throw badRequest("`deviceCode` must be the code /api/device/start returned");
   }
-  await sweep(env, changes);
+  await sweepDeviceRequests(env, changes);
   const db = env.DB;
   const row = await db
     .prepare(`SELECT * FROM device_requests WHERE device_hash = ?1`)

@@ -125,14 +125,22 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   then the modal. Its header starts with a link icon for everyone that
   copies the task's own link (a green tick and "copied" for a moment), and
   opened over the dashboard its key is that link, `text-faint` going
-  accent on hover. A `?task=` key the board doesn't have shows as one
+  accent on hover. Someone with agents of their own on the board also gets
+  a speech-bubble nudge there (accent while open): a line above the task
+  with the agent (a select when there are several, assignees first) and
+  the one-line message input. That input (`src/features/inbox/MessageInput.tsx`)
+  is the same everywhere: a field and a `send` button that turns green
+  and says "sent" for a moment, a refusal in red under it. A `?task=` key the board doesn't have shows as one
   `text-yellow` line under the filter bar with an × to drop it.
 - `src/features/shell/StatusLine.tsx` — statusline and phone menu; its
   readouts are in `topbar.tsx`, the inbox bell in
   `src/features/inbox/InboxBadge.tsx` (the same `InboxItems` list as the
   /inbox pane; opening an item swaps the modal for the task, closing the
   task comes back to the list). The list loads fifty and ends in a muted
-  "older" row while there are more.
+  "older" row while there are more. A message shows its text under the
+  sender line (`text-sm text-ink`, or styled like a comment, `text-xs
+  text-muted`, when it is untrusted) and a muted `↳ reply` under it that
+  opens the message input in place; once sent it reads "replied" in green.
 - The /boards pane always ends with a `+ new board` row (muted, accent on
   hover) for people; with only the inbox it adds a line saying what a board
   is for. Agents never see it, since only people make boards.

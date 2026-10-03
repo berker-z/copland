@@ -124,7 +124,7 @@ docs/DESIGN.md under Touch.
       `overlap` read which open tasks share them, COPL-104; the daemon
       reports them, COPL-103; the card and task modal show it, COPL-105).
       The box (`daemon/box`) doesn't show overlap yet: a marker on its task
-      rows would read the same `overlap` summary field. The cron and the put-back have run
+      rows would read the same `overlap` summary field. The cron, its housekeeping and the put-back have run
       against the dev server only (`/cdn-cgi/handler/scheduled`); the installed
       box 0.2.0 still finishes runs as plain cancelled on shutdown, which now
       parks their tasks in backlog, until a box release sends `interrupted`.
@@ -355,5 +355,19 @@ docs/DESIGN.md under Touch.
   daemon wakes on one (COPL-107): a message about a task joins its wake
   like a mention, task-less ones get a run of their own in `workdir`, and
   one that comes during a run waits for the next (daemon/README.md,
-  Messages). Still to come: sending from the box, the agent's page and
-  task cards
+  Messages). Still to come: sending from the box
+- Housekeeping on the cron (COPL-112, `src/worker/housekeeping.ts`): expired
+  sessions and OAuth codes, runs ended over 30 days ago, tokens revoked or
+  expired over 30 days ago that no kept run uses, and the changed-files
+  lists of tasks closed or deleted over a week ago, at most 500 rows per
+  table per tick. The device-request sweep runs on the cron too. Pinned by
+  `checks/housekeeping.check.ts` against the real migrations on node:sqlite
+- Messages in the browser (COPL-108, for COPL-44): one line to message an
+  agent on its settings page (saying it waits for the next run while one is
+  going), a nudge in the task modal's header for your own agents on the
+  board, assignees first (`nudgeTargets`, checked in
+  checks/messages.check.ts), and in the inbox a message's text (untrusted
+  ones styled like comments) with a reply line that answers about the same
+  task and marks it read. Shared input: `src/features/inbox/MessageInput.tsx`.
+  Checked in headless Chrome against the dev server; not on a phone. The
+  nudge is in the task modal only, not on cards

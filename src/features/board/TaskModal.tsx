@@ -12,15 +12,20 @@
    (taskPath: its board with this modal open). Opened over the dashboard
    (tasks, inbox, /wired), the key in the header is that link too, to go
    and see the task where it lives.
+
+   Someone with agents of their own on the board gets a nudge button: one
+   line to message one of them about this task (COPL-108), the task's
+   assignees offered first (nudgeTargets in domain/messages.ts).
    ========================================================================== */
 
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useMatch } from "react-router";
-import { Check, Link2, Pencil } from "lucide-react";
+import { Check, Link2, MessageSquare, Pencil } from "lucide-react";
 import { Avatar, peopleFirst } from "@/ui/Avatar";
-import { LEVELS, PRIORITIES, type BoardDetail, type Task } from "@/domain/types";
+import { LEVELS, PRIORITIES, type BoardDetail, type Task, type User } from "@/domain/types";
+import { nudgeTargets } from "@/domain/messages";
 import { progress, taskPath } from "@/domain/tasks";
-import { useTaskOverlap } from "@/lib/queries";
+import { useMe, useTaskOverlap } from "@/lib/queries";
 import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
 import { DeleteButton } from "@/ui/DeleteButton";
@@ -33,6 +38,7 @@ import { LabelPicker } from "./LabelPicker";
 import { TaskActivity } from "./TaskActivity";
 import { CodeList } from "./TaskCode";
 import { OverlapList } from "./TaskOverlap";
+import { MessageInput } from "../inbox/MessageInput";
 
 const field = "max-w-full bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent disabled:opacity-60";
 
@@ -66,6 +72,8 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
   const editMode = canEdit && mode === "edit";
   const onBoard = useMatch("/b/:key") !== null;
   const [copied, setCopied] = useState(false);
+  const me = useMe().data;
+  const [nudging, setNudging] = useState(false);
   useEffect(() => {
     if (!copied) return;
     const t = setTimeout(() => setCopied(false), 1500);
@@ -112,6 +120,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
   const save = (patch: TaskPatch) => update.mutate({ id: task.id, patch });
   const stage = detail.stages.find((s) => s.id === task.stageId);
   const others = detail.tasks.filter((t) => t.id !== task.id);
+  const agents = me ? nudgeTargets(detail.members.map((m) => m.user), me.user.id, task.assigneeIds) : [];
 
   const toggleIn = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
 
@@ -145,6 +154,17 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
             {copied ? <Check size={18} /> : <Link2 size={18} />}
             {copied && <span className="text-xs">copied</span>}
           </button>
+          {agents.length > 0 && (
+            <button
+              onClick={() => setNudging(!nudging)}
+              className={`tap p-2 hover:bg-raised transition-colors ${nudging ? "text-accent" : "hover:text-accent"}`}
+              title="Nudge an agent about this task"
+              aria-label="Nudge an agent about this task"
+              aria-expanded={nudging}
+            >
+              <MessageSquare size={18} />
+            </button>
+          )}
           {canEdit && (
             <>
               <button
@@ -164,6 +184,8 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
       {(update.error ?? remove.error) && (
         <p className="text-red text-xs mb-3">{(update.error ?? remove.error)?.message}</p>
       )}
+
+      {nudging && agents.length > 0 && <Nudge agents={agents} taskId={task.id} />}
 
       {editMode ? (
         <TaskForm
@@ -200,6 +222,34 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
 
       <TaskActivity detail={detail} taskId={task.id} />
     </ModalFrame>
+  );
+}
+
+/* One line to one of your agents, about this task; the first offered is picked. */
+function Nudge({ agents, taskId }: { agents: User[]; taskId: string }) {
+  const [to, setTo] = useState(agents[0].id);
+  const picked = agents.find((a) => a.id === to) ?? agents[0];
+  return (
+    <div className="mb-4 pb-3 border-b border-divider">
+      <div className="flex items-center gap-2 mb-2 text-sm text-muted">
+        nudge
+        {agents.length > 1 ? (
+          <select className={field} value={picked.id} onChange={(e) => setTo(e.target.value)} aria-label="Which agent">
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.handle}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 text-ink">
+            <Avatar user={picked} size={16} />
+            {picked.handle}
+          </span>
+        )}
+      </div>
+      <MessageInput key={picked.id} to={picked.id} taskId={taskId} placeholder={`message ${picked.handle} about this task`} autoFocus />
+    </div>
   );
 }
 
