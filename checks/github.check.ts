@@ -6,7 +6,7 @@
    ========================================================================== */
 
 import { generateKeyPairSync } from "node:crypto";
-import { ciFrom, closedIn, driftState, driftStatus, keysIn, overlapOf, parseRepo, pullRefs, verifySignature } from "../src/domain/github.ts";
+import { ciFrom, closedIn, driftState, parseRemote, driftStatus, keysIn, overlapOf, parseRepo, pullRefs, verifySignature } from "../src/domain/github.ts";
 import { pkcs8FromPem } from "../src/worker/pem.ts";
 
 const cases: Array<[string, boolean]> = [];
@@ -78,6 +78,19 @@ const signer = await crypto.subtle.importKey("pkcs8", Buffer.from(pkcs8FromPem(p
 const verifier = await crypto.subtle.importKey("spki", publicKey.export({ type: "spki", format: "der" }), alg, false, ["verify"]);
 const sig = await crypto.subtle.sign(alg, signer, new TextEncoder().encode("jwt"));
 t("the wrapped key signs what its public key verifies", await crypto.subtle.verify(alg, verifier, sig, new TextEncoder().encode("jwt")));
+
+/* Plain git remotes (COPL-95). */
+const rem = (r: string) => parseRemote(r)?.name ?? null;
+t("an https remote", rem("https://git.example.com/me/proj.git") === "git.example.com/me/proj");
+t("an ssh URL, user and port dropped", rem("ssh://git@Git.Example.com:2222/me/proj.git") === "git.example.com/me/proj");
+t("scp style", rem("git@codeberg.org:me/proj.git") === "codeberg.org/me/proj");
+t("a file URL", rem("file:///srv/git/proj.git") === "/srv/git/proj");
+t("an absolute path", rem("/home/me/code/proj/") === "/home/me/code/proj");
+t("the remote is kept as given", parseRemote(" git@codeberg.org:me/proj.git ")?.remote === "git@codeberg.org:me/proj.git");
+t("a relative path is refused", rem("proj") === null && rem("./proj") === null);
+t("a path climbing out is refused", rem("/srv/../etc") === null);
+t("whitespace inside is refused", rem("https://x.com/a b") === null);
+t("something that isn't a remote is refused", rem("hello") === null && rem("") === null);
 
 /* Drift (COPL-75). */
 const drift = (o: Partial<Parameters<typeof driftStatus>[0]>) => {

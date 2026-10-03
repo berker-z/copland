@@ -229,7 +229,7 @@ export async function postRevalidate(
     if (now.behind > 0) throw conflict(`#${p.name} is behind main: bring the branch up to date first, then re-check`, "behind");
     await env.DB.prepare(
       `UPDATE task_code SET revalidated_main = ?3
-        WHERE kind = 'pull' AND name = ?1 AND repo_id IN (SELECT id FROM board_repos WHERE repo = ?2)`,
+        WHERE kind = 'pull' AND name = ?1 AND repo_id IN (SELECT id FROM board_repos WHERE repo = ?2 AND kind = 'github')`,
     )
       .bind(p.name, p.repo, now.main)
       .run();

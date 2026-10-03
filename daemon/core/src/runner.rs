@@ -54,11 +54,16 @@ pub fn prompt(handle: &str, task_key: &str, brief: Brief, workspace: Option<&Wor
                 base = &ws.base[..ws.base.len().min(8)],
             ),
             Some(ws) => format!(
-                "You are @{handle} working on {task_key}, in a git worktree of {repo} on the branch {branch} (from {target} at {base}). Read it with get_task, check your inbox, and work as the copland guide says, including its Code section on finishing coding work. When you stop, leave the task in the right stage.",
+                "You are @{handle} working on {task_key}, in a git worktree of {repo} on the branch {branch} (from {target} at {base}). Read it with get_task, check your inbox, and work as the copland guide says, including its Code section on finishing coding work.{integrate} When you stop, leave the task in the right stage.",
                 repo = ws.repo,
                 branch = ws.branch,
                 target = ws.target,
                 base = &ws.base[..ws.base.len().min(8)],
+                integrate = if ws.pull_requests {
+                    ""
+                } else {
+                    " This repo has no pull requests: integrate by fast-forwarding main, then move the task to done."
+                },
             ),
             None => format!(
                 "You are @{handle} working on {task_key}. Read it with get_task, check your inbox, and work as the copland guide says. When you stop, leave the task in the right stage."
@@ -284,7 +289,15 @@ async fn run_until(
             .env("COPLAND_BRANCH", &ws.branch)
             .env("COPLAND_BASE", &ws.base)
             .env("COPLAND_TARGET", &ws.target)
-            .env("COPLAND_ROLE", if ws.read_only { "lead" } else { "worker" });
+            .env("COPLAND_ROLE", if ws.read_only { "lead" } else { "worker" })
+            .env(
+                "COPLAND_INTEGRATE",
+                if ws.pull_requests {
+                    "pull-request"
+                } else {
+                    "fast-forward"
+                },
+            );
     }
     let mut child = match command.spawn() {
         Ok(c) => c,
@@ -397,6 +410,7 @@ mod tests {
             target: "origin/main".into(),
             fresh: true,
             read_only: false,
+            pull_requests: true,
         };
         let lead = prompt(
             "me/dev",
@@ -410,7 +424,17 @@ mod tests {
         assert!(lead.contains("leading COPL-9") && lead.contains("read-only") && lead.contains("Leading section"));
         let code = prompt("me/dev", "COPL-9", Brief::Work, Some(&ws));
         assert!(code.contains("worktree of o/r on the branch copl-9-x (from origin/main at 01234567)"));
-        assert!(code.contains("Code section"));
+        assert!(code.contains("Code section") && !code.contains("no pull requests"));
+        let plain = prompt(
+            "me/dev",
+            "COPL-9",
+            Brief::Work,
+            Some(&Workspace {
+                pull_requests: false,
+                ..ws.clone()
+            }),
+        );
+        assert!(plain.contains("fast-forwarding main, then move the task to done"));
         let p = prompt_for("me/dev", "COPL-9", Brief::Work);
         assert!(p.starts_with("You are @me/dev working on COPL-9."));
         let p = prompt_for("me/dev", "COPL-9", Brief::Mentioned);

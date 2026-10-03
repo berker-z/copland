@@ -10,7 +10,9 @@ import type { BoardRepo } from "@/domain/types";
 
 interface RepoRow {
   id: string;
+  kind: BoardRepo["kind"];
   repo: string;
+  remote: string | null;
   connected_by_handle: string | null;
   created_at: string;
   last_delivery_at: string | null;
@@ -19,7 +21,9 @@ interface RepoRow {
 
 const rowToRepo = (r: RepoRow): BoardRepo => ({
   id: r.id,
+  kind: r.kind,
   repo: r.repo,
+  remote: r.kind === "github" ? `https://github.com/${r.repo}.git` : (r.remote ?? ""),
   connectedBy: r.connected_by_handle,
   createdAt: r.created_at,
   lastDeliveryAt: r.last_delivery_at,
@@ -27,7 +31,7 @@ const rowToRepo = (r: RepoRow): BoardRepo => ({
 });
 
 const REPO_SELECT = `
-  SELECT r.id, r.repo, u.handle AS connected_by_handle, r.created_at, r.last_delivery_at, r.last_event
+  SELECT r.id, r.kind, r.repo, r.remote, u.handle AS connected_by_handle, r.created_at, r.last_delivery_at, r.last_event
     FROM board_repos r LEFT JOIN users u ON u.id = r.connected_by`;
 
 export async function listRepos(db: D1Database, boardId: string): Promise<BoardRepo[]> {

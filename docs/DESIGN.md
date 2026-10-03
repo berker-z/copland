@@ -205,8 +205,8 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   a deleted branch struck through, and the repo in `text-faint` only when
   the task has code from more than one. A card shows one PR on its meta
   line, after files: icon and number in the state's hue and a `•` in the
-  CI's; a click opens GitHub, not the task. Board settings › github
-  (`RepoEditor.tsx`) lists repos with when GitHub was last heard from in
+  CI's; a click opens GitHub, not the task. Board settings › code
+  (`RepoEditor.tsx`: GitHub, then "or plain git", a remote any owner can set) lists repos with when GitHub was last heard from in
   `text-muted`, `text-yellow` while it never has, and a two-step
   `disconnect` like archive. For an admin, a select of the App's repos
   and `connect`, then a `text-xs text-muted` line with the install link

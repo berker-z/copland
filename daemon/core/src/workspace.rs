@@ -45,6 +45,9 @@ pub struct Workspace {
     pub fresh: bool,
     /// Not a worktree to work in but the clone at the default branch, to read: a lead's (COPL-87).
     pub read_only: bool,
+    /// Integrated through pull requests (a GitHub repo); false for a plain git remote (COPL-95),
+    /// where the work lands by fast-forwarding the default branch.
+    pub pull_requests: bool,
 }
 
 /// Where a repo's clone and a task's worktree live under the code directory.
@@ -59,15 +62,43 @@ pub fn paths(code_dir: &Path, repo: &str, key: &str) -> Result<(PathBuf, PathBuf
 }
 
 /// "owner/name" with GitHub's characters, and neither part a dot path.
+/// Two or more safe segments: "owner/name" for GitHub, "git/<host>/<path…>" for a plain remote.
 fn valid_repo(repo: &str) -> bool {
-    let mut parts = repo.split('/');
-    let (Some(owner), Some(name), None) = (parts.next(), parts.next(), parts.next()) else {
-        return false;
-    };
     let ok = |s: &str| {
         !s.is_empty() && s != "." && s != ".." && s.chars().all(|c| c.is_ascii_alphanumeric() || "-._".contains(c))
     };
-    ok(owner) && ok(name)
+    repo.split('/').count() >= 2 && repo.split('/').all(ok)
+}
+
+/// Where a plain git remote's clone goes under `repos/` (COPL-95): "git/" and its name's
+/// segments ("codeberg.org/me/proj", or "/srv/git/proj" for a path), each made safe.
+pub fn git_dir_name(name: &str) -> String {
+    let segments: Vec<String> = name
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let safe: String = s
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || "-._".contains(c) {
+                        c
+                    } else {
+                        '-'
+                    }
+                })
+                .collect();
+            if safe == "." || safe == ".." {
+                "-".to_string()
+            } else {
+                safe
+            }
+        })
+        .collect();
+    if segments.is_empty() {
+        "git/-".to_string()
+    } else {
+        format!("git/{}", segments.join("/"))
+    }
 }
 
 /// "COPL-79": letters and digits, a dash, a number.
@@ -145,6 +176,7 @@ pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title
             target,
             fresh: false,
             read_only: false,
+            pull_requests: true,
         });
     }
     /* A stale entry for a worktree whose directory is gone would refuse the add. */
@@ -189,6 +221,7 @@ pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title
             target,
             fresh: false,
             read_only: false,
+            pull_requests: true,
         });
     }
 
@@ -209,6 +242,7 @@ pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title
         target,
         fresh: true,
         read_only: false,
+        pull_requests: true,
     })
 }
 
@@ -245,6 +279,7 @@ pub async fn view(code_dir: &Path, remote: &str, repo: &str, key: &str) -> Resul
         target,
         fresh: false,
         read_only: true,
+        pull_requests: true,
     })
 }
 
@@ -295,12 +330,9 @@ fn repo_of(code_dir: &Path, key: &str) -> Option<String> {
     if worktrees.file_name()? != "worktrees" || dot_git.file_name()? != ".git" {
         return None;
     }
-    let clone = dot_git.parent()?;
-    let repo = format!(
-        "{}/{}",
-        clone.parent()?.file_name()?.to_str()?,
-        clone.file_name()?.to_str()?
-    );
+    let clone = dot_git.parent()?.to_str()?;
+    /* Everything after the last "/repos/": "owner/name", or "git/<host>/<path…>" for a plain remote. */
+    let repo = clone.rsplit_once("/repos/")?.1.to_string();
     /* By name rather than by prefix, so a code_dir reached through a symlink still matches. */
     let (expected, _) = paths(code_dir, &repo, key).ok()?;
     expected.join(".git").is_dir().then_some(repo)
@@ -388,6 +420,14 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_remote_gets_a_safe_folder() {
+        assert_eq!(git_dir_name("codeberg.org/me/proj"), "git/codeberg.org/me/proj");
+        assert_eq!(git_dir_name("/srv/git/proj"), "git/srv/git/proj");
+        assert_eq!(git_dir_name("host/a b/../c~d"), "git/host/a-b/-/c-d");
+        assert!(paths(Path::new("/c"), &git_dir_name("/srv/git/proj"), "COPL-1").is_ok());
+    }
+
+    #[test]
     fn paths_refuse_what_could_escape() {
         let root = Path::new("/c");
         assert_eq!(
@@ -399,7 +439,10 @@ mod tests {
         );
         assert!(paths(root, "../etc", "COPL-1").is_err());
         assert!(paths(root, "a/..", "COPL-1").is_err());
-        assert!(paths(root, "a/b/c", "COPL-1").is_err());
+        /* Deeper is fine (a plain remote's git/<host>/<path>), one segment or a dot path is not. */
+        assert!(paths(root, "a/b/c", "COPL-1").is_ok());
+        assert!(paths(root, "ab", "COPL-1").is_err());
+        assert!(paths(root, "a/./b", "COPL-1").is_err());
         assert!(paths(root, "a/b", "../x").is_err());
         assert!(paths(root, "a/b", "COPL-1/x").is_err());
         assert!(paths(root, "a/b", "COPL").is_err());

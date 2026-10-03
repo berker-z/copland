@@ -238,11 +238,18 @@ export interface BoardDetail {
   repos: BoardRepo[];
 }
 
-/** A repo connected to a board, by an instance admin; the instance's GitHub App delivers its events. */
+/**
+ * A board's code. A GitHub repo is connected by an instance admin, and the
+ * instance's GitHub App delivers its events; a plain git remote (COPL-95) by
+ * the board's owner, with no App, webhooks or PRs.
+ */
 export interface BoardRepo {
   id: string;
-  /** "owner/name" */
+  kind: "github" | "git";
+  /** The name shown: "owner/name" on GitHub, the remote without scheme and ".git" otherwise. */
   repo: string;
+  /** What the daemons clone. */
+  remote: string;
   /** Handle of the owner who connected it: the webhook acts as them. */
   connectedBy: string | null;
   createdAt: string;

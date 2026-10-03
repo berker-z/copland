@@ -184,3 +184,30 @@ export function driftStatus(d: Drift): { state: "success" | "pending"; descripti
       };
   }
 }
+
+/* ------------------------------------------------------- plain git ---- */
+
+/**
+ * A git remote for a board without GitHub (COPL-95): what to clone, and the
+ * name to show. Takes what git takes: https and ssh URLs, scp-style
+ * `user@host:path`, `file://` and absolute paths (on the agents' machines).
+ * The name is the remote without its scheme, user and ".git". Copland never
+ * clones it; only the daemons do, so nothing here reaches the network.
+ */
+export function parseRemote(raw: unknown): { remote: string; name: string } | null {
+  if (typeof raw !== "string") return null;
+  const remote = raw.trim();
+  if (!remote || remote.length > 300 || /[\s\u0000-\u001f]/.test(remote)) return null;
+  const tidy = (host: string, path: string) =>
+    `${host.toLowerCase()}/${path.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\.git$/i, "")}`.replace(/\/+$/, "");
+  let m = /^(?:https?|ssh|git):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/i.exec(remote);
+  if (m) return { remote, name: tidy(m[1], m[2]) };
+  m = /^[A-Za-z0-9._-]+@([A-Za-z0-9.-]+):(?!\/\/)(.+)$/.exec(remote);
+  if (m) return { remote, name: tidy(m[1], m[2]) };
+  m = /^file:\/\/(\/.+)$/i.exec(remote);
+  if (m) return { remote, name: m[1].replace(/\/+$/, "").replace(/\.git$/i, "") };
+  if (remote.startsWith("/") && !remote.split("/").includes("..")) {
+    return { remote, name: remote.replace(/\/+$/, "").replace(/\.git$/i, "") };
+  }
+  return null;
+}
