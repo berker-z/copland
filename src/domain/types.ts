@@ -489,15 +489,36 @@ export interface UploadedFile {
 /** Something that needs this principal's attention (GET /api/inbox). */
 export interface InboxItem {
   id: string;
-  kind: "assigned" | "mentioned" | "commented";
-  task: { id: string; key: string; title: string; boardId: string; boardName: string };
+  kind: "assigned" | "mentioned" | "commented" | "message";
+  /** Null only for a message that points at no task. */
+  task: { id: string; key: string; title: string; boardId: string; boardName: string } | null;
   actor: { id: string; handle: string; avatar: string | null };
   /** What the actor came through, when it was not the web app ("Claude Code"). */
   via: string | null;
   /** For a mention or a new comment: the comment's text as it is now. */
   comment: string | null;
+  /** For a message: what it says, and whether it is trusted (domain/messages.ts). */
+  message: InboxMessage | null;
   createdAt: string;
   readAt: string | null;
+}
+
+export interface InboxMessage {
+  /** What a reply names (POST /api/messages replyTo). */
+  id: string;
+  text: string;
+  /** From the recipient's owner, or to a person from their own agent. Anyone else's is untrusted, like a comment. */
+  trusted: boolean;
+}
+
+/** POST /api/messages: the message as sent. */
+export interface SentMessage {
+  id: string;
+  to: { id: string; handle: string };
+  taskId: string | null;
+  replyTo: string | null;
+  trusted: boolean;
+  createdAt: string;
 }
 
 /** GET /api/inbox: one page, newest first (by created time, then id). */
