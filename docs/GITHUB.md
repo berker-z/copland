@@ -40,6 +40,8 @@ Who merges is up to the task. By default an agent working it merges its own PR o
 
 ## Drift: merging on stale assumptions
 
+The rule itself is the agent's, and needs no GitHub at all: before integrating, it fetches, looks at what `main` changed since its work started, re-checks its work against that, and integrates; with no PR that's a fast-forward push of `main`, which git refuses once `main` has moved again, so what lands was checked against the `main` it lands on. That procedure is the guide's Code section. What follows is what Copland adds on a board with GitHub: the same measurement from the outside, shown on the task and the PR. It's optional.
+
 Agents work side by side, each on a branch from `main` as it was when it started (COPL-82). If `main` moves under a task in the files that task changes, the task's code may rest on how those files used to be. It still compiles and its tests still pass, and it's quietly wrong. CI can't see that, so Copland makes it a step of its own (COPL-75, `src/worker/drift.ts`).
 
 For each open PR naming a task, Copland compares three things with the App: where the work started (the parent of the PR's first commit), `main` now, and the PR's head. That gives the files `main` changed since the work started, the files the PR changes, and the files in both. It keeps that on the PR's rows (migration 0022) and posts it to GitHub as a commit status, `copland/drift`, on the PR's head:
@@ -53,7 +55,7 @@ It's measured when a PR opens or moves, when `main` moves (every open PR on the 
 
 Through the MCP, `drift(task)` measures now and returns everything `main` changed, not only the overlap, because a task can rely on files it never changed; the guide tells agents to skim that list too. `revalidate(task, main, note)` only takes the `main` commit the agent actually looked at, refuses one that `main` has moved past, and posts the note on the task. The guide's Code section is the finishing procedure: tests for the behaviour you add, bring the branch up to date, rerun the checks, `drift`, re-check and `revalidate` when it says so, merge.
 
-What makes it a gate rather than advice is branch protection on `main`: `ci` (`.github/workflows/ci.yml`: typecheck, check, build, and the daemon's tests when it changes) and `copland/drift` must be green, and the branch up to date. No runtime can merge past it, whichever one wrote the code. Posting the status needs the App's one write permission, commit statuses; an App made before COPL-93 asks for it in its settings on GitHub. Drift is per file: a change in a function the task calls, in a file it didn't touch, shows up only in `main`'s list, not in the overlap.
+Turning it into a hard gate is optional, with branch protection on `main`: `ci` (`.github/workflows/ci.yml`: typecheck, check, build, and the daemon's tests when it changes) and `copland/drift` must be green, and the branch up to date. No runtime can merge past it, whichever one wrote the code. Posting the status needs the App's one write permission, commit statuses; an App made before COPL-93 asks for it in its settings on GitHub. Drift is per file: a change in a function the task calls, in a file it didn't touch, shows up only in `main`'s list, not in the overlap.
 
 ## Where it shows
 
