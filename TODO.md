@@ -251,7 +251,7 @@ docs/DESIGN.md under Touch.
   row for the rest. Migration 0014 reindexes inbox_items for it
 - The level pill (COPL-46): three dots at the right of every card, list row,
   Gantt label and lane header say where a task sits (task `··●`, story
-  `·●●`, epic `●●●`, a diamond for a milestone, nothing without a level);
+  `·●●`, epic `●●●`, a diamond for a milestone; every task has one);
   the level filter chips carry it too. The leftmost filled dot is the
   level's hue (epic cyan, story green, task blue, milestone magenta;
   COPL-81). `src/ui/LevelPill.tsx`

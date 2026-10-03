@@ -119,7 +119,7 @@ export function useCreateTask(boardId: string) {
           dueDate: input.dueDate ?? null,
           completedAt: stage && isClosing(stage.category) ? now : null,
           parentId: input.parentId ?? null,
-          level: input.level ?? null,
+          level: input.level ?? "task",
           assigneeIds: input.assigneeIds ?? [],
           labelIds: input.labelIds ?? [],
           dependsOn: input.dependsOn ?? [],

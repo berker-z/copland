@@ -67,7 +67,8 @@ function rowToTask(row: TaskRow): Task {
     dueDate: row.due_date,
     completedAt: row.completed_at,
     parentId: row.parent_id,
-    level: row.level,
+    /* Backfilled by migration 0021 and refused by the routes; the column itself still allows null. */
+    level: row.level ?? "task",
     assigneeIds: ids(row.assignee_ids),
     labelIds: ids(row.label_ids),
     dependsOn: ids(row.depends_on),

@@ -133,7 +133,8 @@ export interface Task {
   dueDate: string | null;
   completedAt: string | null;
   parentId: string | null;
-  level: Level | null;
+  /** Always set (COPL-85): a task unless said otherwise. */
+  level: Level;
   assigneeIds: string[];
   labelIds: string[];
   dependsOn: string[];

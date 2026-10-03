@@ -165,7 +165,7 @@ export function FilterBar({ detail, filters, result, onChange }: FilterBarProps)
           {LEVEL_FILTERS.map((l) => (
             <button key={l} onClick={() => set({ levels: toggle(filters.levels, l) })} className={`${chip(filters.levels.includes(l))} flex items-center gap-1.5`} aria-pressed={filters.levels.includes(l)}>
               {l}
-              {l !== "none" && <LevelPill level={l} decorative />}
+              <LevelPill level={l} decorative />
             </button>
           ))}
         </span>

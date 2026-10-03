@@ -145,7 +145,7 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   header, over every view. A search input in the standard style (`/`
   focuses it, Escape clears it), then chips that read like the view switch
   (`text-accent bg-raised` on, `text-muted` off): levels (each with its
-  level pill after the name, `none` without), labels (in their
+  level pill after the name), labels (in their
   tone when on, `text-faint` off), an assignee select, `under…` (a
   search-and-pick dropdown of tasks, those with children first) which
   becomes an `under KEY ×` chip in `text-accent` (`text-red` when the key is
@@ -180,7 +180,7 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   story `·●●`, epic `●●●`), empty ones smaller `fill-faint`. The leftmost
   filled dot carries the level's hue and the others stay `fill-muted`: epic
   `fill-cyan`, story `fill-green`, task `fill-blue`. A milestone is off
-  that ladder: one `fill-magenta` diamond in the same footprint. No level, no pill. It carries the level name as
+  that ladder: one `fill-magenta` diamond in the same footprint. Every task has a level (COPL-85), so every task has a pill. It carries the level name as
   `title` and `aria-label` (`decorative` hides it where the name is written
   beside it). It always sits at the right: top right of a card on the
   title's first line (the title wraps beside it, never under it), the last

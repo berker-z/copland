@@ -82,6 +82,12 @@ function parseDate(raw: unknown, name: string): string | null {
   return raw;
 }
 
+/** Every task has a level (COPL-85): one of LEVELS, never null. */
+function parseLevel(raw: unknown): Level {
+  if (!(LEVELS as readonly string[]).includes(raw as string)) throw badRequest(`\`level\` must be one of ${LEVELS.join(", ")}`);
+  return raw as Level;
+}
+
 function parseFlag(raw: unknown, name: string): boolean {
   if (typeof raw !== "boolean") throw badRequest(`\`${name}\` must be true or false`);
   return raw;
@@ -312,16 +318,13 @@ export async function postTask(
   await requireLabels(db, board.id, labelIds);
 
   let parentId: string | null = null;
-  let level: Level | null = null;
+  let level: Level = "task";
   if (body.parentId !== undefined && body.parentId !== null) {
     if (typeof body.parentId !== "string") throw badRequest("`parentId` must be a task id or null");
     await checkParent(db, board, null, body.parentId);
     parentId = body.parentId;
   }
-  if (body.level !== undefined && body.level !== null) {
-    if (!(LEVELS as readonly string[]).includes(body.level as string)) throw badRequest("`level` is not a level");
-    level = body.level as Level;
-  }
+  if (body.level !== undefined) level = parseLevel(body.level);
 
   const reviewFirst = body.reviewFirst === undefined ? false : parseFlag(body.reviewFirst, "reviewFirst");
 
@@ -489,12 +492,7 @@ export async function patchTask(
     await checkParent(db, board, task.id, body.parentId as string | null);
     set("parent_id", "parentId", body.parentId);
   }
-  if (body.level !== undefined) {
-    if (body.level !== null && !(LEVELS as readonly string[]).includes(body.level as string)) {
-      throw badRequest("`level` is not a level");
-    }
-    set("level", "level", body.level);
-  }
+  if (body.level !== undefined) set("level", "level", parseLevel(body.level));
 
   if (body.assigneeIds !== undefined) {
     const assigneeIds = parseIdList(body.assigneeIds, "assigneeIds");

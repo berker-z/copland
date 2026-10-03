@@ -6,7 +6,7 @@
    The query string is the state, next to ?view=, so a filtered board is a
    link you can share and it survives a reload:
 
-     level=epic&level=none   levels, any of (none = no level)
+     level=epic&level=task   levels, any of
      under=CPL-5             CPL-5 and everything below it, at any depth
      who=me | none | handle  assignee: you, nobody, or a member (agents too)
      label=bug&label=ui      labels by name, any of
@@ -24,7 +24,7 @@ import { LEVELS, type BoardDetail, type Task } from "@/domain/types";
 /** Closed tasks older than this are hidden unless done=all. */
 export const RECENT_DONE_DAYS = 14;
 
-export const LEVEL_FILTERS = [...LEVELS, "none"] as const;
+export const LEVEL_FILTERS = LEVELS;
 export type LevelFilter = (typeof LEVEL_FILTERS)[number];
 
 export interface BoardFilters {
@@ -98,7 +98,7 @@ export function applyFilters(detail: BoardDetail, f: BoardFilters, meId: string 
 
   const matches = (t: Task) =>
     (!below || below.has(t.id)) &&
-    (!f.levels.length || f.levels.includes(t.level ?? "none")) &&
+    (!f.levels.length || f.levels.includes(t.level)) &&
     (whoId === null || (whoId === "none" ? t.assigneeIds.length === 0 : t.assigneeIds.includes(whoId))) &&
     (!f.labels.length || t.labelIds.some((id) => labelIds.has(id))) &&
     (!needle || `${t.key}\n${t.title}\n${t.brief}`.toLowerCase().includes(needle));

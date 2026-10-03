@@ -77,7 +77,7 @@ const CLAIM_REFUSED: Record<ClaimRefusal, string> = {
 
 const SUPPORTED_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 /** The tool interface's version, for serverInfo. Bump when tools change shape. */
-const SERVER_VERSION = "1.5.0";
+const SERVER_VERSION = "1.6.0";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -386,10 +386,10 @@ function resolvePriority(ref: unknown): Priority {
   return p as Priority;
 }
 
-function resolveLevel(ref: unknown): Level | null {
-  if (ref === null || ref === "" || fold(String(ref)) === "none") return null;
-  const level = fold(String(ref));
-  if (!(LEVELS as readonly string[]).includes(level)) throw new Error(`level must be one of: ${LEVELS.join(", ")}, or "none".`);
+/** Every task has one (COPL-85); there is no "none". */
+function resolveLevel(ref: unknown): Level {
+  const level = fold(String(ref ?? ""));
+  if (!(LEVELS as readonly string[]).includes(level)) throw new Error(`level must be one of: ${LEVELS.join(", ")}.`);
   return level as Level;
 }
 
@@ -466,7 +466,7 @@ function summarize(detail: BoardDetail, task: Task, origin: string) {
     ...(task.labelIds.length
       ? { labels: task.labelIds.map((id) => detail.labels.find((l) => l.id === id)?.name ?? id) }
       : {}),
-    ...(task.level ? { level: task.level } : {}),
+    level: task.level,
     ...(task.parentId ? { parent: keyOf(task.parentId) } : {}),
     ...(task.dependsOn.length ? { depends_on: task.dependsOn.map(keyOf) } : {}),
     ...(children ? { children } : {}),
@@ -653,7 +653,7 @@ ${who}${run} Today is ${today()} (UTC).${
 - **Waiting on someone.** When you need an answer or a decision, comment with an @mention of the person who can give it (a question only in a brief, or only in your reply to the user, reaches nobody), and move the task to the board's blocked stage (move_task { stage: "blocked" }). Moving it to blocked releases your claim; once answered, claim it again (claim_task moves it back to active) and carry on. On a board without a blocked stage, just comment.
 - **Runs and claims.** A run is one working session of a principal, of one of two kinds. A supervised run is started by whatever launched you (the daemon, a script), which connects you through it and keeps it alive while your process lives. An interactive run is a chat session's: the first claim_task over a connection that is not a supervised run makes one for that connection (one per connection, so two chat windows on the same connection share it). whoami says which you are in. Every call through a run keeps it alive and goes into the task history with it ("dev via Codex · run 8f31"); a supervised run not heard from for ${RUN_LEASE_MS / 60_000} minutes, or an interactive one for ${INTERACTIVE_LEASE_MS / 60_000}, shows as stale. In Claude Code, a hook the user sets up calls heartbeat on every tool use, so the run stays alive while you work in other tools; elsewhere any call to Copland does it. A claim is a run's hold on a task, so two runs never work the same one: a task has at most one live claim, claim_task refuses while another run or session holds it, and refuses a task assigned to someone other than you. A claim lasts while your run keeps calling and ends by itself when the run goes quiet for its lease or ends, the task closes or moves to blocked, or you come off its assignees; release_task lets go of one without closing the task. In a chat session, release what you stop working on, so the board does not say you are on it after you have moved on. A summary's claimed_by, run and run_kind say who is on a task right now. Blocked is not crashed: when you need an answer, comment with an @mention and move the task to blocked, which releases your claim; the task stays assigned to you, and you or a later run claim it again once answered. finish_run ends your run and releases its claims. For a supervised run it is the connection's last call: after it, the run's credential stops working. For an interactive run the connection keeps working, and the next claim_task starts a new run.
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
-- **Planning.** Any task can have a level (epic > story > task, plus milestone), a parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). All three are optional: a task without them is an ordinary task. A task waits for what it depends on: nobody can claim it until those are closed (for code, merged), so use depends_on where one piece of work has to start from another's result. Breaking work down means creating the pieces as tasks with parent set, never writing them as a list in the parent's brief: the board shows a task's children, and a list in a brief goes stale the moment one moves. An epic's brief says what it is for and why; its stories are its children. Children are work: a record that starts out done (a decision, a note) filed as a child can close an open parent, so keep such records as tasks of their own that name the work in their brief. list_tasks with parent lists a task's children, with under its whole subtree.
+- **Planning.** Every task has a level: epic > story > task, plus milestone (a checkpoint, not work). It is \`task\` unless you say otherwise, and it can be changed but never cleared. A task can also have a parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by), both optional. A task waits for what it depends on: nobody can claim it until those are closed (for code, merged), so use depends_on where one piece of work has to start from another's result. Breaking work down means creating the pieces as tasks with parent set, never writing them as a list in the parent's brief: the board shows a task's children, and a list in a brief goes stale the moment one moves. An epic's brief says what it is for and why; its stories are its children. Children are work: a record that starts out done (a decision, a note) filed as a child can close an open parent, so keep such records as tasks of their own that name the work in their brief. list_tasks with parent lists a task's children, with under its whole subtree.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
 - **Inbox.** Everyone, person or agent, has an inbox: being assigned a task by someone else, being @mentioned in a comment, and a new comment on a task they take part in (created, are assigned to, have commented on or been mentioned on) land there; someone a comment mentions gets only the mention. Read it with inbox, a page at a time (it pages by next until next is null, so older unread items are never out of reach), then mark_read what you have dealt with (or dismiss it); marking something already read again is harmless. A task's notes describe the work; questions, decisions you need from someone, and status updates always go in comments, never only in your own reply or a brief. Replying in the thread reaches whoever asked; a mention is how to hand something to someone or ask a person who is not yet taking part: "@sam can you check this". A handle inside \`code\`, a \`\`\` block or a > quoted line notifies nobody.
 - **Labels** (tags like #frontend) belong to a board and are given by name; create_label adds one, update_label renames or recolours it. Priority is low, normal, high or urgent.
@@ -840,7 +840,7 @@ const TOOLS: Tool[] = [
     name: "list_tasks",
     title: "List tasks",
     description:
-      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, category (the stage's: backlog|todo|active|blocked|done|cancelled), status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields (level, parent, depends_on, children: a count) when set, claimed_by, run and run_kind (supervised or interactive) when a run is on it right now (claim_task), code (branches and PRs naming it, on a board with a GitHub repo connected: pr and title or branch, repo, state open|draft|merged|closed, ci success|failure|pending when reported, url) when there is any, review_first when a person merges its PR rather than the agent, comment count and url (the task's own link: its board with the task open). Filters combine. parent lists a task's direct children; under lists everything below it at any depth (its children, their children and so on, not the task itself), which is how to see what is left of an epic. Both refuse a key that is on none of your boards. status still applies, so pass status: \"all\" to include closed work under a task.",
+      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, category (the stage's: backlog|todo|active|blocked|done|cancelled), status (open|done|cancelled), priority, start, due, overdue, assignees, labels, level (always), planning fields (parent, depends_on, children: a count) when set, claimed_by, run and run_kind (supervised or interactive) when a run is on it right now (claim_task), code (branches and PRs naming it, on a board with a GitHub repo connected: pr and title or branch, repo, state open|draft|merged|closed, ci success|failure|pending when reported, url) when there is any, review_first when a person merges its PR rather than the agent, comment count and url (the task's own link: its board with the task open). Filters combine. parent lists a task's direct children; under lists everything below it at any depth (its children, their children and so on, not the task itself), which is how to see what is left of an epic. Both refuse a key that is on none of your boards. status still applies, so pass status: \"all\" to include closed work under a task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -958,7 +958,7 @@ const TOOLS: Tool[] = [
     name: "create_task",
     title: "Create a task",
     description:
-      "Open a task. Without board it goes in your inbox (for an agent, its owner's inbox, once the owner has added it there). It starts in the board's first todo stage (without one, its first open stage that is not backlog) unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level, parent and depends_on are optional planning fields on any board; parent and depends_on must be tasks on the same board. To break work down, create each piece with parent set rather than listing the pieces in the parent's brief. Dates must be real YYYY-MM-DD days, start on or before due; leave start out and it is today (UTC), which is right unless the user says otherwise; pass start: null only when the user explicitly asks for no start date. A parent follows its children (see the guide): a new child under way, or ready under a closed parent, can move its parent and that parent's parent. Returns { created: summary }, plus also_moved: [{ key, stage }] for any parents that moved with it.",
+      "Open a task. Without board it goes in your inbox (for an agent, its owner's inbox, once the owner has added it there). It starts in the board's first todo stage (without one, its first open stage that is not backlog) unless stage says otherwise, unassigned unless assignees says otherwise. Needs the editor role on the board. level is epic, story, task (the default) or milestone; parent and depends_on are optional planning fields on any board; parent and depends_on must be tasks on the same board. To break work down, create each piece with parent set rather than listing the pieces in the parent's brief. Dates must be real YYYY-MM-DD days, start on or before due; leave start out and it is today (UTC), which is right unless the user says otherwise; pass start: null only when the user explicitly asks for no start date. A parent follows its children (see the guide): a new child under way, or ready under a closed parent, can move its parent and that parent's parent. Returns { created: summary }, plus also_moved: [{ key, stage }] for any parents that moved with it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1023,7 +1023,7 @@ const TOOLS: Tool[] = [
     name: "update_task",
     title: "Update a task",
     description:
-      "Change a task. Only what you pass changes; lists (assignees, labels, depends_on) replace the whole list, [] clears. stage moves it (the same as move_task). \"none\" clears start, due, level or parent. parent and depends_on must be tasks on the same board. Needs the editor role. Everything you pass is saved in one write: all of it, or (on an error) none of it. A new stage or parent can move parents in the same write, the old parent's and the new one's (parents follow their children, see the guide; don't move them yourself). Returns { updated: summary }, plus also_moved: [{ key, stage }] for any parents that moved with it.",
+      "Change a task. Only what you pass changes; lists (assignees, labels, depends_on) replace the whole list, [] clears. stage moves it (the same as move_task). \"none\" clears start, due or parent; a level can be changed but never cleared. parent and depends_on must be tasks on the same board. Needs the editor role. Everything you pass is saved in one write: all of it, or (on an error) none of it. A new stage or parent can move parents in the same write, the old parent's and the new one's (parents follow their children, see the guide; don't move them yourself). Returns { updated: summary }, plus also_moved: [{ key, stage }] for any parents that moved with it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1036,7 +1036,7 @@ const TOOLS: Tool[] = [
         due: { type: "string", description: "YYYY-MM-DD, or \"none\"" },
         assignees: PEOPLE,
         labels: { type: "array", items: S, description: "Label names; [] clears" },
-        level: { type: "string", enum: [...LEVELS, "none"] },
+        level: { type: "string", enum: [...LEVELS], description: "epic, story, task or milestone; a task always has one" },
         parent: { type: "string", description: "Task key, or \"none\"" },
         depends_on: { type: "array", items: S, description: "Task keys; [] clears" },
         review_first: {

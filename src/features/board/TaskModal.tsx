@@ -390,8 +390,7 @@ function TaskForm({ detail, task, others, title, brief, setTitle, setBrief, setE
       )}
 
       <Row label="level">
-        <select className={field} value={task.level ?? ""} onChange={(e) => save({ level: (e.target.value || null) as Task["level"] })}>
-          <option value="">none</option>
+        <select className={field} value={task.level} onChange={(e) => save({ level: e.target.value as Task["level"] })}>
           {LEVELS.map((l) => (
             <option key={l} value={l}>
               {l}
