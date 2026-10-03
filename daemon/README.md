@@ -98,11 +98,13 @@ code_command = [
   "--mcp-config", "{mcp_config}", "--strict-mcp-config",
   "--permission-mode", "bypassPermissions",
   "--no-session-persistence",
+  "--setting-sources", "project",
+  "--settings", "{\"sandbox\":{\"enabled\":false}}",
 ]
-writable = ["~/.claude", "~/.claude.json", "~/.cache", "~/.npm", "~/.cargo/registry"]
+writable = ["~/.claude", "~/.claude.json", "~/.cache", "~/.npm", "~/.cargo/registry", "~/.config/.wrangler"]
 ```
 
-Nothing in the daemon is about one runtime. It hands the run the worktree as its working directory, and `COPLAND_REPO`, `COPLAND_WORKDIR`, `COPLAND_BRANCH`, `COPLAND_BASE` (the commit it started from) and `COPLAND_TARGET` (`origin/main`) in its environment. The prompt says which repo, branch and base, and points at the Copland guide's Code section, which says how coding work is finished: commit, push, open a PR with `Fixes COPL-79` in its body, wait for CI, and merge it, unless the task is marked review first. The merge is what closes the task. The Claude Code command above skips Claude's own permission prompts, since nobody is there to answer them and the sandbox is what limits it; another runtime gets whatever its equivalent is.
+Nothing in the daemon is about one runtime. It hands the run the worktree as its working directory, and `COPLAND_REPO`, `COPLAND_WORKDIR`, `COPLAND_BRANCH`, `COPLAND_BASE` (the commit it started from) and `COPLAND_TARGET` (`origin/main`) in its environment. The prompt says which repo, branch and base, and points at the Copland guide's Code section, which says how coding work is finished: commit, push, open a PR with `Fixes COPL-79` in its body, wait for CI, and merge it, unless the task is marked review first. The merge is what closes the task. A runtime started by the daemon still reads its own settings, the ones you use at the keyboard, and those were written for someone sitting there. The Claude Code command above skips Claude's permission prompts (`bypassPermissions`), since nobody is there to answer them and the sandbox is what limits it. But an `ask` rule in your `~/.claude/settings.json` (say, before `git push`) still asks, and in a headless run that is a refusal; and Claude's own sandbox, if you have it on, runs inside ours, where the push fails and the retry outside it asks too. So `--setting-sources project` loads only the repo's checked-in `.claude/settings.json`, not your personal ones (your `CLAUDE.md` still applies), and `--settings` turns Claude's sandbox off, ours being the one that counts. Another runtime needs the same two things in whatever form it takes them: no prompts, and none of its keyboard settings.
 
 Some top-level keys are for the box alone, and the headless daemon ignores them. The menu's settings and boards panels write the first five for you (see "The menu"); a key at its default is left out.
 
