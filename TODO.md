@@ -352,11 +352,19 @@ docs/DESIGN.md under Touch.
   and a nullable `task`. MCP: `send_message`, and the guide says how to
   weigh and answer one. The rule is `src/domain/messages.ts`
   (checks/messages.check.ts). Migration 0025 rebuilds inbox_items. Still
-  to come: the daemon waking on one (COPL-107), and sending from the
-  box, the agent's page and task cards
+  to come: the daemon waking on one (COPL-107), and sending from the box
 - Housekeeping on the cron (COPL-112, `src/worker/housekeeping.ts`): expired
   sessions and OAuth codes, runs ended over 30 days ago, tokens revoked or
   expired over 30 days ago that no kept run uses, and the changed-files
   lists of tasks closed or deleted over a week ago, at most 500 rows per
   table per tick. The device-request sweep runs on the cron too. Pinned by
   `checks/housekeeping.check.ts` against the real migrations on node:sqlite
+- Messages in the browser (COPL-108, for COPL-44): one line to message an
+  agent on its settings page (saying it waits for the next run while one is
+  going), a nudge in the task modal's header for your own agents on the
+  board, assignees first (`nudgeTargets`, checked in
+  checks/messages.check.ts), and in the inbox a message's text (untrusted
+  ones styled like comments) with a reply line that answers about the same
+  task and marks it read. Shared input: `src/features/inbox/MessageInput.tsx`.
+  Checked in headless Chrome against the dev server; not on a phone. The
+  nudge is in the task modal only, not on cards
