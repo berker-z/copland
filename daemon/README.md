@@ -100,13 +100,13 @@ TLS is rustls with ring, so there is no OpenSSL and no cmake to find; on NixOS p
 
 ## The box
 
-`copland-box` is the daemon with a window (COPL-33). It runs the same loop as `copland-daemon`, in the same process, and draws your agents' work as the wired scene, the same one as the web's /wired pane (`src/features/wired/scene.ts` and `WiredPane.tsx`, designed in `docs/research/wired-prototype.html`): four poles on one ground line, todo, doing, blocked half a span on and done a span on, each with its list underneath. Tickets wait on the wire into doing, a run's sits at the doing pole while current runs along its wire, blocked ones take the short span and wait by the blocked pole, and done ones ride the long span that sags under blocked and fade off the edge. The geometry, the default tuning and the per-frame update are a port of the web scene, kept close enough to read side by side; when the web scene's geometry changes, the box's has to follow by hand. All of it is in `box/src/scene.rs`: the layout is the constants and `Layout`/`build_wires` at the top, and `view.rs` places the lists by the web pane's rule (`budgets`).
+`copland-box` is the daemon with a window (COPL-33). It runs the same loop as `copland-daemon`, in the same process, and draws your agents' work as the wired scene, the same one as the web's /wired pane (`src/features/wired/scene.ts` and `WiredPane.tsx`, designed in `docs/research/wired-prototype.html`): four poles on one ground line, todo, doing, blocked half a span on and done a span on, each with its list underneath. Tickets wait on the wire into doing, a run's sits at the doing pole while current runs along its wire, blocked ones take the short span and wait by the blocked pole, and done ones ride the long span that sags under blocked and fade off the edge. The geometry, the default tuning and the per-frame update are a port of the web scene, kept close enough to read side by side; when the web scene's geometry changes, the box's has to follow by hand, and its tests fail until it does (see "Building the box"). All of it is in `box/src/scene.rs`: the layout is the constants and `Layout`/`build_wires` at the top, and `view.rs` places the lists by the web pane's rule (`budgets`).
 
 The scene is drawn on a 170×22 grid at 3 screen pixels per cell, rounded to whole device pixels on scaled outputs. It is composited in software the way the web's canvas is, then painted as one GPUI quad per horizontal run of same-coloured cells, a few hundred quads. The lists and the status line are text in JetBrains Mono when the system has it, else fontconfig's monospace, else DejaVu Sans Mono. No font is bundled. Each list shows the longest form of its lines that all of them fit, as the web does: doing drops the timer, then the agent; blocked the agent, then the mark. At the box's size the full forms fit for ordinary keys and names.
 
 The window is 548×196 and asks to stay that size. When the compositor gives it more anyway (tiling, a rule, a resize), the box draws at the largest whole multiple of its natural size that fits, 6 pixels per cell at twice the size and so on, with the text and gaps scaled to match, and centres the scene in the space. The title and status lines run the full width. Smaller than 548×196 it stays at its natural size and is cut off.
 
-It draws only when something changes: every frame while a ticket travels or fades, about 20 frames a second while the wires only sway and the current runs, once a second while a run's timer shows with `motion = false`, and otherwise when the daemon's state or the owner's feed changes (and every 30 seconds for the done list's slow fade). GPUI has no reduced-motion setting to follow, so `motion = false` in `daemon.toml` is the switch.
+It draws only when something changes: every frame while a ticket travels or fades, about 20 frames a second while a run's current flows, 12 while the wires only sway (they move about a cell a second, so it looks the same and costs less), once a second while a run's timer shows with `motion = false`, and otherwise when the daemon's state or the owner's feed changes (and every 30 seconds for the done list's slow fade). GPUI has no reduced-motion setting to follow, so `motion = false` in `daemon.toml` is the switch.
 
 What it shows, live, with `owner_token_file`:
 
@@ -154,9 +154,63 @@ hl.window_rule({
 
 The move puts it 24px from the right and 48px from the bottom. Use constants there, not `window_w`: the rule is evaluated against the size the window would have had tiled, which changes with whatever else is on the workspace. The Lua rule was checked on Hyprland 0.56; the `windowrulev2` lines weren't.
 
+### Installing it
+
+`daemon/flake.nix` packages both binaries, `copland-box` and `copland-daemon`, built from `Cargo.lock` with nixpkgs' `rustPlatform` (every crate comes from the lock, offline). GPUI loads the Vulkan loader, Wayland, X11, xkbcommon and fontconfig at run time, which NixOS doesn't put on a library path, so the package adds them to the box's RPATH. Not `LD_LIBRARY_PATH` in a wrapper: that would leak into everything the box starts, the runtimes and your browser included. The package also has a desktop entry (`copland-box.desktop`, "Copland", named after the window's app id so docks match the two) and the Copland mark as its icon, the SVG plus PNGs from 32 to 256 pixels.
+
+From a checkout:
+
+```sh
+nix run ./daemon                      # the box (same as ./daemon#box)
+nix run ./daemon -- --demo            # arguments go after --
+nix run ./daemon#daemon -- --check    # the headless daemon
+nix build ./daemon                    # ./result/bin/copland-box and copland-daemon
+nix profile install ./daemon          # on PATH for good, with the launcher entry
+```
+
+Without a checkout it's `nix run github:berker-z/copland?dir=daemon`, and so on. Nix only sees files git tracks, so a new file in `daemon/` needs at least `git add -N` before any of these find it.
+
+On NixOS, take it as a flake input and add the package where you keep your others:
+
+```nix
+# flake.nix
+inputs.copland = {
+  url = "github:berker-z/copland?dir=daemon";
+  # Not `follows`: the box is built and tested against its own pinned nixpkgs.
+};
+
+# configuration.nix
+environment.systemPackages = [ inputs.copland.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+# or, with home-manager
+home.packages = [ inputs.copland.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+```
+
+`nix flake update copland` takes the newest box; nothing else moves it.
+
+Starting it with the session is up to you. With home-manager, a systemd user service:
+
+```nix
+systemd.user.services.copland-box = {
+  Unit = {
+    Description = "Copland box";
+    PartOf = [ "graphical-session.target" ];
+    After = [ "graphical-session.target" ];
+  };
+  Service = {
+    ExecStart = "${inputs.copland.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/copland-box";
+    Restart = "on-failure";
+  };
+  Install.WantedBy = [ "graphical-session.target" ];
+};
+```
+
+Two things make or break that. Your compositor has to start `graphical-session.target` and hand the user manager its environment (`WAYLAND_DISPLAY` above all), which Hyprland does under UWSM or with home-manager's `wayland.windowManager.hyprland.systemd.enable`. And the runtimes in `daemon.toml` (`claude`, `codex`) are looked up on the service's `PATH`, not your shell's; NixOS's user manager has the system and per-user profiles on it, but a `claude` from npm or `~/.local/bin` isn't. Give `command` a full path then. If your session has no target, Hyprland's `exec-once = copland-box` does the same job with your session's environment.
+
+The package is Linux only (x86_64 and aarch64), from source. Release binaries for other platforms aren't made yet.
+
 ### Building the box
 
-GPUI needs native libraries NixOS doesn't put on a library path: the Vulkan loader, Wayland, X11, xkbcommon, fontconfig and freetype. `daemon/flake.nix` has a dev shell with them and `LD_LIBRARY_PATH` set. It brings no Rust toolchain, so cargo is whatever is on your PATH and builds inside and outside the shell share `target/`. nixpkgs is pinned to a rev in the flake itself, and `flake.lock` holds the hash.
+For working on it, the same flake has a dev shell with GPUI's libraries and `LD_LIBRARY_PATH` set. It brings no Rust toolchain, so cargo is whatever is on your PATH and builds inside and outside the shell share `target/`. nixpkgs is pinned to a rev in the flake itself, and `flake.lock` holds the hash. A binary from `target/` finds its libraries only inside the shell; the package above is the one that runs anywhere.
 
 ```sh
 cd daemon
@@ -166,7 +220,7 @@ nix develop -c cargo test --workspace
 nix develop -c cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The binary runs outside the shell only if the libraries can be found some other way, so start it through `nix develop -c` for now. A Nix package with a wrapper is for later. Nix only sees files git tracks, so a fresh `flake.nix` needs at least `git add -N` before `nix develop` finds it.
+The package doesn't run the tests: some of the box's read the web app's sources, which are outside its source on purpose. Besides `themes.css` (above), `scene.rs` and `view.rs` read `src/features/wired/scene.ts` and `WiredPane.tsx` with a small arithmetic reader (`box/src/webts.rs`) and check the port against them: every number constant, the eight wires' ends, dips and lengths at a few points of the sway, where beads rest, and the lists' width budgets at the web's scales. They fail naming what differs, and on a new web constant the box doesn't port yet. The box's padding and its zoom are its own and aren't checked.
 
 GPUI is `gpui = "=0.2.2"` from crates.io, the newest published release. Everything under it comes from crates.io too, so that line and `Cargo.lock` pin the whole graph; no git dependencies. Pins move only when something forces it (see AGENTS.md).
 

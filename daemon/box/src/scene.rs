@@ -113,6 +113,8 @@ pub const DONE_TAIL: f32 = 16.0;
 /// Lines under the todo and doing poles; blocked and done have `SHORT_LINES`.
 pub const LINES: usize = 4;
 pub const SHORT_LINES: usize = 3;
+/// A list line's height, in screen pixels at the natural size.
+pub const LINE_H: f32 = 15.0;
 
 /// JS `Math.round`: halves go up.
 fn round(x: f32) -> i32 {
@@ -512,7 +514,7 @@ const DEMO_POOL: [&str; 10] = [
 /// Beads drawn resting on a pole; the lists say how many more there are.
 pub const MAX_BEADS: usize = 4;
 /// The done list's header stays lit this long after the newest, in seconds (live).
-const DONE_LIT: f64 = 15.0 * 60.0;
+pub const DONE_LIT: f64 = 15.0 * 60.0;
 
 /// Where the i-th resting item of todo sits on the wire into doing.
 fn queue_t(i: usize) -> f32 {
@@ -1485,7 +1487,7 @@ impl Scene {
         let list_top = Self::list_top(cell, zoom);
         (
             l.bw as f32 * cell + DONE_TAIL * zoom,
-            (l.bh as f32 * cell + 6.0 * zoom).max(list_top + (20.0 + LINES as f32 * 15.0) * zoom),
+            (l.bh as f32 * cell + 6.0 * zoom).max(list_top + (20.0 + LINES as f32 * LINE_H) * zoom),
         )
     }
 }
@@ -1590,6 +1592,198 @@ mod tests {
         let s = Scene::live(Tune::default());
         assert_eq!(s.size(3.0, 1.0), (526.0, 142.0));
         assert_eq!(s.size(6.0, 2.0), (1052.0, 284.0));
+    }
+
+    /// The port against `src/features/wired/scene.ts`: every number constant there, the
+    /// wires `buildWires` makes (ends, dip and length, at a few clocks) and where `restFor`
+    /// rests beads. A change on the web side fails here until the box follows.
+    #[test]
+    fn matches_the_web_scene() {
+        use crate::webts;
+        const FILE: &str = "src/features/wired/scene.ts";
+        let src = webts::read(FILE);
+        let web = webts::consts(&src);
+        let (v, l) = (Tune::default(), Layout::new(Tune::default().spacing));
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-4;
+
+        for (name, &theirs) in &web {
+            let ours: f64 = match name.as_str() {
+                "SPACING" => v.spacing.into(),
+                "SAG" => v.sag.into(),
+                "SWAY_AMP" => v.sway_amp.into(),
+                "SWAY_HZ" => v.sway_speed.into(),
+                "POLE_TONE" => v.pole_tone.into(),
+                "IDLE" => v.idle.into(),
+                "TINT" => v.tint.into(),
+                "PULSE_SPEED" => v.pulse_speed.into(),
+                "PULSE_LEN" => v.pulse_len.into(),
+                "GLOW" => v.glow.into(),
+                "TRAVEL" => v.travel.into(),
+                "BLINK" => v.blink.into(),
+                "DUTY" => v.duty.into(),
+                "SOFT" => v.soft.into(),
+                "MAX_BEADS" => MAX_BEADS as f64,
+                "POLE_H" => POLE_H.into(),
+                "TOP" => TOP.into(),
+                "TAIL" => TAIL.into(),
+                "DEEP" => DEEP.into(),
+                "K" => K.into(),
+                "CK" => K.cosh().into(),
+                "BW" => l.bw.into(),
+                "BH" => l.bh.into(),
+                "X[0]" => l.x[0].into(),
+                "X[1]" => l.x[1].into(),
+                "X[2]" => l.x[2].into(),
+                "X[3]" => l.x[3].into(),
+                other => {
+                    panic!("{FILE} has `{other} = {theirs}`, which the box doesn't port: add it to scene.rs and here")
+                }
+            };
+            assert!(
+                near(ours, theirs),
+                "{FILE}: {name} is {theirs} on the web, {ours} in the box"
+            );
+        }
+        for name in [
+            "SPACING",
+            "SAG",
+            "POLE_H",
+            "TOP",
+            "TAIL",
+            "DEEP",
+            "X[3]",
+            "BW",
+            "BH",
+            "MAX_BEADS",
+        ] {
+            assert!(
+                web.contains_key(name),
+                "{FILE} no longer has a `const {name} = …` the test can read"
+            );
+        }
+
+        /* buildWires: its own consts, X destructured, then one `name: mk(...)` line per wire. */
+        let body = webts::block(&src, "function buildWires(", "}");
+        let after = |marker: &str| -> &str {
+            let line = body
+                .lines()
+                .find(|ln| ln.contains(marker))
+                .unwrap_or_else(|| panic!("{FILE}: no `{marker}` in buildWires"));
+            line.split_once(marker).unwrap().1.trim().trim_end_matches([';', ','])
+        };
+        let sway_expr = after("const sway = (ph: number) => ");
+        let dip_expr = after("dip: ");
+        let default_k: f64 = after("const mk = (")
+            .split_once("k = ")
+            .and_then(|(_, r)| r.split(')').next()?.parse().ok())
+            .unwrap_or_else(|| panic!("{FILE}: can't read mk's default k"));
+        let destructure = after("const [").trim_end_matches(" = X");
+        let mut local = web.clone();
+        for (i, n) in destructure.trim_end_matches(']').split(", ").enumerate() {
+            local.insert(n.to_string(), web[&format!("X[{i}]")]);
+        }
+        for ln in body.lines().map(str::trim) {
+            if let Some((n, e)) = ln.strip_prefix("const ").and_then(|r| r.split_once(" = ")) {
+                if let Some(x) = webts::eval(e.trim_end_matches(';'), &|k| local.get(k).copied()) {
+                    local.insert(n.to_string(), x);
+                }
+            }
+        }
+        let names = [
+            ("in1", W::In1),
+            ("in2", W::In2),
+            ("ab1", W::Ab1),
+            ("ab2", W::Ab2),
+            ("bd", W::Bd),
+            ("bb", W::Bb),
+            ("done1", W::Done1),
+            ("done2", W::Done2),
+        ];
+        let mut wires = 0;
+        for ln in body.lines().map(str::trim) {
+            let Some((name, args)) = ln.split_once(": mk(") else {
+                continue;
+            };
+            let w = names
+                .iter()
+                .find(|(n, _)| *n == name)
+                .unwrap_or_else(|| panic!("{FILE} has a wire `{name}` the box doesn't"))
+                .1;
+            let args: Vec<f64> = webts::split_args(args.trim_end_matches("),"))
+                .iter()
+                .map(|a| {
+                    webts::eval(a, &|k| local.get(k).copied())
+                        .unwrap_or_else(|| panic!("{FILE}: can't read `{a}` in wire {name}"))
+                })
+                .collect();
+            let (x0, y0, x1, y1, ph) = (args[0], args[1], args[2], args[3], args[4]);
+            let k = args.get(5).copied().unwrap_or(default_k);
+            for clock in [0.0, 0.7, 2.9] {
+                let env = |n: &str| match n {
+                    "x0" => Some(x0),
+                    "x1" => Some(x1),
+                    "k" => Some(k),
+                    "ph" => Some(ph),
+                    "clock" => Some(clock),
+                    _ => local.get(n).copied(),
+                };
+                let sway = |f: &str, a: &[f64]| {
+                    (f == "sway").then(|| webts::eval(sway_expr, &|n| if n == "ph" { Some(a[0]) } else { env(n) }))?
+                };
+                let dip = webts::eval_with(dip_expr, &env, &sway)
+                    .unwrap_or_else(|| panic!("{FILE}: can't read `{dip_expr}`"));
+                let ours = build_wires(&l, &v, clock as f32)[w as usize];
+                let pairs = [
+                    ("x0", ours.x0, x0),
+                    ("y0", ours.y0, y0),
+                    ("x1", ours.x1, x1),
+                    ("y1", ours.y1, y1),
+                    ("dip", ours.dip, dip),
+                    ("len", ours.len, (x1 - x0).hypot(y1 - y0)),
+                ];
+                for (what, ours, theirs) in pairs {
+                    assert!(
+                        near(ours.into(), theirs),
+                        "{FILE}: wire {name} {what} at clock {clock} is {theirs} on the web, {ours} in the box"
+                    );
+                }
+            }
+            wires += 1;
+        }
+        assert_eq!(
+            wires,
+            names.len(),
+            "{FILE}: buildWires has {wires} wires, the box {}",
+            names.len()
+        );
+
+        /* restFor: where the i-th resting bead of a pole sits. Doing alternates its two
+        wires, so its i-th bead is the (i/2)-th on its slot's wire in the box. */
+        let rest = webts::block(&src, "function restFor(", "}");
+        let t_of = |pole: &str| -> &str {
+            let ln = rest
+                .lines()
+                .find(|ln| ln.contains(&format!("pole === \"{pole}\"")))
+                .unwrap_or_else(|| panic!("{FILE}: restFor has no line for {pole}"));
+            ln.split_once("t: ").unwrap().1.trim_end_matches(" };").trim()
+        };
+        for i in 0..MAX_BEADS {
+            let at = |pole: &str| {
+                webts::eval(t_of(pole), &|n| (n == "i").then_some(i as f64))
+                    .unwrap_or_else(|| panic!("{FILE}: can't read restFor's {pole} line"))
+            };
+            for (pole, ours) in [
+                ("todo", queue_t(i)),
+                ("doing", doing_t(i / 2)),
+                ("blocked", blocked_t(i)),
+            ] {
+                assert!(
+                    near(ours.into(), at(pole)),
+                    "{FILE}: restFor({pole}, {i}) is {} on the web, {ours} in the box",
+                    at(pole)
+                );
+            }
+        }
     }
 
     #[test]

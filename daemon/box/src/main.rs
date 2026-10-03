@@ -10,6 +10,8 @@ mod scene;
 mod setup;
 mod theme;
 mod view;
+#[cfg(test)]
+mod webts;
 mod wizard;
 
 use std::path::{Path, PathBuf};

@@ -2,9 +2,9 @@
 //! lists and the status line as text, laid out as the prototype's `.box`.
 //!
 //! It draws only when something changes: every frame while an item travels,
-//! about twenty times a second while the wires only sway, once a second while
-//! a run's timer shows, and otherwise when the daemon or the owner's feed says
-//! something new.
+//! about twenty times a second while a run's current flows, twelve while the wires
+//! only sway, once a second while a run's timer shows, and otherwise when the daemon
+//! or the owner's feed says something new.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,8 +38,11 @@ pub const STATUS_H: f32 = 24.0;
 /// The scene's margin: 2px on top, 10px either side, and the 4px gap above the status line.
 const SIDE: f32 = 10.0;
 
-/// While the wires only sway: about 20 frames a second.
-const AMBIENT: Duration = Duration::from_millis(50);
+/// While a run's current flows along its wire (22 logo pixels a second): about 20 frames a second.
+const CURRENT: Duration = Duration::from_millis(50);
+/// While the wires only sway and blocked lamps blink: about 12 frames a second. A swaying wire
+/// moves about a cell a second at most, so this looks the same as 20 and costs less.
+const SWAY: Duration = Duration::from_millis(83);
 /// While a run's timer shows and nothing moves.
 const TICK: Duration = Duration::from_secs(1);
 /// Otherwise, now and then, for the done list's slow fade.
@@ -485,7 +488,7 @@ impl Render for BoxView {
         if self.scene.moving() {
             window.request_animation_frame();
         } else if self.scene.ambient() {
-            self.redraw_in(AMBIENT, cx);
+            self.redraw_in(if self.scene.ticking() { CURRENT } else { SWAY }, cx);
         } else if self.scene.ticking() {
             self.redraw_in(TICK, cx);
         } else {
@@ -685,6 +688,64 @@ mod tests {
     use super::*;
     use copland_daemon_core::AgentState;
     use copland_daemon_core::api::{Wired, WiredAgent, WiredTask};
+
+    /// The lists against `src/features/wired/WiredPane.tsx`: its number constants and its
+    /// `budgets` rule at the web's scales. The padding is the box's own (the window's margin
+    /// beside todo, `DONE_TAIL` past done) and so is the zoom, which has no web cap.
+    #[test]
+    fn matches_the_web_lists() {
+        use crate::scene::{DONE_LIT, LINE_H, LINES, SHORT_LINES, Tune};
+        use crate::webts;
+        const FILE: &str = "src/features/wired/WiredPane.tsx";
+        let src = webts::read(FILE);
+        let web = webts::consts(&src);
+        for (name, &theirs) in &web {
+            let ours: f64 = match name.as_str() {
+                "MAX_SCALE" | "PAD" => continue,
+                "LINES" => LINES as f64,
+                "SHORT_LINES" => SHORT_LINES as f64,
+                "LINE_H" => LINE_H.into(),
+                "CH" => CH.into(),
+                "GAP" => GAP.into(),
+                "TODO_HALF" => TODO_HALF.into(),
+                "DONE_LIT_MS" => DONE_LIT * 1000.0,
+                other => {
+                    panic!("{FILE} has `{other} = {theirs}`, which the box doesn't port: add it to view.rs and here")
+                }
+            };
+            assert_eq!(ours, theirs, "{FILE}: {name} is {theirs} on the web, {ours} in the box");
+        }
+
+        let mut env = webts::consts(&webts::read("src/features/wired/scene.ts"));
+        env.extend(web);
+        let body = webts::block(&src, "function budgets(", "}");
+        let tune = Tune::default();
+        let l = Layout::new(tune.spacing);
+        for (i, (list, pad)) in [("todo", SIDE), ("doing", 0.0), ("blocked", 0.0), ("done", DONE_TAIL)]
+            .into_iter()
+            .enumerate()
+        {
+            let expr = body
+                .lines()
+                .find_map(|ln| ln.trim().strip_prefix(&format!("{list}: ")))
+                .unwrap_or_else(|| panic!("{FILE}: budgets has no {list}"))
+                .trim_end_matches(',');
+            for s in [2.0, 3.0, 4.0] {
+                let theirs = webts::eval(expr, &|n| match n {
+                    "s" => Some(s),
+                    "PAD" => Some(pad.into()),
+                    _ => env.get(n).copied(),
+                })
+                .unwrap_or_else(|| panic!("{FILE}: can't read budgets' `{expr}`"));
+                let ours = budgets(&l, tune.spacing, s as f32, 1.0)[i];
+                assert_eq!(
+                    f64::from(ours),
+                    theirs,
+                    "{FILE}: the {list} budget at scale {s} is {theirs} on the web, {ours} in the box"
+                );
+            }
+        }
+    }
 
     #[test]
     fn reads_the_api_timestamps() {
