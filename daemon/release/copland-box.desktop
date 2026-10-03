@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Copland
+GenericName=Agent box
+Comment=Runs your Copland agents and draws their work as wires and poles
+Exec=copland-box
+Icon=copland-box
+Categories=Utility;Development;
+StartupWMClass=copland-box

@@ -2,12 +2,18 @@
   # The daemon's package and dev shell.
   #
   # The package builds both binaries, `copland-daemon` (headless) and
-  # `copland-box` (the GPUI window), from Cargo.lock, offline: every crate is
-  # vendored from the lock by `cargoLock`, so the lock stays the one source of
-  # truth for versions. GPUI links and dlopens native libraries (Vulkan,
-  # Wayland, X11, xkbcommon, fontconfig) that NixOS does not put on a default
-  # library path, so the box gets them on its RPATH. That way they don't leak
-  # to what it starts (runtimes, the browser) the way LD_LIBRARY_PATH would.
+  # `copland-box` (the GPUI window), from Cargo.lock, offline: crane vendors
+  # every crate from the lock, so the lock stays the one source of truth for
+  # versions. It builds in two derivations: `deps` compiles every dependency
+  # (GPUI and the rest, nearly all of the work) from Cargo.toml and
+  # Cargo.lock alone, and the package compiles our three crates on top of
+  # it. A change to our code rebuilds only those; `deps` changes only with
+  # the lock, and the release workflow pushes both to Cachix.
+  #
+  # GPUI links and dlopens native libraries (Vulkan, Wayland, X11,
+  # xkbcommon, fontconfig) that NixOS does not put on a default library
+  # path, so the box gets them on its RPATH. That way they don't leak to
+  # what it starts (runtimes, the browser) the way LD_LIBRARY_PATH would.
   #
   # The dev shell brings no Rust toolchain on purpose: it uses the cargo
   # already on PATH, so builds inside and outside the shell share one
@@ -16,11 +22,33 @@
   # the headless daemon (`core`, `cli`) builds with plain cargo outside it.
   description = "copland-daemon and copland-box, and a dev shell for the GPUI box";
 
-  # Pinned to a rev, not just locked, so `nix flake update` cannot move it (AGENTS.md: pins move only when forced).
+  # Pinned to revs, not just locked, so `nix flake update` cannot move them
+  # (AGENTS.md: pins move only when forced). crane is v0.24.0 and has no
+  # inputs of its own; it builds with the nixpkgs above.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/624af665418d3c65d544145b4d34ad696439570e";
+  inputs.crane.url = "github:ipetkov/crane/692f7e9ef2ece8125b466f66f2af532b3edaed0d";
+
+  # The release workflow (.github/workflows/box-release.yml) pushes both
+  # systems' builds to a Cachix cache, so `nix run` can download the box
+  # instead of compiling GPUI. Commented out until the cache exists: Nix
+  # asks about (or warns over) every substituter a flake names, and a key
+  # that isn't a real one can't verify anything. To turn it on, create the
+  # cache on cachix.org, copy the public key its page shows
+  # ("copland.cachix.org-1:…"), paste it below and uncomment. Users then get
+  # it with `--accept-flake-config` (or `cachix use copland`).
+  #
+  # nixConfig = {
+  #   extra-substituters = [ "https://copland.cachix.org" ];
+  #   extra-trusted-public-keys = [ "copland.cachix.org-1:PASTE-THE-CACHE-PUBLIC-KEY-HERE" ];
+  # };
 
   outputs =
-    { self, nixpkgs, ... }:
+    {
+      self,
+      nixpkgs,
+      crane,
+      ...
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -51,88 +79,70 @@
         let
           lib = pkgs.lib;
           runtime = runtimeOf pkgs;
-          copland = pkgs.rustPlatform.buildRustPackage {
+          craneLib = crane.mkLib pkgs;
+
+          # What both derivations share. The source is the workspace's Rust
+          # files, Cargo.toml and Cargo.lock only (crane's filter), so
+          # neither target/ nor the README nor release/ reaches the build.
+          common = {
             pname = "copland-daemon";
             version = (lib.importTOML ./Cargo.toml).workspace.package.version;
-
-            # The workspace only: no target/, and the README doesn't rebuild it.
-            src = lib.fileset.toSource {
-              root = ./.;
-              fileset = lib.fileset.unions [
-                ./Cargo.toml
-                ./Cargo.lock
-                ./rustfmt.toml
-                ./core
-                ./cli
-                ./box
-              ];
-            };
-            cargoLock.lockFile = ./Cargo.lock;
-
-            # default-members leaves the box out; name both binaries' packages.
-            cargoBuildFlags = [
-              "-p"
-              "copland-daemon"
-              "-p"
-              "copland-box"
-            ];
+            src = craneLib.cleanCargoSource ./.;
+            strictDeps = true;
+            # default-members leaves the box out; name both binaries'
+            # packages, here and for the deps, so they build the same
+            # features. crane adds --locked only when cargoExtraArgs is unset.
+            cargoExtraArgs = "--locked -p copland-daemon -p copland-box";
             # The tests run with cargo in the dev shell (README). Some of the
             # box's read the web app's sources (themes.css, scene.ts), which
             # are outside this package's source on purpose.
             doCheck = false;
-
-            nativeBuildInputs = [
-              pkgs.pkg-config
-              pkgs.copyDesktopItems
-              pkgs.resvg
-            ];
+            nativeBuildInputs = [ pkgs.pkg-config ];
             buildInputs = runtime;
-
-            # A launcher entry and an icon, so it is an app on the desktop.
-            # The file is named for the box's Wayland app id / X11 class,
-            # which is how compositors and docks match the window to it.
-            desktopItems = [
-              (pkgs.makeDesktopItem {
-                name = "copland-box";
-                desktopName = "Copland";
-                genericName = "Agent box";
-                comment = "Runs your Copland agents and draws their work as wires and poles";
-                exec = "copland-box";
-                icon = "copland-box";
-                categories = [
-                  "Utility"
-                  "Development"
-                ];
-                startupWMClass = "copland-box";
-              })
-            ];
-
-            # The icon is the web app's favicon, the Copland mark on its tile.
-            postInstall = ''
-              icons=$out/share/icons/hicolor
-              install -Dm644 ${../public/favicon.svg} $icons/scalable/apps/copland-box.svg
-              for n in 32 48 64 128 256; do
-                mkdir -p $icons/''${n}x''${n}/apps
-                resvg -w $n -h $n ${../public/favicon.svg} $icons/''${n}x''${n}/apps/copland-box.png
-              done
-            '';
-
-            # After the fixup's RPATH shrinking, which would drop the
-            # dlopened ones (nothing links against libvulkan or libwayland).
-            postFixup = ''
-              patchelf --add-rpath ${lib.makeLibraryPath runtime} $out/bin/copland-box
-            '';
-
-            meta = {
-              description = "Runs Copland agents on this machine; copland-box draws them as wires and poles";
-              license = lib.licenses.mit;
-              mainProgram = "copland-box";
-              platforms = systems;
-            };
           };
+
+          # Every dependency, built once per Cargo.lock.
+          deps = craneLib.buildDepsOnly common;
+
+          copland = craneLib.buildPackage (
+            common
+            // {
+              cargoArtifacts = deps;
+              nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.resvg ];
+
+              # A launcher entry and an icon, so it is an app on the desktop.
+              # The entry is release/copland-box.desktop, the same file the
+              # release tarballs carry, named for the box's Wayland app id /
+              # X11 class, which is how compositors and docks match the window
+              # to it. The icon is the web app's favicon, the Copland mark on
+              # its tile, at the sizes release/package-linux.sh renders too.
+              postInstall = ''
+                install -Dm644 ${./release/copland-box.desktop} $out/share/applications/copland-box.desktop
+                icons=$out/share/icons/hicolor
+                install -Dm644 ${../public/favicon.svg} $icons/scalable/apps/copland-box.svg
+                for n in 32 48 64 128 256; do
+                  mkdir -p $icons/''${n}x''${n}/apps
+                  resvg -w $n -h $n ${../public/favicon.svg} $icons/''${n}x''${n}/apps/copland-box.png
+                done
+              '';
+
+              # After the fixup's RPATH shrinking, which would drop the
+              # dlopened ones (nothing links against libvulkan or libwayland).
+              postFixup = ''
+                patchelf --add-rpath ${lib.makeLibraryPath runtime} $out/bin/copland-box
+              '';
+
+              meta = {
+                description = "Runs Copland agents on this machine; copland-box draws them as wires and poles";
+                license = lib.licenses.mit;
+                mainProgram = "copland-box";
+                platforms = systems;
+              };
+            }
+          );
         in
         {
-          inherit copland;
+          inherit copland deps;
           default = copland;
         }
       );

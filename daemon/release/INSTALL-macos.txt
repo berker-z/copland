@@ -1,0 +1,18 @@
+Copland box @VERSION@, macOS Apple Silicon
+
+  copland-box      the daemon with a window (GPUI, Metal)
+  copland-daemon   the same daemon, headless
+
+The window is easier to use as Copland.app, from the .zip next to this
+archive on the release page. These are the same binaries for a terminal:
+
+  mkdir -p ~/.local/bin && cp copland-box copland-daemon ~/.local/bin/
+  xattr -d com.apple.quarantine ~/.local/bin/copland-box ~/.local/bin/copland-daemon
+
+They are not signed or notarized, so macOS refuses them until the
+quarantine flag is removed as above (only needed when a browser downloaded
+the archive). Check them against SHA256SUMS on the release page first.
+
+Built on macOS 14 for macOS 11 and later. Not yet tried on real hardware.
+
+Docs: https://github.com/berker-z/copland/blob/main/daemon/README.md

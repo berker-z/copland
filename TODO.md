@@ -84,7 +84,12 @@ docs/DESIGN.md under Touch.
 - [ ] The daemon (COPL-9) beyond headless: the GPUI window on the same
       loop (COPL-33) is `copland-box`, drawing all four poles from
       `/api/wired` with your own token (`owner_token_file`) and packaged in
-      `daemon/flake.nix`. Still to do: release builds for other platforms, a second runtime (Codex) to prove the binding, and
+      `daemon/flake.nix`. Release builds (COPL-56) come from
+      `.github/workflows/box-release.yml` on a `box-v*` tag: Linux x86_64
+      and aarch64 tarballs, an unsigned macOS arm64 app, and the Nix
+      package pushed to Cachix. Not yet run on GitHub; the cache, its
+      secret and its key in `flake.nix` are still to set up, and the Mac
+      build has never run on a Mac. Still to do: a second runtime (Codex) to prove the binding, and
       backoff for a runtime that keeps failing. Known gaps are in
       daemon/README.md.
 - [ ] Data export: everything a person has, as one download from settings.

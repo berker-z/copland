@@ -1,0 +1,289 @@
+# Builds the box (copland-box and copland-daemon) for Linux x86_64 and
+# aarch64 and macOS Apple Silicon, pushes the Nix package to Cachix, and
+# publishes a GitHub release with all of it (COPL-56). The packaging is in
+# daemon/release/, scripts that run the same on a laptop.
+#
+# A release: bump `version` in daemon/Cargo.toml, commit, tag `box-vX.Y.Z`
+# on that commit and push the tag. The version check fails the run when the
+# tag and Cargo.toml disagree. Nothing here runs on a branch push, and
+# deploy.yml (the web app) runs only on pushes to main, never on tags.
+#
+# Run by hand (Actions > box-release > Run workflow) it is a dry run: it
+# builds and packages everything and keeps the files as the run's artifacts,
+# but publishes no release and pushes nothing to Cachix.
+#
+# Needs, for the Nix cache only: the secret CACHIX_AUTH_TOKEN (a write token
+# for the cache) and optionally the variable CACHIX_CACHE (the cache's name,
+# `copland` when unset). Without the token the Nix builds still run and the
+# push is skipped with a notice. See "Cutting a release" in daemon/README.md.
+#
+# Actions are pinned to commit SHAs (AGENTS.md: pins move only when forced).
+
+name: box-release
+
+on:
+  push:
+    tags: ["box-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional box-vX.Y.Z to check against daemon/Cargo.toml. A manual run never publishes."
+        required: false
+        default: ""
+
+concurrency:
+  group: box-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # The compiler the release is built with. rust-version in Cargo.toml is
+  # the floor; this is what the box is developed and tested on.
+  RUST_TOOLCHAIN: "1.98.1"
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  version:
+    name: Version check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      publish: ${{ steps.check.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$EVENT" = push ]; then tag=${REF#refs/tags/}; else tag=$INPUT_TAG; fi
+          version=$(daemon/release/check-version.sh "$tag")
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "tag=${tag:-box-v$version}" >>"$GITHUB_OUTPUT"
+          if [ "$EVENT" = push ]; then publish=true; else publish=false; fi
+          echo "publish=$publish" >>"$GITHUB_OUTPUT"
+          echo "Box $version from ${tag:-a manual run}; publish: $publish" >>"$GITHUB_STEP_SUMMARY"
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # What GPUI 0.2.2 needs to build here. xkbcommon and xcb are linked;
+      # Vulkan, Wayland and fontconfig are dlopened at run time (fontconfig
+      # through font-kit's dlopen feature), so their headers aren't needed.
+      # No libfreetype-dev on purpose: without it freetype-sys builds its
+      # own copy into the binary instead of linking the system's.
+      # librsvg2-bin renders the icons.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev libx11-dev libx11-xcb-dev libxcb1-dev librsvg2-bin
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+              sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >>"$GITHUB_PATH"
+            export PATH=$HOME/.cargo/bin:$PATH
+          fi
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+
+      - name: Build
+        working-directory: daemon
+        run: cargo build --release --locked -p copland-box -p copland-daemon
+
+      - name: Check the binaries
+        working-directory: daemon/target/release
+        run: |
+          test "$(./copland-daemon --version)" = "copland-daemon $VERSION"
+          test "$(./copland-box --version)" = "copland-box $VERSION"
+          echo "copland-box links:"; readelf -d copland-box | grep NEEDED
+          echo "glibc floor: $(../../release/glibc-floor.sh copland-box copland-daemon)"
+
+      - name: Package
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
+          daemon/release/package-linux.sh "$VERSION" "${{ matrix.arch }}" daemon/target/release dist
+          tar -tzf dist/*.tar.gz
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS arm64
+    needs: version
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # Apple Silicon's first release; GPUI asks for no newer.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # GPUI's build script compiles its Metal shaders with `xcrun metal`,
+      # which comes with Xcode, not the command line tools, and runs
+      # bindgen, which needs Xcode's libclang. Pin the Xcode it uses.
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15.4.app
+          xcrun -sdk macosx metal --version
+          xcrun -sdk macosx metallib --version 2>/dev/null || true
+
+      - name: Install rsvg-convert
+        run: brew install librsvg
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+              sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >>"$GITHUB_PATH"
+            export PATH=$HOME/.cargo/bin:$PATH
+          fi
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+
+      - name: Build
+        working-directory: daemon
+        run: cargo build --release --locked -p copland-box -p copland-daemon
+
+      - name: Check the binaries
+        working-directory: daemon/target/release
+        run: |
+          test "$(./copland-daemon --version)" = "copland-daemon $VERSION"
+          test "$(./copland-box --version)" = "copland-box $VERSION"
+          file copland-box copland-daemon
+          otool -L copland-box
+
+      - name: Package
+        run: |
+          daemon/release/package-macos.sh "$VERSION" daemon/target/release dist
+          unzip -l dist/*.zip
+          tar -tzf dist/*.tar.gz
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-arm64
+          path: dist/*
+          if-no-files-found: error
+
+  nix:
+    name: Nix ${{ matrix.system }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      CACHIX_CACHE: ${{ vars.CACHIX_CACHE || 'copland' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+
+      - name: No Cachix token
+        if: env.CACHIX_AUTH_TOKEN == ''
+        run: echo "::notice::CACHIX_AUTH_TOKEN is not set, so the Nix build for ${{ matrix.system }} is not pushed to Cachix."
+
+      # Pulls from the cache and, on a tag, pushes everything built after
+      # this step: the deps derivation (GPUI and the rest, rebuilt only when
+      # Cargo.lock changes) as well as the package, so a laptop building a
+      # newer commit still downloads the deps. A manual run only pulls.
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        if: env.CACHIX_AUTH_TOKEN != ''
+        with:
+          name: ${{ env.CACHIX_CACHE }}
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          skipPush: ${{ needs.version.outputs.publish != 'true' }}
+
+      - name: Build the dependencies
+        run: nix build -L ./daemon#deps
+
+      - name: Build
+        run: nix build -L ./daemon#default
+
+      # The daemon pushes only what this run built; a deps derivation the
+      # cache already gave us is there already. Push both outputs by path
+      # anyway, so the cache has them even if the daemon missed one.
+      - name: Push to Cachix
+        if: env.CACHIX_AUTH_TOKEN != '' && needs.version.outputs.publish == 'true'
+        run: nix path-info ./daemon#deps ./daemon#default | cachix push "$CACHIX_CACHE"
+
+      - name: Check the binaries
+        run: |
+          test "$(nix run ./daemon#daemon -- --version)" = "copland-daemon $VERSION"
+          test "$(nix run ./daemon -- --version)" = "copland-box $VERSION"
+
+  publish:
+    name: Publish the release
+    needs: [version, linux, macos, nix]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+      CACHIX_CACHE: ${{ vars.CACHIX_CACHE || 'copland' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums and notes
+        run: |
+          (cd dist && sha256sum -- * >SHA256SUMS && cat SHA256SUMS)
+          daemon/release/notes.sh "$VERSION" "$TAG" "$GITHUB_SHA" "$CACHIX_CACHE" dist >notes.md
+          cat notes.md >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Create the release
+        run: |
+          gh release create "$TAG" dist/* \
+            --verify-tag \
+            --title "Copland box $VERSION" \
+            --notes-file notes.md

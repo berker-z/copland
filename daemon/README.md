@@ -167,9 +167,19 @@ hl.window_rule({
 
 The move puts it 24px from the right and 48px from the bottom. Use constants there, not `window_w`: the rule is evaluated against the size the window would have had tiled, which changes with whatever else is on the workspace. The Lua rule was checked on Hyprland 0.56; the `windowrulev2` lines weren't.
 
+### Getting it
+
+You don't have to compile it. Each `box-vX.Y.Z` tag gets a GitHub release, built by CI (`.github/workflows/box-release.yml`), with a `SHA256SUMS` file covering everything in it:
+
+- **Linux x86_64 and aarch64:** `copland-box-<version>-linux-<arch>.tar.gz` has both binaries, the launcher entry, the icon, an `INSTALL` note and the licence, laid out like `~/.local`. Unpack it and `cp -r bin share ~/.local/` puts the binaries in `~/.local/bin`, `copland-box.desktop` in `~/.local/share/applications` and the icons under `~/.local/share/icons/hicolor`. It's built on Ubuntu 24.04, so it needs glibc 2.39 or newer (the release notes give the exact floor, read from the binaries). The window also needs a Vulkan driver, Wayland or X11, xkbcommon and fontconfig, which a desktop has anyway. On NixOS use the flake below instead: a plain binary won't find those libraries there.
+- **macOS Apple Silicon:** `copland-box-<version>-macos-arm64.zip` is `Copland.app` (the box, with `copland-daemon` beside it in `Contents/MacOS`), and the `.tar.gz` next to it has the bare binaries. Neither is signed or notarized, so macOS refuses to open them at first: right-click the app, Open, and confirm, or `xattr -dr com.apple.quarantine Copland.app`. This build compiles and answers `--version` on CI and has never run on a real Mac. Started from Finder it gets Finder's short `PATH`, so give the runtimes in `daemon.toml` full paths.
+- **Nix:** `nix run github:berker-z/copland/box-vX.Y.Z?dir=daemon`, or the flake input below. The release workflow pushes both Linux systems' builds to the `copland` Cachix cache, so with the cache as a substituter (`cachix use copland`) Nix downloads the box instead of building GPUI. Once the cache's key is in `flake.nix` (see "Cutting a release"), `--accept-flake-config` does the same without cachix.
+
+Windows and Intel Macs get nothing yet.
+
 ### Installing it
 
-`daemon/flake.nix` packages both binaries, `copland-box` and `copland-daemon`, built from `Cargo.lock` with nixpkgs' `rustPlatform` (every crate comes from the lock, offline). GPUI loads the Vulkan loader, Wayland, X11, xkbcommon and fontconfig at run time, which NixOS doesn't put on a library path, so the package adds them to the box's RPATH. Not `LD_LIBRARY_PATH` in a wrapper: that would leak into everything the box starts, the runtimes and your browser included. The package also has a desktop entry (`copland-box.desktop`, "Copland", named after the window's app id so docks match the two) and the Copland mark as its icon, the SVG plus PNGs from 32 to 256 pixels.
+`daemon/flake.nix` packages both binaries, `copland-box` and `copland-daemon`, built from `Cargo.lock` with [crane](https://github.com/ipetkov/crane) (every crate comes from the lock, offline). Crane splits the build in two: `./daemon#deps` compiles every dependency, GPUI included, from `Cargo.toml` and `Cargo.lock` alone, and the package compiles our three crates on top of that. The dependencies are nearly all of the work and change only with the lock, so after the first build a change to our code rebuilds in a fraction of the time, and both halves come from the Cachix cache when it's set up (see "Getting it"). crane is pinned to a commit in `flake.nix` like nixpkgs, and builds with that nixpkgs. GPUI loads the Vulkan loader, Wayland, X11, xkbcommon and fontconfig at run time, which NixOS doesn't put on a library path, so the package adds them to the box's RPATH. Not `LD_LIBRARY_PATH` in a wrapper: that would leak into everything the box starts, the runtimes and your browser included. The package also has a desktop entry (`copland-box.desktop`, "Copland", named after the window's app id so docks match the two) and the Copland mark as its icon, the SVG plus PNGs from 32 to 256 pixels.
 
 From a checkout:
 
@@ -219,7 +229,7 @@ systemd.user.services.copland-box = {
 
 Two things make or break that. Your compositor has to start `graphical-session.target` and hand the user manager its environment (`WAYLAND_DISPLAY` above all), which Hyprland does under UWSM or with home-manager's `wayland.windowManager.hyprland.systemd.enable`. And the runtimes in `daemon.toml` (`claude`, `codex`) are looked up on the service's `PATH`, not your shell's; NixOS's user manager has the system and per-user profiles on it, but a `claude` from npm or `~/.local/bin` isn't. Give `command` a full path then. If your session has no target, Hyprland's `exec-once = copland-box` does the same job with your session's environment.
 
-The package is Linux only (x86_64 and aarch64), from source. Release binaries for other platforms aren't made yet.
+The package is Linux only (x86_64 and aarch64). Releases have tarballs for both and a macOS app (see "Getting it").
 
 ### Building the box
 
@@ -236,6 +246,26 @@ nix develop -c cargo clippy --workspace --all-targets -- -D warnings
 The package doesn't run the tests: some of the box's read the web app's sources, which are outside its source on purpose. Besides `themes.css` (above), `scene.rs` and `view.rs` read `src/features/wired/scene.ts` and `WiredPane.tsx` with a small arithmetic reader (`box/src/webts.rs`) and check the port against them: every number constant, the eight wires' ends, dips and lengths at a few points of the sway, where beads rest, and the lists' width budgets at the web's scales. They fail naming what differs, and on a new web constant the box doesn't port yet. The box's padding and its zoom are its own and aren't checked.
 
 GPUI is `gpui = "=0.2.2"` from crates.io, the newest published release. Everything under it comes from crates.io too, so that line and `Cargo.lock` pin the whole graph; no git dependencies. Pins move only when something forces it (see AGENTS.md).
+
+### Cutting a release
+
+Releases come from `.github/workflows/box-release.yml`, on a pushed tag `box-vX.Y.Z`:
+
+1. Bump `version` under `[workspace.package]` in `daemon/Cargo.toml` (the box and the CLI both take it from there), run `cargo build` so `Cargo.lock` follows, and commit.
+2. `git tag box-vX.Y.Z` on that commit and `git push origin box-vX.Y.Z`.
+
+The workflow first checks the tag against `cargo pkgid` for both binaries and stops if they differ. Then, side by side: release builds on `ubuntu-24.04` and `ubuntu-24.04-arm` (with GPUI's build libraries from apt), one on `macos-14` with Xcode 15.4 selected (GPUI's build script compiles its Metal shaders with `xcrun metal`, which the command line tools alone don't have), and `nix build` of `./daemon#deps` and `./daemon` on both Linux runners, both pushed to Cachix. Each build checks `--version` on both binaries. When all of that passes it makes the release with the files, `SHA256SUMS`, and notes from `daemon/release/notes.md`. Rust is pinned in the workflow (`RUST_TOOLCHAIN`) and every action to a commit.
+
+Running the workflow by hand (Actions, box-release, Run workflow) is a dry run: everything is built and packaged and kept as the run's artifacts, but no release is made and nothing is pushed to Cachix. Give it a tag to check the version against, or nothing.
+
+The packaging is plain scripts in `daemon/release/`, so it can be tried on a laptop: `check-version.sh [tag]`, `package-linux.sh VERSION ARCH target/release OUT` (needs `rsvg-convert` or `resvg`, e.g. `nix shell nixpkgs#resvg -c …`), `package-macos.sh` (on a Mac), and `notes.sh`. `copland-box.desktop` there is also what the flake installs, so the two launchers can't drift.
+
+One-time setup, for the Nix cache only; without it the release still happens and the Nix jobs say they skipped the push:
+
+1. Create a public cache on [cachix.org](https://app.cachix.org), named `copland` or anything else.
+2. Make a write auth token for it and add it to the repo as the Actions secret `CACHIX_AUTH_TOKEN`.
+3. If the cache isn't called `copland`, set the Actions variable `CACHIX_CACHE` to its name (and use that name in `flake.nix` too).
+4. Copy the public signing key the cache's page shows (`copland.cachix.org-1:…`) into the commented `nixConfig` at the top of `daemon/flake.nix` and uncomment it. Until then `nix run` simply builds from source, as it does today.
 
 ## Testing it against a local Copland
 

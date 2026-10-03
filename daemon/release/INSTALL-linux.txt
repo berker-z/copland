@@ -1,0 +1,37 @@
+Copland box @VERSION@, Linux @ARCH@
+
+  bin/copland-box      the daemon with a window (GPUI)
+  bin/copland-daemon   the same daemon, headless
+  share/               the launcher entry and the icon
+
+The layout matches ~/.local, so installing for yourself is one copy:
+
+  cp -r bin share ~/.local/
+  gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor 2>/dev/null || true
+
+That puts the binaries in ~/.local/bin, copland-box.desktop in
+~/.local/share/applications and the icon in
+~/.local/share/icons/hicolor/{scalable,32x32,...,256x256}/apps. The launcher
+runs `copland-box` from PATH; if ~/.local/bin isn't on your desktop
+session's PATH, change Exec= in the desktop file to the full path.
+
+Then start `copland-box`. Without a config it sets itself up in its window:
+type your Copland's address and approve the box in the browser.
+`copland-box --demo` shows the scene without a server.
+
+What it needs:
+
+  - glibc @GLIBC@ or newer (built on Ubuntu 24.04).
+  - For the window: libxcb, libxkbcommon and libxkbcommon-x11 (linked), and
+    the Vulkan loader with a Vulkan driver, libwayland-client and
+    fontconfig (loaded at run time). On Debian and Ubuntu:
+      sudo apt install libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers \
+        libwayland-client0 libfontconfig1
+    Most desktops have all of these already.
+  - copland-daemon needs nothing beyond glibc.
+
+These binaries are not signed. Check them against SHA256SUMS on the release
+page. On NixOS use the flake instead (daemon/README.md): a plain binary
+won't find the libraries there.
+
+Docs: https://github.com/berker-z/copland/blob/main/daemon/README.md
