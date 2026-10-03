@@ -29,18 +29,14 @@
   inputs.crane.url = "github:ipetkov/crane/692f7e9ef2ece8125b466f66f2af532b3edaed0d";
 
   # The release workflow (.github/workflows/box-release.yml) pushes both
-  # systems' builds to a Cachix cache, so `nix run` can download the box
-  # instead of compiling GPUI. Commented out until the cache exists: Nix
-  # asks about (or warns over) every substituter a flake names, and a key
-  # that isn't a real one can't verify anything. To turn it on, create the
-  # cache on cachix.org, copy the public key its page shows
-  # ("copland.cachix.org-1:…"), paste it below and uncomment. Users then get
-  # it with `--accept-flake-config` (or `cachix use copland`).
-  #
-  # nixConfig = {
-  #   extra-substituters = [ "https://copland.cachix.org" ];
-  #   extra-trusted-public-keys = [ "copland.cachix.org-1:PASTE-THE-CACHE-PUBLIC-KEY-HERE" ];
-  # };
+  # systems' packages to the copland Cachix cache, so `nix run` can download
+  # the box instead of compiling GPUI. Nix asks before using a substituter a
+  # flake names; accept it once with `--accept-flake-config` (or run
+  # `cachix use copland`).
+  nixConfig = {
+    extra-substituters = [ "https://copland.cachix.org" ];
+    extra-trusted-public-keys = [ "copland.cachix.org-1:MKDq1A4TI0lpB3+6QiYmCCwHP9ph2W40piY3M3p0NsE=" ];
+  };
 
   outputs =
     {

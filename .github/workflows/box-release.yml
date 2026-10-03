@@ -226,16 +226,17 @@ jobs:
         if: env.CACHIX_AUTH_TOKEN == ''
         run: echo "::notice::CACHIX_AUTH_TOKEN is not set, so the Nix build for ${{ matrix.system }} is not pushed to Cachix."
 
-      # Pulls from the cache and, on a tag, pushes everything built after
-      # this step: the deps derivation (GPUI and the rest, rebuilt only when
-      # Cargo.lock changes) as well as the package, so a laptop building a
-      # newer commit still downloads the deps. A manual run only pulls.
+      # Pulls from the cache only. Pushing is the explicit step below, and
+      # only the package: the deps derivation (GPUI's whole build tree) is
+      # gigabytes, and the free Cachix plan is 5 GiB shared by every cache
+      # on the account. A laptop keeps its own deps build (crane caches it
+      # locally), so it only rebuilds our crates.
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         if: env.CACHIX_AUTH_TOKEN != ''
         with:
           name: ${{ env.CACHIX_CACHE }}
           authToken: ${{ env.CACHIX_AUTH_TOKEN }}
-          skipPush: ${{ needs.version.outputs.publish != 'true' }}
+          skipPush: true
 
       - name: Build the dependencies
         run: nix build -L ./daemon#deps
@@ -243,12 +244,11 @@ jobs:
       - name: Build
         run: nix build -L ./daemon#default
 
-      # The daemon pushes only what this run built; a deps derivation the
-      # cache already gave us is there already. Push both outputs by path
-      # anyway, so the cache has them even if the daemon missed one.
+      # The package and its closure; paths cache.nixos.org already has
+      # (Vulkan, Wayland and the rest of nixpkgs) are not stored again.
       - name: Push to Cachix
         if: env.CACHIX_AUTH_TOKEN != '' && needs.version.outputs.publish == 'true'
-        run: nix path-info ./daemon#deps ./daemon#default | cachix push "$CACHIX_CACHE"
+        run: nix path-info ./daemon#default | cachix push "$CACHIX_CACHE"
 
       - name: Check the binaries
         run: |
