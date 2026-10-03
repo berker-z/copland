@@ -199,7 +199,8 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   GitHub repo. States use the hues the way GitHub does: open `text-green`,
   draft `text-muted`, merged `text-magenta`, closed `text-red`; CI is a
   word after it (`ci passed` green, `ci failed` red, `ci running`
-  yellow). The task modal has a `code` row, PRs as icon, `#12` in
+  yellow), then an open PR's drift when it asks for something (`behind main`
+  muted, `main moved: re-check` yellow, `re-checked` green). The task modal has a `code` row, PRs as icon, `#12` in
   `text-muted` and the title in `text-ink` (accent on hover, opens GitHub),
   a deleted branch struck through, and the repo in `text-faint` only when
   the task has code from more than one. A card shows one PR on its meta

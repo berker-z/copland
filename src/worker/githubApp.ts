@@ -81,7 +81,8 @@ export function manifest(origin: string) {
     redirect_url: `${origin}/auth/github/callback`,
     setup_url: `${origin}/?github=installed`,
     public: false,
-    default_permissions: { metadata: "read", contents: "read", pull_requests: "read", checks: "read", statuses: "read" },
+    /* Reads everything it looks at; writes one thing, the copland/drift status on a PR's head (COPL-93). */
+    default_permissions: { metadata: "read", contents: "read", pull_requests: "read", checks: "read", statuses: "write" },
     default_events: ["push", "pull_request", "check_suite", "status"],
   };
 }
@@ -140,6 +141,86 @@ export async function installedRepos(env: Env): Promise<string[]> {
     }
   }
   return [...repos].sort();
+}
+
+/** A token for the App's installation on one repo ("owner/name"), or null without an App or an installation there. */
+export async function repoToken(env: Env, repo: string): Promise<string | null> {
+  const app = await secrets(env);
+  if (!app) return null;
+  const jwt = await appJwt(app.appId, app.key);
+  let installation: { id: number };
+  try {
+    installation = (await (await github(`/repos/${repo}/installation`, { token: jwt })).json()) as { id: number };
+  } catch {
+    return null;
+  }
+  const { token } = (await (await github(`/app/installations/${installation.id}/access_tokens`, { method: "POST", token: jwt })).json()) as {
+    token: string;
+  };
+  return token;
+}
+
+/** Two commits compared (three dots): where they meet, how far apart, and the files `head` changed since then. */
+export interface Comparison {
+  mergeBase: string;
+  headSha: string;
+  ahead: number;
+  behind: number;
+  files: string[];
+}
+
+export async function compare(token: string, repo: string, base: string, head: string): Promise<Comparison> {
+  const ref = (s: string) => encodeURIComponent(s);
+  const c = (await (await github(`/repos/${repo}/compare/${ref(base)}...${ref(head)}?per_page=100`, { token })).json()) as {
+    merge_base_commit: { sha: string };
+    ahead_by: number;
+    behind_by: number;
+    commits: Array<{ sha: string }>;
+    files?: Array<{ filename: string; previous_filename?: string }>;
+  };
+  const files = new Set<string>();
+  for (const f of c.files ?? []) {
+    files.add(f.filename);
+    if (f.previous_filename) files.add(f.previous_filename);
+  }
+  const headSha = c.commits.length ? c.commits[c.commits.length - 1].sha : c.merge_base_commit.sha;
+  return { mergeBase: c.merge_base_commit.sha, headSha, ahead: c.ahead_by, behind: c.behind_by, files: [...files].sort() };
+}
+
+/** Where a PR's work started: the first parent of its oldest commit. */
+export async function pullBase(token: string, repo: string, number: number): Promise<string> {
+  const commits = (await (await github(`/repos/${repo}/pulls/${number}/commits?per_page=1&page=1`, { token })).json()) as Array<{
+    parents: Array<{ sha: string }>;
+  }>;
+  const first = commits[0]?.parents[0]?.sha;
+  if (!first) throw new HttpError(502, `GitHub gave no commits for ${repo}#${number}`);
+  return first;
+}
+
+/** A repo's default branch ("main"). */
+export async function repoDefaultBranch(token: string, repo: string): Promise<string> {
+  const r = (await (await github(`/repos/${repo}`, { token })).json()) as { default_branch: string };
+  return r.default_branch;
+}
+
+/** A repo's branch head. */
+export async function branchHead(token: string, repo: string, branch: string): Promise<string> {
+  const b = (await (await github(`/repos/${repo}/branches/${encodeURIComponent(branch)}`, { token })).json()) as { commit: { sha: string } };
+  return b.commit.sha;
+}
+
+/** A commit status: what GitHub shows on the PR and what branch protection can require. */
+export async function postStatus(
+  token: string,
+  repo: string,
+  sha: string,
+  status: { context: string; state: "success" | "pending" | "failure"; description: string; url: string },
+): Promise<void> {
+  await github(`/repos/${repo}/statuses/${sha}`, {
+    method: "POST",
+    token,
+    body: JSON.stringify({ context: status.context, state: status.state, description: status.description.slice(0, 140), target_url: status.url }),
+  });
 }
 
 /** A ten-minute JWT as the App (RS256), back-dated a minute for clock drift, as GitHub suggests. */

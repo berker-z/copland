@@ -8,7 +8,7 @@
    ========================================================================== */
 
 import { GitBranch, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft } from "lucide-react";
-import type { CiState, CodeLink, PullState } from "@/domain/github";
+import type { CiState, CodeLink, DriftState, PullState } from "@/domain/github";
 
 const STATE_CLASS: Record<PullState, string> = {
   open: "text-green",
@@ -21,6 +21,13 @@ const CI_TEXT: Record<CiState, [string, string]> = {
   success: ["ci passed", "text-green"],
   failure: ["ci failed", "text-red"],
   pending: ["ci running", "text-yellow"],
+};
+
+/* Drift on an open PR (COPL-75): only what asks for something is shown. */
+const DRIFT_TEXT: Partial<Record<DriftState, [string, string]>> = {
+  behind: ["behind main", "text-muted"],
+  recheck: ["main moved: re-check", "text-yellow"],
+  revalidated: ["re-checked", "text-green"],
 };
 
 function CodeIcon({ link, size }: { link: CodeLink; size: number }) {
@@ -51,6 +58,9 @@ export function CodeList({ links }: { links: CodeLink[] }) {
             )}
           </a>
           {link.ci && <span className={`shrink-0 text-xs ${CI_TEXT[link.ci][1]}`}>{CI_TEXT[link.ci][0]}</span>}
+          {link.drift && DRIFT_TEXT[link.drift] && (link.state === "open" || link.state === "draft") && (
+            <span className={`shrink-0 text-xs ${DRIFT_TEXT[link.drift]![1]}`}>{DRIFT_TEXT[link.drift]![0]}</span>
+          )}
           {repos.size > 1 && <span className="shrink-0 text-xs text-faint">{link.repo}</span>}
         </li>
       ))}

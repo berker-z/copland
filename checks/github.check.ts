@@ -6,7 +6,7 @@
    ========================================================================== */
 
 import { generateKeyPairSync } from "node:crypto";
-import { ciFrom, closedIn, keysIn, parseRepo, pullRefs, verifySignature } from "../src/domain/github.ts";
+import { ciFrom, closedIn, driftState, driftStatus, keysIn, overlapOf, parseRepo, pullRefs, verifySignature } from "../src/domain/github.ts";
 import { pkcs8FromPem } from "../src/worker/pem.ts";
 
 const cases: Array<[string, boolean]> = [];
@@ -78,6 +78,20 @@ const signer = await crypto.subtle.importKey("pkcs8", Buffer.from(pkcs8FromPem(p
 const verifier = await crypto.subtle.importKey("spki", publicKey.export({ type: "spki", format: "der" }), alg, false, ["verify"]);
 const sig = await crypto.subtle.sign(alg, signer, new TextEncoder().encode("jwt"));
 t("the wrapped key signs what its public key verifies", await crypto.subtle.verify(alg, verifier, sig, new TextEncoder().encode("jwt")));
+
+/* Drift (COPL-75). */
+const drift = (o: Partial<Parameters<typeof driftStatus>[0]>) => {
+  const d = { main: "m".repeat(40), base: "b".repeat(40), behind: 0, mainFiles: [], taskFiles: [], overlap: [], revalidated: false, ...o };
+  return { ...d, overlap: o.overlap ?? overlapOf(d.mainFiles, d.taskFiles) };
+};
+t("overlap is the files both changed", eq(overlapOf(["a.ts", "b.ts", "c.ts"], ["c.ts", "d.ts", "a.ts"]), ["a.ts", "c.ts"]));
+t("main hasn't moved: clean", driftState(drift({ taskFiles: ["a.ts"] })) === "clean" && driftStatus(drift({ taskFiles: ["a.ts"] })).description.includes("hasn't moved"));
+t("main moved elsewhere: clean, and it says so", driftState(drift({ mainFiles: ["x.ts"], taskFiles: ["a.ts"] })) === "clean" && driftStatus(drift({ mainFiles: ["x.ts"], taskFiles: ["a.ts"] })).state === "success");
+t("behind comes first, overlap or not", driftState(drift({ behind: 2, mainFiles: ["a.ts"], taskFiles: ["a.ts"] })) === "behind");
+t("behind is pending", driftStatus(drift({ behind: 1 })).state === "pending");
+t("overlap needs a re-check", driftState(drift({ mainFiles: ["a.ts"], taskFiles: ["a.ts"] })) === "recheck" && driftStatus(drift({ mainFiles: ["a.ts"], taskFiles: ["a.ts"] })).state === "pending");
+t("revalidated for this main turns it green", driftStatus(drift({ mainFiles: ["a.ts"], taskFiles: ["a.ts"], revalidated: true })).state === "success");
+t("a status fits GitHub's 140 characters", driftStatus(drift({ behind: 123456 })).description.length <= 140);
 
 let failed = 0;
 for (const [name, pass] of cases) {

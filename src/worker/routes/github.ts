@@ -42,6 +42,7 @@ import { findUserById, rowToUser } from "../repo/users";
 import { asVia } from "../tokens";
 import { browserUser } from "../viewer";
 import { patchTask } from "./tasks";
+import { DRIFT_CONTEXT, measureDrift, openPulls } from "../drift";
 
 /** Most a delivery may weigh. GitHub caps payloads at 25 MB; ours never need that. */
 const MAX_BODY = 5 * 1024 * 1024;
@@ -168,6 +169,8 @@ interface HookRow {
 /* Only what we read of GitHub's payloads. */
 interface Payload {
   repository?: { full_name?: string; default_branch?: string };
+  /** A commit status's name; Copland's own copland/drift comes back as one too. */
+  context?: string;
   ref?: string;
   after?: string;
   deleted?: boolean;
@@ -189,7 +192,7 @@ interface Payload {
 }
 
 /** POST /api/github: a delivery from the App's webhook. No viewer; the signature is the only way in. */
-export async function postWebhook(request: Request, env: Env, changes: Changes): Promise<Response> {
+export async function postWebhook(request: Request, env: Env, ctx: ExecutionContext, changes: Changes): Promise<Response> {
   const secret = await webhookSecret(env);
   if (!secret) throw notFound("This instance has no GitHub App");
   if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY) throw new HttpError(413, "Delivery too large");
@@ -226,12 +229,40 @@ export async function postWebhook(request: Request, env: Env, changes: Changes):
     else if (event === "pull_request") touched = (await onPull(env, hook, payload, now, changes)) || touched;
     else if (event === "check_suite" && payload.action === "completed" && payload.check_suite) {
       touched = (await onCi(env, hook, payload.check_suite.head_sha, payload.check_suite.conclusion, now)) || touched;
-    } else if (event === "status" && payload.sha) touched = (await onCi(env, hook, payload.sha, payload.state ?? null, now)) || touched;
+    } else if (event === "status" && payload.sha && payload.context !== DRIFT_CONTEXT) touched = (await onCi(env, hook, payload.sha, payload.state ?? null, now)) || touched;
     /* The repo's row in board settings shows the last delivery, so the owner can see it arrives. */
     changes.notify(await boardAudience(env.DB, hook.board_id), "board");
   }
+  measureLater(env, ctx, event, payload, repo, new URL(request.url).origin);
   return json({ ok: true, event, touched });
 }
+
+/**
+ * Drift (COPL-93), measured after the webhook has answered: a PR that opened
+ * or moved, or every open PR on the repo when its default branch moved.
+ */
+function measureLater(env: Env, ctx: ExecutionContext, event: string, payload: Payload, repo: string, origin: string): void {
+  const say = (what: string) => (error: unknown) =>
+    console.warn(`measuring drift for ${what}: ${error instanceof Error ? error.message : error}`);
+  const pr = payload.pull_request;
+  if (event === "pull_request" && pr?.state === "open" && pr.base && MOVES.includes(payload.action ?? "")) {
+    const ref = { repo, number: pr.number, head: pr.head.sha, into: pr.base.ref };
+    ctx.waitUntil(measureDrift(env, ctx, ref, origin).then(() => undefined, say(`${repo}#${pr.number}`)));
+  }
+  const main = payload.repository?.default_branch;
+  if (event === "push" && main && payload.ref === `refs/heads/${main}` && !payload.deleted) {
+    ctx.waitUntil(
+      (async () => {
+        for (const ref of await openPulls(env.DB, repo, main)) {
+          await measureDrift(env, ctx, ref, origin).catch(say(`${repo}#${ref.number}`));
+        }
+      })(),
+    );
+  }
+}
+
+/** What a PR does that can change its drift. */
+const MOVES = ["opened", "reopened", "synchronize", "ready_for_review", "edited"];
 
 /** The live tasks on the hook's board with these numbers, as number → id. */
 async function tasksNumbered(env: Env, hook: HookRow, numbers: number[]): Promise<Map<number, string>> {
