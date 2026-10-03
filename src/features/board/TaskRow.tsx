@@ -38,6 +38,24 @@ export function ParentLink({ parentKey, onClick }: { parentKey: string; onClick:
   );
 }
 
+/** A parent's leaf tasks done out of those not cancelled: progress() in domain/tasks.ts. */
+export type Progress = { done: number; total: number };
+
+/**
+ * `3/7`: a parent's progress, quiet, beside its level pill or in a lane
+ * header. Nothing for a task without children. All done reads in green.
+ */
+export function ProgressCount({ progress, className = "" }: { progress: Progress | undefined; className?: string }) {
+  if (!progress) return null;
+  const { done, total } = progress;
+  const complete = total > 0 && done === total;
+  return (
+    <span className={`text-xs tabular-nums whitespace-nowrap ${complete ? "text-green" : "text-muted"} ${className}`} title={`${done} of ${total} done`}>
+      {done}/{total}
+    </span>
+  );
+}
+
 const PRIORITY_MARK: Record<Task["priority"], ReactNode> = {
   urgent: <span className="text-red">!!</span>,
   high: <span className="text-orange">!</span>,
@@ -56,6 +74,8 @@ interface TaskRowProps {
   parentKey?: string | null;
   /** Clicking `↑ KEY`: on a board, show only what is under the parent. */
   onParent?: () => void;
+  /** A parent's progress, shown as `3/7` beside the level pill. */
+  progress?: Progress;
   draggable?: boolean;
   dropMarker?: boolean;
   onOpen: () => void;
@@ -65,7 +85,7 @@ interface TaskRowProps {
   onDrop?: (event: DragEvent) => void;
 }
 
-export function TaskRow({ task, members, labels = [], lead, showKey = true, parentKey, onParent, draggable, dropMarker, onOpen, onLongPress, onDragOver, onDrop }: TaskRowProps) {
+export function TaskRow({ task, members, labels = [], lead, showKey = true, parentKey, onParent, progress, draggable, dropMarker, onOpen, onLongPress, onDragOver, onDrop }: TaskRowProps) {
   const parent = parentKey && onParent ? parentKey : null;
   const closed = task.completedAt !== null;
   const draft = isDraft(task.id);
@@ -116,6 +136,11 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
             {PRIORITY_MARK[task.priority] && <span className="mr-1.5">{PRIORITY_MARK[task.priority]}</span>}
             {task.title}
           </div>
+          {progress && (
+            <span className="h-[1lh] inline-flex items-center">
+              <ProgressCount progress={progress} />
+            </span>
+          )}
           <LevelPill level={task.level} className="h-[1lh]" />
         </div>
         {(showKey || parent || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0 || pull || review || claimer) && (

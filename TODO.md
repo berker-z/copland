@@ -256,6 +256,11 @@ docs/DESIGN.md under Touch.
   the level filter chips carry it too. The leftmost filled dot is the
   level's hue (epic cyan, story green, task blue, milestone magenta;
   COPL-81). `src/ui/LevelPill.tsx`
+- A parent's progress (COPL-90): `3/7` before the level pill on a card
+  with children and in an epic's lane header (desktop and phone), and a
+  `progress` row in the task modal (`3 of 7 done`). Leaf tasks done out of
+  those not cancelled, from `progress()` (COPL-89), over the whole board so
+  filters don't change it. The lane header's card count reads `· 4 shown`
 - Runs and claims (COPL-7, COPL-8): `POST /api/runs` with a token gives a
   run and its own secret, which acts as the same principal and scope and
   stamps `run_id` on events ("via Codex · run 8f31"). One ten-minute lease,

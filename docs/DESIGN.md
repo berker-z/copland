@@ -161,8 +161,9 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   stays at the left while the lanes scroll sideways: a chevron (folds the
   lane, remembered per browser), the epic's key in `text-faint`, its title
   in `text-bright` (`text-muted` struck through when closed; accent on
-  hover, opens it), its stage in the stage's tone, the card count in
-  `text-muted`, and `under` (scopes the board to the epic). Cells are
+  hover, opens it), its stage in the stage's tone, its progress (`3/7`,
+  below), how many cards the lane shows as `· 4 shown` in `text-faint`,
+  and `under` (scopes the board to the epic). Cells are
   `bg-surface` drop targets; a cell that refuses a drop says why in a
   `text-xs text-muted` line instead of a drop marker. Cards drop the
   `↑ KEY` when the parent is the lane's epic.
@@ -186,6 +187,14 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   title's first line (the title wraps beside it, never under it), the last
   column of a list row, the right end of a Gantt label, a lane header and
   the `under…` picker, after the stage in the task modal's title.
+- A parent's progress (`ProgressCount` in `src/features/board/TaskRow.tsx`):
+  `done/total` of its leaf tasks (`progress()` in `src/domain/tasks.ts`,
+  counted over the whole board, never the filtered view), `text-xs`
+  tabular, `text-muted`, `text-green` once every one is done. Only a task
+  with children has one. It sits just before the level pill on a card, and
+  after the stage in an epic's lane header (after the title in a phone's
+  lane section). The task modal spells it out in a `progress` row under
+  `level`: `3 of 7 done` in `text-ink`, green when complete.
 - `src/features/board/TaskCode.tsx`: a task's code from a connected
   GitHub repo. States use the hues the way GitHub does: open `text-green`,
   draft `text-muted`, merged `text-magenta`, closed `text-red`; CI is a

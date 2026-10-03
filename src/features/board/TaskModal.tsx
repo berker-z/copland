@@ -19,7 +19,7 @@ import { Link, useMatch } from "react-router";
 import { Check, Link2, Pencil } from "lucide-react";
 import { Avatar, peopleFirst } from "@/ui/Avatar";
 import { LEVELS, PRIORITIES, type BoardDetail, type Task } from "@/domain/types";
-import { taskPath } from "@/domain/tasks";
+import { progress, taskPath } from "@/domain/tasks";
 import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
 import { DeleteButton } from "@/ui/DeleteButton";
@@ -199,6 +199,7 @@ function TaskView({ detail, task }: { detail: BoardDetail; task: Task }) {
   const labels = detail.labels.filter((l) => task.labelIds.includes(l.id));
   const assignees = peopleFirst(detail.members.filter((m) => task.assigneeIds.includes(m.user.id)));
   const parent = task.parentId ? detail.tasks.find((t) => t.id === task.parentId) : undefined;
+  const count = progress(detail.tasks, detail.stages, task.id);
 
   return (
     <>
@@ -257,6 +258,14 @@ function TaskView({ detail, task }: { detail: BoardDetail; task: Task }) {
       {task.level && (
         <Row label="level" text>
           <span className="text-ink">{task.level}</span>
+        </Row>
+      )}
+
+      {count && (
+        <Row label="progress" text>
+          <span className={count.total > 0 && count.done === count.total ? "text-green" : "text-ink"}>
+            {count.done} of {count.total} done
+          </span>
         </Row>
       )}
 

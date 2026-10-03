@@ -4,9 +4,12 @@
    sticks to the top while the lanes scroll. Which lane a task is in, which
    lanes show and what a drag across lanes does are in lanes.ts.
    ----------------------------------------------------------------------------
-   A lane's header is the epic: key, title (opens it), its stage, how many
-   cards the lane shows, `under` (scope the board to it), and a chevron that
-   folds the lane to its header. Folded lanes are remembered per board in
+   A lane's header is the epic: key, title (opens it), its stage, its
+   progress (`3/7`: leaf tasks under it done out of all of them not
+   cancelled, counted over the whole board so filters don't change it), how
+   many cards the lane shows right now (`· 4 shown`, after the filters),
+   `under` (scope the board to it), and a chevron that folds the lane to its
+   header. Folded lanes are remembered per board in
    this browser (a convenience, not a setting).
 
    A drop on a card puts the dragged one above it, a drop on a cell's empty
@@ -28,7 +31,7 @@ import { LevelPill } from "@/ui/LevelPill";
 import { toneText } from "@/ui/tone";
 import type { Hierarchy } from "./BoardScreen";
 import { buildLanes, laneIds, parentForLane, type Lane } from "./lanes";
-import { TASK_DRAG_TYPE, TaskRow } from "./TaskRow";
+import { ProgressCount, TASK_DRAG_TYPE, TaskRow } from "./TaskRow";
 
 const storageKey = (boardId: string) => `copland.lanes.${boardId}`;
 
@@ -201,11 +204,14 @@ export function LanesView({ detail, shown, hierarchy, onOpen, onNew }: LanesView
                         {lane.epic.title}
                       </button>
                       {epicStage && <span className={`text-xs ${toneText(epicStage.tone)}`}>{epicStage.name}</span>}
+                      <ProgressCount progress={hierarchy.progress(lane.epic.id)} />
                     </>
                   ) : (
                     <span className="text-muted">no epic</span>
                   )}
-                  <span className="text-xs text-muted tabular-nums">{lane.tasks.length}</span>
+                  <span className="text-xs text-faint tabular-nums" title="cards this lane shows">
+                    · {lane.tasks.length} shown
+                  </span>
                   {epicKey && (
                     <button
                       onClick={() => hierarchy.onScope(epicKey)}
@@ -244,6 +250,7 @@ export function LanesView({ detail, shown, hierarchy, onOpen, onNew }: LanesView
                               labels={detail.labels}
                               parentKey={parentKey}
                               onParent={() => parentKey && hierarchy.onScope(parentKey)}
+                              progress={hierarchy.progress(task.id)}
                               draggable={canEdit}
                               dropMarker={here?.before === task.id && !here.refused}
                               onOpen={() => onOpen(task.id)}
