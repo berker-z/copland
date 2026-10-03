@@ -132,10 +132,13 @@ notifications = false                           # no desktop notifications (the 
 compact = true                                  # the status line alone, in a small window
 boards = ["COPL", "HOME"]                       # only these boards' tickets on the scene; all by default
 owner_token_file = "~/.config/copland/me.token" # your own token, for all four poles (below)
+owner_write_token_file = "~/.config/copland/me.write.token" # yours too, read and write: messaging your agents (below)
 owner_url = "https://copland.example.com"       # only when the agents are on more than one Copland
 ```
 
 `owner_token_file` (or `owner_token = "cpl_…"` inline) is a token of yours, the person the agents belong to, made in settings › tokens; read-only is enough and is what to use. It is held to the same rules as the agents' tokens: an API token, never a run's secret, with a warning if the file can be read by anyone but you. It is for one Copland: the agents' `url` when they all share one, else `owner_url`, which a config with agents on more than one instance must give.
+
+`owner_write_token_file` (or `owner_write_token` inline) is a second token of yours, read and write, for what the box writes as you: a message to one of your agents and your inbox marked read (COPL-109). It comes with `owner_token_file` or not at all, and is for the same Copland. You don't make it by hand: the first time you message an agent from the agents screen, the box asks for it with a device login of its own (below), keeps it in `me.write.token` beside the config (0600) and adds the key. The read-only token stays what it reads with; only someone who wants to write from the box holds a write token on disk, and it can do anything you can. One Copland refuses is forgotten (the key and the file go), so the next message asks again.
 
 `copland-daemon --check` reads the config, checks it, asks each instance who the token is and prints what it would run. It fails on a token it can't use: a read-only one (runs and claims are writes), or a run's secret (`cplr_…`) given in place of the agent's own token. The daemon checks the same at startup, through `/api/me`'s `access`, and stops watching that agent with an error; when no agent is left it exits. `COPLAND_LOG=debug` shows each poll's decisions and keepalives.
 
@@ -191,6 +194,8 @@ The menu's agents panel (`a` in the live view goes straight to it) is the agents
 - **Runs here**: its name, runtime (Claude Code or Codex, or "(own)" for a command that isn't one of setup's templates, a widened one say), working folder, and what it is doing: watching, a task it has a run on, an error, or "changes after this run". Space (or ← →) cycles the runtime through those found on PATH, marked as a change; Enter saves the changes. `x` twice stops running it here.
 - **Not on this machine**: Enter asks Copland for that agent's token with a device login that names it (`agents` on `POST /api/device/start`), so `/device` ticks that agent alone; the box shows the code and opens the page, as setup does. Once approved, it writes `<name>.token` beside the config (another name if that file exists) and an `[[agent]]` table with the first runtime found, working in `~/agents/<name>`. Because the request names agents, the approval makes only their tokens: the box already has the read-only one for you.
 
+`m` messages the selected agent, either kind (COPL-109). It opens one line under the name; Enter sends it with `POST /api/messages` as you, Esc goes back, and ctrl+v pastes. A message holds at most 1000 characters, and the line counts them. When the agent has a run going here, the line says the message waits for its next run, and so does the word after sending: nothing reaches a runtime that is already going (see Messages). Stopping a run and pausing an agent are not messages: `s` on the live view and the pause in Copland. Sending needs your write token, so the first `m` asks for it, with `write: true` on `POST /api/device/start` and no agents: `/device` then says it is a read and write token for you and lists no agents, and approving makes that one token ("<host> box, messages" in settings › access) and nothing else. Once it is saved, the line opens. Without `owner_token_file` there is nothing to ask with, and `m` closes the menu as it does elsewhere.
+
 ↑↓ picks an agent, Esc closes the menu, and changes not saved are dropped. Paused agents say so.
 
 Saving edits `daemon.toml` in place (`box/src/edit.rs`): only the changed agent's table, and in it only `client`, `command` and the untested-template note, so comments and hand edits elsewhere stay. The file is checked the way the daemon reads it before anything is written, the old one is kept as `daemon.toml.bak` (or `.bak.2`, …, never over an older backup), and the new one is written whole with mode 0600. Stopping an agent here removes its table and leaves its token file, so the backup still works; the token stays valid until you revoke it in settings › agents. The last agent can't be stopped here (a config without one isn't a config); `--setup` starts over instead.
@@ -201,7 +206,7 @@ Then the running daemon takes the new config without a restart (`Daemon::reload`
 
 ≡ at the right of the title bar, or `m`, opens the menu (COPL-65): small panels under the poles, one at a time, their names across the title bar. Click a name or press its number (1 to 6) to switch, Esc or `m` closes it. Everything in a panel works with the keyboard and the mouse alike: clicking a line does what pressing its key would, and so does clicking a key in the status line. `box/src/menu.rs`.
 
-- **needs you**: what the bell counts (below), each line opening its task.
+- **needs you**: what the bell counts (below), each line opening its task (a message about no task opens Copland, where your inbox is). `r` marks a mention or a message read, with your write token (`POST /api/inbox/read`; without the token it says how to get one).
 - **agents**: the agents screen above.
 - **boards**: which boards' tickets the scene shows, from `GET /api/boards` with your token. Space shows or hides one, `a` shows them all again. It is display only: the agents still wake for anything on any board, and the bell still counts blocks on hidden ones. With a filter on, done's count is what is left of the listed ones.
 - **settings**: the theme (the seven, then "copland", yours there), motion, notifications, start at login and compact. Space or ← → changes the selected one, and it applies at once.
@@ -214,7 +219,7 @@ Compact shows the status line alone in a 548×26 window, with the bell, ≡ and 
 
 ### What needs you
 
-The bell in the title bar (drawn in pixels like the scene) counts what needs you (COPL-64): your agents' tasks in a blocked stage, from `/api/wired`, and unread items in your own inbox that @mention you, from `GET /api/inbox?unread=true` with your read-only token, read again when your live socket says `inbox`. It is faint at nothing and yellow with the count otherwise. Clicking it, or `b`, opens the needs-you panel.
+The bell in the title bar (drawn in pixels like the scene) counts what needs you (COPL-64): your agents' tasks in a blocked stage, from `/api/wired`, and unread items in your own inbox that @mention you or are a message from one of your agents (COPL-109, one line each, its text shown), from `GET /api/inbox?unread=true` with your read-only token, read again when your live socket says `inbox`. It is faint at nothing and yellow with the count otherwise. Clicking it, or `b`, opens the needs-you panel.
 
 A desktop notification fires once for each new one, quietly: no sound (the box plays none and asks the notification server not to with `suppress-sound`), nothing for routine moves, and more than three at once are one notification. Clicking it opens the task. On Linux it goes over D-Bus to `org.freedesktop.Notifications` with zbus, which GPUI already brings, so no crate was added. macOS has none yet (a TODO in `box/src/notify.rs`: it needs a signed app). What was said is kept in `$XDG_STATE_HOME/copland/notified.toml`, so a restart repeats nothing; a need that goes away (unblocked, read) is forgotten, so a task blocked again later is said again. The first time, with no such file, whatever is already there is remembered without a burst. The settings panel switches the notifications off (`notifications = false`); the bell counts either way.
 
@@ -224,7 +229,7 @@ A ticket in doing that this box is running gets a ■ in front of it. Click it, 
 
 ### Signing out
 
-`x` twice on the session panel signs the box out: it stops the daemon (runs finish as cancelled), revokes every token `daemon.toml` names, each with itself through `DELETE /api/tokens/self` (the one token-management call a token may make, on itself only; see AGENTS.md), then deletes the token files, `daemon.toml` with its backups and setup note, and `notified.toml`, and starts setup in the same window with the address filled in. A token it couldn't revoke (the server down, say) is named there, to revoke in settings › tokens. To switch accounts or add one, sign out and set up again; the box holds one at a time.
+`x` twice on the session panel signs the box out: it stops the daemon (runs finish as cancelled), revokes every token `daemon.toml` names (your write token too), each with itself through `DELETE /api/tokens/self` (the one token-management call a token may make, on itself only; see AGENTS.md), then deletes the token files, `daemon.toml` with its backups and setup note, and `notified.toml`, and starts setup in the same window with the address filled in. A token it couldn't revoke (the server down, say) is named there, to revoke in settings › tokens. To switch accounts or add one, sign out and set up again; the box holds one at a time.
 
 ### Closing it, and its colours
 

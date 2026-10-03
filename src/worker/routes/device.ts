@@ -1,14 +1,14 @@
 /* ============================================================================
    Device login: the box connects without anyone copying tokens (COPL-47).
    ----------------------------------------------------------------------------
-     POST /api/device/start      { client, host, agents? }, no auth
+     POST /api/device/start      { client, host, agents?, write? }, no auth
                                  → { deviceCode, userCode, verifyUrl, interval, expiresIn }
      GET  /api/device/:userCode  a person in the app → { client, host, createdAt, status, agents? }
      POST /api/device/approve    a person in the app, { userCode, agentIds }
      POST /api/device/deny       a person in the app, { userCode }
      POST /api/device/poll       { deviceCode }, no auth
                                  → { status: pending | denied | expired }, or once
-                                   { status: "approved", url, owner: { handle, token },
+                                   { status: "approved", url, owner: { handle, token, scope },
                                      agents: [{ handle, token }] }
 
    The shape of OAuth's device flow (RFC 8628), cut down. The box holds the
@@ -38,6 +38,12 @@
    Such a box already holds its owner's read-only token, so the approval
    mints only the agents' tokens and `owner` comes back null.
 
+   A box asks for a read-and-write token for its person the same way, with
+   `write: true` and no agents (COPL-109): sending a message to an agent and
+   marking the inbox read are writes, which its read-only token can't do.
+   The page says so, and approving mints that one token ("<host> box,
+   messages") and nothing else. `owner.scope` says which kind came back.
+
    Two routes take no credentials, so they are limited: a few requests per
    IP every ten minutes, a ceiling on everything pending, and a poll faster
    than once a second answers pending with slow_down rather than doing work.
@@ -52,6 +58,7 @@ import {
   MAX_DEVICE_AGENTS,
   normalizeUserCode,
   parseWantedAgents,
+  parseWriteAsk,
   USER_CODE_ALPHABET,
   type DeviceRequestInfo,
   type DeviceStatus,
@@ -93,11 +100,13 @@ interface DeviceRow {
   last_polled_at: string | null;
   /** JSON array of the agents the box asked for, or null. */
   wanted_agents: string | null;
+  /** 1 when the box asked for a read-and-write token for the person alone (COPL-109). */
+  wants_write: number;
 }
 
 interface Payload {
   /** Null when the box asked for named agents: it already holds a read-only token for its owner. */
-  owner: { handle: string; token: string } | null;
+  owner: { handle: string; token: string; scope: "read" | "write" } | null;
   agents: Array<{ handle: string; token: string }>;
 }
 
@@ -114,6 +123,7 @@ function statusOf(row: DeviceRow): DeviceStatus {
 
 function info(row: DeviceRow): DeviceRequestInfo {
   const base: DeviceRequestInfo = { client: row.client, host: row.host, createdAt: row.created_at, status: statusOf(row) };
+  if (row.wants_write) return { ...base, write: true };
   return row.wanted_agents ? { ...base, agents: JSON.parse(row.wanted_agents) as string[] } : base;
 }
 
@@ -205,9 +215,11 @@ function requirePending(row: DeviceRow): void {
 /* ------------------------------------------------------------------ box --- */
 
 /**
- * POST /api/device/start { client, host, agents? }: no credentials; a code to
- * show and one to keep. `agents` (handles or ids) are what the approval page
- * ticks to begin with, kept with the request; they grant nothing by themselves.
+ * POST /api/device/start { client, host, agents?, write? }: no credentials; a
+ * code to show and one to keep. `agents` (handles or ids) are what the
+ * approval page ticks to begin with, kept with the request; they grant nothing
+ * by themselves. `write` asks for the person's read-and-write token instead,
+ * and grants nothing by itself either: the person approves it on the page.
  */
 export async function postDeviceStart(request: Request, env: Env, url: URL, changes: Changes): Promise<Response> {
   const body = await readJson(request);
@@ -216,6 +228,8 @@ export async function postDeviceStart(request: Request, env: Env, url: URL, chan
   const parsed = parseWantedAgents(body.agents);
   if ("error" in parsed) throw badRequest(parsed.error);
   const wanted = parsed.wanted ? JSON.stringify(parsed.wanted) : null;
+  const write = parseWriteAsk(body.write, parsed.wanted);
+  if ("error" in write) throw badRequest(write.error);
   await sweepDeviceRequests(env, changes);
 
   const db = env.DB;
@@ -240,10 +254,10 @@ export async function postDeviceStart(request: Request, env: Env, url: URL, chan
     try {
       await db
         .prepare(
-          `INSERT INTO device_requests (id, device_hash, user_code, client, host, expires_at, ip_hash, wanted_agents)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+          `INSERT INTO device_requests (id, device_hash, user_code, client, host, expires_at, ip_hash, wanted_agents, wants_write)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
         )
-        .bind(crypto.randomUUID(), deviceHash, userCode, client, host, expiresAt, ipHash, wanted)
+        .bind(crypto.randomUUID(), deviceHash, userCode, client, host, expiresAt, ipHash, wanted, write.write ? 1 : 0)
         .run();
       return json({
         deviceCode,
@@ -316,7 +330,8 @@ export async function getDevice(env: Env, viewer: Viewer, rawCode: string): Prom
 /**
  * POST /api/device/approve { userCode, agentIds }: mint the box's tokens and
  * seal them on the request. agentIds are this person's own live agents; a
- * paused one is allowed (its token works once it is resumed).
+ * paused one is allowed (its token works once it is resumed). A request for a
+ * write token (COPL-109) takes no agents and mints only the person's token.
  */
 export async function postDeviceApprove(request: Request, env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
   requirePersonInApp(viewer);
@@ -330,6 +345,7 @@ export async function postDeviceApprove(request: Request, env: Env, viewer: View
   const db = env.DB;
   const row = await visibleRequest(db, viewer, code);
   requirePending(row);
+  if (row.wants_write && agentIds.length) throw badRequest("This box asked for a write token for you, not for agents");
 
   const { results: agents } = await db
     .prepare(
@@ -344,14 +360,18 @@ export async function postDeviceApprove(request: Request, env: Env, viewer: View
 
   /* The same tokens settings makes; then they expire with the request and say they are the box's. */
   /* A box asking for named agents is adding them to its setup and already has its owner's read-only token. */
-  const owner = row.wanted_agents ? null : await createPersonalToken(db, viewer.user.id, { name: `${row.host} box`, scope: "read", days: null });
+  /* One asking to write (COPL-109) gets a read-and-write token for the person instead, in a name of its own. */
+  const scope = row.wants_write ? "write" : "read";
+  const owner = row.wanted_agents
+    ? null
+    : await createPersonalToken(db, viewer.user.id, { name: row.wants_write ? `${row.host} box, messages` : `${row.host} box`, scope, days: null });
   const minted = [];
   for (const agent of ordered) {
     minted.push({ handle: agent.handle, ...(await createPersonalToken(db, agent.id, { name: row.host, scope: "write", days: null })) });
   }
   const ids = [...(owner ? [owner.token.id] : []), ...minted.map((m) => m.token.id)];
   const payload: Payload = {
-    owner: owner ? { handle: viewer.user.handle, token: owner.secret } : null,
+    owner: owner ? { handle: viewer.user.handle, token: owner.secret, scope } : null,
     agents: minted.map((m) => ({ handle: m.handle, token: m.secret })),
   };
   const sealed = await seal(env, sealContext(row.id), JSON.stringify(payload));

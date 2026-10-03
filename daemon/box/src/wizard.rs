@@ -25,6 +25,51 @@ const AGENT_ROWS: usize = 3;
 /// RFC 8628's step when the server says to slow down.
 const SLOW_DOWN: u64 = 5;
 
+/// What a key did to a line being typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Typed {
+    Changed,
+    /// Enter: what it does is the caller's.
+    Enter,
+    Ignored,
+}
+
+/// A key on a line being typed (setup's address, a message to an agent): characters, moving
+/// and deleting, ctrl+a/e/u/w as in a shell, ctrl+v or shift+insert to paste.
+pub fn type_into(input: &mut LineInput, e: &KeyDownEvent, cx: &mut Context<BoxView>) -> Typed {
+    let k = &e.keystroke;
+    let m = k.modifiers;
+    let name = k.key.as_str();
+    if (m.control && name == "v") || (m.shift && name == "insert") {
+        if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+            input.insert(&text);
+        }
+    } else if m.control {
+        match name {
+            "a" => input.home(),
+            "e" => input.end(),
+            "u" => input.clear(),
+            "w" | "backspace" => input.delete_word(),
+            _ => return Typed::Ignored,
+        }
+    } else {
+        match name {
+            "enter" => return Typed::Enter,
+            "backspace" => input.backspace(),
+            "delete" => input.delete(),
+            "left" => input.left(),
+            "right" => input.right(),
+            "home" => input.home(),
+            "end" => input.end(),
+            _ => match &k.key_char {
+                Some(c) if !m.alt && !m.platform => input.insert(c),
+                _ => return Typed::Ignored,
+            },
+        }
+    }
+    Typed::Changed
+}
+
 /// Where the approval stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wait {
@@ -216,12 +261,14 @@ impl Wizard {
         self.job(
             async move {
                 let api = Api::new(&at).map_err(|e| format!("{e:#}"))?;
-                api.device_start(setup::CLIENT, &host, &[]).await.map_err(|e| match &e {
-                    ApiError::Status { status: 404 | 405, .. } => {
-                        format!("{at} has no device setup: not a Copland, or one older than this box")
-                    }
-                    _ => format!("{at}: {e}"),
-                })
+                api.device_start(setup::CLIENT, &host, &[], false)
+                    .await
+                    .map_err(|e| match &e {
+                        ApiError::Status { status: 404 | 405, .. } => {
+                            format!("{at} has no device setup: not a Copland, or one older than this box")
+                        }
+                        _ => format!("{at}: {e}"),
+                    })
             },
             move |w, out, cx| match out {
                 Ok(start) => {
@@ -437,38 +484,14 @@ impl Wizard {
                 if *busy {
                     return None;
                 }
-                let paste = (m.control && name == "v") || (m.shift && name == "insert");
-                if paste {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
-                        input.insert(&text);
+                match type_into(input, e, cx) {
+                    Typed::Enter => {
+                        self.submit(cx);
+                        return None;
                     }
-                } else if m.control {
-                    match name {
-                        "a" => input.home(),
-                        "e" => input.end(),
-                        "u" => input.clear(),
-                        "w" | "backspace" => input.delete_word(),
-                        _ => return None,
-                    }
-                } else {
-                    match name {
-                        "enter" => {
-                            self.submit(cx);
-                            return None;
-                        }
-                        "backspace" => input.backspace(),
-                        "delete" => input.delete(),
-                        "left" => input.left(),
-                        "right" => input.right(),
-                        "home" => input.home(),
-                        "end" => input.end(),
-                        _ => match &k.key_char {
-                            Some(c) if !m.alt && !m.platform => input.insert(c),
-                            _ => return None,
-                        },
-                    }
+                    Typed::Changed => *error = None,
+                    Typed::Ignored => return None,
                 }
-                *error = None;
             }
             Step::Approve { url, start, wait, .. } => match (name, *wait != Wait::Waiting) {
                 ("o", _) => cx.open_url(&start.verify_url),

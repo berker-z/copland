@@ -77,6 +77,15 @@ docs/DESIGN.md under Touch.
       the live view. Not yet the sign-in detour (localhost is always the dev
       user): open a `/device?code=` link signed out on the live site and
       check it comes back with the code.
+- [ ] Messaging from the box (COPL-109): the server half was run with curl
+      against the dev server (the write ask, its refusals, approve, poll with
+      `scope: "write"`, sending and marking read with it, the read-only token
+      refused on both) and the `/device` page in headless Chrome; the box
+      half is tested as units (the config, the write token's file and key,
+      the bell's message rows, the compose line). Not yet in the window: press
+      `m` on an agent, approve the write token on `/device`, send a message,
+      see the agent's reply in the bell and mark it read, then revoke the
+      token in settings and check the next `m` asks again.
 - [ ] The box's setup writes a Codex command (`box/src/runtime.rs`) that
       has never run against Copland: check that `codex exec` reaches the
       MCP with the run's secret and may call its tools without asking. Paste
@@ -355,7 +364,7 @@ docs/DESIGN.md under Touch.
   daemon wakes on one (COPL-107): a message about a task joins its wake
   like a mention, task-less ones get a run of their own in `workdir`, and
   one that comes during a run waits for the next (daemon/README.md,
-  Messages). Still to come: sending from the box
+  Messages). Sending from the box is COPL-109, below
 - Housekeeping on the cron (COPL-112, `src/worker/housekeeping.ts`): expired
   sessions and OAuth codes, runs ended over 30 days ago, tokens revoked or
   expired over 30 days ago that no kept run uses, and the changed-files
@@ -371,3 +380,14 @@ docs/DESIGN.md under Touch.
   task and marks it read. Shared input: `src/features/inbox/MessageInput.tsx`.
   Checked in headless Chrome against the dev server; not on a phone. The
   nudge is in the task modal only, not on cards
+- Messages in the box (COPL-109, for COPL-44): `m` on an agent in the
+  agents screen opens one line and sends it as you (`POST /api/messages`),
+  saying it waits for the next run while one is going here; the bell lists
+  your agents' unread messages beside mentions and blocks, opens them, and
+  `r` marks one read. Both are writes, so the box asks once for a second,
+  read-and-write token of yours through a device login with `write: true`
+  (migration 0026; `/device` then lists no agents and says what the token
+  can do), kept in `me.write.token` as `owner_write_token_file`; the
+  read-only one stays what it reads with. A refused write token is
+  forgotten, so the next `m` asks again. Signing out revokes it with the
+  rest (`daemon/box/src/write.rs`)

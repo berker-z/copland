@@ -265,7 +265,7 @@ pub fn save_tokens(config: &Path, url: &str, owner: &DeviceIdentity, agents: &[D
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     private_dir(dir)?;
-    let mut used = vec!["me".to_string()];
+    let mut used = vec!["me".to_string(), "me.write".to_string()];
     let owner_token_file = dir.join("me.token");
     private_write(&owner_token_file, &format!("{}\n", owner.token.expose()))?;
     let mut saved = Vec::new();
@@ -528,6 +528,7 @@ mod tests {
         DeviceIdentity {
             handle: handle.into(),
             token: Secret::new(token),
+            scope: None,
         }
     }
 

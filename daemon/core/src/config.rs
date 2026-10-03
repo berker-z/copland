@@ -6,6 +6,9 @@
 //! # compact, boards, and your own
 //! # token for /api/wired, for the agents' url or owner_url.
 //! owner_token_file = "~/.config/copland/me.token"
+//! # Optional, the box's too: your read-and-write token, for messaging your agents and marking
+//! # your inbox read from it (COPL-109). The box asks for it the first time you message one.
+//! owner_write_token_file = "~/.config/copland/me.write.token"
 //!
 //! [[agent]]
 //! url = "https://copland.example.com"
@@ -91,6 +94,9 @@ pub struct Owner {
     /// `owner_url`, or the agents' url when they all share one; no trailing slash.
     pub url: String,
     pub token: Secret,
+    /// A read-and-write token for the same person (`owner_write_token_file`), for what the box
+    /// writes as them: messages to their agents, their inbox marked read. None until asked for.
+    pub write: Option<Secret>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +134,8 @@ struct RawConfig {
     owner_url: Option<String>,
     owner_token: Option<Secret>,
     owner_token_file: Option<String>,
+    owner_write_token: Option<Secret>,
+    owner_write_token_file: Option<String>,
     #[serde(default, rename = "agent")]
     agents: Vec<RawAgent>,
 }
@@ -279,6 +287,9 @@ impl Config {
                 if raw.owner_url.is_some() {
                     bail!("owner_url is set but there is no owner_token_file (or owner_token)");
                 }
+                if raw.owner_write_token.is_some() || raw.owner_write_token_file.is_some() {
+                    bail!("owner_write_token_file is set but there is no owner_token_file (or owner_token)");
+                }
                 None
             }
             pair => {
@@ -300,7 +311,16 @@ impl Config {
                         first.clone()
                     }
                 };
-                Some(Owner { url, token })
+                let write = match (raw.owner_write_token, raw.owner_write_token_file) {
+                    (None, None) => None,
+                    pair => Some(secret(
+                        pair,
+                        ("owner_write_token", "owner_write_token_file"),
+                        &read_token,
+                        &mut inline_token,
+                    )?),
+                };
+                Some(Owner { url, token, write })
             }
         };
         Ok(Config {
@@ -496,7 +516,22 @@ mod tests {
         let owner = c.owner.unwrap();
         assert_eq!(owner.url, "http://x");
         assert_eq!(owner.token.expose(), "cpl_fromfile");
+        assert!(owner.write.is_none());
         assert_eq!(c.motion, Some(false));
+
+        /* The write token is the same person's, so it comes with the owner token or not at all. */
+        let c = parse(&format!(
+            "owner_token_file = \"~/me\"\nowner_write_token_file = \"~/me.write\"\n{one}"
+        ))
+        .unwrap();
+        assert_eq!(c.owner.unwrap().write.unwrap().expose(), "cpl_fromfile");
+        assert!(parse(&format!("owner_write_token_file = \"~/me.write\"\n{one}")).is_err());
+        assert!(
+            parse(&format!(
+                "owner_token = \"cpl_me\"\nowner_write_token = \"cplr_x\"\n{one}"
+            ))
+            .is_err()
+        );
 
         let two = format!("{one}{}", agent("http://y"));
         assert!(parse(&format!("owner_token = \"cpl_me\"\n{two}")).is_err());

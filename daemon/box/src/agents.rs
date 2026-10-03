@@ -10,6 +10,13 @@
 //! Your agents come from `/api/wired` (the owner's feed), which lists them
 //! all, paused ones too, with your read-only token. Without an owner token
 //! the screen shows only the agents this machine runs.
+//!
+//! `m` messages the selected agent (COPL-109): one line, sent with
+//! `POST /api/messages` as you. That needs your read-and-write token
+//! (`write.rs`), so the first `m` asks for it through a device login of its
+//! own, then opens the line. A message to an agent with a run going here
+//! waits for its next run, and the line says so. Stopping and pausing stay
+//! what they are (`s` on the live view, the pause in Copland), not messages.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -18,21 +25,24 @@ use anyhow::Result;
 use copland_daemon_core::api::{Api, DeviceIdentity, DevicePoll, DeviceStart, WiredAgent};
 use copland_daemon_core::config::AgentConfig;
 use copland_daemon_core::{Config, DaemonState, Phase, Reloaded};
-use gpui::{Context, Task};
+use gpui::{Context, KeyDownEvent, Task};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::edit;
 use crate::feed::Feed;
 use crate::runtime::{self, Found, Runtime};
 use crate::scene::{Line, Role, Span};
-use crate::setup::{self, Choice};
+use crate::setup::{self, Choice, LineInput};
 use crate::view::BoxView;
-use crate::wizard::{Panel, Wait, key};
+use crate::wizard::{Panel, Typed, Wait, key, type_into};
+use crate::write;
 
 /// Agents listed at once; the rest scroll with the selection.
 const ROWS: usize = 3;
 /// RFC 8628's step when the server says to slow down.
 const SLOW_DOWN: u64 = 5;
+/// The most a message holds (`MESSAGE_MAX` in `src/domain/messages.ts`).
+const MESSAGE_MAX: usize = 1000;
 
 /// A changed config for the daemon to run, and its answer.
 pub struct Reload {
@@ -213,12 +223,21 @@ enum Mode {
     List,
     /// x was pressed on this agent: x again stops running it here.
     Confirm(String),
-    /// Getting an agent's token through a device login.
+    /// Getting a token through a device login: the agent's, to run it here, or with `write`
+    /// your read-and-write one, to message the agent next.
     Approve {
         handle: String,
         url: String,
+        write: bool,
         start: Option<DeviceStart>,
         wait: Wait,
+    },
+    /// Typing a message to the agent; `note` is what to say under the line.
+    Compose {
+        handle: String,
+        input: LineInput,
+        sending: bool,
+        note: Option<(String, Role)>,
     },
 }
 
@@ -459,11 +478,13 @@ impl Agents {
         }
     }
 
-    /// Ask Copland for one agent's token: a device code naming it, approved in the browser.
-    fn run_here(&mut self, handle: String, url: String, cx: &mut Context<BoxView>) {
+    /// Ask Copland for a token through a device code approved in the browser: one agent's, naming
+    /// it, or with `write` your read-and-write one, so as to message `handle` once it comes.
+    fn ask(&mut self, handle: String, url: String, write: bool, cx: &mut Context<BoxView>) {
         self.mode = Mode::Approve {
             handle: handle.clone(),
             url: url.clone(),
+            write,
             start: None,
             wait: Wait::Waiting,
         };
@@ -473,8 +494,9 @@ impl Agents {
         self.job(
             async move {
                 let api = Api::new(&at).map_err(|e| format!("{e:#}"))?;
+                let agents = if write { Vec::new() } else { vec![handle] };
                 let start = api
-                    .device_start(setup::CLIENT, &host, &[handle])
+                    .device_start(setup::CLIENT, &host, &agents, write)
                     .await
                     .map_err(|e| format!("{at}: {e}"))?;
                 Ok::<_, String>((api, start))
@@ -503,11 +525,18 @@ impl Agents {
     /// The device login's answer: on approval, each agent it brought that isn't here yet gets
     /// its token file and its table (the first runtime found, `~/agents/<name>`), then the
     /// daemon starts it.
-    fn approved(&mut self, out: Result<(String, Vec<DeviceIdentity>), Wait>, cx: &mut Context<BoxView>) {
-        let (url, agents) = match out {
+    fn approved(&mut self, out: Result<Approved, Wait>, cx: &mut Context<BoxView>) {
+        let Approved { url, owner, agents } = match out {
             Ok(x) => x,
             Err(w) => return self.set_wait(w),
         };
+        if let Mode::Approve {
+            write: true, handle, ..
+        } = &self.mode
+        {
+            let handle = handle.clone();
+            return self.write_approved(handle, owner);
+        }
         let runtime = self.choices()[0];
         let mut text = match std::fs::read_to_string(&self.control.config) {
             Ok(t) => t,
@@ -554,6 +583,144 @@ impl Agents {
         );
     }
 
+    /// Your write token came: kept beside the config and named in it, then the message line opens.
+    fn write_approved(&mut self, handle: String, owner: Option<DeviceIdentity>) {
+        let Some(owner) = owner.filter(|o| o.scope.as_deref() == Some("write")) else {
+            return self.set_wait(Wait::Failed(
+                "copland sent no write token (is it older than this box?); revoke what it made in settings › access"
+                    .into(),
+            ));
+        };
+        match write::save(&self.control.config, &owner.token) {
+            Ok(file) => {
+                tracing::info!("agents screen: saved your write token in {}", file.display());
+                self.compose(handle);
+                if let Mode::Compose { note, .. } = &mut self.mode {
+                    *note = Some((
+                        format!("the box can message your agents now · {}", setup::tilde(&file)),
+                        Role::Green,
+                    ));
+                }
+            }
+            Err(e) => self.set_wait(Wait::Failed(format!("saving your write token: {e:#}"))),
+        }
+    }
+
+    /// `m` on an agent: the message line, or first the device login for your write token.
+    fn message(&mut self, handle: String, url: String, cx: &mut Context<BoxView>) {
+        self.message = None;
+        match write::token(&self.control.config) {
+            Some(_) => self.compose(handle),
+            None => self.ask(handle, url, true, cx),
+        }
+    }
+
+    fn compose(&mut self, handle: String) {
+        self.mode = Mode::Compose {
+            handle,
+            input: LineInput::default(),
+            sending: false,
+            note: None,
+        };
+    }
+
+    /// Whether a message is being typed: the screen then takes every key itself (`type_key`).
+    pub fn composing(&self) -> bool {
+        matches!(self.mode, Mode::Compose { .. })
+    }
+
+    /// A key while a message is typed: the line edits, enter sends, escape goes back to the list.
+    pub fn type_key(&mut self, e: &KeyDownEvent, st: &DaemonState, cx: &mut Context<BoxView>) {
+        let Mode::Compose {
+            input, sending, note, ..
+        } = &mut self.mode
+        else {
+            return;
+        };
+        if *sending {
+            return;
+        }
+        if e.keystroke.key == "escape" {
+            self.mode = Mode::List;
+            return;
+        }
+        match type_into(input, e, cx) {
+            Typed::Changed => *note = None,
+            Typed::Ignored => {}
+            Typed::Enter => self.submit(st, cx),
+        }
+    }
+
+    /// Enter on the message line: sent, unless it is empty or too long.
+    fn submit(&mut self, st: &DaemonState, cx: &mut Context<BoxView>) {
+        let Mode::Compose {
+            handle,
+            input,
+            sending: false,
+            note,
+        } = &mut self.mode
+        else {
+            return;
+        };
+        let text = input.text().trim().to_string();
+        let n = text.chars().count();
+        if n == 0 {
+            *note = Some(("type the message first".into(), Role::Faint));
+        } else if n > MESSAGE_MAX {
+            *note = Some((format!("× at most {MESSAGE_MAX} characters; this is {n}"), Role::Red));
+        } else {
+            let (handle, busy) = (handle.clone(), running(st, handle));
+            self.send(handle, text, busy, cx);
+        }
+    }
+
+    /// Send the message with your write token. A refused token is forgotten, so the next `m` asks
+    /// for a new one; any other refusal stays on the line, the text kept.
+    fn send(&mut self, handle: String, text: String, busy: bool, cx: &mut Context<BoxView>) {
+        let Some((url, token)) = write::token(&self.control.config) else {
+            self.mode = Mode::List;
+            self.message = Some((
+                "× the write token is gone from daemon.toml: m asks for a new one".into(),
+                Role::Red,
+            ));
+            return;
+        };
+        if let Mode::Compose { sending, note, .. } = &mut self.mode {
+            *sending = true;
+            *note = None;
+        }
+        let config = self.control.config.clone();
+        let to = handle.clone();
+        self.job(
+            async move {
+                let api = Api::new(&url).map_err(|e| (format!("{e:#}"), false))?;
+                api.send_message(&token, &to, &text)
+                    .await
+                    .map_err(|e| write::failed(&e))
+            },
+            move |a, out, _| match out {
+                Ok(_) => {
+                    a.mode = Mode::List;
+                    a.message = Some((sent(&handle, busy), Role::Green));
+                }
+                Err((e, true)) => {
+                    if let Err(f) = write::forget(&config) {
+                        tracing::warn!("forgetting the write token: {f:#}");
+                    }
+                    a.mode = Mode::List;
+                    a.message = Some((format!("× {e}"), Role::Red));
+                }
+                Err((e, false)) => {
+                    if let Mode::Compose { sending, note, .. } = &mut a.mode {
+                        *sending = false;
+                        *note = Some((format!("× {e}"), Role::Red));
+                    }
+                }
+            },
+            cx,
+        );
+    }
+
     /// A key by name (or a click as one), given the daemon's state and the owner's feed as the screen shows them.
     pub fn press(&mut self, name_: &str, st: &DaemonState, feed: Option<&Feed>, cx: &mut Context<BoxView>) -> Key {
         if self.busy {
@@ -563,6 +730,7 @@ impl Agents {
             Mode::Approve {
                 handle,
                 url,
+                write,
                 wait,
                 start,
             } => {
@@ -577,8 +745,8 @@ impl Agents {
                         }
                     }
                     ("r", true) => {
-                        let (h, u) = (handle.clone(), url.clone());
-                        self.run_here(h, u, cx);
+                        let (h, u, w) = (handle.clone(), url.clone(), *write);
+                        self.ask(h, u, w, cx);
                     }
                     _ => return Key::Ignored,
                 }
@@ -589,6 +757,15 @@ impl Agents {
                 self.mode = Mode::List;
                 if name_ == "x" {
                     self.remove(&handle, cx);
+                }
+                return Key::Handled;
+            }
+            /* Typed keys come through type_key; these are the status line's, clicked. */
+            Mode::Compose { .. } => {
+                match name_ {
+                    "escape" => self.mode = Mode::List,
+                    "enter" => self.submit(st, cx),
+                    _ => return Key::Ignored,
                 }
                 return Key::Handled;
             }
@@ -621,7 +798,11 @@ impl Agents {
             ("left", Some(r @ Row::Here { .. })) => self.cycle(r, -1),
             ("enter", Some(Row::Here { .. })) if !self.pending.is_empty() => self.save(cx),
             ("enter" | "h", Some(Row::Away { handle, .. })) => match feed {
-                Some(f) => self.run_here(handle.clone(), f.url.clone(), cx),
+                Some(f) => self.ask(handle.clone(), f.url.clone(), false, cx),
+                None => return Key::Ignored,
+            },
+            ("m", Some(r)) => match feed {
+                Some(f) => self.message(r.handle().to_string(), f.url.clone(), cx),
                 None => return Key::Ignored,
             },
             ("x", Some(Row::Here { handle, .. })) => {
@@ -667,20 +848,48 @@ impl Agents {
     pub fn panel(&self, st: &DaemonState, feed: Option<&Feed>) -> Panel {
         match &self.mode {
             Mode::Approve {
-                handle, start, wait, ..
-            } => self.approve_panel(handle, start.as_ref(), wait),
+                handle,
+                write,
+                start,
+                wait,
+                ..
+            } => self.approve_panel(handle, *write, start.as_ref(), wait),
+            Mode::Compose {
+                handle,
+                input,
+                sending,
+                note,
+            } => compose_panel(handle, input, *sending, note.as_ref(), running(st, handle)),
             _ => self.list_panel(st, feed),
         }
     }
 
-    fn approve_panel(&self, handle: &str, start: Option<&DeviceStart>, wait: &Wait) -> Panel {
-        let mut lines = vec![
-            Line::one(format!("run @{handle} here · approve it in copland"), Role::Blue),
-            Line::one(
-                format!("{} on {} asks for @{handle} only", setup::CLIENT, self.host),
-                Role::Faint,
-            ),
-        ];
+    fn approve_panel(&self, handle: &str, write: bool, start: Option<&DeviceStart>, wait: &Wait) -> Panel {
+        let mut lines = if write {
+            vec![
+                Line::one(
+                    format!("to message @{handle}, let the box write as you · approve it in copland"),
+                    Role::Blue,
+                ),
+                Line::one(
+                    format!(
+                        "{} on {} asks for a read and write token for you, kept in {}",
+                        setup::CLIENT,
+                        self.host,
+                        write::FILE
+                    ),
+                    Role::Faint,
+                ),
+            ]
+        } else {
+            vec![
+                Line::one(format!("run @{handle} here · approve it in copland"), Role::Blue),
+                Line::one(
+                    format!("{} on {} asks for @{handle} only", setup::CLIENT, self.host),
+                    Role::Faint,
+                ),
+            ]
+        };
         if let Some(s) = start {
             lines.push(Line(
                 vec![Span::new(s.verify_url.clone(), Role::Muted)],
@@ -864,6 +1073,9 @@ impl Agents {
             (_, Some(Row::Away { leaving: false, .. })) if feed.is_some() => keys.push(key("enter", "run it here")),
             _ => {}
         }
+        if feed.is_some() && row.is_some() && !matches!(self.mode, Mode::Confirm(_)) {
+            keys.push(key("m", "message"));
+        }
         if n > 1 {
             keys.push(key("↑↓", "agent"));
         }
@@ -884,6 +1096,57 @@ impl Agents {
                 .find(|(h, _)| same_handle(name(h), name(handle)))
                 .map(|(_, r)| *r)
         })
+    }
+}
+
+/// Whether the agent has a run going here: a message to it then waits for its next run.
+fn running(st: &DaemonState, handle: &str) -> bool {
+    st.agents
+        .iter()
+        .any(|s| !s.runs.is_empty() && (same_handle(&s.handle, handle) || same_handle(&s.configured, handle)))
+}
+
+/// What sending says once it is done.
+fn sent(handle: &str, busy: bool) -> String {
+    if busy {
+        format!(
+            "sent to {} · it reads it in its next run, after the one going",
+            name(handle)
+        )
+    } else {
+        format!("sent to {}", name(handle))
+    }
+}
+
+/// Characters of the line shown either side of the cursor; the rest is clipped with an ellipsis.
+const BEFORE: usize = 56;
+const AFTER: usize = 20;
+
+/// The message line: who it goes to, the text being typed, and what to know before sending.
+fn compose_panel(handle: &str, input: &LineInput, sending: bool, note: Option<&(String, Role)>, busy: bool) -> Panel {
+    let mut head = vec![Span::new(format!("message @{handle}"), Role::Blue)];
+    if busy {
+        head.push(Span::new(
+            format!(" · {} has a run going: this waits for its next one", name(handle)),
+            Role::Yellow,
+        ));
+    }
+    let (before, after) = input.split();
+    let count = input.text().trim().chars().count();
+    let under = match (sending, note) {
+        (true, _) => ("sending…".to_string(), Role::Muted),
+        (false, Some(n)) => n.clone(),
+        (false, None) => (
+            format!("{count}/{MESSAGE_MAX} · as you, with your write token"),
+            if count > MESSAGE_MAX { Role::Red } else { Role::Faint },
+        ),
+    };
+    Panel {
+        lines: vec![Line(head, None), Line::one("", Role::Ink), Line::one(under.0, under.1)],
+        input: Some((1, clip_left(before, BEFORE), clip(after, AFTER))),
+        code: None,
+        keys: vec![key("enter", "send"), key("ctrl+v", "paste"), key("esc", "back")],
+        clicks: Vec::new(),
     }
 }
 
@@ -910,9 +1173,17 @@ fn clip_left(s: &str, n: usize) -> String {
     }
 }
 
-/// Poll a device code until it is answered or lapses: the instance and the agents it brought
-/// when approved, else how it ended. A failure that may pass (the network) is tried again.
-async fn poll(api: Api, code: String, interval: u64, expires_in: u64) -> Result<(String, Vec<DeviceIdentity>), Wait> {
+/// What an approved device code brought.
+struct Approved {
+    url: String,
+    /// Yours: only for a write token here, since the box already holds your read-only one.
+    owner: Option<DeviceIdentity>,
+    agents: Vec<DeviceIdentity>,
+}
+
+/// Poll a device code until it is answered or lapses: what it brought when approved, else how
+/// it ended. A failure that may pass (the network) is tried again.
+async fn poll(api: Api, code: String, interval: u64, expires_in: u64) -> Result<Approved, Wait> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(expires_in.max(1));
     let mut every = Duration::from_secs(interval.clamp(1, 60));
     loop {
@@ -928,7 +1199,7 @@ async fn poll(api: Api, code: String, interval: u64, expires_in: u64) -> Result<
             }
             Ok(DevicePoll::Denied) => return Err(Wait::Denied),
             Ok(DevicePoll::Expired) => return Err(Wait::Expired),
-            Ok(DevicePoll::Approved { url, agents, .. }) => return Ok((url, agents)),
+            Ok(DevicePoll::Approved { url, owner, agents }) => return Ok(Approved { url, owner, agents }),
             Err(e) if e.is_refusal() => return Err(Wait::Failed(e.to_string())),
             Err(e) => tracing::warn!("polling the device code: {e}"),
         }
@@ -1055,5 +1326,38 @@ mod tests {
         assert_eq!(clip("dev", 5), "dev");
         assert_eq!(clip_left("~/agents/a-very-long-folder", 10), "…ng-folder");
         assert_eq!(clip_left("~/a", 10), "~/a");
+    }
+
+    #[test]
+    fn a_message_to_an_agent_in_a_run_says_it_waits_for_the_next() {
+        let mut dev = AgentState::new("me/dev", "http://x");
+        dev.handle = "me/dev".into();
+        let idle = DaemonState {
+            agents: vec![dev.clone()],
+            stopping: false,
+        };
+        assert!(!running(&idle, "me/dev"));
+        dev.run_started("8f31", "T-1");
+        let st = DaemonState {
+            agents: vec![dev],
+            stopping: false,
+        };
+        assert!(running(&st, "@me/dev") && !running(&st, "me/review"));
+        assert_eq!(sent("me/dev", false), "sent to dev");
+        assert!(sent("me/dev", true).contains("next run"));
+
+        let p = compose_panel("me/dev", &LineInput::new("look at T-2"), false, None, true);
+        assert!(p.lines[0].0.iter().any(|s| s.text.contains("waits for its next one")));
+        assert_eq!(p.input, Some((1, "look at T-2".into(), String::new())));
+        assert_eq!(p.lines[2].0[0].text, "11/1000 · as you, with your write token");
+        /* A long line shows the end before the cursor. */
+        let long = "x".repeat(200);
+        let p = compose_panel("me/dev", &LineInput::new(&long), false, None, false);
+        let (_, before, _) = p.input.unwrap();
+        assert_eq!(before.chars().count(), BEFORE);
+        assert!(before.starts_with('…'));
+        assert!(p.lines[0].0.len() == 1);
+        let p = compose_panel("me/dev", &LineInput::new("hi"), true, None, false);
+        assert_eq!(p.lines[2].0[0].text, "sending…");
     }
 }

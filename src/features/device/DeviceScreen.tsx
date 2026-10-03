@@ -8,6 +8,10 @@
    revocable in settings: a read-only one for you, a read-and-write one per
    ticked agent. The box collects them itself; nothing is shown or copied
    here. Without ?code= there is a box to type it into.
+
+   A box already set up can ask for a read-and-write token for you alone
+   (COPL-109), to message your agents and mark your inbox read; the page
+   then lists no agents and says what that token can do.
    ========================================================================== */
 
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
@@ -107,7 +111,7 @@ function Approve({ code, request }: { code: string; request: DeviceRequestInfo }
   const answer = useMutation({
     mutationFn: (approve: boolean) =>
       approve
-        ? send<DeviceRequestInfo>("POST", "/device/approve", { userCode: code, agentIds: [...(ticked ?? [])] })
+        ? send<DeviceRequestInfo>("POST", "/device/approve", { userCode: code, agentIds: request.write ? [] : [...(ticked ?? [])] })
         : send<DeviceRequestInfo>("POST", "/device/deny", { userCode: code }),
     onSuccess: (data) => {
       queryClient.setQueryData(["device", code], data);
@@ -127,7 +131,7 @@ function Approve({ code, request }: { code: string; request: DeviceRequestInfo }
   return (
     <Frame>
       <p className="text-bright leading-relaxed">
-        {request.client} on <span className="text-blue">{request.host}</span> wants to connect to your copland.
+        {request.client} on <span className="text-blue">{request.host}</span> {request.write ? "wants to send messages for you" : "wants to connect to your copland"}.
       </p>
 
       <div className="my-5 text-center">
@@ -141,6 +145,55 @@ function Approve({ code, request }: { code: string; request: DeviceRequestInfo }
         <span>Only approve a code shown by your own box. Anyone who has this code and you approve gets these tokens.</span>
       </div>
 
+      {request.write ? (
+        <div className="text-xs text-muted leading-relaxed mb-5 space-y-1.5">
+          <p>
+            The box asks to send messages for you: to message your agents and mark your inbox read, which its read-only
+            token can't do.
+          </p>
+          <p>Approving creates:</p>
+          <p>
+            <span className="text-yellow">a read and write token for you</span>, kept on the box in a file of its own. It
+            can do whatever you can, so approve it only for a box you trust.
+          </p>
+          <p>Revocable in settings › access, as "{request.host} box, messages".</p>
+        </div>
+      ) : (
+        <AgentChoice request={request} agents={agents} ticked={ticked} toggle={toggle} />
+      )}
+
+      {answer.error && <p className="mb-3 text-xs text-red">{answer.error.message}</p>}
+      <div className="flex justify-end gap-2">
+        <button type="button" className={denyButton} disabled={answer.isPending} onClick={() => answer.mutate(false)}>
+          deny
+        </button>
+        <button
+          type="button"
+          className={approveButton}
+          disabled={answer.isPending || (!request.write && (agents.isPending || ticked === null))}
+          onClick={() => answer.mutate(true)}
+        >
+          approve
+        </button>
+      </div>
+    </Frame>
+  );
+}
+
+/** Which agents the box may run, and what approving creates for them. */
+function AgentChoice({
+  request,
+  agents,
+  ticked,
+  toggle,
+}: {
+  request: DeviceRequestInfo;
+  agents: ReturnType<typeof useAgents>;
+  ticked: Set<string> | null;
+  toggle: (id: string, on: boolean) => void;
+}) {
+  return (
+    <>
       <h4 className="text-label mb-2">agents it may run</h4>
       {request.agents && (
         <p className="text-xs text-muted mb-2 leading-relaxed">
@@ -190,22 +243,7 @@ function Approve({ code, request }: { code: string; request: DeviceRequestInfo }
         </p>
         <p>All revocable in settings › access and settings › agents.</p>
       </div>
-
-      {answer.error && <p className="mb-3 text-xs text-red">{answer.error.message}</p>}
-      <div className="flex justify-end gap-2">
-        <button type="button" className={denyButton} disabled={answer.isPending} onClick={() => answer.mutate(false)}>
-          deny
-        </button>
-        <button
-          type="button"
-          className={approveButton}
-          disabled={answer.isPending || agents.isPending || ticked === null}
-          onClick={() => answer.mutate(true)}
-        >
-          approve
-        </button>
-      </div>
-    </Frame>
+    </>
   );
 }
 

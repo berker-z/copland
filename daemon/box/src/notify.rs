@@ -1,10 +1,11 @@
 //! What needs you, and telling you once (COPL-64).
 //!
-//! Two things need the owner: a task of their agents' that has gone to a
+//! Three things need the owner: a task of their agents' that has gone to a
 //! blocked stage (from `/api/wired`), and an unread item in their own inbox
-//! that @mentions them (`GET /api/inbox?unread=true` with their read-only
-//! token). The bell in the title bar counts both and lists them; each opens its
-//! task. Nothing else is a need: routine moves, comments, assignments to the
+//! that @mentions them or is a message from one of their agents (`GET
+//! /api/inbox?unread=true` with their read-only token; messages since
+//! COPL-109). The bell in the title bar counts them and lists them; each opens
+//! its task (a message about no task opens Copland, where the inbox is). Nothing else is a need: routine moves, comments, assignments to the
 //! agents are the scene's business, not the bell's.
 //!
 //! A desktop notification fires once per need. What has been notified is kept
@@ -34,6 +35,8 @@ pub enum Why {
     Blocked,
     /// Someone @mentioned you; the inbox item is unread.
     Mentioned,
+    /// One of your agents sent you a message; the inbox item is unread.
+    Message,
 }
 
 impl Why {
@@ -41,6 +44,7 @@ impl Why {
         match self {
             Why::Blocked => "blocked:",
             Why::Mentioned => "mention:",
+            Why::Message => "message:",
         }
     }
 }
@@ -48,16 +52,20 @@ impl Why {
 /// One thing that needs you.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Need {
-    /// What it is remembered by: the task for a block, the inbox item for a mention.
+    /// What it is remembered by: the task for a block, the inbox item for a mention or a message.
     pub id: String,
     pub why: Why,
-    /// "COPL-12".
+    /// "COPL-12"; empty for a message about no task.
     pub key: String,
+    /// The task's title, or a message's text on one line.
     pub title: String,
-    /// The agent that is blocked, or who mentioned you.
+    /// The agent that is blocked, or who mentioned you or sent the message.
     pub who: String,
-    /// The task's page.
+    /// The task's page, or Copland itself for a message about no task.
     pub link: Option<String>,
+    /// The inbox items it stands for, what marking it read names: a message's own, every unread
+    /// mention on the task for a mention. Empty for a block.
+    pub items: Vec<String>,
 }
 
 /// What the bell counts and lists: what needs you, or nothing without the owner's feed. Not
@@ -66,8 +74,8 @@ pub fn needs_shown(feed: Option<&Feed>) -> Vec<Need> {
     feed.map(needs).unwrap_or_default()
 }
 
-/// What needs you in the feed, blocked first (oldest change first), then mentions (newest
-/// first), one per task and reason. Empty for what hasn't been read yet.
+/// What needs you in the feed, blocked first (oldest change first), then mentions, one per
+/// task, and messages, each its own, newest first. Empty for what hasn't been read yet.
 pub fn needs(feed: &Feed) -> Vec<Need> {
     let mut out = Vec::new();
     if let Some((w, _)) = &feed.wired {
@@ -85,15 +93,22 @@ pub fn needs(feed: &Feed) -> Vec<Need> {
                 title: t.title.clone(),
                 who: agent(&t.agent_id),
                 link: task_link(&feed.url, &t.key),
+                items: Vec::new(),
             });
         }
     }
+    let inbox = feed.inbox.as_deref().unwrap_or_default();
     let mut seen: HashSet<String> = HashSet::new();
-    for m in feed.mentions.iter().flatten() {
+    for m in inbox {
         let Some(task) = &m.task else { continue };
         if m.kind != "mentioned" || !seen.insert(task.key.clone()) {
             continue;
         }
+        let items = inbox
+            .iter()
+            .filter(|o| o.kind == "mentioned" && o.task.as_ref().is_some_and(|t| t.key == task.key))
+            .map(|o| o.id.clone())
+            .collect();
         out.push(Need {
             id: format!("{}{}", Why::Mentioned.prefix(), m.id),
             why: Why::Mentioned,
@@ -101,6 +116,25 @@ pub fn needs(feed: &Feed) -> Vec<Need> {
             title: task.title.clone(),
             who: m.actor.handle.trim_start_matches('@').to_string(),
             link: task_link(&feed.url, &task.key),
+            items,
+        });
+    }
+    for m in inbox {
+        let Some(message) = m.message.as_ref().filter(|_| m.kind == "message") else {
+            continue;
+        };
+        let handle = m.actor.handle.trim_start_matches('@');
+        out.push(Need {
+            id: format!("{}{}", Why::Message.prefix(), m.id),
+            why: Why::Message,
+            key: m.task.as_ref().map(|t| t.key.clone()).unwrap_or_default(),
+            title: message.text.split_whitespace().collect::<Vec<_>>().join(" "),
+            who: handle.rsplit('/').next().unwrap_or(handle).to_string(),
+            link: match &m.task {
+                Some(t) => task_link(&feed.url, &t.key),
+                None => Some(format!("{}/", feed.url)),
+            },
+            items: vec![m.id.clone()],
         });
     }
     out
@@ -179,10 +213,12 @@ pub fn notes(fresh: &[Need]) -> Vec<Note> {
         summary: match n.why {
             Why::Blocked => format!("{} is blocked", n.key),
             Why::Mentioned => format!("@{} mentioned you on {}", n.who, n.key),
+            Why::Message if n.key.is_empty() => format!("{} sent you a message", n.who),
+            Why::Message => format!("{} sent you a message on {}", n.who, n.key),
         },
         body: match n.why {
             Why::Blocked => format!("{} · {} is waiting on you", n.title, n.who),
-            Why::Mentioned => n.title.clone(),
+            Why::Mentioned | Why::Message => n.title.clone(),
         },
         link: n.link.clone(),
     };
@@ -191,7 +227,17 @@ pub fn notes(fresh: &[Need]) -> Vec<Note> {
     }
     vec![Note {
         summary: format!("{} things need you", fresh.len()),
-        body: fresh.iter().map(|n| n.key.as_str()).collect::<Vec<_>>().join(" "),
+        body: fresh
+            .iter()
+            .map(|n| {
+                if n.key.is_empty() {
+                    n.who.as_str()
+                } else {
+                    n.key.as_str()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
         link: fresh[0].link.clone(),
     }]
 }
@@ -221,8 +267,8 @@ impl Notifier {
         if feed.wired.is_some() {
             read.push(Why::Blocked);
         }
-        if feed.mentions.is_some() {
-            read.push(Why::Mentioned);
+        if feed.inbox.is_some() {
+            read.extend([Why::Mentioned, Why::Message]);
         }
         if read.is_empty() {
             return Vec::new();
@@ -387,7 +433,7 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use copland_daemon_core::api::{Actor, InboxItem, TaskRef, Wired, WiredAgent, WiredTask};
+    use copland_daemon_core::api::{Actor, InboxItem, InboxMessage, TaskRef, Wired, WiredAgent, WiredTask};
 
     fn blocked(id: &str, key: &str) -> WiredTask {
         WiredTask {
@@ -441,7 +487,7 @@ mod tests {
                 },
                 std::time::SystemTime::now(),
             )),
-            mentions,
+            inbox: mentions,
             ..Default::default()
         }
     }
@@ -460,6 +506,57 @@ mod tests {
         assert_eq!((n[0].why, n[0].who.as_str()), (Why::Blocked, "dev"));
         assert_eq!(n[0].link.as_deref(), Some("http://x/b/COPL?task=COPL-1"));
         assert_eq!((n[1].why, n[1].id.as_str()), (Why::Mentioned, "mention:i1"));
+        /* Both mentions on the task are what marking it read names. */
+        assert_eq!(n[1].items, ["i1", "i2"]);
+        assert!(n[0].items.is_empty());
+    }
+
+    fn message(id: &str, key: Option<&str>, text: &str) -> InboxItem {
+        let mut i = mention(id, key.unwrap_or("X-1"), "message");
+        if key.is_none() {
+            i.task = None;
+        }
+        i.actor.handle = "me/dev".into();
+        i.message = Some(InboxMessage {
+            id: format!("m-{id}"),
+            text: text.into(),
+            trusted: true,
+        });
+        i
+    }
+
+    #[test]
+    fn an_agents_messages_need_you_each_on_its_own() {
+        let f = feed(
+            vec![],
+            Some(vec![
+                message("i1", None, "done with\nthe readme"),
+                message("i2", Some("COPL-2"), "which branch?"),
+                message("i3", Some("COPL-2"), "never mind"),
+                /* A comment is the scene's business, not the bell's. */
+                mention("i4", "COPL-3", "commented"),
+            ]),
+        );
+        let n = needs(&f);
+        assert_eq!(n.len(), 3);
+        assert_eq!(
+            (n[0].why, n[0].key.as_str(), n[0].who.as_str(), n[0].title.as_str()),
+            (Why::Message, "", "dev", "done with the readme")
+        );
+        assert_eq!(n[0].link.as_deref(), Some("http://x/"));
+        assert_eq!(
+            (n[0].id.as_str(), n[0].items.as_slice()),
+            ("message:i1", ["i1".to_string()].as_slice())
+        );
+        assert_eq!(n[1].link.as_deref(), Some("http://x/b/COPL?task=COPL-2"));
+        assert_eq!(n[2].items, ["i3"]);
+        let said = notes(&n[..2]);
+        assert_eq!(said[0].summary, "dev sent you a message");
+        assert_eq!(said[1].summary, "dev sent you a message on COPL-2");
+        assert_eq!(said[1].body, "which branch?");
+        let mut many = n.clone();
+        many.extend(n.clone());
+        assert_eq!(notes(&many)[0].body, "dev COPL-2 COPL-2 dev COPL-2 COPL-2");
     }
 
     #[test]
@@ -534,6 +631,7 @@ mod tests {
                 title: "x".into(),
                 who: "dev".into(),
                 link: Some(format!("http://x/b/T?task=T-{i}")),
+                items: Vec::new(),
             })
             .collect();
         let n = notes(&many);

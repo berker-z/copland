@@ -34,6 +34,8 @@ export interface DeviceRequestInfo {
   status: DeviceStatus;
   /** The agents the box asked for (handles or ids), when it named any: the page ticks those. */
   agents?: string[];
+  /** The box asked for a read-and-write token for the person, and nothing else (COPL-109). */
+  write?: boolean;
 }
 
 /** At most this many agents named in one request (approving takes at most as many too). */
@@ -58,6 +60,20 @@ export function parseWantedAgents(raw: unknown): { wanted: string[] | null } | {
   }
   if (out.length > MAX_DEVICE_AGENTS) return { error: `At most ${MAX_DEVICE_AGENTS} agents per box` };
   return { wanted: out.length ? out : null };
+}
+
+/**
+ * `write` on POST /api/device/start: the box asks for a read-and-write token
+ * for the person, so it can message their agents and mark their inbox read
+ * (COPL-109). Missing, null or false is the read-only token, as before. It is
+ * an ask of its own, made by a box that is already set up, so naming agents
+ * in the same request is an error, said in `error`.
+ */
+export function parseWriteAsk(raw: unknown, wanted: readonly string[] | null): { write: boolean } | { error: string } {
+  if (raw === undefined || raw === null || raw === false) return { write: false };
+  if (raw !== true) return { error: "`write` must be true or false" };
+  if (wanted) return { error: "Ask for agents or for a write token, not both in one request" };
+  return { write: true };
 }
 
 /**

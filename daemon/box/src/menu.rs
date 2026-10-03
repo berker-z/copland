@@ -2,7 +2,8 @@
 //! poles, one at a time, named across the title bar. The bell (COPL-64) opens
 //! the first of them, what needs you.
 //!
-//! - **needs you**: your agents' blocked tasks and your unread mentions; each opens its task.
+//! - **needs you**: your agents' blocked tasks, your unread mentions and your agents' messages;
+//!   each opens its task, and `r` marks a mention or a message read (with the write token, COPL-109).
 //! - **agents**: the agents screen (`agents.rs`), which `a` still opens directly.
 //! - **boards**: which boards' tickets the box shows (`boards = [...]`, all by default). Display
 //!   only: the agents still wake for anything on any board.
@@ -36,6 +37,7 @@ use crate::setup;
 use crate::theme::Theme;
 use crate::view::BoxView;
 use crate::wizard::{Panel, key};
+use crate::write;
 
 /// Rows a panel lists at once; the rest scroll with the selection.
 const ROWS: usize = 4;
@@ -264,6 +266,14 @@ impl Menu {
         self.agents.as_mut()
     }
 
+    /// The agents screen while a message is typed on it, in the open tab: it takes every key.
+    pub fn composing(&mut self) -> Option<&mut Agents> {
+        (self.tab == Tab::Agents && !self.signing_out)
+            .then_some(self.agents.as_mut())
+            .flatten()
+            .filter(|a| a.composing())
+    }
+
     pub fn animating(&self) -> bool {
         self.signing_out
             || (self.tab == Tab::Agents && self.agents.as_ref().is_some_and(Agents::animating))
@@ -289,6 +299,41 @@ impl Menu {
                         Ok(c) => Release::Checked(c),
                         Err(e) => Release::Failed(e),
                     };
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Mark these inbox items read, with the write token (COPL-109). The bell drops them when the
+    /// feed hears the inbox changed.
+    fn mark_read(&mut self, items: Vec<String>, cx: &mut Context<BoxView>) {
+        let Some((url, token)) = write::token(&self.control.config) else {
+            self.message = Some((
+                "marking read needs the box's write token: m on an agent in the agents tab asks for it".into(),
+                Role::Yellow,
+            ));
+            return;
+        };
+        self.message = Some(("marking it read…".into(), Role::Faint));
+        let config = self.control.config.clone();
+        let handle = self.control.rt.spawn(async move {
+            let api = Api::new(&url).map_err(|e| (format!("{e:#}"), false))?;
+            api.mark_read(&token, &items).await.map_err(|e| write::failed(&e))
+        });
+        self.job = Some(cx.spawn(async move |this, cx| {
+            let Ok(out) = handle.await else { return };
+            let _ = this.update(cx, |view, cx| {
+                if let Some(m) = view.menu() {
+                    m.message = Some(match out {
+                        Ok(()) => ("marked read".into(), Role::Green),
+                        Err((e, refused)) => {
+                            if refused && let Err(f) = write::forget(&config) {
+                                tracing::warn!("forgetting the write token: {f:#}");
+                            }
+                            (format!("× {e}"), Role::Red)
+                        }
+                    });
                 }
                 cx.notify();
             });
@@ -321,7 +366,8 @@ impl Menu {
             self.go(Tab::ALL[i], cx);
             return Act::Handled;
         }
-        if name == "m" || name == "escape" && self.tab != Tab::Agents {
+        /* In the agents tab m messages an agent; it closes the menu only when the screen doesn't take it. */
+        if (name == "m" || name == "escape") && self.tab != Tab::Agents {
             return Act::Close;
         }
         let tab = self.index();
@@ -333,11 +379,22 @@ impl Menu {
                 match a.press(name, st, feed, cx) {
                     Key::Close => Act::Close,
                     Key::Handled => Act::Handled,
+                    Key::Ignored if name == "m" => Act::Close,
                     Key::Ignored => Act::Ignored,
                 }
             }
             Tab::Needs => {
                 let needs = notify::needs_shown(feed);
+                if name == "r" {
+                    let sel = self.selected[tab].min(needs.len().saturating_sub(1));
+                    return match needs.get(sel).filter(|n| !n.items.is_empty()) {
+                        Some(n) => {
+                            self.mark_read(n.items.clone(), cx);
+                            Act::Handled
+                        }
+                        None => Act::Ignored,
+                    };
+                }
                 if let Some(i) = self.row(name, needs.len()) {
                     if let Some(link) = needs.get(i).and_then(|n| n.link.clone()) {
                         cx.open_url(&link);
@@ -529,7 +586,7 @@ impl Menu {
             lines.push(Line::one("nothing needs you", Role::Muted));
             clicks.push(None);
             lines.push(Line::one(
-                "the bell counts your agents' blocked tasks and your unread @mentions",
+                "the bell counts your agents' blocked tasks, your unread @mentions and their messages",
                 Role::Faint,
             ));
             clicks.push(None);
@@ -540,6 +597,7 @@ impl Menu {
             let (mark, role, what) = match n.why {
                 Why::Blocked => ("▲ ", Role::Red, format!("blocked · {}", n.who)),
                 Why::Mentioned => ("@ ", Role::Blue, format!("@{} mentioned you", n.who)),
+                Why::Message => ("» ", Role::Yellow, format!("{} wrote", n.who)),
             };
             lines.push(Line(
                 vec![
@@ -556,6 +614,9 @@ impl Menu {
         let mut keys = Vec::new();
         if !needs.is_empty() {
             keys.push(key("enter", "open"));
+        }
+        if needs.get(sel).is_some_and(|n| !n.items.is_empty()) {
+            keys.push(key("r", "mark read"));
         }
         if needs.len() > 1 {
             keys.push(key("↑↓", "pick"));
@@ -888,14 +949,17 @@ pub fn held_tokens(text: &str) -> Vec<Held> {
         .unwrap_or_default();
     let first_url = agents.first().and_then(|a| s(a, "url")).unwrap_or_default();
     let mut out = Vec::new();
-    let (token, file) = (s(&t, "owner_token"), s(&t, "owner_token_file"));
-    if token.is_some() || file.is_some() {
-        out.push(Held {
-            label: "yours".into(),
-            url: s(&t, "owner_url").unwrap_or(first_url),
-            token,
-            file: file.map(|f| expand_home(&f)),
-        });
+    let owner_url = s(&t, "owner_url").unwrap_or(first_url);
+    for (label, key) in [("yours", "owner_token"), ("yours (write)", "owner_write_token")] {
+        let (token, file) = (s(&t, key), s(&t, &format!("{key}_file")));
+        if token.is_some() || file.is_some() {
+            out.push(Held {
+                label: label.into(),
+                url: owner_url.clone(),
+                token,
+                file: file.map(|f| expand_home(&f)),
+            });
+        }
     }
     for a in agents {
         let handle = s(a, "handle").unwrap_or_default();
@@ -1120,15 +1184,19 @@ mod tests {
 
     #[test]
     fn finds_every_token_the_box_holds() {
-        let text = "owner_token_file = \"/c/me.token\"\n[[agent]]\nurl = \"http://x\"\nhandle = \"me/dev\"\ntoken_file = \"/c/dev.token\"\n[[agent]]\nurl = \"http://y\"\nhandle = \"me/review\"\ntoken = \"cpl_r\"\n";
+        let text = "owner_token_file = \"/c/me.token\"\nowner_write_token_file = \"/c/me.write.token\"\n[[agent]]\nurl = \"http://x\"\nhandle = \"me/dev\"\ntoken_file = \"/c/dev.token\"\n[[agent]]\nurl = \"http://y\"\nhandle = \"me/review\"\ntoken = \"cpl_r\"\n";
         let h = held_tokens(text);
-        assert_eq!(h.len(), 3);
+        assert_eq!(h.len(), 4);
         assert_eq!(
             (h[0].label.as_str(), h[0].url.as_str(), h[0].file.as_deref()),
             ("yours", "http://x", Some(Path::new("/c/me.token")))
         );
-        assert_eq!((h[1].label.as_str(), h[1].url.as_str()), ("dev", "http://x"));
-        assert_eq!((h[2].label.as_str(), h[2].token.as_deref()), ("review", Some("cpl_r")));
+        assert_eq!(
+            (h[1].label.as_str(), h[1].url.as_str(), h[1].file.as_deref()),
+            ("yours (write)", "http://x", Some(Path::new("/c/me.write.token")))
+        );
+        assert_eq!((h[2].label.as_str(), h[2].url.as_str()), ("dev", "http://x"));
+        assert_eq!((h[3].label.as_str(), h[3].token.as_deref()), ("review", Some("cpl_r")));
         assert!(held_tokens("not = [toml").is_empty());
     }
 

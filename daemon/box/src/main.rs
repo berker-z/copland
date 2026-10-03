@@ -18,6 +18,7 @@ mod view;
 #[cfg(test)]
 mod webts;
 mod wizard;
+mod write;
 
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
