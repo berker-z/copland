@@ -437,7 +437,7 @@ impl AgentLoop {
         let mut link = live.link.clone();
         let since = tokio::time::Instant::now();
         /* A board change can make work ready (a dependency closed, a lead assigned itself a task,
-           COPL-86) or wake a task the guard remembers, so it is always worth a poll, spaced out. */
+        COPL-86) or wake a task the guard remembers, so it is always worth a poll, spaced out. */
         let board = true;
         /* Set once a board change is heard: when the poll it asks for is due. */
         let mut board_due: Option<tokio::time::Instant> = None;
@@ -638,7 +638,13 @@ impl AgentLoop {
             }
             /* Coding work has a worktree of its own; anything else shares workdir, one run at a time.
             A run that turns out to answer without a claim also uses workdir, without waiting for it. */
-            let workdir = self.ctx().repos(&wake.task_id, &wake.task_key).await?.is_none();
+            let lookup = self.ctx().lookup(&wake.task_id, &wake.task_key).await?;
+            if lookup.role == Role::Skip {
+                tracing::info!(task = %wake.task_key, "a milestone: a checkpoint, not work; nothing to run");
+                self.guard.remember(wake, lookup.task.map(|t| t.updated_at), false);
+                continue;
+            }
+            let workdir = lookup.role == Role::Workdir;
             if workdir && self.inflight.values().any(|r| r.workdir) {
                 tracing::debug!(task = %wake.task_key, "another run has the workdir; next time");
                 continue;
@@ -659,6 +665,39 @@ impl AgentLoop {
         }
         Ok(())
     }
+}
+
+/// What a run on a task is (COPL-87), by its board and its level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// No repo on its board, or no `code_command` for this agent: a run in `workdir`, as ever.
+    Workdir,
+    /// A task, a leaf: coded in its own worktree.
+    Worker,
+    /// An epic or a story, or anything with children: planned into tasks, reading the repo.
+    Lead,
+    /// A milestone: a checkpoint, not work. Nothing runs.
+    Skip,
+}
+
+/// The rule, on its own so it can be tested: a leaf task is coded, anything that holds work is led.
+pub fn role_of(code_command: bool, repo: bool, level: Option<&str>, has_children: bool) -> Role {
+    if !code_command || !repo {
+        return Role::Workdir;
+    }
+    match level {
+        Some("milestone") => Role::Skip,
+        Some("epic" | "story") => Role::Lead,
+        _ if has_children => Role::Lead,
+        _ => Role::Worker,
+    }
+}
+
+/// A task as a run would need it.
+struct TaskInfo {
+    role: Role,
+    task: Option<crate::api::Task>,
+    repo: Option<String>,
 }
 
 /// What a run tells its loop when it is over.
@@ -855,43 +894,53 @@ impl RunCtx {
         }
     }
 
-    /// The board's repos when the task is coding work for this agent (it has a `code_command`), else none.
-    async fn repos(&self, task_id: &str, key: &str) -> Result<Option<(crate::api::Task, Vec<String>)>> {
+    /// What a run on the task would be (COPL-87), with the task and the repo when it was read.
+    async fn lookup(&self, task_id: &str, key: &str) -> Result<TaskInfo> {
         if self.agent.code_command.is_none() {
-            return Ok(None);
+            return Ok(TaskInfo {
+                role: Role::Workdir,
+                task: None,
+                repo: None,
+            });
         }
         let task = self
             .api
             .task(&self.agent.token, task_id)
             .await
             .map_err(|e| anyhow!("reading {key}: {e}"))?;
-        let repos = self
+        let board = self
             .api
             .board_repos(&self.agent.token, &task.board_id)
             .await
             .map_err(|e| anyhow!("reading {key}'s board: {e}"))?;
-        Ok((!repos.is_empty()).then_some((task, repos)))
+        if board.repos.len() > 1 {
+            tracing::debug!(task = %key, "its board has {} repos; working in the first", board.repos.len());
+        }
+        let has_children = board.tasks.iter().any(|t| t.parent_id.as_deref() == Some(task_id));
+        let role = role_of(true, !board.repos.is_empty(), task.level.as_deref(), has_children);
+        let repo = board.repos.into_iter().next().map(|r| r.repo);
+        Ok(TaskInfo {
+            role,
+            task: Some(task),
+            repo,
+        })
     }
 
-    /// The task's workspace when it is coding work: the agent has a `code_command` and the task's
-    /// board has a repo. A board with several repos uses the first, for now.
+    /// Where the run works: a worker's worktree, a lead's read-only view of the repo, or none
+    /// (the agent's `workdir`).
     async fn workspace(&self, task_id: &str, key: &str) -> Result<Option<Workspace>> {
-        let Some((task, repos)) = self.repos(task_id, key).await? else {
+        let TaskInfo { role, task, repo } = self.lookup(task_id, key).await?;
+        let (Some(task), Some(repo)) = (task, repo) else {
             return Ok(None);
         };
-        let repo = &repos[0];
-        if repos.len() > 1 {
-            tracing::info!(task = %key, "its board has {} repos; working in the first, {repo}", repos.len());
+        let (dir, remote) = (&self.agent.code_dir, workspace::github_remote(&repo));
+        match role {
+            Role::Worker => workspace::realize(dir, &remote, &repo, key, &task.title)
+                .await
+                .map(Some),
+            Role::Lead => workspace::view(dir, &remote, &repo, key).await.map(Some),
+            Role::Workdir | Role::Skip => Ok(None),
         }
-        workspace::realize(
-            &self.agent.code_dir,
-            &workspace::github_remote(repo),
-            repo,
-            key,
-            &task.title,
-        )
-        .await
-        .map(Some)
     }
 
     fn summary(&self, run: &str, task: &str, outcome: String) {
@@ -908,6 +957,20 @@ impl RunCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_leaf_task_is_coded_and_what_holds_work_is_led() {
+        /* No coding setup or no repo: the old way, whatever the level. */
+        assert_eq!(role_of(false, true, Some("story"), true), Role::Workdir);
+        assert_eq!(role_of(true, false, Some("story"), true), Role::Workdir);
+        assert_eq!(role_of(true, true, Some("task"), false), Role::Worker);
+        assert_eq!(role_of(true, true, None, false), Role::Worker);
+        assert_eq!(role_of(true, true, Some("story"), false), Role::Lead);
+        assert_eq!(role_of(true, true, Some("epic"), false), Role::Lead);
+        /* A task split into children is led too. */
+        assert_eq!(role_of(true, true, Some("task"), true), Role::Lead);
+        assert_eq!(role_of(true, true, Some("milestone"), false), Role::Skip);
+    }
 
     #[test]
     fn the_sweep_removes_closed_and_gone_tasks_worktrees_only() {

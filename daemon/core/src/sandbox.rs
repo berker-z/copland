@@ -17,17 +17,19 @@ use std::path::{Path, PathBuf};
 
 pub const BWRAP: &str = "bwrap";
 
-/// What a sandboxed run may write.
+/// What a sandboxed run may write, and where it starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Writable {
-    pub worktree: PathBuf,
-    /// The clone's `.git`, shared by its worktrees.
-    pub git_dir: PathBuf,
+    /// Writable, and there: a coding run's worktree and its clone's `.git`; none for a run that
+    /// only reads the repo (a lead planning, COPL-87).
+    pub dirs: Vec<PathBuf>,
     /// From the agent's config. Missing ones are skipped (`--bind-try`).
     pub extra: Vec<PathBuf>,
+    /// The run's working directory.
+    pub chdir: PathBuf,
 }
 
-/// `argv`, run inside bubblewrap in the worktree.
+/// `argv`, run inside bubblewrap in `chdir`.
 pub fn wrap(argv: &[String], w: &Writable) -> Vec<String> {
     let p = |path: &Path| path.to_string_lossy().to_string();
     let mut out: Vec<String> = [
@@ -47,13 +49,13 @@ pub fn wrap(argv: &[String], w: &Writable) -> Vec<String> {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    for path in [&w.git_dir, &w.worktree] {
+    for path in &w.dirs {
         out.extend(["--bind".into(), p(path), p(path)]);
     }
     for path in &w.extra {
         out.extend(["--bind-try".into(), p(path), p(path)]);
     }
-    out.extend(["--chdir".into(), p(&w.worktree), "--".into()]);
+    out.extend(["--chdir".into(), p(&w.chdir), "--".into()]);
     out.extend(argv.iter().cloned());
     out
 }
@@ -65,9 +67,9 @@ mod tests {
     #[test]
     fn the_command_comes_last_after_the_binds() {
         let w = Writable {
-            worktree: "/c/work/COPL-1".into(),
-            git_dir: "/c/repos/o/r/.git".into(),
+            dirs: vec!["/c/repos/o/r/.git".into(), "/c/work/COPL-1".into()],
             extra: vec!["/h/.claude".into()],
+            chdir: "/c/work/COPL-1".into(),
         };
         let argv = wrap(&["claude".into(), "-p".into(), "hi".into()], &w);
         assert_eq!(argv[0], "bwrap");
@@ -86,7 +88,12 @@ mod tests {
             eprintln!("no bwrap here; skipping");
             return;
         }
-        let root = std::env::temp_dir().join(format!("copland-sandbox-{}", std::process::id()));
+        /* Not under /tmp: the sandbox gives every run an empty /tmp of its own. */
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("core sits in the workspace")
+            .join("target")
+            .join(format!("copland-sandbox-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (worktree, git_dir, extra, outside) = (
             root.join("work"),
@@ -98,9 +105,9 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
         let w = Writable {
-            worktree: worktree.clone(),
-            git_dir: git_dir.clone(),
+            dirs: vec![git_dir.clone(), worktree.clone()],
             extra: vec![extra.clone(), root.join("missing")],
+            chdir: worktree.clone(),
         };
         let script = format!(
             "touch in && touch {g}/in && touch {e}/in && touch /tmp/in && ! touch {o}/out 2>/dev/null && pwd",
@@ -121,6 +128,21 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), worktree.to_string_lossy());
         assert!(worktree.join("in").exists() && git_dir.join("in").exists() && extra.join("in").exists());
         assert!(!outside.join("out").exists());
+
+        /* Reading only (a lead): nothing in the worktree may be written, the extras still may. */
+        let read = Writable {
+            dirs: Vec::new(),
+            extra: vec![extra.clone()],
+            chdir: worktree.clone(),
+        };
+        let script = format!(
+            "ls >/dev/null && ! touch read 2>/dev/null && touch {e}/read",
+            e = extra.display()
+        );
+        let argv = wrap(&["sh".into(), "-c".into(), script], &read);
+        let out = std::process::Command::new(&argv[0]).args(&argv[1..]).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(!worktree.join("read").exists() && extra.join("read").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

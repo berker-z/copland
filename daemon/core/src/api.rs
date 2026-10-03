@@ -87,6 +87,9 @@ pub struct Task {
     pub title: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    /// epic, story, task or milestone (always set since COPL-85; None from an older server).
+    #[serde(default)]
+    pub level: Option<String>,
     /// A run on it right now; only live claims are sent.
     #[serde(default)]
     pub claim: Option<Claim>,
@@ -112,6 +115,17 @@ struct Ready {
 pub struct BoardRepos {
     #[serde(default)]
     pub repos: Vec<BoardRepo>,
+    /// Its tasks, for which have children.
+    #[serde(default)]
+    pub tasks: Vec<BoardTask>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardTask {
+    pub id: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -493,12 +507,10 @@ impl Api {
             .await
     }
 
-    /// The repos connected to a board, "owner/name"; empty for a board without any.
-    pub async fn board_repos(&self, cred: &Secret, board_id: &str) -> ApiResult<Vec<String>> {
-        let board: BoardRepos = self
-            .send(self.http.get(self.url(&format!("/api/boards/{board_id}"))), cred)
-            .await?;
-        Ok(board.repos.into_iter().map(|r| r.repo).collect())
+    /// A board's repos ("owner/name") and its tasks' parents.
+    pub async fn board_repos(&self, cred: &Secret, board_id: &str) -> ApiResult<BoardRepos> {
+        self.send(self.http.get(self.url(&format!("/api/boards/{board_id}"))), cred)
+            .await
     }
 
     /// Start a run with the agent's own token.

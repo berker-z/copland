@@ -43,6 +43,8 @@ pub struct Workspace {
     pub target: String,
     /// Made by this call, rather than found from an earlier run.
     pub fresh: bool,
+    /// Not a worktree to work in but the clone at the default branch, to read: a lead's (COPL-87).
+    pub read_only: bool,
 }
 
 /// Where a repo's clone and a task's worktree live under the code directory.
@@ -128,17 +130,7 @@ pub fn github_remote(repo: &str) -> String {
 /// Make the task's workspace, or find the one an earlier run left. `remote` is where to clone from.
 pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title: &str) -> Result<Workspace> {
     let (clone, dir) = paths(code_dir, repo, key)?;
-    if clone.join(".git").exists() {
-        git(&clone, &["fetch", "--prune", "--quiet", "origin"]).await?;
-    } else {
-        let parent = clone.parent().expect("a clone path has a parent");
-        tokio::fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("creating {}", parent.display()))?;
-        let dest = clone.to_string_lossy().to_string();
-        git(parent, &["clone", "--quiet", remote, &dest]).await?;
-    }
-    let target = default_branch(&clone).await?;
+    let target = sync(&clone, remote).await?;
 
     if dir.join(".git").exists() {
         let branch = git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
@@ -152,6 +144,7 @@ pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title
             base,
             target,
             fresh: false,
+            read_only: false,
         });
     }
     /* A stale entry for a worktree whose directory is gone would refuse the add. */
@@ -195,6 +188,7 @@ pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title
             base,
             target,
             fresh: false,
+            read_only: false,
         });
     }
 
@@ -214,6 +208,43 @@ pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title
         base,
         target,
         fresh: true,
+        read_only: false,
+    })
+}
+
+/// The clone, cloned or fetched, and its default branch ("origin/main").
+async fn sync(clone: &Path, remote: &str) -> Result<String> {
+    if clone.join(".git").exists() {
+        git(clone, &["fetch", "--prune", "--quiet", "origin"]).await?;
+    } else {
+        let parent = clone.parent().expect("a clone path has a parent");
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("creating {}", parent.display()))?;
+        let dest = clone.to_string_lossy().to_string();
+        git(parent, &["clone", "--quiet", remote, &dest]).await?;
+    }
+    default_branch(clone).await
+}
+
+/// What a lead reads to plan (COPL-87): the clone itself, checked out at the default branch's
+/// head as fetched just now, detached. Nobody works in the clone's own checkout (tasks have
+/// worktrees), and the run that reads it can't write there (sandbox.rs), so leads share it.
+pub async fn view(code_dir: &Path, remote: &str, repo: &str, key: &str) -> Result<Workspace> {
+    let (clone, _) = paths(code_dir, repo, key)?;
+    let target = sync(&clone, remote).await?;
+    git(&clone, &["checkout", "--quiet", "--detach", "--force", &target]).await?;
+    let base = git(&clone, &["rev-parse", "HEAD"]).await?;
+    Ok(Workspace {
+        repo: repo.into(),
+        key: key.into(),
+        dir: clone.clone(),
+        clone,
+        branch: target.clone(),
+        base,
+        target,
+        fresh: false,
+        read_only: true,
     })
 }
 
@@ -464,6 +495,26 @@ mod tests {
         assert!(!back.fresh);
         assert_eq!(back.branch, "copl-5-do-the-thing");
         assert_eq!(git(&back.dir, &["log", "-1", "--format=%s"]).await.unwrap(), "work");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_lead_reads_the_clone_at_the_default_branch() {
+        let root = scratch("view");
+        let remote = origin(&root).await;
+        let code = root.join("code");
+        /* A task's worktree first, so the clone exists with a task branch checked out elsewhere. */
+        let ws = realize(&code, &remote, "o/r", "COPL-8", "Some work").await.unwrap();
+        let view = view(&code, &remote, "o/r", "COPL-9").await.unwrap();
+        assert!(view.read_only && !ws.read_only);
+        assert_eq!(view.dir, ws.clone);
+        assert_eq!(view.target, "origin/main");
+        assert_eq!(view.base, git(&ws.clone, &["rev-parse", "origin/main"]).await.unwrap());
+        /* Detached at the default branch, so nothing a lead might do there lands on a branch. */
+        assert_eq!(
+            git(&view.dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await.unwrap(),
+            "HEAD"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

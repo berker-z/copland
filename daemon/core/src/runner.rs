@@ -46,6 +46,13 @@ pub enum Brief {
 pub fn prompt(handle: &str, task_key: &str, brief: Brief, workspace: Option<&Workspace>) -> String {
     match brief {
         Brief::Work => match workspace {
+            /* A lead (COPL-87): an epic or story, or a task with children, is planned, not coded. */
+            Some(ws) if ws.read_only => format!(
+                "You are @{handle} leading {task_key}, which is work to plan into tasks, not to code. Your working directory is {repo} at {target} ({base}), read-only: read it to plan. Read {task_key} with get_task, check your inbox, and plan it as the copland guide's Leading section says: child tasks with parent {task_key}, depends_on where one needs another's result, each assigned. Leave {task_key} open: it closes when its children are done.",
+                repo = ws.repo,
+                target = ws.target,
+                base = &ws.base[..ws.base.len().min(8)],
+            ),
             Some(ws) => format!(
                 "You are @{handle} working on {task_key}, in a git worktree of {repo} on the branch {branch} (from {target} at {base}). Read it with get_task, check your inbox, and work as the copland guide says, including its Code section on finishing coding work. When you stop, leave the task in the right stage.",
                 repo = ws.repo,
@@ -226,10 +233,16 @@ async fn run_until(
     /* A coding task: its own command, in its worktree, inside the sandbox. */
     let (argv, cwd) = match (workspace, &agent.code_command) {
         (Some(ws), Some(code)) => {
+            /* A lead reads the repo; a worker writes its worktree, and its commits land in the clone's .git. */
+            let dirs = if ws.read_only {
+                Vec::new()
+            } else {
+                vec![ws.clone.join(".git"), ws.dir.clone()]
+            };
             let writable = Writable {
-                worktree: ws.dir.clone(),
-                git_dir: ws.clone.join(".git"),
+                dirs,
                 extra: agent.writable.clone(),
+                chdir: ws.dir.clone(),
             };
             (
                 sandbox::wrap(&fill_command(code, &text, &mcp_path), &writable),
@@ -270,7 +283,8 @@ async fn run_until(
             .env("COPLAND_WORKDIR", &ws.dir)
             .env("COPLAND_BRANCH", &ws.branch)
             .env("COPLAND_BASE", &ws.base)
-            .env("COPLAND_TARGET", &ws.target);
+            .env("COPLAND_TARGET", &ws.target)
+            .env("COPLAND_ROLE", if ws.read_only { "lead" } else { "worker" });
     }
     let mut child = match command.spawn() {
         Ok(c) => c,
@@ -382,7 +396,18 @@ mod tests {
             base: "0123456789abcdef".into(),
             target: "origin/main".into(),
             fresh: true,
+            read_only: false,
         };
+        let lead = prompt(
+            "me/dev",
+            "COPL-9",
+            Brief::Work,
+            Some(&Workspace {
+                read_only: true,
+                ..ws.clone()
+            }),
+        );
+        assert!(lead.contains("leading COPL-9") && lead.contains("read-only") && lead.contains("Leading section"));
         let code = prompt("me/dev", "COPL-9", Brief::Work, Some(&ws));
         assert!(code.contains("worktree of o/r on the branch copl-9-x (from origin/main at 01234567)"));
         assert!(code.contains("Code section"));
