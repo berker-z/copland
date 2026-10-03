@@ -39,7 +39,7 @@
 import { useRef, useState, type DragEvent } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ArrowLeft, BookOpen, Plus, Settings2, UserPlus, Users, X } from "lucide-react";
-import { rankBetween } from "@/domain/tasks";
+import { progress, rankBetween } from "@/domain/tasks";
 import type { BoardDetail, Stage, Task } from "@/domain/types";
 import { useBoard, useBoards, useMe } from "@/lib/queries";
 import { tasksIn, useCreateTask, useUpdateTask } from "@/lib/tasks";
@@ -58,7 +58,7 @@ import { MoveSheet } from "./MoveSheet";
 import { NewTaskModal } from "./NewTaskModal";
 import { ShareModal } from "./ShareModal";
 import { TaskModal } from "./TaskModal";
-import { TASK_DRAG_TYPE, TaskRow } from "./TaskRow";
+import { ProgressCount, TASK_DRAG_TYPE, TaskRow, type Progress } from "./TaskRow";
 
 function hasTask(event: DragEvent): boolean {
   return event.dataTransfer.types.includes(TASK_DRAG_TYPE);
@@ -67,6 +67,8 @@ function hasTask(event: DragEvent): boolean {
 /** A task's parent, by key, and scoping the board to it: what `↑ KEY` needs. */
 export interface Hierarchy {
   parentKey: (task: Task) => string | null;
+  /** A parent's done/total over the whole board (closed tasks too, filters ignored); undefined without children. */
+  progress: (taskId: string) => Progress | undefined;
   onScope: (parentKey: string) => void;
 }
 
@@ -167,6 +169,7 @@ function Column({ detail, stage, hierarchy, grouping, onOpen, onNew, onMoveMenu 
                     <>
                       <span className="text-faint">{lane.epic.key}</span>
                       <span className="text-muted truncate">{lane.epic.title}</span>
+                      <ProgressCount progress={hierarchy.progress(lane.epic.id)} />
                       <LevelPill level={lane.epic.level} className="ml-auto pl-2 self-center" />
                     </>
                   ) : (
@@ -185,6 +188,7 @@ function Column({ detail, stage, hierarchy, grouping, onOpen, onNew, onMoveMenu 
                     labels={detail.labels}
                     parentKey={parentKey}
                     onParent={() => parentKey && hierarchy.onScope(parentKey)}
+                    progress={hierarchy.progress(task.id)}
                     draggable={canEdit}
                     dropMarker={over === task.id}
                     onOpen={() => onOpen(task.id)}
@@ -324,8 +328,13 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   const shown: BoardDetail = { ...detail, tasks: result.tasks };
   const setFilters = (next: typeof filters) => setParams((prev) => writeFilters(prev, next), { replace: true, state: location.state });
   const byId = new Map(detail.tasks.map((t) => [t.id, t]));
+  const counted = new Map<string, Progress | undefined>();
   const hierarchy: Hierarchy = {
     parentKey: (task) => (task.parentId ? (byId.get(task.parentId)?.key ?? null) : null),
+    progress: (taskId) => {
+      if (!counted.has(taskId)) counted.set(taskId, progress(detail.tasks, detail.stages, taskId));
+      return counted.get(taskId);
+    },
     onScope: (key) => setFilters({ ...filters, under: key }),
   };
   /* The open task lives in ?task=KEY; ids stay inside the screen. */
