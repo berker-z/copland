@@ -45,7 +45,7 @@ t("a parent already active is left alone", run(chain("active", "active", "active
 t("a parent blocked by hand is not pulled back to active", run(chain("blocked", "blocked", "active", "todo"), "a") === "");
 t("everything delivered closes story and epic", run(chain("active", "active", "done", "done"), "a") === "S:done E:done");
 t("one child still ready holds the parent open", run(chain("active", "active", "done", "todo"), "a") === "");
-t("a parked child does not hold the parent open", run(chain("active", "active", "done", "backlog"), "a") === "S:done E:done");
+t("a parked child holds the parent open", run(chain("active", "active", "done", "backlog"), "a") === "");
 t("adding a parked child does not close the parent", run(chain("todo", "todo", "done", "backlog"), "b") === "");
 t("deleting the last open child does not close the parent", followUp(chain("active", "active", "done", "done").filter((x) => x.id !== "b"), FULL, [{ parentId: "S", childId: "b" }]).length === 0);
 t("a child moving to todo under a parent whose rest is done does not close it", run(chain("active", "active", "todo", "done"), "a") === "");

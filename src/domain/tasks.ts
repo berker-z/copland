@@ -107,13 +107,14 @@ export interface Followed {
  * - A child active or blocked: work is under way, so a parent that is not
  *   (parked, ready, or closed) goes to the first active stage.
  * - Otherwise, when the child that changed has just closed, and every child
- *   that is not parked in backlog is closed with at least one done: the
- *   parent's work is delivered, so an open parent goes to the first done
- *   stage. Parked children don't hold it open, but only a child finishing
- *   closes a parent: adding a parked child, moving one, or deleting the last
- *   open one never does. All of them cancelled is not delivery, so that
- *   leaves the parent alone, and so does a parent already closed (a
- *   cancelled epic stays cancelled).
+ *   is closed with at least one done: the parent's work is delivered, so an
+ *   open parent goes to the first done stage. A child parked in backlog is
+ *   still open work (not committed yet, not abandoned), so it holds the
+ *   parent open; drop abandoned work by cancelling or deleting it. Only a
+ *   child finishing closes a parent: adding, moving or deleting a child never
+ *   does. All of them cancelled is not delivery, so that leaves the parent
+ *   alone, and so does a parent already closed (a cancelled epic stays
+ *   cancelled).
  * - Otherwise, a closed parent with a child ready in todo has work left again
  *   (a child added under it, or reopened): it goes back to the board's
  *   default stage (defaultStage), as a reopened task would.
@@ -139,7 +140,7 @@ export function followChildren<S extends { id: string; category: StageCategory }
   if (kids.some((c) => c === "active" || c === "blocked")) {
     return parent === "active" || parent === "blocked" ? undefined : target("active");
   }
-  const counted = kids.filter((c) => c !== "backlog");
+  const counted = kids;
   const finished = triggerStageId !== undefined && isClosing(category(triggerStageId) ?? "backlog");
   if (finished && counted.length && counted.every(isClosing) && counted.includes("done")) {
     return isClosing(parent) ? undefined : target("done");
