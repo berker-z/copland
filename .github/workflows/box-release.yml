@@ -27,9 +27,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Optional box-vX.Y.Z to check against daemon/Cargo.toml. A manual run never publishes."
+        description: "Optional box-vX.Y.Z to check against daemon/Cargo.toml. A manual run never publishes a release."
         required: false
         default: ""
+      push_cache:
+        description: "Push the Nix builds to Cachix anyway (still no release)."
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: box-release-${{ github.ref }}
@@ -248,7 +253,7 @@ jobs:
       # The package and its closure; paths cache.nixos.org already has
       # (Vulkan, Wayland and the rest of nixpkgs) are not stored again.
       - name: Push to Cachix
-        if: env.CACHIX_AUTH_TOKEN != '' && needs.version.outputs.publish == 'true'
+        if: env.CACHIX_AUTH_TOKEN != '' && (needs.version.outputs.publish == 'true' || inputs.push_cache)
         run: |
           if [ "${{ matrix.system }}" = x86_64-linux ]; then
             nix path-info ./daemon#deps ./daemon#default | cachix push "$CACHIX_CACHE"
