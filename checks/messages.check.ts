@@ -10,7 +10,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { mayMessage, type MessageParty } from "../src/domain/messages.ts";
+import { mayMessage, nudgeTargets, type MessageParty } from "../src/domain/messages.ts";
 
 const cases: Array<[string, boolean]> = [];
 const t = (name: string, pass: boolean) => cases.push([name, pass]);
@@ -42,6 +42,15 @@ t("a refusal says why", (() => {
   const v = mayMessage(ada, dev);
   return !v.ok && /owner/.test(v.reason);
 })());
+
+/* A nudge on a task offers the viewer's own agents on its board, assigned ones first. */
+const u = (id: string, kind: "person" | "agent", ownerId: string | null) => ({ id, kind, ownerId, handle: ownerId ? `${ownerId}/${id}` : id });
+const members = [u("sam", "person", null), u("ada", "person", null), u("zed", "agent", "sam"), u("dev", "agent", "sam"), u("adas", "agent", "ada"), u("open", "agent", "sam")];
+const ids = (list: { id: string }[]) => list.map((x) => x.id).join(",");
+t("a nudge offers only your own agents, by handle", ids(nudgeTargets(members, "sam", [])) === "dev,open,zed");
+t("a nudge puts the task's assignees first", ids(nudgeTargets(members, "sam", ["zed", "ada"])) === "zed,dev,open");
+t("a nudge offers nothing to someone without agents on the board", nudgeTargets(members, "bob", []).length === 0);
+t("a nudge offers an agent nothing", nudgeTargets(members, "dev", ["dev"]).length === 0);
 
 /* The table. */
 const db = new DatabaseSync(":memory:");
