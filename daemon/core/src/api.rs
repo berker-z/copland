@@ -83,11 +83,26 @@ pub struct Inbox {
 pub struct Task {
     pub id: String,
     pub key: String,
+    pub board_id: String,
+    pub title: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
     /// A run on it right now; only live claims are sent.
     #[serde(default)]
     pub claim: Option<Claim>,
+}
+
+/// The part of GET /api/boards/:id the daemon reads: the GitHub repos connected to it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BoardRepos {
+    #[serde(default)]
+    pub repos: Vec<BoardRepo>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BoardRepo {
+    /// "owner/name".
+    pub repo: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -448,6 +463,14 @@ impl Api {
     pub async fn task(&self, cred: &Secret, id: &str) -> ApiResult<Task> {
         self.send(self.http.get(self.url(&format!("/api/tasks/{id}"))), cred)
             .await
+    }
+
+    /// The repos connected to a board, "owner/name"; empty for a board without any.
+    pub async fn board_repos(&self, cred: &Secret, board_id: &str) -> ApiResult<Vec<String>> {
+        let board: BoardRepos = self
+            .send(self.http.get(self.url(&format!("/api/boards/{board_id}"))), cred)
+            .await?;
+        Ok(board.repos.into_iter().map(|r| r.repo).collect())
     }
 
     /// Start a run with the agent's own token.

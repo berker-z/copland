@@ -14,7 +14,14 @@
 //! command = ["claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config"]
 //! workdir = "~/work/dev"
 //! client = "Claude Code"        # optional, what history says it came through
+//! # Optional: tasks on a board with a GitHub repo run this instead, in the task's worktree,
+//! # inside a sandbox (sandbox.rs) where only the worktree and `writable` can be written.
+//! code_command = ["claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config"]
+//! writable = ["~/.claude", "~/.claude.json", "~/.cache"]
 //! ```
+//!
+//! `code_dir = "~/copland"` (top level, optional) is where repos are cloned and tasks'
+//! worktrees made (workspace.rs).
 
 use std::fmt;
 use std::fs;
@@ -26,6 +33,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 pub const DEFAULT_POLL_SECS: u64 = 30;
+pub const DEFAULT_CODE_DIR: &str = "~/copland";
 pub const DEFAULT_CLIENT: &str = "Claude Code";
 pub const PROMPT: &str = "{prompt}";
 pub const MCP_CONFIG: &str = "{mcp_config}";
@@ -54,6 +62,8 @@ impl fmt::Debug for Secret {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub poll_interval: Duration,
+    /// Where repos are cloned and coding tasks' worktrees made.
+    pub code_dir: PathBuf,
     pub agents: Vec<AgentConfig>,
     /// The box's colour theme by name (`theme = "nord"`). Only the window reads it; the headless daemon ignores it.
     pub theme: Option<String>,
@@ -91,12 +101,20 @@ pub struct AgentConfig {
     pub command: Vec<String>,
     pub workdir: PathBuf,
     pub client: String,
+    /// argv for a task on a board with a repo, run sandboxed in the task's worktree; None runs those
+    /// like any other task, with `command` in `workdir`.
+    pub code_command: Option<Vec<String>>,
+    /// What a sandboxed run may write besides its worktree: the runtime's own state, caches.
+    pub writable: Vec<PathBuf>,
+    /// The config's `code_dir`, the same for every agent.
+    pub code_dir: PathBuf,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     poll_interval: Option<u64>,
+    code_dir: Option<String>,
     theme: Option<String>,
     motion: Option<bool>,
     notifications: Option<bool>,
@@ -119,6 +137,9 @@ struct RawAgent {
     command: Vec<String>,
     workdir: String,
     client: Option<String>,
+    code_command: Option<Vec<String>>,
+    #[serde(default)]
+    writable: Vec<String>,
 }
 
 /// `~/…` against $HOME. Anything else as written.
@@ -195,6 +216,7 @@ impl Config {
         if raw.agents.is_empty() {
             bail!("no [[agent]] configured");
         }
+        let code_dir = expand_home(raw.code_dir.as_deref().unwrap_or(DEFAULT_CODE_DIR));
         let mut agents = Vec::new();
         let mut inline_token = false;
         for (n, a) in raw.agents.into_iter().enumerate() {
@@ -224,6 +246,11 @@ impl Config {
                 bail!("{at}: workdir {} is not a directory", workdir.display());
             }
             let client = a.client.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
+            if let Some(code) = &a.code_command {
+                if code.is_empty() || code[0].trim().is_empty() {
+                    bail!("{at}: code_command is empty");
+                }
+            }
             agents.push(AgentConfig {
                 url,
                 handle,
@@ -231,6 +258,9 @@ impl Config {
                 command: a.command,
                 workdir,
                 client: client.unwrap_or_else(|| DEFAULT_CLIENT.to_string()),
+                code_command: a.code_command,
+                writable: a.writable.iter().map(|w| expand_home(w)).collect(),
+                code_dir: code_dir.clone(),
             });
         }
         let owner = match (raw.owner_token, raw.owner_token_file) {
@@ -264,6 +294,7 @@ impl Config {
         };
         Ok(Config {
             poll_interval: Duration::from_secs(poll),
+            code_dir,
             agents,
             theme: raw.theme.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()),
             motion: raw.motion,

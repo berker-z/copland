@@ -15,7 +15,9 @@ pub mod guard;
 pub mod live;
 pub mod reload;
 pub mod runner;
+pub mod sandbox;
 pub mod state;
+pub mod workspace;
 
 pub use agent::Paths;
 pub use config::Config;

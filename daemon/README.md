@@ -75,6 +75,35 @@ command = [
 
 About the Claude Code flags, as of Claude Code 2.1: `--tools ""` takes away every built-in tool (no Bash, no Edit, no file reads), `--strict-mcp-config` ignores your other MCP servers, and `--permission-mode dontAsk` denies whatever isn't in `--allowedTools` instead of waiting for a prompt nobody will answer. `--allowedTools` is variadic, so keep it last. For an agent that should actually write code, give it the built-in tools it needs and a working directory you don't mind it changing. `claude` has to be signed in already (`claude` once, interactively); the daemon doesn't handle that.
 
+### Coding tasks
+
+A task on a board with a GitHub repo connected (docs/GITHUB.md) is coding work, and an agent with a `code_command` does it in a workspace of its own instead of `workdir` (`core/src/workspace.rs`). The daemon keeps one clone per repo under `code_dir` and makes the task a git worktree beside it, on a branch named after the task:
+
+```text
+~/copland/repos/berker-z/copland     the clone, shared by every task and agent here
+~/copland/work/COPL-79               COPL-79's worktree, on copl-79-<its title>
+```
+
+The worktree belongs to the task, not to a run: a run that crashed, a later run that picks the task up again, and a run fixing what CI found all carry on in the same place on the same branch. A new one starts from the default branch's head as it is right then. If the worktree is gone but the branch is still around, here or on GitHub, it is made again on that branch. Once the task closes (its PR merged), the next run on it removes the worktree. The clone goes over https, so pushing uses whatever git credential helper the machine has; `gh auth setup-git` is the easy one.
+
+`code_command` runs inside bubblewrap (`core/src/sandbox.rs`), whatever the runtime is. Everything is readable and nothing writable except the worktree, the clone's `.git` (where the worktree's commits go), a fresh empty `/tmp`, and what `writable` lists: the runtime's own state and the caches its builds use. Without `bwrap` the run doesn't start. bubblewrap can't limit hosts, so a coding run reaches the network the way the machine does, and it can push wherever your git credentials can. A runtime's own sandbox can go on top, in its command.
+
+```toml
+code_dir = "~/copland"   # top level; optional, ~/copland by default
+
+[[agent]]
+# ...as above, then:
+code_command = [
+  "claude", "-p", "{prompt}",
+  "--mcp-config", "{mcp_config}", "--strict-mcp-config",
+  "--permission-mode", "bypassPermissions",
+  "--no-session-persistence",
+]
+writable = ["~/.claude", "~/.claude.json", "~/.cache", "~/.npm", "~/.cargo/registry"]
+```
+
+Nothing in the daemon is about one runtime. It hands the run the worktree as its working directory, and `COPLAND_REPO`, `COPLAND_WORKDIR`, `COPLAND_BRANCH`, `COPLAND_BASE` (the commit it started from) and `COPLAND_TARGET` (`origin/main`) in its environment. The prompt says which repo, branch and base, and points at the Copland guide's Code section, which says how coding work is finished: commit, push, open a PR with `Fixes COPL-79` in its body, wait for CI, and merge it, unless the task is marked review first. The merge is what closes the task. The Claude Code command above skips Claude's own permission prompts, since nobody is there to answer them and the sandbox is what limits it; another runtime gets whatever its equivalent is.
+
 Some top-level keys are for the box alone, and the headless daemon ignores them. The menu's settings and boards panels write the first five for you (see "The menu"); a key at its default is left out.
 
 ```toml
@@ -313,4 +342,7 @@ Run `npm run dev` at the repo root, make an agent and a board in the app (or thr
 
 - Two daemons running the same agent work fine against each other (claims keep them off the same task), but each launches its own run on a restart for whatever is unread.
 - No backoff beyond the poll interval for a runtime that keeps failing on new items.
+- A board with several repos: coding runs work in the first one.
+- A closed task's worktree is removed by the next run on that task, so one closed by hand with no run after it stays until removed (`git worktree remove`).
+- One run per agent at a time, coding or not, and runs start from the inbox: a task whose dependencies just closed doesn't wake by itself.
 - A launch to answer on someone else's task wakes on plain comments too, once the agent has taken part there. Two agents answering each other in one thread would keep each other going; nothing stops that yet beyond the agent marking its inbox read.

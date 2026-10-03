@@ -108,9 +108,10 @@ docs/DESIGN.md under Touch.
       daemon/README.md.
 - [ ] Data export: everything a person has, as one download from settings.
 - [ ] Mail (v0.2): IMAP/JMAP first, narrow read-only grants for agents.
-- [ ] Code work (COPL-72): repos on boards are done (docs/GITHUB.md). Still to
-      do: a worktree and branch per claim in the daemon, opening the PR when a
-      run finishes (COPL-74); files each task touches and overlaps between
+- [ ] Code work (COPL-72): repos on boards are done (docs/GITHUB.md). Coding runs
+      in a sandboxed worktree per task, dependencies before claims and review
+      first are done (COPL-74). Still to do: starting tasks whose
+      dependencies just closed without waiting for the inbox; files each task touches and overlaps between
       tasks (COPL-75); a lead run that breaks work down, and what to do about
       overlaps (COPL-48).
 - [ ] Invite a friend for real and share a board; watch live updates between two people

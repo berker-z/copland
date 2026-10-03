@@ -15,6 +15,8 @@ use tokio::time::{Instant, interval_at, timeout};
 
 use crate::api::Api;
 use crate::config::{AgentConfig, Secret, fill_command};
+use crate::sandbox::{self, Writable};
+use crate::workspace::Workspace;
 
 /// How often a live runtime's run is kept alive. The lease is ten minutes.
 pub const KEEPALIVE: Duration = Duration::from_secs(120);
@@ -39,12 +41,22 @@ pub enum Brief {
     Waiting,
 }
 
-/// The prompt the runtime starts with. Short: the MCP guide carries the rest.
-pub fn prompt(handle: &str, task_key: &str, brief: Brief) -> String {
+/// The prompt the runtime starts with. Short: the MCP guide carries the rest, including how coding
+/// work is finished, so any runtime connected to Copland gets the same instructions.
+pub fn prompt(handle: &str, task_key: &str, brief: Brief, workspace: Option<&Workspace>) -> String {
     match brief {
-        Brief::Work => format!(
-            "You are @{handle} working on {task_key}. Read it with get_task, check your inbox, and work as the copland guide says. When you stop, leave the task in the right stage."
-        ),
+        Brief::Work => match workspace {
+            Some(ws) => format!(
+                "You are @{handle} working on {task_key}, in a git worktree of {repo} on the branch {branch} (from {target} at {base}). Read it with get_task, check your inbox, and work as the copland guide says, including its Code section on finishing coding work. When you stop, leave the task in the right stage.",
+                repo = ws.repo,
+                branch = ws.branch,
+                target = ws.target,
+                base = &ws.base[..ws.base.len().min(8)],
+            ),
+            None => format!(
+                "You are @{handle} working on {task_key}. Read it with get_task, check your inbox, and work as the copland guide says. When you stop, leave the task in the right stage."
+            ),
+        },
         Brief::Mentioned => format!(
             "You are @{handle}. You were mentioned on {task_key}, which isn't yours. Read it with get_task, answer in its comments, and don't take it over."
         ),
@@ -143,6 +155,8 @@ pub struct Launch<'a> {
     pub brief: Brief,
     pub state_dir: &'a Path,
     pub runtime_dir: &'a Path,
+    /// A coding task's workspace: the run uses `code_command`, sandboxed, in the worktree.
+    pub workspace: Option<&'a Workspace>,
 }
 
 /// Where a run's output goes.
@@ -188,6 +202,7 @@ async fn run_until(
         brief,
         state_dir,
         runtime_dir,
+        workspace,
     } = launch;
 
     let mcp_dir = runtime_dir.join("copland");
@@ -207,11 +222,26 @@ async fn run_until(
         Err(e) => return Exit::SpawnFailed(format!("{e:#}")),
     };
 
-    let argv = fill_command(&agent.command, &prompt(handle, task_key, brief), &mcp_path);
+    let text = prompt(handle, task_key, brief, workspace);
+    /* A coding task: its own command, in its worktree, inside the sandbox. */
+    let (argv, cwd) = match (workspace, &agent.code_command) {
+        (Some(ws), Some(code)) => {
+            let writable = Writable {
+                worktree: ws.dir.clone(),
+                git_dir: ws.clone.join(".git"),
+                extra: agent.writable.clone(),
+            };
+            (
+                sandbox::wrap(&fill_command(code, &text, &mcp_path), &writable),
+                ws.dir.clone(),
+            )
+        }
+        _ => (fill_command(&agent.command, &text, &mcp_path), agent.workdir.clone()),
+    };
     let _ = writeln!(
         log_file,
         "# copland-daemon: run {run_id}, @{handle} on {task_key}, in {}\n# argv: {:?}",
-        agent.workdir.display(),
+        cwd.display(),
         argv
     );
     let stderr = match log_file.try_clone() {
@@ -222,7 +252,7 @@ async fn run_until(
     let mut command = Command::new(&argv[0]);
     command
         .args(&argv[1..])
-        .current_dir(&agent.workdir)
+        .current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(stderr))
@@ -234,6 +264,14 @@ async fn run_until(
         .env("COPLAND_TASK", task_key)
         .env("COPLAND_RUN", run_id)
         .env("COPLAND_MCP_CONFIG", &mcp_path);
+    if let Some(ws) = workspace {
+        command
+            .env("COPLAND_REPO", &ws.repo)
+            .env("COPLAND_WORKDIR", &ws.dir)
+            .env("COPLAND_BRANCH", &ws.branch)
+            .env("COPLAND_BASE", &ws.base)
+            .env("COPLAND_TARGET", &ws.target);
+    }
     let mut child = match command.spawn() {
         Ok(c) => c,
         Err(e) => return Exit::SpawnFailed(format!("{}: {e}", argv[0])),
@@ -313,6 +351,10 @@ pub fn short(run_id: &str) -> String {
 mod tests {
     use super::*;
 
+    fn prompt_for(handle: &str, key: &str, brief: Brief) -> String {
+        prompt(handle, key, brief, None)
+    }
+
     #[test]
     fn mcp_config_is_claude_codes_http_shape() {
         let json: serde_json::Value =
@@ -331,15 +373,28 @@ mod tests {
 
     #[test]
     fn prompt_names_the_agent_and_task() {
-        let p = prompt("me/dev", "COPL-9", Brief::Work);
+        let ws = Workspace {
+            repo: "o/r".into(),
+            key: "COPL-9".into(),
+            dir: "/c/work/COPL-9".into(),
+            clone: "/c/repos/o/r".into(),
+            branch: "copl-9-x".into(),
+            base: "0123456789abcdef".into(),
+            target: "origin/main".into(),
+            fresh: true,
+        };
+        let code = prompt("me/dev", "COPL-9", Brief::Work, Some(&ws));
+        assert!(code.contains("worktree of o/r on the branch copl-9-x (from origin/main at 01234567)"));
+        assert!(code.contains("Code section"));
+        let p = prompt_for("me/dev", "COPL-9", Brief::Work);
         assert!(p.starts_with("You are @me/dev working on COPL-9."));
-        let p = prompt("me/dev", "COPL-9", Brief::Mentioned);
+        let p = prompt_for("me/dev", "COPL-9", Brief::Mentioned);
         assert_eq!(
             p,
             "You are @me/dev. You were mentioned on COPL-9, which isn't yours. Read it with get_task, answer in its comments, and don't take it over."
         );
-        assert!(prompt("me/dev", "COPL-9", Brief::Closed).contains("which is closed"));
-        assert!(prompt("me/dev", "COPL-9", Brief::Waiting).contains("don't start the work"));
+        assert!(prompt_for("me/dev", "COPL-9", Brief::Closed).contains("which is closed"));
+        assert!(prompt_for("me/dev", "COPL-9", Brief::Waiting).contains("don't start the work"));
     }
 
     #[test]
@@ -360,6 +415,9 @@ mod tests {
             command: vec!["sleep".into(), "30".into()],
             workdir: std::env::temp_dir(),
             client: "test".into(),
+            code_command: None,
+            writable: Vec::new(),
+            code_dir: "/tmp/copland-code".into(),
         };
         let api = Api::new(&agent.url).unwrap();
         let (_tx, shutdown) = watch::channel(false);
@@ -375,6 +433,7 @@ mod tests {
                 brief: Brief::Work,
                 state_dir: &scratch,
                 runtime_dir: &scratch,
+                workspace: None,
             },
             shutdown,
             std::future::pending(),
@@ -399,6 +458,9 @@ mod tests {
             command: vec!["sh".into(), "-c".into(), "sleep 30 & wait".into()],
             workdir: std::env::temp_dir(),
             client: "test".into(),
+            code_command: None,
+            writable: Vec::new(),
+            code_dir: "/tmp/copland-code".into(),
         };
         let api = Api::new(&agent.url).unwrap();
         let (_tx, shutdown) = watch::channel(false);
@@ -414,6 +476,7 @@ mod tests {
                 brief: Brief::Work,
                 state_dir: &scratch,
                 runtime_dir: &scratch,
+                workspace: None,
             },
             shutdown,
             tokio::time::sleep(Duration::from_millis(300)),

@@ -330,6 +330,9 @@ mod tests {
             command: vec![command.into()],
             workdir: std::env::temp_dir(),
             client: "Claude Code".into(),
+            code_command: None,
+            writable: Vec::new(),
+            code_dir: "/tmp/copland-code".into(),
         }
     }
 

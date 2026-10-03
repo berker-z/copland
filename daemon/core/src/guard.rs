@@ -358,7 +358,10 @@ mod tests {
     #[test]
     fn refusals_by_reason() {
         assert_eq!(refused(Some("claimed"), &one("assigned")), Refused::Hold);
-        assert_eq!(refused(Some("waiting"), &one("mentioned")), Refused::Answer(Brief::Waiting));
+        assert_eq!(
+            refused(Some("waiting"), &one("mentioned")),
+            Refused::Answer(Brief::Waiting)
+        );
         assert_eq!(refused(Some("waiting"), &one("assigned")), Refused::Skip);
         assert_eq!(
             refused(Some("assigned_elsewhere"), &one("mentioned")),

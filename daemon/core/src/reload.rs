@@ -74,6 +74,9 @@ mod tests {
             command: vec![command.into()],
             workdir: "/tmp".into(),
             client: "Claude Code".into(),
+            code_command: None,
+            writable: Vec::new(),
+            code_dir: "/tmp/copland-code".into(),
         }
     }
 

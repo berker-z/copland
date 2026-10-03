@@ -18,6 +18,7 @@ use crate::guard::{Check, Identity, Plan, Refused, Wake, WakeGuard, plan, refuse
 use crate::live::{self, FALLBACK_POLL, Heard, Link};
 use crate::runner::{self, Brief, Exit, Launch};
 use crate::state::{AgentState, DaemonState, Phase, RunSummary};
+use crate::workspace::{self, Workspace};
 
 const PAGE: u32 = 100;
 /// More unread than this is read on a later poll.
@@ -560,6 +561,27 @@ impl AgentLoop {
             }
         };
 
+        /* A coding task (its board has a repo, and the agent a code_command) runs in its workspace. */
+        let workspace = if brief == Brief::Work {
+            match self.workspace(&wake.task_id, &key).await {
+                Ok(ws) => ws,
+                Err(e) => {
+                    tracing::warn!(run = %short, task = %key, "its workspace could not be made: {e:#}");
+                    let ending = self.finish(&run_id, Ending::Failed).await;
+                    self.update(|s| s.phase = Phase::Idle);
+                    let updated = self.updated_at(&wake.task_id).await;
+                    self.guard.remember(wake, updated, false);
+                    self.summary(&short, &key, format!("{ending}: no workspace ({e})"));
+                    return Ok(Outcome::Skipped);
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(ws) = &workspace {
+            tracing::info!(run = %short, task = %key, dir = %ws.dir.display(), branch = %ws.branch, fresh = ws.fresh, "workspace ready");
+        }
+
         let exit = runner::run(
             Launch {
                 api: &self.api,
@@ -571,6 +593,7 @@ impl AgentLoop {
                 brief,
                 state_dir: &self.paths.state_dir,
                 runtime_dir: &self.paths.runtime_dir,
+                workspace: workspace.as_ref(),
             },
             self.shutdown.clone(),
             stop_requested(self.stop_run.clone(), self.slot, short.clone()),
@@ -589,6 +612,17 @@ impl AgentLoop {
             /* The runtime finished it first (finish_run), and its word stands. */
             tracing::info!(run = %short, task = %key, "runtime {exit}; run {status} (finished by the runtime)");
         }
+        /* A closed task's worktree has nothing left to do; its branch lives on in the remote. */
+        if let Some(ws) = &workspace {
+            if let Ok(t) = self.api.task(&self.agent.token, &wake.task_id).await {
+                if t.completed_at.is_some() {
+                    match workspace::remove(&self.agent.code_dir, &ws.repo, &ws.key).await {
+                        Ok(_) => tracing::info!(task = %key, "task closed; its worktree is removed"),
+                        Err(e) => tracing::warn!(task = %key, "removing its worktree: {e:#}"),
+                    }
+                }
+            }
+        }
         /* Remembered whatever the ending, a ceiling included, so it isn't launched again for the same items. */
         let updated = self.updated_at(&wake.task_id).await;
         self.guard.remember(wake, updated, false);
@@ -600,6 +634,39 @@ impl AgentLoop {
         self.summary(&short, &key, outcome);
         self.update(|s| s.phase = Phase::Idle);
         Ok(Outcome::Ran)
+    }
+
+    /// The task's workspace when it is coding work: the agent has a `code_command` and the task's
+    /// board has a repo. A board with several repos uses the first, for now.
+    async fn workspace(&self, task_id: &str, key: &str) -> Result<Option<Workspace>> {
+        if self.agent.code_command.is_none() {
+            return Ok(None);
+        }
+        let task = self
+            .api
+            .task(&self.agent.token, task_id)
+            .await
+            .map_err(|e| anyhow!("reading {key}: {e}"))?;
+        let repos = self
+            .api
+            .board_repos(&self.agent.token, &task.board_id)
+            .await
+            .map_err(|e| anyhow!("reading {key}'s board: {e}"))?;
+        let Some(repo) = repos.first() else {
+            return Ok(None);
+        };
+        if repos.len() > 1 {
+            tracing::info!(task = %key, "its board has {} repos; working in the first, {repo}", repos.len());
+        }
+        workspace::realize(
+            &self.agent.code_dir,
+            &workspace::github_remote(repo),
+            repo,
+            key,
+            &task.title,
+        )
+        .await
+        .map(Some)
     }
 
     fn summary(&self, run: &str, task: &str, outcome: String) {

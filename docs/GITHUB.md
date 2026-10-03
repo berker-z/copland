@@ -54,4 +54,4 @@ Who did something on GitHub isn't recorded. GitHub users aren't Copland users, a
 
 ## Later
 
-The daemon will make a worktree and a `<key>-<slug>` branch per claim and open the PR when a run finishes (COPL-74), with the machine's own git credentials for now. Agents running somewhere without them could get short-lived installation tokens from the App instead, which needs it to ask for write access. Push events list the files each commit touched, which is where showing two tasks that touch the same files will come from (COPL-75).
+The daemon makes each coding task a worktree on a `<key>-<slug>` branch, kept across runs, and runs the agent in it sandboxed; the agent pushes, opens the PR and merges with the machine's own git credentials (daemon/README.md, Coding tasks). Agents running somewhere without them could get short-lived installation tokens from the App instead, which needs it to ask for write access. Push events list the files each commit touched, which is where showing two tasks that touch the same files will come from (COPL-75).

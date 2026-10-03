@@ -947,6 +947,9 @@ mod tests {
             command: runtime.map_or_else(|| vec!["/usr/bin/my-agent".into()], Runtime::command),
             workdir: "/srv/agents/dev".into(),
             client: "Claude Code".into(),
+            code_command: None,
+            writable: Vec::new(),
+            code_dir: "/tmp/copland-code".into(),
         }
     }
 
