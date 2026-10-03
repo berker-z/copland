@@ -63,6 +63,9 @@
     "SIGNUP": "invite"
   },
 
+  /* The dead-run sweep (src/worker/deadRuns.ts, COPL-97). */
+  "triggers": { "crons": ["*/5 * * * *"] },
+
   "observability": {
     "enabled": true
   }

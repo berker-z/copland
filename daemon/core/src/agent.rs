@@ -807,7 +807,7 @@ impl RunCtx {
                 }
             },
             Err(e) => {
-                self.finish(&run_id, Ending::Cancelled).await;
+                self.finish(&run_id, Ending::Interrupted).await;
                 self.update(|s| s.run_ended(&short));
                 return Done::failed(wake, format!("claiming {key}: {e}"));
             }
@@ -857,7 +857,8 @@ impl RunCtx {
         drop(started);
         let ending = match exit {
             Exit::Code(0) => Ending::Completed,
-            Exit::Stopped | Exit::Cancelled => Ending::Cancelled,
+            Exit::Stopped => Ending::Interrupted,
+            Exit::Cancelled => Ending::Cancelled,
             _ => Ending::Failed,
         };
         let status = self.finish(&run_id, ending).await;

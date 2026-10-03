@@ -11,8 +11,10 @@
 
    One lease per kind, the same for a run and its claims: a run not heard from
    for that long is stale, and its claims not renewed for that long have
-   lapsed. Any call a run makes renews both, so the two always agree. Nothing
-   sweeps; whatever reads a run or a claim compares against the clock.
+   lapsed. Any call a run makes renews both, so the two always agree.
+   Whatever reads a run or a claim compares against the clock; the one sweep
+   (worker/deadRuns.ts, on the Worker's cron) ends supervised runs past their
+   lease so the tasks they held go back (COPL-97).
    ========================================================================== */
 
 export const RUN_KINDS = ["supervised", "interactive"] as const;
@@ -55,3 +57,42 @@ export function runStatus(stored: "running" | RunEnding, lastSeenAt: string, kin
  */
 export const CLAIM_REFUSALS = ["closed", "assigned_elsewhere", "claimed", "waiting"] as const;
 export type ClaimRefusal = (typeof CLAIM_REFUSALS)[number];
+
+/**
+ * How a supervised run ended, as far as the tasks it held are concerned
+ * (COPL-97): failed (the runtime or the agent said so), stale (nobody heard
+ * from it for its lease: the launcher or the machine went away), cancelled
+ * (a person stopped it) or interrupted (its launcher stopped it for its own
+ * reasons, shutting down or reloading, and nobody decided against the work).
+ */
+export type RunDeath = "failed" | "stale" | "cancelled" | "interrupted";
+
+/** How many dead runs in a row a task takes before it waits for a person instead of another run. */
+export const STRIKES = 3;
+
+/**
+ * The stage category a task goes back to when the supervised run that held
+ * it dies. `strikes` is how many runs in a row have now died on it, this one
+ * included (strikesOf). A task a person stopped is parked; one interrupted
+ * goes back to be picked up, and so does one whose run died, until the
+ * third in a row, which waits for a person instead of looping.
+ */
+export function returnTo(death: RunDeath, strikes: number): "todo" | "backlog" | "blocked" {
+  if (death === "cancelled") return "backlog";
+  if (death === "interrupted") return "todo";
+  return strikes >= STRIKES ? "blocked" : "todo";
+}
+
+/**
+ * The runs that claimed a task since a person last touched it, newest first,
+ * as stored: how many died in a row, counting back from the newest. A run
+ * that completed, or was cancelled, ends the streak.
+ */
+export function strikesOf(endings: Array<"running" | RunEnding>): number {
+  let n = 0;
+  for (const e of endings) {
+    if (e !== "failed") break;
+    n++;
+  }
+  return n;
+}

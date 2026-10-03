@@ -313,7 +313,11 @@ pub enum DevicePoll {
 pub enum Ending {
     Completed,
     Failed,
+    /// A person stopped it: Copland parks the tasks it held.
     Cancelled,
+    /// The daemon stopped it for its own reasons (shutting down, reloading): stored as cancelled, and
+    /// Copland puts the tasks it held back to todo for the next run (COPL-97).
+    Interrupted,
 }
 
 impl Ending {
@@ -321,7 +325,7 @@ impl Ending {
         match self {
             Ending::Completed => "completed",
             Ending::Failed => "failed",
-            Ending::Cancelled => "cancelled",
+            Ending::Cancelled | Ending::Interrupted => "cancelled",
         }
     }
 }
@@ -569,7 +573,7 @@ impl Api {
         let req = self
             .http
             .post(self.url(&format!("/api/runs/{id}/finish")))
-            .json(&json!({ "status": ending.as_str() }));
+            .json(&json!({ "status": ending.as_str(), "interrupted": ending == Ending::Interrupted }));
         self.send(req, token).await
     }
 

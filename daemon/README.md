@@ -28,7 +28,7 @@ While the socket is up the daemon still polls every five minutes (or `poll_inter
 
 The runtime's stdout and stderr go to `$XDG_STATE_HOME/copland/runs/<run-id>.log` (`~/.local/state/copland/runs/` by default), mode 0600. The runtime also gets `COPLAND_URL`, `COPLAND_TASK` (the key), `COPLAND_RUN` (the id) and `COPLAND_MCP_CONFIG` in its environment. Never the secret; that lives only in the config file.
 
-SIGINT or SIGTERM stops polling, sends SIGTERM to each runtime's process group (SIGKILL ten seconds later), and finishes their runs as cancelled. A second signal exits at once; whatever runs were left go stale within the lease and their claims lapse.
+SIGINT or SIGTERM stops polling, sends SIGTERM to each runtime's process group (SIGKILL ten seconds later), and finishes their runs as interrupted (`cancelled` with `interrupted: true`), which puts their tasks back in todo for the next start. A run stopped from the box is plain cancelled, and Copland parks its task in backlog; one whose runtime fails, failed, which puts it back in todo, or in blocked after three in a row. A second signal exits at once; whatever runs were left go stale within the lease, and Copland's cron ends them and puts their tasks back.
 
 ## The wake guard
 
