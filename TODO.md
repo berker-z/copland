@@ -252,7 +252,9 @@ docs/DESIGN.md under Touch.
 - The level pill (COPL-46): three dots at the right of every card, list row,
   Gantt label and lane header say where a task sits (task `··●`, story
   `·●●`, epic `●●●`, a diamond for a milestone, nothing without a level);
-  the level filter chips carry it too. `src/ui/LevelPill.tsx`
+  the level filter chips carry it too. The leftmost filled dot is the
+  level's hue (epic cyan, story green, task blue, milestone magenta;
+  COPL-81). `src/ui/LevelPill.tsx`
 - Runs and claims (COPL-7, COPL-8): `POST /api/runs` with a token gives a
   run and its own secret, which acts as the same principal and scope and
   stamps `run_id` on events ("via Codex · run 8f31"). One ten-minute lease,

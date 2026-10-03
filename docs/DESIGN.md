@@ -176,10 +176,11 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   `bg-raised` `<pre>` with a back arrow; anything else opens through the
   attachment route in a new tab.
 - `src/ui/LevelPill.tsx` — where a task sits in the plan, at a glance:
-  three dots in a 16×6 SVG filled from the right by depth, filled ones
-  `fill-muted`, empty ones smaller `fill-faint` (task `··●`, story `·●●`,
-  epic `●●●`). A milestone is off that ladder: one `fill-muted` diamond in
-  the same footprint. No level, no pill. It carries the level name as
+  three dots in a 16×6 SVG filled from the right by depth (task `··●`,
+  story `·●●`, epic `●●●`), empty ones smaller `fill-faint`. The leftmost
+  filled dot carries the level's hue and the others stay `fill-muted`: epic
+  `fill-cyan`, story `fill-green`, task `fill-blue`. A milestone is off
+  that ladder: one `fill-magenta` diamond in the same footprint. No level, no pill. It carries the level name as
   `title` and `aria-label` (`decorative` hides it where the name is written
   beside it). It always sits at the right: top right of a card on the
   title's first line (the title wraps beside it, never under it), the last
