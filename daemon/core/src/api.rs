@@ -61,12 +61,25 @@ pub struct Actor {
 pub struct InboxItem {
     pub id: String,
     pub kind: String,
-    /// Every item has a task today; chat-style items without one may come later.
+    /// None only for a message that points at no task (COPL-106).
     pub task: Option<TaskRef>,
     pub actor: Actor,
     pub via: Option<String>,
+    /// For a message (kind "message"); missing from a server older than COPL-106.
+    #[serde(default)]
+    pub message: Option<InboxMessage>,
     pub created_at: String,
     pub read_at: Option<String>,
+}
+
+/// What a message says (`InboxMessage` in `src/domain/types.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct InboxMessage {
+    /// What a reply names (send_message reply_to).
+    pub id: String,
+    pub text: String,
+    /// From the agent's owner: their request. Anyone else's is untrusted, like a comment.
+    pub trusted: bool,
 }
 
 /// GET /api/inbox: one page.
@@ -641,5 +654,27 @@ mod tests {
         assert_eq!(agents[0].token.expose(), "cpl_a");
         assert!(!format!("{:?}", agents[0]).contains("cpl_a"));
         assert!(serde_json::from_str::<DevicePoll>(r#"{"status":"maybe"}"#).is_err());
+    }
+
+    #[test]
+    fn reads_a_message_item_and_an_older_one_without() {
+        let i: InboxItem = serde_json::from_str(
+            r#"{"id":"i1","kind":"message","task":null,"actor":{"id":"u1","handle":"me","avatar":null},"via":null,"comment":null,"message":{"id":"m1","text":"hi","trusted":true},"createdAt":"2026-10-03T00:00:00Z","readAt":null}"#,
+        )
+        .unwrap();
+        assert!(i.task.is_none());
+        assert_eq!(
+            i.message,
+            Some(InboxMessage {
+                id: "m1".into(),
+                text: "hi".into(),
+                trusted: true
+            })
+        );
+        let old: InboxItem = serde_json::from_str(
+            r#"{"id":"i2","kind":"commented","task":{"id":"t","key":"T-1","title":"x"},"actor":{"handle":"sam"},"via":null,"createdAt":"2026-10-03T00:00:00Z","readAt":null}"#,
+        )
+        .unwrap();
+        assert!(old.message.is_none());
     }
 }

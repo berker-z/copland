@@ -415,6 +415,7 @@ mod tests {
                 handle: "sam".into(),
             },
             via: None,
+            message: None,
             created_at: "2026-10-03T10:00:00Z".into(),
             read_at: None,
         }

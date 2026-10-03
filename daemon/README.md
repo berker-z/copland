@@ -9,7 +9,7 @@ It talks to Copland only over the HTTP API, with each agent's own token, like an
 Per agent, every `poll_interval` seconds:
 
 1. Read the agent's unread inbox (`GET /api/inbox?unread=true`, following `next`).
-2. Drop items the agent wrote itself (by the actor's id against the token's, from `/api/me`), and items without a task (none exist yet; they are logged once). Group the rest by task, oldest first. Then add the agent's ready work (`GET /api/tasks/ready`, COPL-86): tasks assigned to it, in a todo stage, every dependency closed, nobody's run on them. Nothing in the inbox says so when a task the agent gave itself, or one whose dependencies just closed, can start; Copland decides it, and the daemon only asks.
+2. Drop items the agent wrote itself (by the actor's id against the token's, from `/api/me`), and set aside messages that point at no task (see Messages). Group the rest by task, oldest first. Then add the agent's ready work (`GET /api/tasks/ready`, COPL-86): tasks assigned to it, in a todo stage, every dependency closed, nobody's run on them. Nothing in the inbox says so when a task the agent gave itself, or one whose dependencies just closed, can start; Copland decides it, and the daemon only asks.
 3. For each task that needs it (see the wake guard below), as far as `max_runs` allows: `POST /api/runs` with the agent's token, which gives a run and its secret (`cplr_…`).
 4. With the run's secret, `POST /api/tasks/:id/claim`. That assigns the task if nobody has it and moves it to the board's first active stage. A refusal is a 409 whose `code` says why, and the daemon goes by it:
    - `claimed`: another run holds it. The daemon finishes its own run as cancelled and comes back once that claim is gone (see the wake guard).
@@ -26,7 +26,7 @@ The poll is the fallback, not the usual way in (COPL-62). Each agent also keeps 
 
 While the socket is up the daemon still polls every five minutes (or `poll_interval`, if that's longer), because the hub keeps nothing and a message sent during a reconnect is gone. When it drops, the daemon polls once straight away and then every `poll_interval` until it's back. Reconnecting backs off from one second to a minute with jitter; a refusal (a 4xx, say a revoked token) waits five minutes. After a reconnect it polls once, for whatever it missed. It pings every 30 seconds and treats 75 seconds of silence as a dead connection. The client is `core/src/live.rs`: the handshake and the frame format by hand over reqwest's upgraded connection, with `ring` (already there for TLS) for SHA-1 and randomness, so no WebSocket crate. Revoking the token, pausing the agent or disabling its owner closes the socket at the next message for it. `AgentState::live` says where each socket is.
 
-The runtime's stdout and stderr go to `$XDG_STATE_HOME/copland/runs/<run-id>.log` (`~/.local/state/copland/runs/` by default), mode 0600. The runtime also gets `COPLAND_URL`, `COPLAND_TASK` (the key), `COPLAND_RUN` (the id) and `COPLAND_MCP_CONFIG` in its environment. Never the secret; that lives only in the config file.
+The runtime's stdout and stderr go to `$XDG_STATE_HOME/copland/runs/<run-id>.log` (`~/.local/state/copland/runs/` by default), mode 0600. The runtime also gets `COPLAND_URL`, `COPLAND_TASK` (the key; not for a run on messages), `COPLAND_RUN` (the id) and `COPLAND_MCP_CONFIG` in its environment. Never the secret; that lives only in the config file.
 
 SIGINT or SIGTERM stops polling, sends SIGTERM to each runtime's process group (SIGKILL ten seconds later), and finishes their runs as interrupted (`cancelled` with `interrupted: true`), which puts their tasks back in todo for the next start. A run stopped from the box is plain cancelled, and Copland parks its task in backlog; one whose runtime fails, failed, which puts it back in todo, or in blocked after three in a row. A second signal exits at once; whatever runs were left go stale within the lease, and Copland's cron ends them and puts their tasks back.
 
@@ -41,6 +41,16 @@ The agent marks its inbox read itself, over the MCP, because only it knows what 
 - Once a task has nothing unread, its memory is dropped.
 
 This applies to failed runs too, so a runtime that crashes on start doesn't get relaunched every 30 seconds. The memory is in-process: restart the daemon and it launches once more for whatever is still unread.
+
+## Messages
+
+A message (COPL-106) is a short note from the agent's owner, or from a board member when the owner lets members give it work, that lands in the agent's inbox with its text and whether it is trusted (from the owner). The daemon wakes for them like this (COPL-107):
+
+- **About a task:** it joins that task's wake like a mention, so the usual claim and refusal rules pick the prompt (a message on someone else's task, or on a closed one, is answered without a claim). The prompt then quotes each message, with who sent it, whether it is the owner's request or untrusted, and its message and inbox item ids, and says to answer it with `send_message { reply_to }`, not a comment, then `mark_read` it.
+- **About no task:** the unread ones no run has had yet go to one run, oldest first and at most 20 (the rest go to the next), with no claim and no worktree, in `workdir`, so it waits while another run has the workdir and counts against `max_runs`. Its prompt quotes them the same way, says to answer each and mark it read, and to put work that needs more than an answer on the board as a task rather than doing it there. `COPLAND_TASK` is not set, and the run shows in `AgentState::runs` under the task `messages` (`runner::MESSAGES`).
+- **Timing:** nothing is put into a runtime that is already going. A message that comes during a run waits for the next one: a new run for the messages, or the task's next wake. `AgentState::messages` counts the messages that are waiting like that (no run has had them and none is on them), for the box to say so.
+
+The guard remembers task-less messages by inbox item id once a run has had them, whatever its ending, so one the run left unread doesn't launch another; a new message does, for itself. A message's memory goes once it is read.
 
 ## Config
 
@@ -131,7 +141,7 @@ owner_url = "https://copland.example.com"       # only when the agents are on mo
 
 ## Building
 
-It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. `box` is `copland-box`, the same loop with a GPUI window (below). `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, waiting tasks, last run) as a `tokio::sync::watch` receiver, which the headless binary ignores and the box draws. `Daemon::reload(config)` changes the agents it runs in place (see "The agents screen"); only the box calls it, and the headless daemon still reads its config once, at start. The workspace's `default-members` are `core` and `cli`, so plain `cargo` here builds and checks the headless daemon only, with no GPUI anywhere in its graph.
+It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. `box` is `copland-box`, the same loop with a GPUI window (below). `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, waiting tasks, messages waiting for a run, last run) as a `tokio::sync::watch` receiver, which the headless binary ignores and the box draws. `Daemon::reload(config)` changes the agents it runs in place (see "The agents screen"); only the box calls it, and the headless daemon still reads its config once, at start. The workspace's `default-members` are `core` and `cli`, so plain `cargo` here builds and checks the headless daemon only, with no GPUI anywhere in its graph.
 
 ```sh
 cd daemon

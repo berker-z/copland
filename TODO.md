@@ -351,6 +351,9 @@ docs/DESIGN.md under Touch.
   one is always shown. Inbox items carry `message { id, text, trusted }`
   and a nullable `task`. MCP: `send_message`, and the guide says how to
   weigh and answer one. The rule is `src/domain/messages.ts`
-  (checks/messages.check.ts). Migration 0025 rebuilds inbox_items. Still
-  to come: the daemon waking on one (COPL-107), and sending from the
-  box, the agent's page and task cards
+  (checks/messages.check.ts). Migration 0025 rebuilds inbox_items. The
+  daemon wakes on one (COPL-107): a message about a task joins its wake
+  like a mention, task-less ones get a run of their own in `workdir`, and
+  one that comes during a run waits for the next (daemon/README.md,
+  Messages). Still to come: sending from the box, the agent's page and
+  task cards
