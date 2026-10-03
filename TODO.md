@@ -286,3 +286,14 @@ docs/DESIGN.md under Touch.
   migration 0017). `daemon.toml` is edited in place with a backup and the
   daemon reloads without a restart: an agent in a run finishes it under
   its old binding first (`Daemon::reload`, daemon/README.md).
+- The daemon wakes on live updates (COPL-62): `/api/live` takes a Bearer
+  token as well as a tab's cookie, and puts the socket in the token's
+  principal's own hub, so an agent hears only what is sent to it. A run's
+  secret is refused, and a socket whose token is revoked, or whose agent
+  is paused, closes at the next message for it. Each agent in the daemon
+  keeps one open (`daemon/core/src/live.rs`, no WebSocket crate) and polls
+  on an `inbox` topic; the HTTP poll stays, every five minutes while the
+  socket is up and every `poll_interval` while it's down. Assignment to
+  runtime start went from about 15 s on average (30 s at worst) to half a
+  second. The box's `/api/wired` reads follow the owner's socket the same
+  way, with a dot in its status line

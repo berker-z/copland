@@ -26,3 +26,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 libc = "0.2"
 anyhow = "1"
+# Already in the graph through rustls; named here for the live socket's handshake (SHA-1 and
+# randomness, COPL-62). Exact, so it never moves on its own.
+ring = { version = "=0.17.14", default-features = false }

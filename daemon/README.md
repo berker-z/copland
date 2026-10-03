@@ -22,6 +22,10 @@ Per agent, every `poll_interval` seconds:
 
 One run per agent at a time, and that isn't configurable. Different agents run side by side.
 
+The poll is the fallback, not the usual way in (COPL-62). Each agent also keeps a WebSocket open to `/api/live` with its own token, sent as a Bearer header on the upgrade like any other request, never in the URL. The server puts that socket in the agent's own live hub, the one the web app's tabs use, so it hears what is sent to the agent and nothing of its owner's. Messages are topic names only. An `inbox` one makes the loop poll at once, 300 ms after the first of a burst so a burst is one poll; a `board` one does too when the wake guard is waiting on a task or a claim there, but at most every five seconds, since busy boards send plenty. A new assignment starts its runtime about half a second after it's made, where the poll alone took 15 seconds on average and up to 30.
+
+While the socket is up the daemon still polls every five minutes (or `poll_interval`, if that's longer), because the hub keeps nothing and a message sent during a reconnect is gone. When it drops, the daemon polls once straight away and then every `poll_interval` until it's back. Reconnecting backs off from one second to a minute with jitter; a refusal (a 4xx, say a revoked token) waits five minutes. After a reconnect it polls once, for whatever it missed. It pings every 30 seconds and treats 75 seconds of silence as a dead connection. The client is `core/src/live.rs`: the handshake and the frame format by hand over reqwest's upgraded connection, with `ring` (already there for TLS) for SHA-1 and randomness, so no WebSocket crate. Revoking the token, pausing the agent or disabling its owner closes the socket at the next message for it. `AgentState::live` says where each socket is.
+
 The runtime's stdout and stderr go to `$XDG_STATE_HOME/copland/runs/<run-id>.log` (`~/.local/state/copland/runs/` by default), mode 0600. The runtime also gets `COPLAND_URL`, `COPLAND_TASK` (the key), `COPLAND_RUN` (the id) and `COPLAND_MCP_CONFIG` in its environment. Never the secret; that lives only in the config file.
 
 SIGINT or SIGTERM stops polling, sends SIGTERM to each runtime's process group (SIGKILL ten seconds later), and finishes their runs as cancelled. A second signal exits at once; whatever runs were left go stale within the lease and their claims lapse.
@@ -43,7 +47,7 @@ This applies to failed runs too, so a runtime that crashes on start doesn't get 
 `~/.config/copland/daemon.toml` (`$XDG_CONFIG_HOME/copland/daemon.toml`), or `--config <file>`. Unknown keys are refused. `copland-box --setup` writes one for you (see "Setting it up" under the box); this is what it writes, and how to write it by hand.
 
 ```toml
-poll_interval = 30   # seconds; optional, 30 by default
+poll_interval = 30   # seconds while the live socket is down; optional, 30 by default
 
 [[agent]]
 url = "https://copland.example.com"
@@ -110,10 +114,10 @@ It draws only when something changes: every frame while a ticket travels or fade
 
 What it shows, live, with `owner_token_file`:
 
-- The box reads `GET /api/wired` with your token every 15 seconds, and two seconds after any of its runs starts or ends: the same data as the web pane, so todo, doing (live claims with their timers, then active tasks no run holds, dimmer and without timer or current), blocked, and done in the last 24 hours with the count in the status line. This runs on the daemon's Tokio runtime (`box/src/feed.rs`) and is handed to the window as a `watch` value, like the daemon's own state.
+- The box reads `GET /api/wired` with your token when your live socket (the same `/api/live`, with the same token) says a board, your boards, your agents or people changed, at most once a second; two seconds after any of its runs starts or ends; and on a clock, every two minutes while the socket is up and every 15 seconds while it's down (a claim that lapses sends nothing, so the clock still matters). The status line ends in a faint `•` while every socket on the box (each agent's and yours) is up, and `◦ polling` while one is down. It is the same data as the web pane, so todo, doing (live claims with their timers, then active tasks no run holds, dimmer and without timer or current), blocked, and done in the last 24 hours with the count in the status line. This runs on the daemon's Tokio runtime (`box/src/feed.rs`) and is handed to the window as a `watch` value, like the daemon's own state.
 - The daemon's own runs go over it: a run it has just started shows in doing at once, before the next read says so, and the two are matched by task key.
 - When the data changes, each ticket that changed pole travels the wires to its new one, diffed by key; one nothing lists any more fades. The first read is placed as it is, without travel.
-- Clicking a ticket opens its board in the browser, `<url>/b/<BOARD>`, the board key being the task key's prefix.
+- Clicking a ticket opens the task in the browser, `<url>/b/<BOARD>?task=<KEY>` (its board with the task open), the board key being the task key's prefix.
 - An agent's token given as `owner_token_file` is refused (the route is a person's own) and the box says so in the status line and stops reading; so does any other refusal. A failed read (the server down) keeps the last picture and says why.
 
 Without `owner_token_file` it draws what the daemon alone knows, and the status line says to add the key: todo is the tasks with unread items for an agent (`AgentState::waiting`, published on every poll), doing is each agent's current run, and done and blocked stay empty. A task the daemon has already run stays in todo there while its items are unread, because that is what the inbox says. With no config it sets itself up (below); with one it can't use (no agents, a refused key) it shows the empty scene and "nothing on the wire" with the reason. `--demo` drives it with the prototype's simulation instead: no config, no server, nothing launched. In the demo `n` adds an item, `a` answers a blocked one and `f` finishes a run; `q` or Esc quits anywhere.

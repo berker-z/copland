@@ -492,6 +492,9 @@ pub struct Board {
     pub note: Option<(String, Role)>,
     /// The data is real (not a placeholder before the first read): from the next change on, moves animate.
     pub ready: bool,
+    /// The live sockets (COPL-62): all up (changes arrive at once), or one down (it polls until
+    /// it is back). None when there is nothing to say: none tried yet, or the demo.
+    pub live: Option<bool>,
 }
 
 /// A small xorshift, so the demo needs no dependency.
@@ -567,6 +570,8 @@ pub struct Scene {
     pub agents: Vec<AgentLabel>,
     pub quiet: Option<String>,
     note: Option<(String, Role)>,
+    /// Live: whether the live sockets are up, when there is anything to say (see `Board::live`).
+    live: Option<bool>,
     /// Sway, current, blinking and travel. Off, it is a still picture redrawn when something changes.
     pub motion: bool,
     demo: Option<Demo>,
@@ -593,6 +598,7 @@ impl Scene {
             agents: Vec::new(),
             quiet: None,
             note: None,
+            live: None,
             motion: true,
             demo: None,
         }
@@ -758,6 +764,7 @@ impl Scene {
         self.agents = board.agents.clone();
         self.quiet = board.quiet.clone();
         self.note = board.note.clone();
+        self.live = board.live;
         self.links = board.links.clone();
         let animate = self.motion && self.synced;
         if board.ready {
@@ -1463,6 +1470,12 @@ impl Scene {
                 None,
             ));
         }
+        /* A quiet dot while changes arrive as they happen; a word when it has fallen back to polling. */
+        match self.live {
+            Some(true) => parts.push(Line::one("•", Role::Faint)),
+            Some(false) => parts.push(Line::one("◦ polling", Role::Faint)),
+            None => {}
+        }
         if let Some((note, role)) = &self.note {
             parts.push(Line::one(note.clone(), *role));
         }
@@ -1957,11 +1970,14 @@ mod tests {
         let mut s = Scene::live(Tune::default());
         s.sync(&Board {
             todo: vec!["COPL-7".into()],
-            links: vec![("COPL-7".into(), "http://x/b/COPL".into())],
+            links: vec![("COPL-7".into(), "http://x/b/COPL?task=COPL-7".into())],
             ready: true,
             ..Default::default()
         });
-        assert_eq!(s.columns(WIDE)[0].lines[0].1.as_deref(), Some("http://x/b/COPL"));
+        assert_eq!(
+            s.columns(WIDE)[0].lines[0].1.as_deref(),
+            Some("http://x/b/COPL?task=COPL-7")
+        );
     }
 
     #[test]
@@ -2013,5 +2029,27 @@ mod tests {
         assert_eq!(fmt(134.9), "2m14");
         assert_eq!(fmt(5.0), "0m05");
         assert_eq!(fmt(3900.0), "1h05");
+    }
+
+    #[test]
+    fn the_status_line_says_quietly_whether_changes_arrive_live() {
+        let mut s = Scene::live(Tune::default());
+        let board = |live| Board {
+            ready: true,
+            live,
+            ..Default::default()
+        };
+        let texts = |s: &Scene| -> Vec<String> {
+            s.status()
+                .iter()
+                .flat_map(|l| l.0.iter().map(|sp| sp.text.to_string()))
+                .collect()
+        };
+        s.sync(&board(None));
+        assert!(!texts(&s).iter().any(|t| t.contains('•') || t.contains("polling")));
+        s.sync(&board(Some(true)));
+        assert_eq!(texts(&s).last().unwrap(), "•");
+        s.sync(&board(Some(false)));
+        assert_eq!(texts(&s).last().unwrap(), "◦ polling");
     }
 }

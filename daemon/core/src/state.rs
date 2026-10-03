@@ -3,6 +3,8 @@
 
 use std::time::SystemTime;
 
+use crate::live::Link;
+
 #[derive(Debug, Clone, Default)]
 pub struct DaemonState {
     /// One per configured agent, in config order.
@@ -35,6 +37,9 @@ pub struct AgentState {
     /// A reload changed or removed this agent and its loop is winding down: at once when idle,
     /// after the run when one is going. Cleared when its new binding starts.
     pub retiring: bool,
+    /// The agent's live socket (COPL-62): connected, it wakes on new work at once and polls only
+    /// as a fallback; reconnecting, it polls at `poll_interval` until the socket is back.
+    pub live: Link,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +80,7 @@ impl AgentState {
             last_run: None,
             waiting: Vec::new(),
             retiring: false,
+            live: Link::Connecting,
         }
     }
 }

@@ -18,15 +18,34 @@
    Nothing is stored and nothing is replayed. A tab that reconnects refetches
    everything it shows, so a missed message costs a refetch, never a stale
    screen.
+
+   The daemon and the box listen too (COPL-62), with a Bearer token in the
+   upgrade's Authorization header, resolved like any other request. A socket
+   lands in its principal's own hub: an agent's token hears what is sent to
+   the agent (its inbox, its boards), never its owner's. Such a socket
+   remembers its token, and every broadcast first checks the token is still
+   good, so revoking it, pausing the agent or disabling the owner closes the
+   socket at the next message instead of leaving it listening.
    ========================================================================== */
 
 import { DurableObject } from "cloudflare:workers";
 import type { LiveEvent, LiveTopic } from "@/domain/live";
+import type { Viewer } from "@/domain/types";
 import type { Env } from "./env";
 import { forbidden } from "./http";
+import { liveTokenIds } from "./tokens";
 
 const PING = "ping";
 const PONG = "pong";
+/** Set by connectLive on the request it hands the hub; whatever a client sent under it is dropped. */
+const TOKEN_HEADER = "x-copland-live-token";
+/** The close code for a socket whose token stopped working; the client's next attempt gets a 401. */
+const CREDENTIAL_GONE = 4001;
+
+interface Attachment {
+  /** The API token the socket was opened with; absent for a browser tab. */
+  tokenId?: string;
+}
 
 export class LiveHub extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -35,18 +54,26 @@ export class LiveHub extends DurableObject<Env> {
   }
 
   /** The upgrade, already authenticated by the Worker (connectLive). */
-  override async fetch(): Promise<Response> {
+  override async fetch(request: Request): Promise<Response> {
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server);
+    const tokenId = request.headers.get(TOKEN_HEADER);
+    server.serializeAttachment((tokenId ? { tokenId } : {}) satisfies Attachment);
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /** Called over RPC after a write; sends to every open socket. */
+  /** Called over RPC after a write; sends to every open socket whose credential still works. */
   async broadcast(event: LiveEvent): Promise<void> {
     const message = JSON.stringify(event);
-    for (const socket of this.ctx.getWebSockets()) {
+    const sockets = this.ctx.getWebSockets();
+    const tokenOf = (socket: WebSocket) => (socket.deserializeAttachment() as Attachment | null)?.tokenId;
+    const tokenIds = [...new Set(sockets.map(tokenOf).filter((id): id is string => !!id))];
+    const live = tokenIds.length > 0 ? await liveTokenIds(this.env.DB, tokenIds) : new Set<string>();
+    for (const socket of sockets) {
+      const tokenId = tokenOf(socket);
       try {
-        socket.send(message);
+        if (tokenId && !live.has(tokenId)) socket.close(CREDENTIAL_GONE, "token no longer valid");
+        else socket.send(message);
       } catch {
         /* Closing under us; webSocketClose tidies up. */
       }
@@ -67,16 +94,25 @@ function hub(env: Env, userId: string): DurableObjectStub<LiveHub> {
 }
 
 /**
- * GET /api/live: hand a signed-in tab's WebSocket to its user's hub. A
- * WebSocket is not bound by CORS, so the Origin check is what keeps another
- * site from opening one with someone's cookie.
+ * GET /api/live: hand a WebSocket to its principal's hub. A browser tab
+ * comes with its session cookie, and a WebSocket is not bound by CORS, so
+ * the Origin check is what keeps another site from opening one with that
+ * cookie. A daemon comes with a Bearer token instead, which no web page can
+ * put on a WebSocket, so it needs no Origin. A run's secret is refused: it
+ * dies with its run, and a socket would outlive it.
  */
-export async function connectLive(request: Request, env: Env, url: URL, userId: string): Promise<Response> {
+export async function connectLive(request: Request, env: Env, url: URL, viewer: Viewer): Promise<Response> {
   if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
     return new Response("Expected a WebSocket upgrade", { status: 426 });
   }
-  if (request.headers.get("origin") !== url.origin) throw forbidden("Cross-origin WebSocket refused");
-  return hub(env, userId).fetch(request);
+  const access = viewer.access;
+  if (!access && request.headers.get("origin") !== url.origin) throw forbidden("Cross-origin WebSocket refused");
+  if (access?.runId) throw forbidden("A run's secret cannot listen for live updates; use the agent's own token");
+  const headers = new Headers(request.headers);
+  headers.delete(TOKEN_HEADER);
+  headers.delete("authorization");
+  if (access) headers.set(TOKEN_HEADER, access.tokenId);
+  return hub(env, viewer.user.id).fetch(new Request(request, { headers }));
 }
 
 /**

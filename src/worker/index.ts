@@ -7,7 +7,7 @@
                 affected users' open tabs what changed (live.ts). Two
                 routes come before any of that and have no viewer at all:
                 a box's device login, start and poll (routes/device.ts).
-     /api/live  a tab's WebSocket for those messages
+     /api/live  a tab's WebSocket for those messages, or a daemon's (Bearer token)
      /mcp, /oauth/*, /.well-known/oauth-*
                 AI assistants: the MCP server and its OAuth (integrations.ts).
                 /api also takes the same tokens as a Bearer header.
@@ -113,7 +113,9 @@ const api = new Router<Ctx>()
   .on("DELETE", "/api/me/avatar", mine(null, ({ env, viewer, changes }) => deleteAvatar(env, viewer, changes)))
   /* Keys are "avatars/<uuid>", pinned here like attachments below. */
   .on("GET", "/api/avatars/:id", ({ env, viewer }, { id }) => getAvatar(env, viewer, `avatars/${id}`))
-  .on("GET", "/api/live", mine(null, ({ request, env, url, viewer }) => connectLive(request, env, url, viewer.user.id)))
+  /* Not mine(grant): an agent's token lands in the agent's own hub and
+     hears only what is sent to the agent (live.ts). */
+  .on("GET", "/api/live", ({ request, env, url, viewer }) => connectLive(request, env, url, viewer))
   /* Not mine(grant): an agent's inbox is its own, not its owner's. */
   .on("GET", "/api/inbox", ({ env, viewer, url }) => getInbox(env, viewer, url))
   .on("POST", "/api/inbox/read", ({ request, env, viewer, changes }) => postInboxRead(request, env, viewer, changes))

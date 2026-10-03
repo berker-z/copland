@@ -274,7 +274,7 @@ struct ErrorBody {
 }
 
 /// An error and its causes, "error sending request: connection refused", without repeats.
-fn chain(e: &dyn std::error::Error) -> String {
+pub(crate) fn chain(e: &dyn std::error::Error) -> String {
     let mut out = e.to_string();
     let mut cause = e.source();
     while let Some(c) = cause {
@@ -290,6 +290,13 @@ fn chain(e: &dyn std::error::Error) -> String {
 
 static TLS: Once = Once::new();
 
+/// reqwest is built without a crypto provider of its own (no aws-lc, no cmake); ring is it.
+pub(crate) fn install_tls() {
+    TLS.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// One instance's API.
 #[derive(Clone)]
 pub struct Api {
@@ -299,10 +306,7 @@ pub struct Api {
 
 impl Api {
     pub fn new(base: &str) -> anyhow::Result<Self> {
-        /* reqwest is built without a crypto provider of its own (no aws-lc, no cmake); ring is it. */
-        TLS.call_once(|| {
-            let _ = rustls::crypto::ring::default_provider().install_default();
-        });
+        install_tls();
         let http = reqwest::Client::builder()
             .user_agent(concat!("copland-daemon/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))

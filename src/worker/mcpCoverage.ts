@@ -27,7 +27,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PUT /api/me/avatar": { skip: "browser: a picture is cropped and uploaded from the profile page" },
   "DELETE /api/me/avatar": { skip: "browser: goes with uploading one, on the profile page" },
   "GET /api/avatars/:id": { skip: "browser: image bytes for <img> tags; tools show people by handle" },
-  "GET /api/live": { skip: "browser: a tab's WebSocket for live updates; tool writes are broadcast to it" },
+  "GET /api/live": {
+    skip: "browser: a tab's WebSocket for live updates (the daemon's too, with its token); tool writes are broadcast to it",
+  },
 
   /* Agents are set up by their owner, in the app; a token is refused on all of these. */
   "GET /api/agents": { skip: "browser: settings › agents, owner only" },

@@ -126,6 +126,30 @@ export async function tokenAccess(
 }
 
 /**
+ * Which of these tokens would still resolve: not revoked or expired, its
+ * user live, and for an agent's, the agent not paused and its owner live
+ * (as agentContext requires). The live hub asks before each broadcast, so a
+ * socket opened with a token stops hearing once the token would be refused.
+ */
+export async function liveTokenIds(db: D1Database, ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const marks = ids.map((_, i) => `?${i + 2}`).join(", ");
+  const { results } = await db
+    .prepare(
+      `SELECT t.id FROM api_tokens t
+         JOIN users u ON u.id = t.user_id AND u.disabled_at IS NULL
+         LEFT JOIN agents a ON a.user_id = u.id
+         LEFT JOIN users o ON o.id = u.owner_id
+        WHERE t.id IN (${marks}) AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?1)
+          AND (u.kind <> 'agent'
+               OR (a.user_id IS NOT NULL AND a.paused_at IS NULL AND o.kind = 'person' AND o.disabled_at IS NULL))`,
+    )
+    .bind(nowIso(), ...ids)
+    .all<{ id: string }>();
+  return new Set(results.map((r) => r.id));
+}
+
+/**
  * A run's secret: the run must be running and heard from within the lease
  * (a stale run's secret is dead, so a run that is never finished does not
  * leave a live credential behind), and the token that started it

@@ -4,14 +4,18 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, anyhow};
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
+use tokio::task::JoinHandle;
+use tracing::Instrument;
 
 use crate::api::{Api, ApiError, Ending, InboxItem, Me};
 use crate::config::AgentConfig;
 use crate::guard::{Check, Identity, Plan, Refused, Wake, WakeGuard, plan, refused};
+use crate::live::{self, FALLBACK_POLL, Heard, Link};
 use crate::runner::{self, Brief, Exit, Launch};
 use crate::state::{AgentState, DaemonState, Phase, RunSummary};
 
@@ -102,6 +106,63 @@ pub struct AgentLoop {
     noted: std::collections::HashSet<String>,
 }
 
+/// What the live socket has heard since the loop last looked. Flags rather than counts: one poll
+/// answers any number of messages, so a poll clears what came before it (`clear`), and what
+/// comes while it runs (or during a run) is kept for the next wait.
+#[derive(Default)]
+struct Wakes {
+    notify: Notify,
+    inbox: AtomicBool,
+    board: AtomicBool,
+}
+
+impl Wakes {
+    fn heard(&self, inbox: bool, board: bool) {
+        if inbox {
+            self.inbox.store(true, Ordering::SeqCst);
+        }
+        if board {
+            self.board.store(true, Ordering::SeqCst);
+        }
+        if inbox || board {
+            self.notify.notify_one();
+        }
+    }
+
+    /// About to poll: whatever was heard until now, this poll sees.
+    fn clear(&self) {
+        self.inbox.store(false, Ordering::SeqCst);
+        self.board.store(false, Ordering::SeqCst);
+    }
+
+    /// Whether what was heard is worth a poll: inbox always, board only when `board` is wanted.
+    fn due(&self, board: bool) -> bool {
+        self.inbox() || (board && self.board.load(Ordering::SeqCst))
+    }
+
+    /// Whether the inbox changed, which is worth a poll at once.
+    fn inbox(&self) -> bool {
+        self.inbox.load(Ordering::SeqCst)
+    }
+}
+
+/// A board change is only a maybe (the guard waits on a task or a claim there), and a busy
+/// board sends many, so the polls they wake are at least this far apart. The inbox wakes at once.
+const BOARD_SPACING: Duration = Duration::from_secs(5);
+
+/// The agent's live socket while its loop runs; dropping it closes the socket.
+struct Live {
+    wakes: Arc<Wakes>,
+    link: watch::Receiver<Link>,
+    task: JoinHandle<()>,
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 /// What became of one wake.
 enum Outcome {
     Ran,
@@ -157,9 +218,11 @@ impl AgentLoop {
     /// Poll until shutdown or a reload retires it. Gives back what the wake guard remembers, so
     /// the loop that takes over the agent after a reload doesn't relaunch on items already seen.
     pub async fn run(mut self) -> WakeGuard {
+        let live = self.listen();
         /* The same failure every poll (server down) is said once, until it changes. */
         let mut last_error: Option<String> = None;
         while !self.stopping() {
+            live.wakes.clear();
             let launched = match self.tick().await {
                 Ok(launched) => {
                     if last_error.take().is_some() {
@@ -193,14 +256,7 @@ impl AgentLoop {
             if launched {
                 continue;
             }
-            let mut shutdown = self.shutdown.clone();
-            let mut retire = self.retire.rx.clone();
-            let generation = self.retire.generation;
-            tokio::select! {
-                _ = tokio::time::sleep(self.poll) => {}
-                _ = shutdown.wait_for(|stop| *stop) => {}
-                _ = retire.wait_for(|w| w.generation != generation) => {}
-            }
+            self.wait(&live).await;
         }
         if self.retire.now() && !*self.shutdown.borrow() {
             /* The daemon starts whatever replaces it; the agent isn't stopped, so the window doesn't say so. */
@@ -210,6 +266,95 @@ impl AgentLoop {
             tracing::info!("stopped");
         }
         self.guard
+    }
+
+    /// Open the agent's live socket for as long as the returned value lives. Its state goes into
+    /// the daemon's; an "inbox" topic (or a reconnect, after which anything may have changed)
+    /// wakes the loop, and a "board" one does when the guard is waiting on a task to change or
+    /// on another run's claim to go, both of which come as board changes.
+    fn listen(&self) -> Live {
+        let wakes = Arc::new(Wakes::default());
+        let (link_tx, link) = watch::channel(Link::Connecting);
+        let (base, token) = (self.agent.url.clone(), self.agent.token.clone());
+        let (state, slot) = (self.state.clone(), self.slot);
+        let heard = wakes.clone();
+        let task = tokio::spawn(
+            async move {
+                live::listen(
+                    &base,
+                    &token,
+                    |topic| topic == "inbox" || topic == "board",
+                    move |l| {
+                        link_tx.send_replace(l);
+                        state.send_if_modified(|s| match s.agents.iter_mut().find(|a| a.slot == slot) {
+                            Some(a) if a.live != l => {
+                                a.live = l;
+                                true
+                            }
+                            _ => false,
+                        });
+                    },
+                    move |h| match h {
+                        Heard::Resync => heard.heard(true, false),
+                        Heard::Topics(topics) => heard.heard(topics.contains("inbox"), topics.contains("board")),
+                    },
+                )
+                .await
+            }
+            .in_current_span(),
+        );
+        Live { wakes, link, task }
+    }
+
+    /// Between polls: until the poll is due (seldom while the socket is up, at `poll_interval`
+    /// while it is down), the socket says there is something, or the loop should stop.
+    async fn wait(&self, live: &Live) {
+        let mut shutdown = self.shutdown.clone();
+        let mut retire = self.retire.rx.clone();
+        let generation = self.retire.generation;
+        let mut link = live.link.clone();
+        let since = tokio::time::Instant::now();
+        /* A task the guard remembers wakes again on a change to it, which is a board change. */
+        let board = self.guard.remembered() > 0;
+        /* Set once a board change is heard: when the poll it asks for is due. */
+        let mut board_due: Option<tokio::time::Instant> = None;
+        loop {
+            let connected = *link.borrow_and_update() == Link::Connected;
+            let every = if connected {
+                FALLBACK_POLL.max(self.poll)
+            } else {
+                self.poll
+            };
+            tokio::select! {
+                _ = tokio::time::sleep_until(since + every) => return,
+                _ = async { let _ = shutdown.wait_for(|stop| *stop).await; } => return,
+                _ = async { let _ = retire.wait_for(|w| w.generation != generation).await; } => return,
+                _ = async { tokio::time::sleep_until(board_due.expect("guarded")).await }, if board_due.is_some() => {
+                    tracing::debug!("woken by the live socket (a board change)");
+                    return;
+                }
+                _ = live.wakes.notify.notified() => {
+                    if live.wakes.inbox() {
+                        tracing::debug!("woken by the live socket");
+                        return;
+                    }
+                    if board_due.is_none() && live.wakes.due(board) {
+                        board_due = Some((since + BOARD_SPACING).max(tokio::time::Instant::now()));
+                    }
+                }
+                changed = link.changed() => {
+                    if changed.is_err() {
+                        /* The listener is gone (it never ends by itself): poll on the clock. */
+                        tokio::time::sleep_until(since + self.poll).await;
+                        return;
+                    }
+                    /* Down: a message may have been lost on the way, so look now, then poll on the clock. */
+                    if *link.borrow() == Link::Reconnecting && connected {
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     /// Who the token is, from the server. The config's handle is only a label.
@@ -440,5 +585,44 @@ impl AgentLoop {
             ended: SystemTime::now(),
         };
         self.update(|s| s.last_run = Some(last));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_poll_answers_what_was_heard_before_it_and_keeps_what_came_during_it() {
+        let w = Wakes::default();
+        assert!(!w.due(true));
+        /* A board change wakes only a loop that is waiting on one. */
+        w.heard(false, true);
+        /* Only a maybe: the wait spaces it out (BOARD_SPACING) instead of polling at once. */
+        assert!(!w.inbox());
+        assert!(w.due(true));
+        assert!(!w.due(false));
+        /* The permit stays for the waiter, even when nobody was waiting. */
+        tokio::time::timeout(Duration::from_millis(50), w.notify.notified())
+            .await
+            .expect("woken");
+        /* Polling now: everything so far is answered by it. */
+        w.clear();
+        assert!(!w.due(true));
+        /* Heard while polling (or during a run): still due for the next wait. */
+        w.heard(true, false);
+        w.heard(true, true);
+        assert!(w.due(false));
+        tokio::time::timeout(Duration::from_millis(50), w.notify.notified())
+            .await
+            .expect("woken");
+        /* Nothing heard: no wake. */
+        w.clear();
+        w.heard(false, false);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), w.notify.notified())
+                .await
+                .is_err()
+        );
     }
 }

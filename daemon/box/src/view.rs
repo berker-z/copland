@@ -364,10 +364,12 @@ pub fn parse_utc(s: &str) -> Option<SystemTime> {
     Some(UNIX_EPOCH + Duration::from_secs_f64(secs))
 }
 
-/// `<url>/b/<BOARD>` for a task key "BOARD-12": the board's page, where the task is.
-pub fn board_link(url: &str, key: &str) -> Option<String> {
+/// `<url>/b/<BOARD>?task=<KEY>` for a task key "BOARD-12": the task's own link, its board
+/// with the task open (the web app's `taskPath`).
+pub fn task_link(url: &str, key: &str) -> Option<String> {
     let (board, number) = key.rsplit_once('-')?;
-    (!board.is_empty() && number.chars().all(|c| c.is_ascii_digit())).then(|| format!("{url}/b/{board}"))
+    (!board.is_empty() && !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+        .then(|| format!("{url}/b/{board}?task={key}"))
 }
 
 /// What the scene is told: the owner's view from `/api/wired` when there is one, with the
@@ -385,7 +387,7 @@ pub fn board_from(st: &DaemonState, feed: Option<&Feed>, now: f64, wall: SystemT
     };
     let mut links: Vec<(String, String)> = Vec::new();
     let mut link = |url: &str, key: &str| {
-        if let Some(l) = board_link(url, key) {
+        if let Some(l) = task_link(url, key) {
             if !links.iter().any(|(k, _)| k == key) {
                 links.push((key.to_string(), l));
             }
@@ -398,6 +400,7 @@ pub fn board_from(st: &DaemonState, feed: Option<&Feed>, now: f64, wall: SystemT
             stopped: a.phase == Phase::Stopped,
         });
     }
+    board.live = crate::feed::links_up(st, feed);
 
     match feed.and_then(|f| f.wired.as_ref().map(|w| (f, &w.0))) {
         Some((f, w)) => {
@@ -830,13 +833,17 @@ mod tests {
     }
 
     #[test]
-    fn links_a_key_to_its_board() {
-        assert_eq!(board_link("http://x", "COPL-12").as_deref(), Some("http://x/b/COPL"));
+    fn links_a_key_to_its_task() {
         assert_eq!(
-            board_link("http://x", "MY-BOARD-3").as_deref(),
-            Some("http://x/b/MY-BOARD")
+            task_link("http://x", "COPL-12").as_deref(),
+            Some("http://x/b/COPL?task=COPL-12")
         );
-        assert_eq!(board_link("http://x", "nope"), None);
+        assert_eq!(
+            task_link("http://x", "MY-BOARD-3").as_deref(),
+            Some("http://x/b/MY-BOARD?task=MY-BOARD-3")
+        );
+        assert_eq!(task_link("http://x", "nope"), None);
+        assert_eq!(task_link("http://x", "COPL-"), None);
     }
 
     fn task(key: &str, since: Option<&str>, live: bool) -> WiredTask {
@@ -886,6 +893,7 @@ mod tests {
             wired: Some((wired, wall)),
             error: None,
             refused: false,
+            live: Default::default(),
         };
         /* The daemon has just started a run on T-1, which the server still has in todo. */
         let st = daemon(
@@ -911,7 +919,7 @@ mod tests {
         assert_eq!(b.done, Some(vec![("T-6".to_string(), 100.0 - 3600.0)]));
         assert_eq!(b.done_count, Some(7));
         assert!(b.note.is_none());
-        assert!(b.links.iter().any(|(k, u)| k == "T-5" && u == "http://x/b/T"));
+        assert!(b.links.iter().any(|(k, u)| k == "T-5" && u == "http://x/b/T?task=T-5"));
     }
 
     #[test]
