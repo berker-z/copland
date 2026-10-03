@@ -37,6 +37,10 @@ pub struct AgentState {
     /// Tasks with unread items for the agent at the last poll, oldest first: what the box draws as todo.
     /// The task a run is on stays listed until the next poll after it, so a reader leaves that one out.
     pub waiting: Vec<String>,
+    /// Messages to the agent (COPL-107), with or without a task, that no run has had and none is on
+    /// yet: they wait for the next run, since nothing reaches a run once it has started. A run on
+    /// messages that point at no task shows in `runs` under the task `runner::MESSAGES`.
+    pub messages: usize,
     /// A reload changed or removed this agent and its loop is winding down: at once when idle,
     /// after the run when one is going. Cleared when its new binding starts.
     pub retiring: bool,
@@ -122,6 +126,7 @@ impl AgentState {
             last_error: None,
             last_run: None,
             waiting: Vec::new(),
+            messages: 0,
             retiring: false,
             live: Link::Connecting,
         }

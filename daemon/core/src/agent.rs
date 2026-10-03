@@ -6,6 +6,10 @@
 //! its own worktree; anything else shares the agent's `workdir`, one at a time.
 //! A task is never in two runs from one loop. The loop hears each run's end
 //! (Done) and remembers it in the wake guard, as before.
+//!
+//! Messages that point at no task (COPL-107) get a run of their own in
+//! `workdir`, without a claim: one at a time, for those no run has had yet.
+//! What arrives while a run is going waits for the next one.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,9 +24,9 @@ use tracing::Instrument;
 
 use crate::api::{Api, ApiError, Ending, InboxItem, Me};
 use crate::config::AgentConfig;
-use crate::guard::{Check, Identity, Plan, Refused, Wake, WakeGuard, add_ready, plan, refused};
+use crate::guard::{Check, Identity, Message, Plan, Refused, Wake, WakeGuard, add_ready, plan, refused};
 use crate::live::{self, FALLBACK_POLL, Heard, Link};
-use crate::runner::{self, Brief, Exit, Launch};
+use crate::runner::{self, Brief, Exit, Launch, MESSAGES};
 use crate::state::{AgentState, DaemonState, Phase, RunSummary};
 use crate::workspace::{self, Workspace};
 
@@ -133,7 +137,7 @@ pub struct AgentLoop {
     guard: WakeGuard,
     /// Task-less items already logged, so each is said once.
     noted: std::collections::HashSet<String>,
-    /// The tasks with a run going, by id.
+    /// The tasks with a run going, by id; a message run is under `MESSAGES`.
     inflight: HashMap<String, Inflight>,
     /// When the last sweep for closed tasks' worktrees was, if there has been one.
     swept: Option<tokio::time::Instant>,
@@ -146,6 +150,8 @@ struct Inflight {
     key: String,
     /// It uses `workdir`, not a worktree.
     workdir: bool,
+    /// The inbox items it was started for.
+    items: Vec<String>,
 }
 
 /// How often an agent with a `code_command` sweeps the worktrees of closed tasks, after the once
@@ -300,8 +306,10 @@ impl AgentLoop {
             Ok((id, d)) => {
                 self.spawned.remove(&id);
                 self.inflight.remove(&d.wake.task_id);
-                if let Some((updated, held)) = d.remember {
-                    self.guard.remember(&d.wake, updated, held);
+                match d.remember {
+                    Some(_) if d.wake.task_id == MESSAGES => self.guard.remember_messages(&d.wake.messages),
+                    Some((updated, held)) => self.guard.remember(&d.wake, updated, held),
+                    None => {}
                 }
                 if let Some(e) = d.error {
                     tracing::warn!("{e}");
@@ -596,13 +604,80 @@ impl AgentLoop {
         });
         for id in &plan.taskless {
             if self.noted.insert(id.clone()) {
-                tracing::info!("inbox item {id} has no task; nothing handles those yet");
+                tracing::info!("inbox item {id} has no task and is no message; nothing handles those");
             }
         }
         if !plan.own.is_empty() {
             tracing::debug!("{} unread item(s) are the agent's own; ignored", plan.own.len());
         }
         self.guard.retain(&plan);
+        self.launch(&plan, runs).await?;
+        self.queued(&plan);
+        Ok(())
+    }
+
+    /// Messages to the agent that no run has had and none is on: they wait for the next run.
+    fn queued(&self, plan: &Plan) {
+        let running: std::collections::HashSet<&str> = self
+            .inflight
+            .values()
+            .flat_map(|r| r.items.iter().map(String::as_str))
+            .collect();
+        let taskless = plan.messages.iter().map(|m| (None, m));
+        let on_tasks = plan
+            .wakes
+            .iter()
+            .flat_map(|w| w.messages.iter().map(move |m| (Some(w.task_id.as_str()), m)));
+        let queued = taskless
+            .chain(on_tasks)
+            .filter(|(task, m)| !running.contains(m.item.as_str()) && !self.guard.had(*task, &m.item))
+            .count();
+        self.update(|s| s.messages = queued);
+    }
+
+    /// One run for the task-less messages no run has had yet, when nothing stands in its way: one
+    /// going already, `max_runs`, or another run in the workdir. They wait for the next poll then.
+    fn answer(&mut self, me: &Identity, plan: &Plan, runs: &mut JoinSet<Done>) {
+        let batch = self.guard.new_messages(plan);
+        if batch.is_empty() || self.inflight.contains_key(MESSAGES) {
+            return;
+        }
+        if self.inflight.len() >= self.agent.max_runs {
+            tracing::debug!(
+                "{} message(s), but {} runs are going, the most it may; next time",
+                batch.len(),
+                self.inflight.len()
+            );
+            return;
+        }
+        if self.inflight.values().any(|r| r.workdir) {
+            tracing::debug!("{} message(s), but another run has the workdir; next time", batch.len());
+            return;
+        }
+        self.inflight.insert(
+            MESSAGES.to_string(),
+            Inflight {
+                key: MESSAGES.to_string(),
+                workdir: true,
+                items: batch.iter().map(|m| m.item.clone()).collect(),
+            },
+        );
+        let (ctx, handle) = (self.ctx(), me.handle.clone());
+        let id = runs
+            .spawn(async move { ctx.answer(&handle, batch).await }.in_current_span())
+            .id();
+        self.spawned.insert(id, MESSAGES.to_string());
+    }
+
+    /// Start a run for the task-less messages, then for each task that needs one, as far as
+    /// `max_runs` and the workdir allow. Messages go first: they are said to the agent directly,
+    /// and a run on them is short.
+    async fn launch(&mut self, plan: &Plan, runs: &mut JoinSet<Done>) -> Result<()> {
+        let me = self.identity().await?;
+        if self.stopping() {
+            return Ok(());
+        }
+        self.answer(&me, plan, runs);
         for wake in &plan.wakes {
             if self.stopping() {
                 return Ok(());
@@ -654,6 +729,7 @@ impl AgentLoop {
                 Inflight {
                     key: wake.task_key.clone(),
                     workdir,
+                    items: wake.items.clone(),
                 },
             );
             let (ctx, handle, wake) = (self.ctx(), me.handle.clone(), wake.clone());
@@ -698,6 +774,16 @@ struct TaskInfo {
     role: Role,
     task: Option<crate::api::Task>,
     source: Option<crate::api::CodeSource>,
+}
+
+/// How a run ends, by how its runtime did.
+fn ending_of(exit: &Exit) -> Ending {
+    match exit {
+        Exit::Code(0) => Ending::Completed,
+        Exit::Stopped => Ending::Interrupted,
+        Exit::Cancelled => Ending::Cancelled,
+        _ => Ending::Failed,
+    }
 }
 
 /// What a run tells its loop when it is over.
@@ -847,6 +933,7 @@ impl RunCtx {
                 task_id: &wake.task_id,
                 task_key: &key,
                 brief,
+                messages: &wake.messages,
                 state_dir: &self.paths.state_dir,
                 runtime_dir: &self.paths.runtime_dir,
                 workspace: workspace.as_ref(),
@@ -856,12 +943,7 @@ impl RunCtx {
         )
         .await;
         drop(started);
-        let ending = match exit {
-            Exit::Code(0) => Ending::Completed,
-            Exit::Stopped => Ending::Interrupted,
-            Exit::Cancelled => Ending::Cancelled,
-            _ => Ending::Failed,
-        };
+        let ending = ending_of(&exit);
         let status = self.finish(&run_id, ending).await;
         if status == ending.as_str() {
             tracing::info!(run = %short, task = %key, "runtime {exit}; run {status}");
@@ -892,6 +974,59 @@ impl RunCtx {
         Done {
             wake,
             remember: Some((updated, false)),
+            error: None,
+        }
+    }
+
+    /// One run on messages that point at no task: start it, launch the runtime in `workdir` with
+    /// the messages in its prompt, finish the run. No claim: there is no task to hold.
+    async fn answer(self, me: &str, batch: Vec<Message>) -> Done {
+        let n = batch.len();
+        let wake = Wake {
+            task_id: MESSAGES.to_string(),
+            task_key: MESSAGES.to_string(),
+            items: batch.iter().map(|m| m.item.clone()).collect(),
+            oldest: batch.first().map(|m| m.at.clone()).unwrap_or_default(),
+            mentioned: true,
+            commented: true,
+            messages: batch,
+        };
+        tracing::info!(messages = n, "waking for {n} message(s)");
+        let started = match self.api.start_run(&self.agent.token, &self.agent.client).await {
+            Ok(s) => s,
+            Err(e) => return Done::failed(wake, format!("starting a run for {n} message(s): {e}")),
+        };
+        let run_id = started.run.id.clone();
+        let short = started.run.short.clone();
+        self.update(|s| s.run_started(&short, MESSAGES));
+        let exit = runner::run(
+            Launch {
+                api: &self.api,
+                agent: &self.agent,
+                handle: me,
+                run_id: &run_id,
+                secret: &started.secret,
+                task_id: "",
+                task_key: MESSAGES,
+                brief: Brief::Message,
+                messages: &wake.messages,
+                state_dir: &self.paths.state_dir,
+                runtime_dir: &self.paths.runtime_dir,
+                workspace: None,
+            },
+            self.shutdown.clone(),
+            stop_requested(self.stop_run.clone(), self.slot, short.clone()),
+        )
+        .await;
+        drop(started);
+        let status = self.finish(&run_id, ending_of(&exit)).await;
+        tracing::info!(run = %short, messages = n, "runtime {exit}; run {status}");
+        /* Remembered whatever the ending, so a message the run left unread doesn't launch another. */
+        self.summary(&short, MESSAGES, status);
+        self.update(|s| s.run_ended(&short));
+        Done {
+            wake,
+            remember: Some((None, false)),
             error: None,
         }
     }
