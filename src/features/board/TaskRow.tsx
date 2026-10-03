@@ -5,7 +5,8 @@
    ========================================================================== */
 
 import type { DragEvent, ReactNode } from "react";
-import { Paperclip } from "lucide-react";
+import { Files, Paperclip } from "lucide-react";
+import { overlapTitle } from "@/domain/overlap";
 import type { BoardMember, Label, Task } from "@/domain/types";
 import { Avatar } from "@/ui/Avatar";
 import { LevelPill } from "@/ui/LevelPill";
@@ -95,6 +96,8 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
     .filter((u): u is NonNullable<typeof u> => u !== undefined);
   const taskLabels = labels.filter((l) => task.labelIds.includes(l.id));
   const pull = cardPull(task.code);
+  /* Other open tasks changing some of the same files (COPL-104): information, so muted like the other counts. */
+  const overlap = closed ? [] : task.overlap;
   /* Review first (COPL-77): a person merges its PR. It stands out while that PR is open and waiting for them. */
   const review = task.reviewFirst && !closed ? (pull?.state === "open" ? "waiting" : "quiet") : null;
   /* A run on it right now (claim_task). The server sends only live claims; one that lapsed since the last fetch is hidden here too. */
@@ -143,7 +146,7 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
           )}
           <LevelPill level={task.level} className="h-[1lh]" />
         </div>
-        {(showKey || parent || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0 || pull || review || claimer) && (
+        {(showKey || parent || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0 || pull || review || overlap.length > 0 || claimer) && (
           <div className="flex flex-wrap items-center gap-x-2 mt-0.5 text-xs">
             {showKey && <span className="text-faint">{task.key}</span>}
             {parent && <ParentLink parentKey={parent} onClick={onParent as () => void} />}
@@ -162,6 +165,12 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
                 title={review === "waiting" ? "review first: a person merges its PR, open and waiting for them" : "review first: a person merges its PR"}
               >
                 review
+              </span>
+            )}
+            {overlap.length > 0 && (
+              <span className="text-muted inline-flex items-center gap-0.5" title={overlapTitle(overlap)}>
+                <Files size={11} />
+                {overlap.length}
               </span>
             )}
             {taskLabels.map((l) => (

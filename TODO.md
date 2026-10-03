@@ -121,8 +121,10 @@ docs/DESIGN.md under Touch.
       overlaps between tasks still being worked on, before any PR exists, so
       a lead can sequence them (COPL-99; the Worker stores each task's
       changed files, COPL-102, and summaries, a route and the MCP's
-      `overlap` read which open tasks share them, COPL-104; the daemon's
-      reports and the card follow). The cron and the put-back have run
+      `overlap` read which open tasks share them, COPL-104, and the card and
+      task modal show it, COPL-105; the daemon's reports follow). The box
+      (`daemon/box`) doesn't show overlap yet: a marker on its task rows
+      would read the same `overlap` summary field. The cron and the put-back have run
       against the dev server only (`/cdn-cgi/handler/scheduled`); the installed
       box 0.2.0 still finishes runs as plain cancelled on shutdown, which now
       parks their tasks in backlog, until a box release sends `interrupted`.

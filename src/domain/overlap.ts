@@ -156,3 +156,35 @@ export function overlaps(tasks: ReadonlyArray<{ id: string; files: readonly stri
   }
   return out;
 }
+
+/** GET /api/tasks/:id/overlap's answer (worker/routes/files.ts), as the task modal reads it. */
+export interface TaskOverlapRead {
+  /** The task's own latest report, or null before its first. */
+  files: { reported_at: string; base: string; files: string[]; truncated: boolean } | null;
+  overlaps: Array<{
+    key: string;
+    title: string;
+    /** Handles, with the @. */
+    assignees: string[];
+    claimed_by: string | null;
+    shared: string[];
+    reported_at: string;
+  }>;
+}
+
+/** How many tasks a card's tooltip names before it counts the rest. */
+export const OVERLAP_TITLE_TASKS = 4;
+
+const filesWord = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
+
+/**
+ * A card's overlap tooltip from its summary's overlap (most shared first):
+ * "shares 3 files with COPL-12, 1 file with COPL-15", the first few tasks
+ * by name and the rest counted. Empty when it shares nothing.
+ */
+export function overlapTitle(list: ReadonlyArray<{ key: string; files: number }>): string {
+  if (list.length === 0) return "";
+  const named = list.slice(0, OVERLAP_TITLE_TASKS).map((o) => `${filesWord(o.files)} with ${o.key}`);
+  const rest = list.length - named.length;
+  return `shares ${named.join(", ")}${rest > 0 ? `, and files with ${rest} more ${rest === 1 ? "task" : "tasks"}` : ""}`;
+}
