@@ -226,11 +226,12 @@ jobs:
         if: env.CACHIX_AUTH_TOKEN == ''
         run: echo "::notice::CACHIX_AUTH_TOKEN is not set, so the Nix build for ${{ matrix.system }} is not pushed to Cachix."
 
-      # Pulls from the cache only. Pushing is the explicit step below, and
-      # only the package: the deps derivation (GPUI's whole build tree) is
-      # gigabytes, and the free Cachix plan is 5 GiB shared by every cache
-      # on the account. A laptop keeps its own deps build (crane caches it
-      # locally), so it only rebuilds our crates.
+      # Pulls from the cache only; pushing is the explicit step below. The
+      # free Cachix plan is 5 GiB for the whole account (shared with other
+      # projects' caches), evicting the least recently used paths when full.
+      # The x86_64 deps derivation (GPUI's build, about 600 MiB) is worth a
+      # place there: it is what a laptop or the next release would otherwise
+      # rebuild. aarch64 pushes only its package.
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         if: env.CACHIX_AUTH_TOKEN != ''
         with:
@@ -248,7 +249,12 @@ jobs:
       # (Vulkan, Wayland and the rest of nixpkgs) are not stored again.
       - name: Push to Cachix
         if: env.CACHIX_AUTH_TOKEN != '' && needs.version.outputs.publish == 'true'
-        run: nix path-info ./daemon#default | cachix push "$CACHIX_CACHE"
+        run: |
+          if [ "${{ matrix.system }}" = x86_64-linux ]; then
+            nix path-info ./daemon#deps ./daemon#default | cachix push "$CACHIX_CACHE"
+          else
+            nix path-info ./daemon#default | cachix push "$CACHIX_CACHE"
+          fi
 
       - name: Check the binaries
         run: |
