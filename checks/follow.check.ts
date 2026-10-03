@@ -46,6 +46,9 @@ t("a parent blocked by hand is not pulled back to active", run(chain("blocked", 
 t("everything delivered closes story and epic", run(chain("active", "active", "done", "done"), "a") === "S:done E:done");
 t("one child still ready holds the parent open", run(chain("active", "active", "done", "todo"), "a") === "");
 t("a parked child does not hold the parent open", run(chain("active", "active", "done", "backlog"), "a") === "S:done E:done");
+t("adding a parked child does not close the parent", run(chain("todo", "todo", "done", "backlog"), "b") === "");
+t("deleting the last open child does not close the parent", followUp(chain("active", "active", "done", "done").filter((x) => x.id !== "b"), FULL, [{ parentId: "S", childId: "b" }]).length === 0);
+t("a child moving to todo under a parent whose rest is done does not close it", run(chain("active", "active", "todo", "done"), "a") === "");
 t("the parked child stays where it is", followUp(chain("active", "active", "done", "backlog"), FULL, [{ parentId: "S", childId: "a" }]).every((m) => m.id !== "b"));
 t("only parked children: the parent is left alone", run(chain("todo", "todo", "backlog", "backlog"), "a") === "");
 t("done plus cancelled closes as done", run(chain("active", "active", "done", "cancelled"), "a") === "S:done E:done");
@@ -61,14 +64,14 @@ t("a board without cancelled (COPL) still closes on done", run(chain("active", "
 t("a parent with no children left is left alone", followUp([task("P", null, "active")], FULL, [{ parentId: "P", childId: "gone" }]).length === 0);
 t("no parent, nothing to do", run([task("a", null, "active")], "a") === "");
 
-/* Reparenting: the old parent loses its last open child, the new one gains an active one. */
+/* Reparenting: the new parent gains an active child; the old one losing its last open child is not a finish, so it stays. */
 {
   const tasks = [task("old", null, "active"), task("new", null, "todo"), task("x", "old", "done"), task("a", "new", "active")];
   const moves = followUp(tasks, FULL, [
     { parentId: "old", childId: "a" },
     { parentId: "new", childId: "a" },
   ]).map((m) => `${m.id}:${m.to}`).join(" ");
-  t("reparenting re-checks both the old and the new parent", moves === "old:done new:active");
+  t("reparenting re-checks both parents; only the new one moves", moves === "new:active");
 }
 
 /* Loops in the parent chain end, and settle. */

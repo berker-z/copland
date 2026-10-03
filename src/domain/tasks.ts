@@ -106,11 +106,14 @@ export interface Followed {
  *
  * - A child active or blocked: work is under way, so a parent that is not
  *   (parked, ready, or closed) goes to the first active stage.
- * - Otherwise, every child that is not parked in backlog is closed and at
- *   least one is done: the parent's work is delivered, so an open parent goes
- *   to the first done stage. Parked children don't hold it open. All of them
- *   cancelled is not delivery, so that leaves the parent alone, and so does a
- *   parent already closed (a cancelled epic stays cancelled).
+ * - Otherwise, when the child that changed has just closed, and every child
+ *   that is not parked in backlog is closed with at least one done: the
+ *   parent's work is delivered, so an open parent goes to the first done
+ *   stage. Parked children don't hold it open, but only a child finishing
+ *   closes a parent: adding a parked child, moving one, or deleting the last
+ *   open one never does. All of them cancelled is not delivery, so that
+ *   leaves the parent alone, and so does a parent already closed (a
+ *   cancelled epic stays cancelled).
  * - Otherwise, a closed parent with a child ready in todo has work left again
  *   (a child added under it, or reopened): it goes back to the board's
  *   default stage (defaultStage), as a reopened task would.
@@ -123,6 +126,8 @@ export function followChildren<S extends { id: string; category: StageCategory }
   stages: S[],
   parentStageId: string,
   childStageIds: string[],
+  /** The stage of the child whose change brought us here; undefined when it is gone. */
+  triggerStageId?: string,
 ): string | undefined {
   if (childStageIds.length === 0) return undefined;
   const category = (id: string) => stages.find((s) => s.id === id)?.category;
@@ -135,7 +140,8 @@ export function followChildren<S extends { id: string; category: StageCategory }
     return parent === "active" || parent === "blocked" ? undefined : target("active");
   }
   const counted = kids.filter((c) => c !== "backlog");
-  if (counted.length && counted.every(isClosing) && counted.includes("done")) {
+  const finished = triggerStageId !== undefined && isClosing(category(triggerStageId) ?? "backlog");
+  if (finished && counted.length && counted.every(isClosing) && counted.includes("done")) {
     return isClosing(parent) ? undefined : target("done");
   }
   if (isClosing(parent) && counted.includes("todo")) {
@@ -170,7 +176,7 @@ export function followUp<T extends { id: string; parentId: string | null; stageI
   for (let steps = 0; queue.length && steps < 4 * tasks.length + 8; steps++) {
     const { parentId, childId } = queue.shift()!;
     const from = stage.get(parentId)!;
-    const to = followChildren(stages, from, (children.get(parentId) ?? []).map((id) => stage.get(id)!));
+    const to = followChildren(stages, from, (children.get(parentId) ?? []).map((id) => stage.get(id)!), stage.get(childId));
     if (!to || to === from) continue;
     stage.set(parentId, to);
     moves.push({ id: parentId, from, to, childId });
