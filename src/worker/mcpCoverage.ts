@@ -76,6 +76,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
       "comment_on_task",
       "delete_task",
       "drift",
+      "overlap",
       "revalidate",
       "my_work",
       "create_label",
@@ -89,6 +90,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
     ],
   },
   "GET /api/tasks/:id/drift": { tools: ["drift"] },
+  "GET /api/tasks/:id/overlap": { tools: ["overlap"] },
   "POST /api/tasks/:id/revalidate": { tools: ["revalidate"] },
   "GET /api/tasks/ready": { skip: "not yet: what the caller can start now (todo, dependencies closed, unclaimed); the daemon pulls it, an assistant asks my_work" },
   "GET /api/tasks/mine": { tools: ["my_work"] },
@@ -96,7 +98,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /api/inbox/read": { tools: ["mark_read"] },
   "POST /api/inbox/dismiss": { tools: ["mark_read"] },
   "GET /api/tasks/:id": {
-    tools: ["get_task", "update_task", "move_task", "claim_task", "release_task", "comment_on_task", "delete_task", "drift", "revalidate"],
+    tools: ["get_task", "update_task", "move_task", "claim_task", "release_task", "comment_on_task", "delete_task", "drift", "overlap", "revalidate"],
   },
   "POST /api/boards/:id/tasks": { tools: ["create_task"] },
   /* create_task sets dependencies with a second write: creation takes none. */

@@ -1,14 +1,15 @@
 /* ============================================================================
-   Overlap reports: who may send one, what a path may be, and the cap
-   (src/domain/overlap.ts, COPL-102).
+   Overlap reports: who may send one, what a path may be, the cap, and
+   which tasks overlap (src/domain/overlap.ts, COPL-102, COPL-104).
    ----------------------------------------------------------------------------
    Run: npm run check. Only the run holding a task's live claim reports its
    files; paths are plain repo-relative ones; a report is sorted, deduplicated
    and capped at TASK_FILES_CAP, and says when it was truncated; a report
-   replaces the last one, and one that says nothing new is told apart.
+   replaces the last one, and one that says nothing new is told apart; and
+   which tasks share files with which (COPL-104).
    ========================================================================== */
 
-import { parseFileReport, pathProblem, reportRefusal, sameReport, TASK_FILE_MAX, TASK_FILES_ACCEPTED, TASK_FILES_CAP, type FileReport } from "../src/domain/overlap.ts";
+import { overlaps, parseFileReport, pathProblem, reportRefusal, sameReport, TASK_FILE_MAX, TASK_FILES_ACCEPTED, TASK_FILES_CAP, type FileReport } from "../src/domain/overlap.ts";
 
 const cases: Array<[string, boolean]> = [];
 const t = (name: string, pass: boolean) => cases.push([name, pass]);
@@ -69,6 +70,26 @@ t("another file is new", !sameReport(r, { ...r, files: ["a.ts", "c.ts"] }));
 t("one file fewer is new", !sameReport(r, { ...r, files: ["a.ts"] }));
 t("another base is new", !sameReport(r, { ...r, base: "1234567" }));
 t("truncated is new", !sameReport(r, { ...r, truncated: true }));
+
+/* Which tasks share files. */
+const lists = [
+  { id: "a", files: ["src/x.ts", "src/y.ts", "README.md"] },
+  { id: "b", files: ["src/y.ts"] },
+  { id: "c", files: ["src/x.ts", "src/y.ts", "src/z.ts"] },
+  { id: "d", files: ["docs/only.md"] },
+  { id: "e", files: [] },
+];
+const o = overlaps(lists);
+t("a task sharing nothing is absent", !o.has("d") && !o.has("e"));
+t("each side sees the other", o.get("b")?.some((x) => x.taskId === "a") === true && o.get("a")?.some((x) => x.taskId === "b") === true);
+t("the shared files are listed, sorted", eq(o.get("a")?.find((x) => x.taskId === "c")?.shared, ["src/x.ts", "src/y.ts"]));
+t("most shared first", eq(o.get("a")?.map((x) => x.taskId), ["c", "b"]));
+t("more shared before fewer, from the other side too", eq(o.get("c")?.map((x) => x.taskId), ["a", "b"]));
+t("a tie in count keeps input order", eq(overlaps([{ id: "p", files: ["f"] }, { id: "q", files: ["f"] }, { id: "r", files: ["f"] }]).get("r")?.map((x) => x.taskId), ["p", "q"]));
+t("a task never overlaps itself", [...o].every(([id, list]) => list.every((x) => x.taskId !== id)));
+t("a duplicate path in one list counts once", eq(overlaps([{ id: "p", files: ["f", "f"] }, { id: "q", files: ["f"] }]).get("p")?.[0].shared, ["f"]));
+t("no lists, no overlap", overlaps([]).size === 0);
+t("one task alone overlaps nothing", overlaps([{ id: "p", files: ["f"] }]).size === 0);
 
 let failed = 0;
 for (const [name, pass] of cases) {
