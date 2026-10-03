@@ -133,10 +133,50 @@ pub struct AgentLoop {
     guard: WakeGuard,
     /// Task-less items already logged, so each is said once.
     noted: std::collections::HashSet<String>,
-    /// The tasks with a run going, by id, and whether that run uses `workdir` (not a worktree).
-    inflight: HashMap<String, bool>,
+    /// The tasks with a run going, by id.
+    inflight: HashMap<String, Inflight>,
+    /// When the last sweep for closed tasks' worktrees was, if there has been one.
+    swept: Option<tokio::time::Instant>,
     /// Which task each spawned run is for, by its join id, for a run that panics.
     spawned: HashMap<Id, String>,
+}
+
+/// A run going on a task.
+struct Inflight {
+    key: String,
+    /// It uses `workdir`, not a worktree.
+    workdir: bool,
+}
+
+/// How often an agent with a `code_command` sweeps the worktrees of closed tasks, after the once
+/// when its loop starts. A task closed by a merge or by hand gets no run that would remove its own.
+const SWEEP_EVERY: Duration = Duration::from_secs(5 * 60);
+
+/// What the sweep learned of a worktree's task from Copland.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lookup {
+    Open,
+    Closed,
+    /// A 404: deleted, or on a board the agent isn't on, which the server doesn't tell apart.
+    NotFound,
+    /// Any other refusal.
+    Refused,
+}
+
+/// Whether the sweep removes a task's worktree: the task is closed, or gone from a board the agent
+/// is on (it reads every task there, so a 404 can only mean gone). Never while one of the agent's
+/// runs is on it; a 404 from a board it isn't on, or any other refusal, leaves it alone.
+fn removable(key: &str, lookup: Lookup, boards: &[String], running: &[&str]) -> bool {
+    if running.iter().any(|k| k.eq_ignore_ascii_case(key)) {
+        return false;
+    }
+    match lookup {
+        Lookup::Closed => true,
+        Lookup::NotFound => key
+            .split_once('-')
+            .is_some_and(|(board, _)| boards.iter().any(|b| b.eq_ignore_ascii_case(board))),
+        Lookup::Open | Lookup::Refused => false,
+    }
 }
 
 /// What the live socket has heard since the loop last looked. Flags rather than counts: one poll
@@ -225,6 +265,7 @@ impl AgentLoop {
             guard,
             noted: Default::default(),
             inflight: HashMap::new(),
+            swept: None,
             spawned: HashMap::new(),
         })
     }
@@ -299,6 +340,12 @@ impl AgentLoop {
                         tracing::info!("working again");
                     }
                     self.update(|s| s.last_error = None);
+                    if self.agent.code_command.is_some() && self.swept.is_none_or(|t| t.elapsed() >= SWEEP_EVERY) {
+                        self.swept = Some(tokio::time::Instant::now());
+                        if let Err(e) = self.sweep().await {
+                            tracing::warn!("sweeping closed tasks' worktrees: {e:#}");
+                        }
+                    }
                 }
                 Err(e) => {
                     let message = format!("{e:#}");
@@ -433,6 +480,44 @@ impl AgentLoop {
         }
     }
 
+    /// Remove the worktrees under `code_dir` whose tasks are closed or gone (see `removable`). Agents
+    /// share `code_dir`, so this sees other agents' worktrees too, and two sweeps may meet the same one.
+    async fn sweep(&self) -> Result<()> {
+        let code_dir = &self.agent.code_dir;
+        let found = workspace::worktrees(code_dir);
+        if found.is_empty() {
+            return Ok(());
+        }
+        let boards: Vec<String> = self
+            .api
+            .boards(&self.agent.token)
+            .await
+            .map_err(|e| anyhow!("listing boards: {e}"))?
+            .into_iter()
+            .map(|b| b.key)
+            .collect();
+        let running: Vec<&str> = self.inflight.values().map(|r| r.key.as_str()).collect();
+        for (key, repo) in found {
+            let lookup = match self.api.task(&self.agent.token, &key).await {
+                Ok(t) if t.completed_at.is_some() => Lookup::Closed,
+                Ok(_) => Lookup::Open,
+                Err(e) if e.status() == Some(404) => Lookup::NotFound,
+                Err(e) if e.is_refusal() => Lookup::Refused,
+                Err(e) => return Err(anyhow!("reading {key}: {e}")),
+            };
+            if !removable(&key, lookup, &boards, &running) {
+                continue;
+            }
+            let why = if lookup == Lookup::Closed { "closed" } else { "gone" };
+            match workspace::remove(code_dir, &repo, &key).await {
+                Ok(true) => tracing::info!(task = %key, "task {why}; its worktree is removed"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(task = %key, "removing its worktree: {e:#}"),
+            }
+        }
+        Ok(())
+    }
+
     /// Who the token is, from the server. The config's handle is only a label.
     async fn identity(&mut self) -> Result<Identity> {
         if let Some(me) = &self.me {
@@ -546,11 +631,17 @@ impl AgentLoop {
             /* Coding work has a worktree of its own; anything else shares workdir, one run at a time.
             A run that turns out to answer without a claim also uses workdir, without waiting for it. */
             let workdir = self.ctx().repos(&wake.task_id, &wake.task_key).await?.is_none();
-            if workdir && self.inflight.values().any(|w| *w) {
+            if workdir && self.inflight.values().any(|r| r.workdir) {
                 tracing::debug!(task = %wake.task_key, "another run has the workdir; next time");
                 continue;
             }
-            self.inflight.insert(wake.task_id.clone(), workdir);
+            self.inflight.insert(
+                wake.task_id.clone(),
+                Inflight {
+                    key: wake.task_key.clone(),
+                    workdir,
+                },
+            );
             let (ctx, handle, wake) = (self.ctx(), me.handle.clone(), wake.clone());
             let task_id = wake.task_id.clone();
             let id = runs
@@ -809,6 +900,23 @@ impl RunCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sweep_removes_closed_and_gone_tasks_worktrees_only() {
+        let boards = vec!["COPL".to_string(), "WRD".to_string()];
+        let none: &[&str] = &[];
+        assert!(removable("COPL-80", Lookup::Closed, &boards, none));
+        assert!(!removable("COPL-81", Lookup::Open, &boards, none));
+        /* Closed, but a run of this agent's is still on it (the run removes it itself when it ends). */
+        assert!(!removable("COPL-80", Lookup::Closed, &boards, &["copl-80"]));
+        assert!(removable("COPL-80", Lookup::Closed, &boards, &["COPL-8"]));
+        /* A 404 on a board the agent is on is a deleted task; elsewhere it is a refusal. */
+        assert!(removable("copl-9", Lookup::NotFound, &boards, none));
+        assert!(!removable("OTHER-9", Lookup::NotFound, &boards, none));
+        assert!(!removable("COPL-9", Lookup::NotFound, &boards, &["COPL-9"]));
+        assert!(!removable("COPL-10", Lookup::Refused, &boards, none));
+        assert!(!removable("COPL-10", Lookup::NotFound, &[], none));
+    }
 
     #[tokio::test]
     async fn a_poll_answers_what_was_heard_before_it_and_keeps_what_came_during_it() {

@@ -226,11 +226,53 @@ pub async fn remove(code_dir: &Path, repo: &str, key: &str) -> Result<bool> {
     }
     let branch = git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await.ok();
     let path = dir.to_string_lossy().to_string();
-    git(&clone, &["worktree", "remove", "--force", &path]).await?;
+    if let Err(e) = git(&clone, &["worktree", "remove", "--force", &path]).await {
+        /* Agents share the code directory: another one's sweep got there first. */
+        if !dir.exists() {
+            return Ok(false);
+        }
+        return Err(e);
+    }
     if let Some(branch) = branch {
         let _ = git(&clone, &["branch", "-D", &branch]).await;
     }
     Ok(true)
+}
+
+/// The worktrees under the code directory, as (key, repo), by key: each directory of `work/` that is
+/// named like a task key and is a worktree of one of the clones beside it. Anything else is left alone.
+pub fn worktrees(code_dir: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = std::fs::read_dir(code_dir.join("work")) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(String, String)> = entries
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|key| valid_key(key))
+        .filter_map(|key| repo_of(code_dir, &key).map(|repo| (key, repo)))
+        .collect();
+    found.sort();
+    found
+}
+
+/// The repo a task's worktree belongs to, from its `.git` file, which names the clone
+/// ("gitdir: <code_dir>/repos/<owner>/<name>/.git/worktrees/<key>"). None when it isn't one of ours.
+fn repo_of(code_dir: &Path, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(code_dir.join("work").join(key).join(".git")).ok()?;
+    let gitdir = PathBuf::from(text.strip_prefix("gitdir:")?.trim());
+    let worktrees = gitdir.parent()?;
+    let dot_git = worktrees.parent()?;
+    if worktrees.file_name()? != "worktrees" || dot_git.file_name()? != ".git" {
+        return None;
+    }
+    let clone = dot_git.parent()?;
+    let repo = format!(
+        "{}/{}",
+        clone.parent()?.file_name()?.to_str()?,
+        clone.file_name()?.to_str()?
+    );
+    /* By name rather than by prefix, so a code_dir reached through a symlink still matches. */
+    let (expected, _) = paths(code_dir, &repo, key).ok()?;
+    expected.join(".git").is_dir().then_some(repo)
 }
 
 /// "origin/main", from the clone's idea of the remote's HEAD.
@@ -412,6 +454,11 @@ mod tests {
         assert!(remove(&code, "o/r", "COPL-6").await.unwrap());
         assert!(!other.dir.exists());
         assert!(!remove(&code, "o/r", "COPL-6").await.unwrap());
+        /* The sweep's list: worktrees only, by key, with the repo each belongs to. */
+        std::fs::create_dir_all(code.join("work/notes")).unwrap();
+        std::fs::create_dir_all(code.join("work/COPL-8")).unwrap();
+        assert_eq!(worktrees(&code), vec![("COPL-5".to_string(), "o/r".to_string())]);
+        assert!(worktrees(&root.join("nowhere")).is_empty());
         std::fs::remove_dir_all(&first.dir).unwrap();
         let back = realize(&code, &remote, "o/r", "COPL-5", "Whatever").await.unwrap();
         assert!(!back.fresh);
