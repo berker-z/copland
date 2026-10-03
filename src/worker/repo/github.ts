@@ -5,7 +5,7 @@
    it). The webhook that writes them is routes/github.ts.
    ========================================================================== */
 
-import type { CiState, CodeLink, PullState } from "@/domain/github";
+import { driftState, type CiState, type CodeLink, type Drift, type PullState } from "@/domain/github";
 import type { BoardRepo } from "@/domain/types";
 
 interface RepoRow {
@@ -49,6 +49,7 @@ interface CodeRow {
   url: string;
   state: PullState;
   ci: CiState | null;
+  drift: string | null;
   updated_at: string;
 }
 
@@ -59,7 +60,7 @@ const ORDER = `CASE WHEN c.state IN ('open', 'draft') THEN 0 ELSE 1 END, CASE c.
 export async function codeFor(db: D1Database, where: string, value: string): Promise<Map<string, CodeLink[]>> {
   const { results } = await db
     .prepare(
-      `SELECT c.task_id, c.kind, r.repo, c.name, c.title, c.url, c.state, c.ci, c.updated_at
+      `SELECT c.task_id, c.kind, r.repo, c.name, c.title, c.url, c.state, c.ci, c.drift, c.updated_at
          FROM task_code c JOIN board_repos r ON r.id = c.repo_id JOIN tasks t ON t.id = c.task_id
         WHERE ${where} ORDER BY ${ORDER}`,
     )
@@ -68,7 +69,17 @@ export async function codeFor(db: D1Database, where: string, value: string): Pro
   const out = new Map<string, CodeLink[]>();
   for (const r of results) {
     const list = out.get(r.task_id) ?? [];
-    list.push({ kind: r.kind, repo: r.repo, name: r.name, title: r.title, url: r.url, state: r.state, ci: r.ci, updatedAt: r.updated_at });
+    list.push({
+      kind: r.kind,
+      repo: r.repo,
+      name: r.name,
+      title: r.title,
+      url: r.url,
+      state: r.state,
+      ci: r.ci,
+      drift: r.drift ? driftState(JSON.parse(r.drift) as Drift) : null,
+      updatedAt: r.updated_at,
+    });
     out.set(r.task_id, list);
   }
   return out;

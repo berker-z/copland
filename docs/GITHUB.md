@@ -38,6 +38,23 @@ The move goes through the same code as a move in the app, as the admin who conne
 
 Who merges is up to the task. By default an agent working it merges its own PR once CI is green, with the machine's own git credentials (the App stays read-only), and the merge is what closes the task, so agents never move coding tasks to done themselves. A task with **review first** set (a checkbox under merge in the task, `review_first` through the MCP, migration 0020) stops at the open PR for a person to review and merge. Done means merged, which is also what lets a task that depends on it be claimed (COPL-78).
 
+## Drift: merging on stale assumptions
+
+Agents work side by side, each on a branch from `main` as it was when it started (COPL-82). If `main` moves under a task in the files that task changes, the task's code may rest on how those files used to be. It still compiles and its tests still pass, and it's quietly wrong. CI can't see that, so Copland makes it a step of its own (COPL-75, `src/worker/drift.ts`).
+
+For each open PR naming a task, Copland compares three things with the App: where the work started (the parent of the PR's first commit), `main` now, and the PR's head. That gives the files `main` changed since the work started, the files the PR changes, and the files in both. It keeps that on the PR's rows (migration 0022) and posts it to GitHub as a commit status, `copland/drift`, on the PR's head:
+
+- **behind**: the branch doesn't have `main`'s latest commits yet. Pending until it takes them in.
+- **clean**: nothing the PR changes moved under it. Green.
+- **recheck**: `main` changed files the PR changes. Pending until someone re-checks the change against those changes and says so with `revalidate`, for that very `main` commit. If `main` moves again, it's pending again.
+- **revalidated**: re-checked against the current `main`. Green.
+
+It's measured when a PR opens or moves, when `main` moves (every open PR on the repo), and when someone asks (`drift`) or revalidates. An overlap of three files or more also makes the task review first, as the person who connected the repo, via GitHub: its author doesn't merge it.
+
+Through the MCP, `drift(task)` measures now and returns everything `main` changed, not only the overlap, because a task can rely on files it never changed; the guide tells agents to skim that list too. `revalidate(task, main, note)` only takes the `main` commit the agent actually looked at, refuses one that `main` has moved past, and posts the note on the task. The guide's Code section is the finishing procedure: tests for the behaviour you add, bring the branch up to date, rerun the checks, `drift`, re-check and `revalidate` when it says so, merge.
+
+What makes it a gate rather than advice is branch protection on `main`: `ci` (`.github/workflows/ci.yml`: typecheck, check, build, and the daemon's tests when it changes) and `copland/drift` must be green, and the branch up to date. No runtime can merge past it, whichever one wrote the code. Posting the status needs the App's one write permission, commit statuses; an App made before COPL-93 asks for it in its settings on GitHub. Drift is per file: a change in a function the task calls, in a file it didn't touch, shows up only in `main`'s list, not in the overlap.
+
 ## Where it shows
 
 On the task, a code row lists its PRs and branches, open first: the state in its colour (open green, draft muted, merged magenta, closed red), `#12` and the title, and CI as a word. A card shows one PR, the first open one or else the latest merged, as its number with a dot for CI.

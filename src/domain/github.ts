@@ -108,5 +108,79 @@ export interface CodeLink {
   /** A branch is open until it is deleted ("closed"). */
   state: PullState;
   ci: CiState | null;
+  /** A PR's drift, as last measured (COPL-75); null for a branch, or a PR not measured yet. */
+  drift: DriftState | null;
   updatedAt: string;
+}
+
+/* ------------------------------------------------------------- drift ---- */
+
+/**
+ * Drift (COPL-75): what changed on the default branch while a PR's task was
+ * being worked on, against what the task changed. Its code may rest on how
+ * those files were when it started, so where they overlap the agent has to
+ * look again before it merges.
+ */
+export interface Drift {
+  /** The default branch's head this was measured against. */
+  main: string;
+  /** Where the task's work started: the parent of the PR's first commit. */
+  base: string;
+  /** Commits on the default branch the PR's head doesn't have yet. */
+  behind: number;
+  /** Files the default branch changed since `base`. */
+  mainFiles: string[];
+  /** Files the PR changes. */
+  taskFiles: string[];
+  /** In both: where the task's assumptions may be stale. */
+  overlap: string[];
+  /** Someone re-checked the PR against this `main` (revalidate). */
+  revalidated: boolean;
+}
+
+export type DriftState = "clean" | "behind" | "recheck" | "revalidated";
+
+/** How many overlapping files make the task review first: a person merges it, not its author. */
+export const DRIFT_REVIEW = 3;
+
+export function overlapOf(mainFiles: string[], taskFiles: string[]): string[] {
+  const main = new Set(mainFiles);
+  return taskFiles.filter((f) => main.has(f)).sort();
+}
+
+/**
+ * The state, in the order that matters: a branch behind the default branch
+ * first takes it in (that is also when its overlap becomes real code to look
+ * at); then any overlap needs a re-check for this very `main`.
+ */
+export function driftState(d: Pick<Drift, "behind" | "overlap" | "revalidated">): DriftState {
+  if (d.behind > 0) return "behind";
+  if (d.overlap.length === 0) return "clean";
+  return d.revalidated ? "revalidated" : "recheck";
+}
+
+const short = (sha: string) => sha.slice(0, 7);
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+/** The copland/drift commit status for a PR: what GitHub shows, and what branch protection requires. */
+export function driftStatus(d: Drift): { state: "success" | "pending"; description: string } {
+  switch (driftState(d)) {
+    case "behind":
+      return { state: "pending", description: `${plural(d.behind, "commit")} behind ${short(d.main)}: bring the branch up to date` };
+    case "clean":
+      return {
+        state: "success",
+        description:
+          d.mainFiles.length === 0
+            ? "main hasn't moved since this work started"
+            : `main changed ${plural(d.mainFiles.length, "file")} since this work started, none of this PR's`,
+      };
+    case "revalidated":
+      return { state: "success", description: `re-checked against ${short(d.main)}: ${plural(d.overlap.length, "file")} main changed too` };
+    case "recheck":
+      return {
+        state: "pending",
+        description: `main changed ${plural(d.overlap.length, "file")} this PR changes since it started: re-check, then revalidate`,
+      };
+  }
 }

@@ -80,6 +80,7 @@ import { getInbox, postInboxDismiss, postInboxRead } from "./routes/inbox";
 import { getDevice, postDeviceApprove, postDeviceDeny, postDevicePoll, postDeviceStart } from "./routes/device";
 import { deleteOwnToken, deleteToken, getTokens, postToken, SELF_REVOKE_PATH } from "./routes/tokens";
 import { handleIntegration, isIntegrationPath } from "./integrations";
+import { getTaskDrift, postRevalidate } from "./drift";
 import { asAccess, bearerFrom, requireWriteScope, touchStatements } from "./tokens";
 import { getMarketExtras } from "./routes/markets";
 import { deleteNote, getNotes, patchNote, postNote } from "./routes/notes";
@@ -106,6 +107,8 @@ interface Ctx {
   viewer: Viewer;
   url: URL;
   changes: Changes;
+  /** For a route that calls out and finishes after it answers (drift.ts). */
+  ctx: ExecutionContext;
 }
 
 /**
@@ -295,6 +298,11 @@ const api = new Router<Ctx>()
   )
   .on("DELETE", "/api/comments/:id", ({ env, viewer, changes }, { id }) => deleteComment(env, viewer, id, changes))
   .on("GET", "/api/tasks/:id/events", ({ env, viewer }, { id }) => getTaskEvents(env, viewer, id))
+  /* Drift (drift.ts, COPL-75): what main changed under the task's open PRs, and re-checking it. */
+  .on("GET", "/api/tasks/:id/drift", ({ env, ctx, viewer, url }, { id }) => getTaskDrift(env, ctx, viewer, id, url.origin))
+  .on("POST", "/api/tasks/:id/revalidate", ({ request, env, ctx, viewer, url, changes }, { id }) =>
+    postRevalidate(request, env, ctx, viewer, id, url.origin, changes),
+  )
 
   /* Runs and claims (routes/runs.ts). Not mine(grant): a run is its principal's
      own, an agent's included, and claims are board work, checked by requireBoard. */
@@ -347,6 +355,8 @@ interface OpenCtx {
   env: Env;
   url: URL;
   changes: Changes;
+  /** For work after the answer: the GitHub webhook measures drift then (drift.ts). */
+  ctx: ExecutionContext;
 }
 
 /**
@@ -359,7 +369,7 @@ interface OpenCtx {
 const open = new Router<OpenCtx>()
   .on("POST", "/api/device/start", ({ request, env, url, changes }) => postDeviceStart(request, env, url, changes))
   .on("POST", "/api/device/poll", ({ request, env, url, changes }) => postDevicePoll(request, env, url, changes))
-  .on("POST", "/api/github", ({ request, env, changes }) => postWebhook(request, env, changes));
+  .on("POST", "/api/github", ({ request, env, ctx, changes }) => postWebhook(request, env, ctx, changes));
 
 /**
  * The session rides in a cookie, so a page on another site could make the
@@ -422,7 +432,7 @@ async function runApi(
   /* A token revoking itself only takes access away, so a read-only one may too. */
   if (!(request.method === "DELETE" && url.pathname === SELF_REVOKE_PATH)) requireWriteScope(viewer, request.method);
   const changes = new Changes();
-  const pending = api.dispatch(request.method, url.pathname, { request, env, viewer, url, changes });
+  const pending = api.dispatch(request.method, url.pathname, { request, env, viewer, url, changes, ctx });
   if (!pending) throw notFound(`No route for ${request.method} ${url.pathname}`);
   const response = await pending;
   if (response.ok) changes.publish(env, ctx, tab);
@@ -432,7 +442,7 @@ async function runApi(
 async function handleApi(request: Request, env: Env, ctx: ExecutionContext, url: URL): Promise<Response> {
   requireSameOrigin(request, url);
   const changes = new Changes();
-  const unauthenticated = open.dispatch(request.method, url.pathname, { request, env, url, changes });
+  const unauthenticated = open.dispatch(request.method, url.pathname, { request, env, url, changes, ctx });
   if (unauthenticated) {
     const response = await unauthenticated;
     if (response.ok) changes.publish(env, ctx, null);
