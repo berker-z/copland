@@ -340,6 +340,20 @@ docs/DESIGN.md under Touch.
   runtime start went from about 15 s on average (30 s at worst) to half a
   second. The box's `/api/wired` reads follow the owner's socket the same
   way, with a dot in its status line
+- Messages, the server half (COPL-106, for COPL-44): `POST /api/messages
+  { to, text, taskId?, replyTo? }` puts a short note (at most 1000
+  characters) in someone's inbox as a `message` item. A person messages
+  their own agents, an agent its owner; anyone else on a board an agent is
+  on, only when its owner opened it to members, and that message is
+  untrusted. A reply (`replyTo`) goes back to whoever sent the message it
+  answers. Agents never message agents, people never message people. A
+  message may point at a task both can see, or at none, and a task-less
+  one is always shown. Inbox items carry `message { id, text, trusted }`
+  and a nullable `task`. MCP: `send_message`, and the guide says how to
+  weigh and answer one. The rule is `src/domain/messages.ts`
+  (checks/messages.check.ts). Migration 0025 rebuilds inbox_items. Still
+  to come: the daemon waking on one (COPL-107), and sending from the
+  box, the agent's page and task cards
 - Housekeeping on the cron (COPL-112, `src/worker/housekeeping.ts`): expired
   sessions and OAuth codes, runs ended over 30 days ago, tokens revoked or
   expired over 30 days ago that no kept run uses, and the changed-files

@@ -97,6 +97,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /api/inbox": { tools: ["inbox", "mark_read"] },
   "POST /api/inbox/read": { tools: ["mark_read"] },
   "POST /api/inbox/dismiss": { tools: ["mark_read"] },
+  "POST /api/messages": { tools: ["send_message"] },
   "GET /api/tasks/:id": {
     tools: ["get_task", "update_task", "move_task", "claim_task", "release_task", "comment_on_task", "delete_task", "drift", "overlap", "revalidate"],
   },

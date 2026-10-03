@@ -27,7 +27,8 @@
 
    An item shows only while its task is on a board the viewer can still see.
    Taken off a board, or the task deleted, and it quietly drops out: an inbox
-   never shows a title its reader is no longer allowed to read.
+   never shows a title its reader is no longer allowed to read. A message
+   that points at no task (routes/messages.ts) is always shown.
    ========================================================================== */
 
 import type { Inbox, InboxItem, Viewer } from "@/domain/types";
@@ -86,17 +87,20 @@ export function inboxQuery(url: URL): InboxQuery {
 interface Row {
   id: string;
   kind: InboxItem["kind"];
-  task_id: string;
-  number: number;
-  title: string;
-  board_id: string;
-  board_key: string;
-  board_name: string;
+  task_id: string | null;
+  number: number | null;
+  title: string | null;
+  board_id: string | null;
+  board_key: string | null;
+  board_name: string | null;
   actor_id: string;
   actor_handle: string;
   actor_avatar: string | null;
   via: string | null;
   comment: string | null;
+  message_id: string | null;
+  message: string | null;
+  trusted: number | null;
   created_at: string;
   read_at: string | null;
 }
@@ -104,11 +108,11 @@ interface Row {
 export async function readInbox(env: Env, viewer: Viewer, query: InboxQuery = {}): Promise<Inbox> {
   const limit = Math.min(Math.max(query.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
   const after = query.cursor ? decodeCursor(query.cursor) : null;
-  const boards = await boardsFor(env.DB, viewer);
-  if (boards.length === 0) return { unread: 0, items: [], next: null };
-  const ids = boards.map((b) => b.id);
-  /* ?1 the viewer, ?2 and ?3 the cursor's position, then the boards. */
-  const visible = `i.board_id IN (${ids.map((_, n) => `?${n + 4}`).join(",")})`;
+  const ids = (await boardsFor(env.DB, viewer)).map((b) => b.id);
+  /* ?1 the viewer, ?2 and ?3 the cursor's position, ?4 the boards (a JSON
+     list, so the count of bindings never depends on how many). A task-less
+     message needs no board; any other item a live task on one. */
+  const visible = `(i.task_id IS NULL OR (t.id IS NOT NULL AND i.board_id IN (SELECT value FROM json_each(?4))))`;
   const page = [
     query.unread ? " AND i.read_at IS NULL" : "",
     after ? " AND (i.created_at < ?2 OR (i.created_at = ?2 AND i.id < ?3))" : "",
@@ -116,22 +120,26 @@ export async function readInbox(env: Env, viewer: Viewer, query: InboxQuery = {}
   const [rows, count] = await Promise.all([
     env.DB.prepare(
       `SELECT i.id, i.kind, i.task_id, t.number, t.title, b.id AS board_id, b.key AS board_key, b.name AS board_name,
-              i.actor_id, u.handle AS actor_handle, u.avatar_key AS actor_avatar, i.via, c.text AS comment, i.created_at, i.read_at
+              i.actor_id, u.handle AS actor_handle, u.avatar_key AS actor_avatar, i.via, c.text AS comment,
+              m.id AS message_id, m.text AS message, (u.owner_id = i.user_id OR me.owner_id = u.id) AS trusted,
+              i.created_at, i.read_at
          FROM inbox_items i
-         JOIN tasks t ON t.id = i.task_id AND t.deleted_at IS NULL
-         JOIN boards b ON b.id = i.board_id
+         LEFT JOIN tasks t ON t.id = i.task_id AND t.deleted_at IS NULL
+         LEFT JOIN boards b ON b.id = i.board_id
          JOIN users u ON u.id = i.actor_id
+         JOIN users me ON me.id = i.user_id
          LEFT JOIN comments c ON c.id = i.comment_id
+         LEFT JOIN messages m ON m.id = i.message_id
         WHERE i.user_id = ?1 AND ${visible}${page}
         ORDER BY i.created_at DESC, i.id DESC LIMIT ${limit + 1}`,
     )
-      .bind(viewer.user.id, after?.createdAt ?? null, after?.id ?? null, ...ids)
+      .bind(viewer.user.id, after?.createdAt ?? null, after?.id ?? null, JSON.stringify(ids))
       .all<Row>(),
     env.DB.prepare(
-      `SELECT count(*) AS n FROM inbox_items i JOIN tasks t ON t.id = i.task_id AND t.deleted_at IS NULL
+      `SELECT count(*) AS n FROM inbox_items i LEFT JOIN tasks t ON t.id = i.task_id AND t.deleted_at IS NULL
         WHERE i.user_id = ?1 AND i.read_at IS NULL AND ${visible}`,
     )
-      .bind(viewer.user.id, null, null, ...ids)
+      .bind(viewer.user.id, null, null, JSON.stringify(ids))
       .first<{ n: number }>(),
   ]);
   /* One more than asked for says whether there is a next page. */
@@ -141,10 +149,14 @@ export async function readInbox(env: Env, viewer: Viewer, query: InboxQuery = {}
   const items: InboxItem[] = shown.map((r) => ({
     id: r.id,
     kind: r.kind,
-    task: { id: r.task_id, key: `${r.board_key}-${r.number}`, title: r.title, boardId: r.board_id, boardName: r.board_name },
+    task:
+      r.task_id && r.board_id
+        ? { id: r.task_id, key: `${r.board_key}-${r.number}`, title: r.title ?? "", boardId: r.board_id, boardName: r.board_name ?? "" }
+        : null,
     actor: { id: r.actor_id, handle: r.actor_handle, avatar: avatarUrl(r.actor_avatar) },
     via: r.via,
     comment: r.comment,
+    message: r.message_id ? { id: r.message_id, text: r.message ?? "", trusted: r.trusted === 1 } : null,
     createdAt: r.created_at,
     readAt: r.read_at,
   }));

@@ -2,9 +2,10 @@
    The /inbox pane: what needs your attention (routes/inbox.ts).
    ----------------------------------------------------------------------------
    Being given a task by someone else, @mentioned in a comment, or a new
-   comment on a task you take part in lands here, newest first; the unread count sits in the header. Clicking an item
-   marks it read and opens its task over the dashboard, the way the tasks
-   pane does. × dismisses an item for good. Read items stay, dimmed, until
+   comment on a task you take part in lands here, newest first; the unread count sits in the header. So does a
+   message from one of your agents (routes/messages.ts), with its text and,
+   when it points at one, its task. Clicking an item marks it read and opens
+   its task over the dashboard, the way the tasks pane does. × dismisses an item for good. Read items stay, dimmed, until
    dismissed. The first 50 load; "older" at the foot loads the next page
    (the route's cursor), so nothing old is out of reach.
 
@@ -54,6 +55,7 @@ const VERB: Record<InboxItem["kind"], string> = {
   assigned: "gave you",
   mentioned: "mentioned you on",
   commented: "commented on",
+  message: "messaged you",
 };
 
 function Item({ item, onOpen, onDismiss }: { item: InboxItem; onOpen: () => void; onDismiss: () => void }) {
@@ -65,10 +67,17 @@ function Item({ item, onOpen, onDismiss }: { item: InboxItem; onOpen: () => void
         <span className="flex-1 min-w-0">
           <span className="block text-sm text-muted">
             <span className={unread ? "text-bright" : "text-ink"}>{item.actor.handle}</span>{" "}
-            {VERB[item.kind]} <span className="text-ink">{item.task.key}</span>
+            {VERB[item.kind]}
+            {item.task && (
+              <>
+                {item.kind === "message" ? " about " : " "}
+                <span className="text-ink">{item.task.key}</span>
+              </>
+            )}
             {item.via && <span className="text-faint"> via {item.via}</span>}
           </span>
-          <span className="block text-sm text-ink truncate">{item.task.title}</span>
+          {item.task && <span className="block text-sm text-ink truncate">{item.task.title}</span>}
+          {item.message && <span className="block text-sm text-ink line-clamp-3 mt-0.5 whitespace-pre-line">{item.message.text}</span>}
           {item.comment && <span className="block text-xs text-muted line-clamp-2 mt-0.5">{item.comment}</span>}
         </span>
         <span className="shrink-0 text-xs text-faint pt-0.5">{when(item.createdAt)}</span>
@@ -77,7 +86,7 @@ function Item({ item, onOpen, onDismiss }: { item: InboxItem; onOpen: () => void
         onClick={onDismiss}
         className="tap shrink-0 p-2.5 text-faint hover:text-red pointer-fine:opacity-0 pointer-fine:group-hover/item:opacity-100 transition-opacity"
         title="Dismiss"
-        aria-label={`Dismiss ${item.task.key}`}
+        aria-label={`Dismiss ${item.task?.key ?? `message from ${item.actor.handle}`}`}
       >
         <X size={14} />
       </button>
@@ -127,7 +136,7 @@ export function InboxItems({ onOpen }: { onOpen: (target: InboxTarget) => void }
           item={item}
           onOpen={() => {
             if (item.readAt === null) markRead.mutate([item.id]);
-            onOpen({ boardId: item.task.boardId, taskId: item.task.id });
+            if (item.task) onOpen({ boardId: item.task.boardId, taskId: item.task.id });
           }}
           onDismiss={() => dismiss.mutate([item.id])}
         />
