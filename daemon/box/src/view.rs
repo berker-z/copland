@@ -5,6 +5,9 @@
 //! about twenty times a second while a run's current flows, twelve while the wires
 //! only sway, once a second while a run's timer shows, and otherwise when the daemon
 //! or the owner's feed says something new.
+//!
+//! The title bar has the bell (what needs you, COPL-64) and ≡ (the menu, COPL-65).
+//! In compact mode the window is the status line alone, the bell and ≡ at its end.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,16 +15,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use copland_daemon_core::{DaemonState, Phase};
 use gpui::{
-    Bounds, Context, FocusHandle, Hsla, KeyDownEvent, MouseButton, Rgba, SharedString, StyledText, Task, Window,
-    canvas, div, fill, point, prelude::*, px, size,
+    Bounds, Context, FocusHandle, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, Rgba, SharedString, StyledText,
+    Task, Window, canvas, div, fill, point, prelude::*, px, size,
 };
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
-use crate::agents::{Agents, Control, Key};
+use crate::agents::{Agents, Control};
 use crate::feed::Feed;
-use crate::scene::{AgentLabel, Board, DONE_TAIL, Doing, Layout, Line, Role, Scene};
+use crate::menu::{Act, Menu, Prefs, Tab};
+use crate::scene::{AgentLabel, Board, DONE_TAIL, Doing, Layout, Line, Role, Scene, Span};
 use crate::theme::{Rgb, Theme};
-use crate::wizard::{Panel, Wizard};
+use crate::wizard::{Panel, Wizard, hint_key, key};
 
 pub fn color(c: Rgb, a: f32) -> Hsla {
     Rgba {
@@ -50,6 +54,15 @@ const TICK: Duration = Duration::from_secs(1);
 const IDLE: Duration = Duration::from_secs(30);
 /// While setup waits on something: the dots after "waiting".
 const DOTS: Duration = Duration::from_millis(250);
+/// A first press of "stop this run" waits this long for the second.
+const ARMED: Duration = Duration::from_secs(6);
+/// How long a word in the status line about something just done stays.
+const FLASH: Duration = Duration::from_secs(5);
+
+/// The bell, a pixel at a time, as the scene is drawn.
+const BELL: [&str; 7] = [
+    "...#...", "..###..", ".#####.", ".#####.", ".#####.", "#######", "...#...",
+];
 
 /// Where the box's data comes from.
 pub enum Source {
@@ -62,8 +75,10 @@ pub enum Source {
         feed: Option<watch::Receiver<Feed>>,
         /// Set once the daemon has stopped by itself (a signal, or no agent left).
         finished: Arc<AtomicBool>,
-        /// For the agents screen: the config file and the way to the running daemon.
+        /// For the menu and the agents screen: the config file and the way to the running daemon.
         control: Option<Control>,
+        /// Links of desktop notifications that were clicked, to open.
+        clicks: Option<mpsc::UnboundedReceiver<String>>,
     },
     /// Nothing to watch, and why.
     Quiet(String),
@@ -71,9 +86,44 @@ pub enum Source {
     Setup(Box<Wizard>),
 }
 
+/// A run of this box's that "stop this run" has been pressed for once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Armed {
+    slot: u64,
+    run: String,
+    key: String,
+    agent: String,
+    at: Instant,
+}
+
+/// A run this box is running: its agent's slot, the run, the task and the agent's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunHere {
+    pub slot: u64,
+    pub run: String,
+    pub key: String,
+    pub agent: String,
+}
+
+/// The runs this box has going now, in the daemon's order.
+pub fn runs_here(st: &DaemonState) -> Vec<RunHere> {
+    st.agents
+        .iter()
+        .filter_map(|a| match &a.phase {
+            Phase::Running { run, task, .. } => Some(RunHere {
+                slot: a.slot,
+                run: run.clone(),
+                key: task.clone(),
+                agent: a.handle.rsplit('/').next().unwrap_or(&a.handle).to_string(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 pub struct BoxView {
     scene: Scene,
-    theme: &'static Theme,
+    prefs: Prefs,
     font: SharedString,
     source: Source,
     began: Instant,
@@ -82,29 +132,33 @@ pub struct BoxView {
     timer: Option<(Instant, Task<()>)>,
     /// Redraw when the daemon's state or the feed changes.
     _watchers: Vec<Task<()>>,
-    /// The agents screen, while it is open over the live view.
-    agents: Option<Agents>,
+    /// The menu, while it is open over the live view.
+    menu: Option<Menu>,
+    /// "stop this run", pressed once.
+    armed: Option<Armed>,
+    /// A word for the status line, and when it was said.
+    flash: Option<(String, Role, Instant)>,
+    /// Whether the window is the compact one now.
+    shown_compact: bool,
 }
 
 impl BoxView {
-    pub fn new(
-        scene: Scene,
-        theme: &'static Theme,
-        font: SharedString,
-        source: Source,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let watchers = watch_source(&source, cx);
+    pub fn new(scene: Scene, prefs: Prefs, font: SharedString, mut source: Source, cx: &mut Context<Self>) -> Self {
+        let watchers = watch_source(&mut source, cx);
+        let shown_compact = prefs.compact && matches!(source, Source::Live { .. });
         let mut view = Self {
             scene,
-            theme,
+            prefs,
             font,
             source,
             began: Instant::now(),
             focus: cx.focus_handle(),
             timer: None,
             _watchers: watchers,
-            agents: None,
+            menu: None,
+            armed: None,
+            flash: None,
+            shown_compact,
         };
         if let Some(w) = view.wizard() {
             w.begin(cx);
@@ -120,9 +174,14 @@ impl BoxView {
         }
     }
 
-    /// The agents screen, when it is open.
+    /// The agents screen, when the menu has it open.
     pub fn agents(&mut self) -> Option<&mut Agents> {
-        self.agents.as_mut()
+        self.menu.as_mut().and_then(Menu::agents)
+    }
+
+    /// The menu, when it is open.
+    pub fn menu(&mut self) -> Option<&mut Menu> {
+        self.menu.as_mut()
     }
 
     /// The daemon's state and the owner's feed as they are now, in live mode.
@@ -135,9 +194,23 @@ impl BoxView {
         }
     }
 
+    fn feed_now(&self) -> Option<Feed> {
+        match &self.source {
+            Source::Live { feed: Some(f), .. } => Some(f.borrow().clone()),
+            _ => None,
+        }
+    }
+
+    fn control(&self) -> Option<Control> {
+        match &self.source {
+            Source::Live { control, .. } => control.clone(),
+            _ => None,
+        }
+    }
+
     /// Setup is done and the daemon runs: draw it from here on.
-    fn go_live(&mut self, source: Source, cx: &mut Context<Self>) {
-        self._watchers = watch_source(&source, cx);
+    fn go_live(&mut self, mut source: Source, cx: &mut Context<Self>) {
+        self._watchers = watch_source(&mut source, cx);
         self.source = source;
         cx.notify();
     }
@@ -156,6 +229,12 @@ impl BoxView {
         )
     }
 
+    /// The window at its natural size: the whole box, or compact, the status line alone.
+    pub fn size_for(scene: &Scene, compact: bool) -> (f32, f32) {
+        let (w, h) = Self::window_size(scene, scene.tune.scale as f32, 1.0);
+        if compact { (w, STATUS_H + 2.0) } else { (w, h) }
+    }
+
     fn board(&self, now: f64) -> Option<Board> {
         match &self.source {
             Source::Demo => None,
@@ -169,7 +248,9 @@ impl BoxView {
             }),
             Source::Live { state, feed, .. } => {
                 let feed = feed.as_ref().map(|f| f.borrow().clone());
-                Some(board_from(&state.borrow(), feed.as_ref(), now, SystemTime::now()))
+                let mut b = board_from(&state.borrow(), feed.as_ref(), now, SystemTime::now());
+                filter_board(&mut b, &self.prefs);
+                Some(b)
             }
         }
     }
@@ -192,8 +273,7 @@ impl BoxView {
         self.timer = Some((due, task));
     }
 
-    fn line(&self, line: &Line) -> StyledText {
-        let th = self.theme;
+    fn line(&self, line: &Line, th: &Theme) -> StyledText {
         let mut text = String::new();
         let mut highlights = Vec::new();
         for span in &line.0 {
@@ -211,8 +291,8 @@ impl BoxView {
     }
 
     /// A line, opening its task's board in the browser when it has one.
-    fn row(&self, line: &Line) -> gpui::Div {
-        let row = div().child(self.line(line));
+    fn row(&self, line: &Line, th: &Theme) -> gpui::Div {
+        let row = div().child(self.line(line, th));
         match &line.1 {
             Some(url) => {
                 let url = url.clone();
@@ -223,21 +303,34 @@ impl BoxView {
         }
     }
 
-    /// Setup's step under the poles: its lines on the left, the text field with its cursor,
-    /// and a code to approve drawn large on the right.
-    fn panel(&self, p: &Panel, top: f32, width: f32, z: f32) -> gpui::Div {
-        let th = self.theme;
-        let lines = p.lines.iter().enumerate().map(|(i, l)| match &p.input {
-            Some((at, before, after)) if *at == i => div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .child(div().text_color(color(th.blue, 1.0)).child("› "))
-                .child(div().text_color(color(th.ink, 1.0)).child(before.clone()))
-                .child(div().w(px(1.5 * z)).h(px(13. * z)).bg(color(th.ink, 0.9)))
-                .child(div().text_color(color(th.ink, 1.0)).child(after.clone())),
-            _ => self.row(l),
-        });
+    /// Setup's step or a menu panel under the poles: its lines on the left, each clickable as
+    /// the key the panel says, the text field with its cursor, and a code to approve drawn
+    /// large on the right.
+    fn panel(&self, p: &Panel, top: f32, width: f32, z: f32, th: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let lines: Vec<gpui::AnyElement> = p
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| match &p.input {
+                Some((at, before, after)) if *at == i => div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(div().text_color(color(th.blue, 1.0)).child("› "))
+                    .child(div().text_color(color(th.ink, 1.0)).child(before.clone()))
+                    .child(div().w(px(1.5 * z)).h(px(13. * z)).bg(color(th.ink, 0.9)))
+                    .child(div().text_color(color(th.ink, 1.0)).child(after.clone()))
+                    .into_any_element(),
+                _ => match p.clicks.get(i).cloned().flatten() {
+                    Some(k) => div()
+                        .cursor_pointer()
+                        .child(self.line(l, th))
+                        .on_mouse_down(MouseButton::Left, press_on(k, cx))
+                        .into_any_element(),
+                    None => self.row(l, th).into_any_element(),
+                },
+            })
+            .collect();
         let mut d = div()
             .absolute()
             .left(px(0.))
@@ -269,6 +362,226 @@ impl BoxView {
         }
         d
     }
+
+    /// The bell, drawn in pixels like the scene, with the count beside it when something needs you.
+    fn bell(&self, count: usize, z: f32, sf: f32, th: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let u = ((1.5 * z * sf).round().max(1.0)) / sf;
+        let lit = count > 0;
+        let c = if lit {
+            color(th.yellow, 1.0)
+        } else {
+            color(th.faint, 1.0)
+        };
+        let pixels = canvas(
+            |_, _, _| (),
+            move |bounds: Bounds<gpui::Pixels>, _, window: &mut Window, _| {
+                for (y, row) in BELL.iter().enumerate() {
+                    for (x, ch) in row.chars().enumerate() {
+                        if ch == '#' {
+                            let at = point(bounds.origin.x + px(x as f32 * u), bounds.origin.y + px(y as f32 * u));
+                            window.paint_quad(fill(Bounds::new(at, size(px(u), px(u))), c));
+                        }
+                    }
+                }
+            },
+        )
+        .w(px(7.0 * u))
+        .h(px(7.0 * u));
+        let mut b = div()
+            .id("bell")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(3. * z))
+            .cursor_pointer()
+            .child(pixels)
+            .on_mouse_down(MouseButton::Left, press_on("b".into(), cx));
+        if lit {
+            b = b.child(div().text_color(color(th.yellow, 1.0)).child(count.to_string()));
+        }
+        b
+    }
+
+    /// A key by name, or a click as one: the menu's when it is open, else the live view's.
+    fn press(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let live = self.live();
+        if let Some(m) = self.menu.as_mut() {
+            let Some((st, feed)) = live else { return };
+            let compact_was = self.prefs.compact;
+            match m.press(name, &mut self.prefs, &st, feed.as_ref(), cx) {
+                Act::Close => self.close_menu(),
+                Act::SignOut => self.sign_out(cx),
+                Act::Resize | Act::Handled => {}
+                Act::Ignored => return,
+            }
+            if self.prefs.compact != compact_was {
+                self.flash = Some((
+                    format!(
+                        "compact {} · when the menu closes",
+                        if self.prefs.compact { "on" } else { "off" }
+                    ),
+                    Role::Muted,
+                    Instant::now(),
+                ));
+            }
+            let _ = window;
+            cx.notify();
+            return;
+        }
+        let control = self.control();
+        let runs = live.as_ref().map(|(st, _)| runs_here(st)).unwrap_or_default();
+        /* Anything but s (or tab among runs) after a first press of s keeps the run going. */
+        if self.armed.is_some() && !matches!(name, "s" | "tab") && !name.starts_with("stop:") {
+            self.armed = None;
+            if name == "escape" {
+                cx.notify();
+                return;
+            }
+        }
+        match name {
+            "m" | "≡" if control.is_some() => self.open_menu(Tab::Agents, cx),
+            "b" if control.is_some() => self.open_menu(Tab::Needs, cx),
+            "a" if control.is_some() => self.open_menu(Tab::Agents, cx),
+            "s" | "tab" if !runs.is_empty() => self.arm(name, None, &runs),
+            n if n.starts_with("stop:") && !runs.is_empty() => {
+                let key = n.trim_start_matches("stop:").to_string();
+                self.arm("s", Some(key), &runs);
+            }
+            "n" => self.scene.add(),
+            "a" => self.scene.answer(),
+            "f" => self.scene.finish_one(),
+            "q" | "escape" => cx.quit(),
+            _ => return,
+        }
+        cx.notify();
+    }
+
+    /// "stop this run": the first press picks a run (`key`'s, or the first; tab the next), the
+    /// second, within a few seconds, stops it.
+    fn arm(&mut self, name: &str, key: Option<String>, runs: &[RunHere]) {
+        let pick = |i: usize| {
+            let r = &runs[i % runs.len()];
+            Armed {
+                slot: r.slot,
+                run: r.run.clone(),
+                key: r.key.clone(),
+                agent: r.agent.clone(),
+                at: Instant::now(),
+            }
+        };
+        let at = |a: &Armed| runs.iter().position(|r| r.slot == a.slot && r.run == a.run);
+        let wanted = key.as_ref().and_then(|k| runs.iter().position(|r| &r.key == k));
+        match (&self.armed, name) {
+            (Some(a), "tab") => self.armed = Some(pick(at(a).map_or(0, |i| i + 1))),
+            (None, "tab") => self.armed = Some(pick(0)),
+            (Some(a), _) if a.at.elapsed() < ARMED && (wanted.is_none() || wanted == at(a)) && at(a).is_some() => {
+                let a = a.clone();
+                if let Some(c) = self.control() {
+                    c.stopper.stop(a.slot, &a.run);
+                    tracing::info!(task = %a.key, run = %a.run, "stopping the run from the box");
+                    self.flash = Some((
+                        format!("stopping {}'s run · it finishes as cancelled", a.key),
+                        Role::Yellow,
+                        Instant::now(),
+                    ));
+                }
+                self.armed = None;
+            }
+            _ => self.armed = Some(pick(wanted.unwrap_or(0))),
+        }
+    }
+
+    fn open_menu(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        let Some(control) = self.control() else { return };
+        self.armed = None;
+        match self.menu.as_mut() {
+            Some(m) => m.go(tab, cx),
+            None => self.menu = Some(Menu::open(control, tab, cx)),
+        }
+    }
+
+    /// Close the menu, writing what it changed to daemon.toml.
+    fn close_menu(&mut self) {
+        if self.menu.as_ref().is_some_and(|m| m.signing_out) {
+            return;
+        }
+        self.menu = None;
+        let Some(c) = self.control() else { return };
+        match self.prefs.write(&c.config) {
+            Ok(Some(backup)) => {
+                tracing::info!(
+                    "menu: wrote {}, kept the old one as {}",
+                    c.config.display(),
+                    backup.display()
+                );
+                self.flash = Some(("settings saved in daemon.toml".into(), Role::Green, Instant::now()));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!("menu: writing daemon.toml: {e:#}");
+                self.flash = Some((format!("× daemon.toml: {}", e.root_cause()), Role::Red, Instant::now()));
+            }
+        }
+    }
+
+    /// Sign out: stop the daemon, revoke the box's tokens, delete them and the config, and set
+    /// the box up again in this window.
+    fn sign_out(&mut self, cx: &mut Context<Self>) {
+        let Some(control) = self.control() else { return };
+        if let Some(m) = self.menu.as_mut() {
+            m.signing_out = true;
+        }
+        let url = self.feed_now().map(|f| f.url);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (stop, config) = (control.stop_daemon.clone(), control.config.clone());
+        let spawned = std::thread::Builder::new().name("sign-out".into()).spawn(move || {
+            stop();
+            let _ = tx.send(crate::menu::sign_out(&config, &crate::notify::memory_path()));
+        });
+        if let Err(e) = spawned {
+            tracing::error!("sign out: {e}");
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let failed = rx
+                .await
+                .unwrap_or_else(|_| vec!["the sign-out thread ended early".into()]);
+            let _ = this.update(cx, |view, cx| {
+                let note = (!failed.is_empty()).then(|| {
+                    format!(
+                        "signed out, but couldn't revoke {}; revoke it in settings › tokens",
+                        failed.join("; ")
+                    )
+                });
+                if failed.is_empty() {
+                    tracing::info!("signed out");
+                }
+                match (control.setup)(url.as_deref(), note) {
+                    Ok(w) => {
+                        view.menu = None;
+                        view.prefs.dirty.clear();
+                        view.go_live(Source::Setup(Box::new(w)), cx);
+                        if let Some(w) = view.wizard() {
+                            w.begin(cx);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("signed out, but setup can't start: {e:#}");
+                        cx.quit();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+/// A click that presses `key` on the view.
+fn press_on(key: String, cx: &mut Context<BoxView>) -> impl Fn(&MouseDownEvent, &mut Window, &mut gpui::App) + 'static {
+    cx.listener(move |this: &mut BoxView, _: &MouseDownEvent, window, cx| {
+        cx.stop_propagation();
+        this.press(&key, window, cx);
+    })
 }
 
 /// The most a window much larger than the box blows it up.
@@ -313,13 +626,26 @@ pub fn budgets(l: &Layout, spacing: f32, cell: f32, zoom: f32) -> [f32; 4] {
     ]
 }
 
-/// Redraw on whatever the source publishes.
-fn watch_source(source: &Source, cx: &mut Context<BoxView>) -> Vec<Task<()>> {
+/// Redraw on whatever the source publishes, and open what a clicked notification links to.
+fn watch_source(source: &mut Source, cx: &mut Context<BoxView>) -> Vec<Task<()>> {
     let mut watchers = Vec::new();
-    if let Source::Live { state, feed, .. } = source {
+    if let Source::Live {
+        state, feed, clicks, ..
+    } = source
+    {
         watchers.push(redraw_on(state.clone(), cx));
         if let Some(feed) = feed {
             watchers.push(redraw_on(feed.clone(), cx));
+        }
+        if let Some(mut rx) = clicks.take() {
+            watchers.push(cx.spawn(async move |_, cx| {
+                while let Some(link) = rx.recv().await {
+                    tracing::info!("a notification was clicked: opening {link}");
+                    if cx.update(|cx| cx.open_url(&link)).is_err() {
+                        break;
+                    }
+                }
+            }));
         }
     }
     watchers
@@ -370,6 +696,22 @@ pub fn task_link(url: &str, key: &str) -> Option<String> {
     let (board, number) = key.rsplit_once('-')?;
     (!board.is_empty() && !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
         .then(|| format!("{url}/b/{board}?task={key}"))
+}
+
+/// The boards filter (COPL-65) over what the scene is told: tickets of boards the box doesn't
+/// show are left out, the done count then being what is left of the listed ones. Display only;
+/// the daemon runs what it runs.
+pub fn filter_board(b: &mut Board, prefs: &Prefs) {
+    if prefs.boards.is_none() {
+        return;
+    }
+    b.todo.retain(|k| prefs.shows(k));
+    b.doing.retain(|d| prefs.shows(&d.key));
+    b.blocked.retain(|(k, _)| prefs.shows(k));
+    if let Some(done) = &mut b.done {
+        done.retain(|(k, _)| prefs.shows(k));
+        b.done_count = Some(done.len() as u32);
+    }
 }
 
 /// What the scene is told: the owner's view from `/api/wired` when there is one, with the
@@ -499,11 +841,15 @@ pub fn board_from(st: &DaemonState, feed: Option<&Feed>, now: f64, wall: SystemT
 
 impl Render for BoxView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let signing_out = self.menu.as_ref().is_some_and(|m| m.signing_out);
         if let Source::Live { finished, .. } = &self.source {
-            if finished.load(Ordering::Relaxed) {
+            if finished.load(Ordering::Relaxed) && !signing_out {
                 cx.quit();
             }
         }
+        let feed = self.feed_now();
+        let th = self.prefs.theme_now(feed.as_ref());
+        self.scene.motion = self.prefs.motion;
         let now = self.began.elapsed().as_secs_f64();
         if let Some(board) = self.board(now) {
             self.scene.sync(&board);
@@ -518,33 +864,225 @@ impl Render for BoxView {
         } else {
             self.redraw_in(IDLE, cx);
         }
-        if self.agents.is_some() && !matches!(self.source, Source::Live { .. }) {
-            self.agents = None;
+        if self.menu.is_some() && !matches!(self.source, Source::Live { .. }) {
+            self.menu = None;
         }
-        let panel = match (&self.agents, self.live()) {
-            (Some(a), Some((st, feed))) => Some((a.animating(), a.panel(&st, feed.as_ref()), "agents")),
+        if self.armed.as_ref().is_some_and(|a| a.at.elapsed() >= ARMED) {
+            self.armed = None;
+        }
+        if self.flash.as_ref().is_some_and(|f| f.2.elapsed() >= FLASH) {
+            self.flash = None;
+        }
+        if self.armed.is_some() || self.flash.is_some() {
+            self.redraw_in(TICK, cx);
+        }
+        let live = self.live();
+        let runs = live.as_ref().map(|(st, _)| runs_here(st)).unwrap_or_default();
+        if self
+            .armed
+            .as_ref()
+            .is_some_and(|a| !runs.iter().any(|r| r.slot == a.slot && r.run == a.run))
+        {
+            self.armed = None;
+        }
+        let dots = ["   ", ".  ", ".. ", "..."][(self.began.elapsed().as_millis() / 500 % 4) as usize];
+        let panel = match (&self.menu, &live) {
+            (Some(m), Some((st, feed))) => Some((m.animating(), m.panel(&self.prefs, st, feed.as_ref(), dots), "menu")),
             _ => self.wizard().map(|w| (w.animating(), w.panel(), "setup")),
         };
         if let Some((true, _, _)) = &panel {
             self.redraw_in(DOTS, cx);
         }
+        let has_menu = matches!(self.source, Source::Live { control: Some(_), .. });
+        let needs = crate::notify::needs_shown(feed.as_ref()).len();
+        let bell_shown = feed.is_some();
 
-        let th = self.theme;
+        /* Compact: the status line alone, while no panel is open. */
+        let compact = self.prefs.compact && panel.is_none() && matches!(self.source, Source::Live { .. });
+        if compact != self.shown_compact {
+            self.shown_compact = compact;
+            let (w, h) = Self::size_for(&self.scene, compact);
+            window.resize(size(px(w), px(h)));
+            crate::hyprland::resize(w, h);
+        }
+
         /* The largest whole multiple of the natural size the window has room for, in whole device
         pixels per logo pixel, so every cell is the same size on any output scale. A window the
         compositor made larger than the box gets it bigger and centred, not in a corner. */
         let sf = window.scale_factor();
         let vp = window.viewport_size();
-        let (cell, z) = fit(&self.scene, (vp.width.into(), vp.height.into()), sf);
+        let (cell, z) = if compact {
+            (self.scene.tune.scale as f32, 1.0)
+        } else {
+            fit(&self.scene, (vp.width.into(), vp.height.into()), sf)
+        };
         let (scene_w, scene_h) = self.scene.size(cell, z);
+
+        /* The right end of the title bar (or of the compact status line): bell, ≡, ×. */
+        let ends = |this: &Self, cx: &mut Context<Self>| {
+            let mut row = div().flex().flex_row().items_center().gap(px(8. * z)).flex_none();
+            if bell_shown {
+                row = row.child(this.bell(needs, z, sf, th, cx));
+            }
+            if has_menu {
+                row = row.child(
+                    div()
+                        .id("menu")
+                        .text_color(color(if this.menu.is_some() { th.blue } else { th.muted }, 1.0))
+                        .hover(|s| s.text_color(color(th.ink, 1.0)))
+                        .cursor_pointer()
+                        .child("≡")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this: &mut Self, _: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                if this.menu.is_some() {
+                                    this.close_menu();
+                                    cx.notify();
+                                } else {
+                                    this.press("m", window, cx);
+                                }
+                            }),
+                        ),
+                );
+            }
+            row.child(
+                div()
+                    .id("close")
+                    .text_color(color(th.faint, 1.0))
+                    .hover(|s| s.text_color(color(th.red, 1.0)))
+                    .cursor_pointer()
+                    .child("×")
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                        cx.quit();
+                    }),
+            )
+        };
+
+        let status: Vec<(Line, Option<String>)> = match &panel {
+            Some((_, p, _)) => p.keys.iter().map(|k| (k.clone(), hint_key(k))).collect(),
+            None => match &self.armed {
+                Some(a) => {
+                    let mut s = vec![
+                        (
+                            Line(
+                                vec![
+                                    Span::new("stop ", Role::Yellow),
+                                    Span::new(a.key.clone(), Role::Ink),
+                                    Span::new(format!("'s run ({})?", a.agent), Role::Yellow),
+                                ],
+                                None,
+                            ),
+                            None,
+                        ),
+                        (key("s", "stop it"), Some("s".to_string())),
+                    ];
+                    if runs.len() > 1 {
+                        s.push((key("tab", "next run"), Some("tab".to_string())));
+                    }
+                    s.push((key("esc", "keep it running"), Some("escape".to_string())));
+                    s
+                }
+                None => {
+                    let mut parts: Vec<(Line, Option<String>)> =
+                        self.scene.status().into_iter().map(|l| (l, None)).collect();
+                    /* The way to the menu, before the last word (which can be long and get cut off). */
+                    if has_menu && !compact {
+                        let at = if self.scene.has_note() {
+                            parts.len().saturating_sub(1)
+                        } else {
+                            parts.len()
+                        };
+                        parts.insert(at, (key("m", "menu"), Some("m".into())));
+                        if !runs.is_empty() {
+                            parts.insert(at, (key("s", "stop a run"), Some("s".into())));
+                        }
+                    }
+                    if let Some((text, role, _)) = &self.flash {
+                        parts.push((Line::one(text.clone(), *role), None));
+                    }
+                    parts
+                }
+            },
+        };
+        let mut bar = div()
+            .id("bar")
+            .flex_none()
+            .h(px(STATUS_H * z))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10. * z))
+            .px(px(10. * z))
+            .bg(color(th.bar, 1.0))
+            .text_color(color(th.muted, 1.0))
+            .whitespace_nowrap()
+            .overflow_hidden();
+        let mut items = div()
+            .flex_1()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10. * z))
+            .overflow_hidden();
+        for (n, (part, press)) in status.iter().enumerate() {
+            if n > 0 {
+                items = items.child(div().text_color(color(th.faint, 1.0)).child("│"));
+            }
+            let el = div().flex_none().child(self.line(part, th));
+            items = items.child(match press {
+                Some(k) => el
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, press_on(k.clone(), cx)),
+                None => el,
+            });
+        }
+        bar = bar.child(items);
+        if compact {
+            bar = bar
+                .child(ends(self, cx))
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move());
+        }
+
+        let root = div()
+            .id("box")
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this: &mut Self, e: &KeyDownEvent, window, cx| {
+                if let Some(w) = this.wizard() {
+                    if let Some(source) = w.key(e, cx) {
+                        this.go_live(source, cx);
+                    }
+                    return;
+                }
+                let k = &e.keystroke;
+                if k.modifiers.control && k.key == "q" {
+                    cx.quit();
+                    return;
+                }
+                this.press(&k.key, window, cx);
+            }))
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(color(th.surface, 1.0))
+            .border_1()
+            .border_color(color(th.faint, 0.7))
+            .font_family(self.font.clone())
+            .text_size(px(11. * z))
+            .line_height(px(11. * 1.35 * z));
+        if compact {
+            return root.child(bar);
+        }
+
         let raster = self.scene.draw(th);
-        let runs = raster.runs(th.surface);
+        let runs_px = raster.runs(th.surface);
         let (bw, bh) = (raster.w as f32 * cell, raster.h as f32 * cell);
         let pixels = canvas(
             |_, _, _| (),
             move |bounds: Bounds<gpui::Pixels>, _, window: &mut Window, _| {
                 let o = bounds.origin;
-                for r in &runs {
+                for r in &runs_px {
                     let at = point(o.x + px(r.x as f32 * cell), o.y + px(r.y as f32 * cell));
                     let rgb = Rgb(r.rgb[0] as f32, r.rgb[1] as f32, r.rgb[2] as f32);
                     window.paint_quad(fill(
@@ -566,10 +1104,25 @@ impl Render for BoxView {
         let cols = self
             .scene
             .columns(room.map(|w| (w / (CH * z)).floor().max(1.0) as usize));
+        /* The doing tickets this box runs, by the link their line opens: each gets a stop mark. */
+        let feed_url = feed.as_ref().map(|f| f.url.clone());
+        let here: Vec<(String, String)> = match &live {
+            Some((st, _)) => runs
+                .iter()
+                .filter_map(|r| {
+                    let url = feed_url
+                        .clone()
+                        .or_else(|| st.agents.iter().find(|a| a.slot == r.slot).map(|a| a.url.clone()))?;
+                    task_link(&url, &r.key).map(|l| (l, r.key.clone()))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let armed_key = self.armed.as_ref().map(|a| a.key.clone());
+        let mut lists: Vec<gpui::AnyElement> = Vec::new();
         /* Where each list hangs: todo centred under its pole, doing flush right with its pole,
         blocked centred under its own, done flush left with its pole; as the web widget. */
-        let list = |i: usize| {
-            let c = &cols[i];
+        for (i, c) in cols.iter().enumerate() {
             let w = room[i];
             let (left, align) = match i {
                 0 => ((x[0] + 5.0) * cell - w / 2.0, 0),
@@ -591,15 +1144,71 @@ impl Render for BoxView {
                 1 => d.items_end(),
                 _ => d.items_start(),
             };
-            d.child(
+            let mut d = d.child(
                 div()
                     .mb(px(2. * z))
                     .text_color(color(c.head_role.of(th), 1.0))
                     .child(c.head),
-            )
-            .children(c.lines.iter().map(|l| self.row(l)))
-        };
+            );
+            for l in &c.lines {
+                let mine = (i == 1)
+                    .then(|| l.1.as_ref().and_then(|u| here.iter().find(|(h, _)| h == u)))
+                    .flatten();
+                d = d.child(match mine {
+                    Some((_, k)) => {
+                        let armed = armed_key.as_deref() == Some(k.as_str());
+                        div()
+                            .flex()
+                            .flex_row()
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("stop-{k}")))
+                                    .cursor_pointer()
+                                    .text_color(color(if armed { th.red } else { th.faint }, 1.0))
+                                    .hover(|s| s.text_color(color(th.red, 1.0)))
+                                    .child(if armed { "stop? ■ " } else { "■ " })
+                                    .on_mouse_down(MouseButton::Left, press_on(format!("stop:{k}"), cx)),
+                            )
+                            .child(self.row(l, th))
+                    }
+                    None => self.row(l, th),
+                });
+            }
+            lists.push(d.into_any_element());
+        }
 
+        /* The menu's panels by name across the title bar, the open one lit; else the count. */
+        let middle: gpui::AnyElement = match (&self.menu, &panel) {
+            (Some(m), _) => {
+                let mut row = div().flex().flex_row().gap(px(7. * z));
+                for (n, t) in Tab::ALL.iter().enumerate() {
+                    let on = *t == m.tab;
+                    let label = if *t == Tab::Needs && needs > 0 {
+                        format!("{} {needs}", t.label())
+                    } else {
+                        t.label().to_string()
+                    };
+                    row = row.child(
+                        div()
+                            .id(SharedString::from(format!("tab-{n}")))
+                            .cursor_pointer()
+                            .text_color(color(if on { th.blue } else { th.muted }, 1.0))
+                            .hover(|s| s.text_color(color(th.ink, 1.0)))
+                            .child(label)
+                            .on_mouse_down(MouseButton::Left, press_on(format!("tab:{n}"), cx)),
+                    );
+                }
+                row.into_any_element()
+            }
+            (None, Some((_, _, title))) => div()
+                .text_color(color(th.muted, 1.0))
+                .child(title.to_string())
+                .into_any_element(),
+            (None, None) => div()
+                .text_color(color(th.muted, 1.0))
+                .child(self.scene.count())
+                .into_any_element(),
+        };
         let title = div()
             .id("title")
             .flex_none()
@@ -614,104 +1223,15 @@ impl Render for BoxView {
             .child(div().text_color(color(th.faint, 1.0)).child("—"))
             .child(div().text_color(color(th.blue, 1.0)).child("wired"))
             .child(div().flex_1().h(px(1.)).bg(color(th.faint, 0.55)))
-            .child(div().text_color(color(th.muted, 1.0)).child(match &panel {
-                Some((_, _, title)) => title.to_string(),
-                None => self.scene.count(),
-            }))
-            .child(
-                div()
-                    .id("close")
-                    .text_color(color(th.faint, 1.0))
-                    .hover(|s| s.text_color(color(th.red, 1.0)))
-                    .cursor_pointer()
-                    .child("×")
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                        cx.quit();
-                    }),
-            )
+            .child(middle)
+            .child(ends(self, cx))
             .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move());
 
-        let status = match &panel {
-            Some((_, p, _)) => p.keys.clone(),
-            None => {
-                let mut parts = self.scene.status();
-                /* The way to the agents screen, before the last word (which can be long and get cut off). */
-                if matches!(self.source, Source::Live { control: Some(_), .. }) {
-                    let at = if self.scene.has_note() {
-                        parts.len().saturating_sub(1)
-                    } else {
-                        parts.len()
-                    };
-                    parts.insert(at, crate::wizard::key("a", "agents"));
-                }
-                parts
-            }
+        let body: Vec<gpui::AnyElement> = match &panel {
+            Some((_, p, _)) => vec![self.panel(p, list_top, scene_w, z, th, cx).into_any_element()],
+            None => lists,
         };
-        let mut bar = div()
-            .flex_none()
-            .h(px(STATUS_H * z))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(10. * z))
-            .px(px(10. * z))
-            .bg(color(th.bar, 1.0))
-            .text_color(color(th.muted, 1.0))
-            .whitespace_nowrap()
-            .overflow_hidden();
-        for (n, part) in status.iter().enumerate() {
-            if n > 0 {
-                bar = bar.child(div().text_color(color(th.faint, 1.0)).child("│"));
-            }
-            bar = bar.child(div().flex_none().child(self.line(part)));
-        }
-
-        div()
-            .id("box")
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this: &mut Self, e: &KeyDownEvent, _, cx| {
-                if let Some(w) = this.wizard() {
-                    if let Some(source) = w.key(e, cx) {
-                        this.go_live(source, cx);
-                    }
-                    return;
-                }
-                if this.agents.is_some() {
-                    let Some((st, feed)) = this.live() else { return };
-                    let Some(a) = this.agents.as_mut() else { return };
-                    match a.key(e, &st, feed.as_ref(), cx) {
-                        Key::Close => this.agents = None,
-                        Key::Handled => {}
-                        Key::Ignored => return,
-                    }
-                    cx.notify();
-                    return;
-                }
-                let control = match &this.source {
-                    Source::Live { control, .. } => control.clone(),
-                    _ => None,
-                };
-                match e.keystroke.key.as_str() {
-                    "a" if control.is_some() => this.agents = control.map(|c| Agents::open(c, cx)),
-                    "n" => this.scene.add(),
-                    "a" => this.scene.answer(),
-                    "f" => this.scene.finish_one(),
-                    "q" | "escape" => cx.quit(),
-                    _ => return,
-                }
-                cx.notify();
-            }))
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(color(th.surface, 1.0))
-            .border_1()
-            .border_color(color(th.faint, 0.7))
-            .font_family(self.font.clone())
-            .text_size(px(11. * z))
-            .line_height(px(11. * 1.35 * z))
-            .child(title)
+        root.child(title)
             .child(
                 /* Whatever the window has beyond the box's size, around the scene: it is centred. */
                 div()
@@ -731,10 +1251,7 @@ impl Render for BoxView {
                             .h(px(scene_h))
                             .whitespace_nowrap()
                             .child(pixels)
-                            .children(match &panel {
-                                Some((_, p, _)) => vec![self.panel(p, list_top, scene_w, z).into_any_element()],
-                                None => (0..4).map(|i| list(i).into_any_element()).collect(),
-                            }),
+                            .children(body),
                     ),
             )
             .child(bar)
@@ -894,6 +1411,7 @@ mod tests {
             error: None,
             refused: false,
             live: Default::default(),
+            ..Default::default()
         };
         /* The daemon has just started a run on T-1, which the server still has in todo. */
         let st = daemon(

@@ -61,12 +61,31 @@ pub enum Step {
 
 /// What a step says: lines under the poles, maybe a code drawn large beside them, and the
 /// keys in the status line. `input` is the line that is the text field, drawn with a cursor.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Panel {
     pub lines: Vec<Line>,
     pub input: Option<(usize, String, String)>,
     pub code: Option<String>,
     pub keys: Vec<Line>,
+    /// What clicking a line does, by line: a key name the panel's own key handler takes, so
+    /// the mouse does what the keyboard does ("row:2" picks that row). A key in the status
+    /// line is clicked as the key it names.
+    pub clicks: Vec<Option<String>>,
+}
+
+/// The key a status-line hint names, for clicking it: "esc" is escape, "↑↓" moves down.
+pub fn hint_key(hint: &Line) -> Option<String> {
+    let k = hint.0.first()?.text.trim();
+    Some(
+        match k {
+            "esc" => "escape",
+            "↑↓" => "down",
+            "←→" => "right",
+            "any key" => "escape",
+            other => other,
+        }
+        .to_string(),
+    )
 }
 
 pub struct Wizard {
@@ -126,6 +145,13 @@ impl Wizard {
             job: None,
             since: Instant::now(),
         })
+    }
+
+    /// Say `note` on the address step (what signing out couldn't do, say).
+    pub fn note(&mut self, note: String) {
+        if let Step::Address { error, .. } = &mut self.step {
+            *error = Some(note);
+        }
     }
 
     fn runtimes(saved: Saved) -> Step {
@@ -534,6 +560,7 @@ impl Wizard {
                     input: Some((1, before.to_string(), after.to_string())),
                     code: None,
                     keys: vec![key("enter", "connect"), key("ctrl+v", "paste"), quit],
+                    clicks: Vec::new(),
                 }
             }
             Step::Approve { url, start, wait, note } => {
@@ -572,6 +599,7 @@ impl Wizard {
                     input: None,
                     code: Some(start.user_code.clone()),
                     keys,
+                    clicks: Vec::new(),
                 }
             }
             Step::Runtimes {
@@ -696,6 +724,7 @@ impl Wizard {
                     input: None,
                     code: None,
                     keys,
+                    clicks: Vec::new(),
                 }
             }
         }

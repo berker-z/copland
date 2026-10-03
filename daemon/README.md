@@ -75,11 +75,14 @@ command = [
 
 About the Claude Code flags, as of Claude Code 2.1: `--tools ""` takes away every built-in tool (no Bash, no Edit, no file reads), `--strict-mcp-config` ignores your other MCP servers, and `--permission-mode dontAsk` denies whatever isn't in `--allowedTools` instead of waiting for a prompt nobody will answer. `--allowedTools` is variadic, so keep it last. For an agent that should actually write code, give it the built-in tools it needs and a working directory you don't mind it changing. `claude` has to be signed in already (`claude` once, interactively); the daemon doesn't handle that.
 
-Three top-level keys are for the box alone, and the headless daemon ignores them:
+Some top-level keys are for the box alone, and the headless daemon ignores them. The menu's settings and boards panels write the first five for you (see "The menu"); a key at its default is left out.
 
 ```toml
-theme = "nord"                                  # one of Copland's seven themes
+theme = "nord"                                  # one of Copland's seven themes, or "copland" for yours there
 motion = false                                  # a still picture: no sway, current, blinking or travel
+notifications = false                           # no desktop notifications (the bell still counts)
+compact = true                                  # the status line alone, in a small window
+boards = ["COPL", "HOME"]                       # only these boards' tickets on the scene; all by default
 owner_token_file = "~/.config/copland/me.token" # your own token, for all four poles (below)
 owner_url = "https://copland.example.com"       # only when the agents are on more than one Copland
 ```
@@ -108,7 +111,7 @@ TLS is rustls with ring, so there is no OpenSSL and no cmake to find; on NixOS p
 
 The scene is drawn on a 170×22 grid at 3 screen pixels per cell, rounded to whole device pixels on scaled outputs. It is composited in software the way the web's canvas is, then painted as one GPUI quad per horizontal run of same-coloured cells, a few hundred quads. The lists and the status line are text in JetBrains Mono when the system has it, else fontconfig's monospace, else DejaVu Sans Mono. No font is bundled. Each list shows the longest form of its lines that all of them fit, as the web does: doing drops the timer, then the agent; blocked the agent, then the mark. At the box's size the full forms fit for ordinary keys and names.
 
-The window is 548×196 and asks to stay that size. When the compositor gives it more anyway (tiling, a rule, a resize), the box draws at the largest whole multiple of its natural size that fits, 6 pixels per cell at twice the size and so on, with the text and gaps scaled to match, and centres the scene in the space. The title and status lines run the full width. Smaller than 548×196 it stays at its natural size and is cut off.
+The window is 548×196, or 548×26 in compact mode (below). Its minimum is the compact size, so it can shrink to that when compact is switched on; Wayland has no way to ask for a fixed size, and GPUI 0.2.2 sends only the minimum anyway. When the compositor gives it more anyway (tiling, a rule, a resize), the box draws at the largest whole multiple of its natural size that fits, 6 pixels per cell at twice the size and so on, with the text and gaps scaled to match, and centres the scene in the space. The title and status lines run the full width. Smaller than 548×196 it stays at its natural size and is cut off.
 
 It draws only when something changes: every frame while a ticket travels or fades, about 20 frames a second while a run's current flows, 12 while the wires only sway (they move about a cell a second, so it looks the same and costs less), once a second while a run's timer shows with `motion = false`, and otherwise when the daemon's state or the owner's feed changes (and every 30 seconds for the done list's slow fade). GPUI has no reduced-motion setting to follow, so `motion = false` in `daemon.toml` is the switch.
 
@@ -135,20 +138,51 @@ The commands come from `box/src/runtime.rs`, one template per runtime. Claude Co
 
 ### The agents screen
 
-`a` in the live view (the status line says so) opens the agents screen in the same window, the poles staying behind it as they do for setup (COPL-55). It lists every agent you have in Copland, from the `agents` that `/api/wired` already sends with your read-only token (paused ones too), so without `owner_token_file` it lists only what this machine runs. Each agent is one of two kinds:
+The menu's agents panel (`a` in the live view goes straight to it) is the agents screen, in the same window, the poles staying behind it as they do for setup (COPL-55). It lists every agent you have in Copland, from the `agents` that `/api/wired` already sends with your read-only token (paused ones too), so without `owner_token_file` it lists only what this machine runs. Each agent is one of two kinds:
 
 - **Runs here**: its name, runtime (Claude Code or Codex, or "(own)" for a command that isn't one of setup's templates, a widened one say), working folder, and what it is doing: watching, a task it has a run on, an error, or "changes after this run". Space (or ← →) cycles the runtime through those found on PATH, marked as a change; Enter saves the changes. `x` twice stops running it here.
 - **Not on this machine**: Enter asks Copland for that agent's token with a device login that names it (`agents` on `POST /api/device/start`), so `/device` ticks that agent alone; the box shows the code and opens the page, as setup does. Once approved, it writes `<name>.token` beside the config (another name if that file exists) and an `[[agent]]` table with the first runtime found, working in `~/agents/<name>`. Because the request names agents, the approval makes only their tokens: the box already has the read-only one for you.
 
-↑↓ picks an agent, Esc goes back, and changes not saved are dropped. Paused agents say so.
+↑↓ picks an agent, Esc closes the menu, and changes not saved are dropped. Paused agents say so.
 
 Saving edits `daemon.toml` in place (`box/src/edit.rs`): only the changed agent's table, and in it only `client`, `command` and the untested-template note, so comments and hand edits elsewhere stay. The file is checked the way the daemon reads it before anything is written, the old one is kept as `daemon.toml.bak` (or `.bak.2`, …, never over an older backup), and the new one is written whole with mode 0600. Stopping an agent here removes its table and leaves its token file, so the backup still works; the token stays valid until you revoke it in settings › agents. The last agent can't be stopped here (a config without one isn't a config); `--setup` starts over instead.
 
 Then the running daemon takes the new config without a restart (`Daemon::reload`, `core/src/daemon.rs`, the diff in `core/src/reload.rs`). An agent is the same agent across the two when its instance and handle are; one whose command, workdir, client or token changed is rebound, one that's gone is stopped, one that's new is started, and the rest are left alone (all are rebound when `poll_interval` changed). Each agent's loop runs under a supervising task that holds its binding. A rebind or a stop bumps the binding's generation, which the loop looks at only between polls and before starting a run; it is never passed to a runtime. So an idle loop ends at once, and a loop in a run lets the run finish, claim, keepalives, `finish_run` and all, under its old binding, then ends; only then does the supervisor start the agent again with the new one (or drop it). An agent never has two loops, so never two runs. The wake guard's memory goes from the old loop to the new, so a rebind doesn't relaunch on items already handled. If a reload comes between the check and a launch, that one run still uses the old binding; the next one uses the new.
 
-Closing the window, SIGINT or SIGTERM stop the daemon as the headless one stops: runtimes get SIGTERM and their runs finish as cancelled. The title bar drags the window (GPUI's `start_window_move`).
+### The menu
 
-The colours are Copland's seven themes, copied from `src/styles/themes.css` into `box/src/theme.rs`. They have to be kept in step by hand; a test reads the CSS and fails when they differ. Pick one with `theme = "nord"` at the top of `daemon.toml` (the headless daemon ignores the key) or `--theme`. Later it should come from your Copland settings.
+≡ at the right of the title bar, or `m`, opens the menu (COPL-65): small panels under the poles, one at a time, their names across the title bar. Click a name or press its number (1 to 6) to switch, Esc or `m` closes it. Everything in a panel works with the keyboard and the mouse alike: clicking a line does what pressing its key would, and so does clicking a key in the status line. `box/src/menu.rs`.
+
+- **needs you**: what the bell counts (below), each line opening its task.
+- **agents**: the agents screen above.
+- **boards**: which boards' tickets the scene shows, from `GET /api/boards` with your token. Space shows or hides one, `a` shows them all again. It is display only: the agents still wake for anything on any board, and the bell still counts blocks on hidden ones. With a filter on, done's count is what is left of the listed ones.
+- **settings**: the theme (the seven, then "copland", yours there), motion, notifications, start at login and compact. Space or ← → changes the selected one, and it applies at once.
+- **session**: who the box is signed in as, on which Copland, and the tokens it holds. `x` twice signs out (below).
+- **about**: this version, and whether a newer box is out. It asks GitHub's releases API for `box-v*` tags on berker-z/copland once, without a credential, keeps the answer in `$XDG_STATE_HOME/copland/release.toml` for twelve hours, and says so plainly when it can't ask. `r` asks again, `o` opens the releases.
+
+Settings and boards are written to `daemon.toml` when the menu closes, once for everything changed, through the same editor as the agents screen (`edit::set_key`): an existing key is replaced where it is, a new one goes after the last top-level key, comments stay, and the old file is kept as `daemon.toml.bak` (`.bak.2`, …). Start at login is a file of its own, written or removed as it is switched: `$XDG_CONFIG_HOME/autostart/copland-box.desktop`, running `copland-box` as found on PATH (a Nix profile's link, which follows upgrades, not the store path behind it), else this binary, with a word in the panel when that is a store path or a build tree. `--config` goes into it when the box was started with one that isn't the default.
+
+Compact shows the status line alone in a 548×26 window, with the bell, ≡ and × at its end; it drags like the title bar. Opening the menu grows the window back for as long as it is open. The box resizes itself (`Window::resize`), and on Hyprland asks for the size over IPC as well (`hyprland::resize`, floating it where it is, without centring), since a rule's `size` would otherwise win. Started compact, it is sized that way even when a rule floats it.
+
+### What needs you
+
+The bell in the title bar (drawn in pixels like the scene) counts what needs you (COPL-64): your agents' tasks in a blocked stage, from `/api/wired`, and unread items in your own inbox that @mention you, from `GET /api/inbox?unread=true` with your read-only token, read again when your live socket says `inbox`. It is faint at nothing and yellow with the count otherwise. Clicking it, or `b`, opens the needs-you panel.
+
+A desktop notification fires once for each new one, quietly: no sound (the box plays none and asks the notification server not to with `suppress-sound`), nothing for routine moves, and more than three at once are one notification. Clicking it opens the task. On Linux it goes over D-Bus to `org.freedesktop.Notifications` with zbus, which GPUI already brings, so no crate was added. macOS has none yet (a TODO in `box/src/notify.rs`: it needs a signed app). What was said is kept in `$XDG_STATE_HOME/copland/notified.toml`, so a restart repeats nothing; a need that goes away (unblocked, read) is forgotten, so a task blocked again later is said again. The first time, with no such file, whatever is already there is remembered without a burst. The settings panel switches the notifications off (`notifications = false`); the bell counts either way.
+
+### Stopping a run
+
+A ticket in doing that this box is running gets a ■ in front of it. Click it, or press `s` (tab picks the next run when there are several), and the box asks "stop COPL-12's run?"; a second click or `s` within six seconds stops it, anything else keeps it. Stopping is the same as at shutdown, for that run alone: SIGTERM to the runtime's process group, SIGKILL ten seconds later, and the run finishes as cancelled. The wake guard remembers the task's items as after any run, so it isn't started again until something new comes. Underneath it is `Daemon::run_stopper()` (`RunStopper::stop(slot, run)`), which the agent's loop watches during a run.
+
+### Signing out
+
+`x` twice on the session panel signs the box out: it stops the daemon (runs finish as cancelled), revokes every token `daemon.toml` names, each with itself through `DELETE /api/tokens/self` (the one token-management call a token may make, on itself only; see AGENTS.md), then deletes the token files, `daemon.toml` with its backups and setup note, and `notified.toml`, and starts setup in the same window with the address filled in. A token it couldn't revoke (the server down, say) is named there, to revoke in settings › tokens. To switch accounts or add one, sign out and set up again; the box holds one at a time.
+
+### Closing it, and its colours
+
+Closing the window, SIGINT or SIGTERM stop the daemon as the headless one stops: runtimes get SIGTERM and their runs finish as cancelled. After signing out, with no daemon left, SIGINT and SIGTERM just exit. The title bar drags the window (GPUI's `start_window_move`).
+
+The colours are Copland's seven themes, copied from `src/styles/themes.css` into `box/src/theme.rs`. They have to be kept in step by hand; a test reads the CSS and fails when they differ. Pick one with `theme = "nord"` at the top of `daemon.toml` (the headless daemon ignores the key) or `--theme` (for that run only), or from the menu. `theme = "copland"` follows the theme you chose in Copland: the box reads `GET /api/settings` with your read-only token (a person's own read, which an agent's token can't make) and again when your live socket says `settings` changed; until it has, and without `owner_token_file`, it is nord.
 
 ### Hyprland
 

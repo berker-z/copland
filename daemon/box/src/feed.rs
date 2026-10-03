@@ -8,16 +8,25 @@
 //! runs starts or ends, and on a clock: every fifteen seconds while the
 //! socket is down, every two minutes while it is up (a claim that lapses
 //! sends nothing, and the hub keeps nothing for a socket that was away).
+//!
+//! With the same token it also reads what the menu and the bell show (COPL-64,
+//! COPL-65), each when its topic says it changed and on the same clock: the
+//! person's unread mentions (`/api/inbox?unread=true`, "inbox"), their boards
+//! (`/api/boards`, "boards") and their theme (`/api/settings`, "settings").
+//! After each read the notifier decides whether anything new needs saying.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use copland_daemon_core::DaemonState;
 use copland_daemon_core::Phase;
-use copland_daemon_core::api::{Api, Wired};
+use copland_daemon_core::api::{Api, BoardRef, InboxItem, Wired};
 use copland_daemon_core::config::Owner;
 use copland_daemon_core::live::{self, Heard, Link};
 use tokio::sync::{Notify, watch};
+
+use crate::notify::{Desktop, Notifier};
 
 /// How often it reads when nothing happens here and the live socket is down.
 pub const EVERY: Duration = Duration::from_secs(15);
@@ -27,11 +36,50 @@ pub const EVERY_LIVE: Duration = Duration::from_secs(120);
 const SETTLE: Duration = Duration::from_secs(2);
 /// Reads the live socket asks for are at least this far apart.
 const SPACING: Duration = Duration::from_secs(1);
+/// Unread mentions read at most this many pages of a hundred.
+const INBOX_PAGES: usize = 3;
 
 /// What `/api/wired` is made of: tasks on boards (board), which boards the person is on
-/// (boards), their agents' names and pauses (agents). Handles are in "people".
+/// (boards), their agents' names and pauses (agents). Handles are in "people". The person's
+/// inbox and settings are the bell's and the theme's.
 fn wanted(topic: &str) -> bool {
-    matches!(topic, "board" | "boards" | "agents" | "people")
+    matches!(topic, "board" | "boards" | "agents" | "people" | "inbox" | "settings")
+}
+
+/// What a wake should read again.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Due {
+    pub wired: bool,
+    pub inbox: bool,
+    pub boards: bool,
+    pub settings: bool,
+}
+
+impl Due {
+    pub const ALL: Due = Due {
+        wired: true,
+        inbox: true,
+        boards: true,
+        settings: true,
+    };
+
+    /// What a set of live topics asks to read.
+    pub fn of(topics: &std::collections::BTreeSet<String>) -> Due {
+        let has = |t: &str| topics.contains(t);
+        Due {
+            wired: has("board") || has("boards") || has("agents") || has("people"),
+            inbox: has("inbox"),
+            boards: has("boards"),
+            settings: has("settings"),
+        }
+    }
+
+    fn add(&mut self, o: Due) {
+        self.wired |= o.wired;
+        self.inbox |= o.inbox;
+        self.boards |= o.boards;
+        self.settings |= o.settings;
+    }
 }
 
 /// The clock's interval for a socket state.
@@ -43,6 +91,8 @@ pub fn every(link: Link) -> Duration {
 pub struct Feed {
     /// The instance it reads, for links.
     pub url: String,
+    /// The person the token is, once asked ("berker-z").
+    pub who: Option<String>,
     /// The last good read, and when (wall clock) it was taken.
     pub wired: Option<(Wired, SystemTime)>,
     /// What went wrong with the last read, cleared by a good one.
@@ -51,6 +101,20 @@ pub struct Feed {
     pub refused: bool,
     /// The owner's live socket.
     pub live: Link,
+    /// The person's unread mentions, newest first, once read.
+    pub mentions: Option<Vec<InboxItem>>,
+    /// The boards the person is on, once read.
+    pub boards: Option<Vec<BoardRef>>,
+    /// The person's theme in Copland, once read.
+    pub theme: Option<String>,
+}
+
+/// What the feed tells you about on the desktop, besides drawing it: the notifier, where the
+/// notes go, and whether they are wanted right now (the settings panel's switch).
+pub struct Notices {
+    pub notifier: Notifier,
+    pub desktop: Desktop,
+    pub enabled: Arc<AtomicBool>,
 }
 
 /// Whether the box's live sockets are up, for the status line: the running agents' and the
@@ -99,8 +163,13 @@ async fn run_changed(daemon: &mut watch::Receiver<DaemonState>, seen: &mut Vec<O
 }
 
 /// The owner's live socket, for as long as the returned task lives (it is aborted when the
-/// feed stops). Its state goes into the feed; what it hears wakes `wake`.
-fn listen(owner: &Owner, tx: watch::Sender<Feed>, wake: Arc<Notify>) -> tokio::task::JoinHandle<()> {
+/// feed stops). Its state goes into the feed; what it hears is added to `due` and wakes `wake`.
+fn listen(
+    owner: &Owner,
+    tx: watch::Sender<Feed>,
+    due: Arc<Mutex<Due>>,
+    wake: Arc<Notify>,
+) -> tokio::task::JoinHandle<()> {
     let (base, token) = (owner.url.clone(), owner.token.clone());
     tokio::spawn(async move {
         live::listen(
@@ -115,9 +184,14 @@ fn listen(owner: &Owner, tx: watch::Sender<Feed>, wake: Arc<Notify>) -> tokio::t
                 });
             },
             move |h| {
-                if let Heard::Topics(t) = &h {
-                    tracing::debug!(?t, "live: reading your agents' work");
-                }
+                let d = match &h {
+                    Heard::Topics(t) => {
+                        tracing::debug!(?t, "live: reading your agents' work");
+                        Due::of(t)
+                    }
+                    Heard::Resync => Due::ALL,
+                };
+                due.lock().expect("not poisoned").add(d);
                 wake.notify_one();
             },
         )
@@ -133,7 +207,27 @@ impl Drop for Abort {
     }
 }
 
-pub async fn run(owner: Owner, tx: watch::Sender<Feed>, mut daemon: watch::Receiver<DaemonState>) {
+/// The person's unread mentions, newest first: a few pages of their unread inbox at most.
+async fn mentions(api: &Api, owner: &Owner) -> Result<Vec<InboxItem>, copland_daemon_core::api::ApiError> {
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..INBOX_PAGES {
+        let page = api.inbox_unread(&owner.token, 100, cursor.as_deref()).await?;
+        out.extend(page.items.into_iter().filter(|i| i.kind == "mentioned"));
+        match page.next {
+            Some(n) => cursor = Some(n),
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+pub async fn run(
+    owner: Owner,
+    tx: watch::Sender<Feed>,
+    mut daemon: watch::Receiver<DaemonState>,
+    mut notices: Option<Notices>,
+) {
     let refuse = |why: String| {
         tracing::error!("{why}");
         tx.send_modify(|f| {
@@ -157,9 +251,19 @@ pub async fn run(owner: Owner, tx: watch::Sender<Feed>, mut daemon: watch::Recei
         *said = Some(message);
     };
     let wake = Arc::new(Notify::new());
-    let _socket = Abort(listen(&owner, tx.clone(), wake.clone()));
+    let due = Arc::new(Mutex::new(Due::ALL));
+    let _socket = Abort(listen(&owner, tx.clone(), due.clone(), wake.clone()));
     let mut link = tx.subscribe();
+    /* The extra reads' failures are quieter: logged once each until they change. */
+    let mut extra_said: [Option<String>; 3] = Default::default();
+    let quiet = |said: &mut Option<String>, what: &str, e: String| {
+        if said.as_deref() != Some(e.as_str()) {
+            tracing::warn!("reading {what}: {e}");
+            *said = Some(e);
+        }
+    };
     loop {
+        let now = std::mem::take(&mut *due.lock().expect("not poisoned"));
         if !checked {
             /* /api/wired would refuse an agent's token too, but this says why. */
             match api.me(&owner.token).await {
@@ -171,13 +275,16 @@ pub async fn run(owner: Owner, tx: watch::Sender<Feed>, mut daemon: watch::Recei
                 }
                 Ok(me) => {
                     tracing::info!(url = %owner.url, "reading your agents' work as @{}", me.user.handle);
+                    tx.send_modify(|f| f.who = Some(me.user.handle.clone()));
                     checked = true;
                 }
                 Err(e) if e.is_refusal() => return refuse(format!("owner token refused: {e}")),
                 Err(e) => fail(format!("asking who the owner token is: {e}"), &mut said),
             }
         }
-        if checked {
+        /* Until the first good look at who it is, everything is still due. */
+        let now = if checked { now } else { Due::ALL };
+        if checked && now.wired {
             match api.wired(&owner.token).await {
                 Ok(w) => {
                     if said.take().is_some() {
@@ -192,12 +299,54 @@ pub async fn run(owner: Owner, tx: watch::Sender<Feed>, mut daemon: watch::Recei
                 Err(e) => fail(format!("reading /api/wired: {e}"), &mut said),
             }
         }
+        if checked && now.inbox {
+            match mentions(&api, &owner).await {
+                Ok(m) => {
+                    extra_said[0] = None;
+                    tx.send_modify(|f| f.mentions = Some(m));
+                }
+                Err(e) => quiet(&mut extra_said[0], "your inbox", e.to_string()),
+            }
+        }
+        if checked && now.boards {
+            match api.boards(&owner.token).await {
+                Ok(b) => {
+                    extra_said[1] = None;
+                    tx.send_modify(|f| f.boards = Some(b));
+                }
+                Err(e) => quiet(&mut extra_said[1], "your boards", e.to_string()),
+            }
+        }
+        if checked && now.settings {
+            match api.settings(&owner.token).await {
+                Ok(s) => {
+                    extra_said[2] = None;
+                    tx.send_if_modified(|f| {
+                        let changed = f.theme.as_deref() != Some(s.theme.as_str());
+                        f.theme = Some(s.theme.clone());
+                        changed
+                    });
+                }
+                Err(e) => quiet(&mut extra_said[2], "your settings", e.to_string()),
+            }
+        }
+        if let Some(n) = notices.as_mut() {
+            let notes = n.notifier.check(&tx.borrow());
+            if n.enabled.load(Ordering::Relaxed) {
+                for note in notes {
+                    n.desktop.send(note);
+                }
+            }
+        }
         /* Until the clock (whose interval follows the socket), the socket, or a run here. */
         let since = tokio::time::Instant::now();
         loop {
             let up = link.borrow_and_update().live;
             tokio::select! {
-                _ = tokio::time::sleep_until(since + every(up)) => break,
+                _ = tokio::time::sleep_until(since + every(up)) => {
+                    due.lock().expect("not poisoned").add(Due::ALL);
+                    break;
+                }
                 _ = wake.notified() => {
                     /* A busy board sends a burst; one read every SPACING at most answers it. */
                     tokio::time::sleep_until(since + SPACING).await;
@@ -205,12 +354,14 @@ pub async fn run(owner: Owner, tx: watch::Sender<Feed>, mut daemon: watch::Recei
                 }
                 _ = run_changed(&mut daemon, &mut seen) => {
                     tokio::time::sleep(SETTLE).await;
+                    due.lock().expect("not poisoned").wired = true;
                     break;
                 }
                 changed = link.changed() => {
                     let now = link.borrow().live;
                     /* Gone down: anything could have been missed, so read now. */
                     if changed.is_err() || (up == Link::Connected && now != Link::Connected) {
+                        due.lock().expect("not poisoned").add(Due::ALL);
                         break;
                     }
                 }
@@ -229,7 +380,39 @@ mod tests {
         assert_eq!(every(Link::Reconnecting), EVERY);
         assert_eq!(every(Link::Connecting), EVERY);
         assert!(wanted("board") && wanted("agents") && wanted("boards"));
-        assert!(!wanted("inbox") && !wanted("vault") && !wanted("settings"));
+        assert!(wanted("inbox") && wanted("settings") && !wanted("vault") && !wanted("notes"));
+    }
+
+    #[test]
+    fn each_topic_reads_only_what_it_changed() {
+        let of = |t: &[&str]| Due::of(&t.iter().map(|s| s.to_string()).collect());
+        assert_eq!(
+            of(&["board"]),
+            Due {
+                wired: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            of(&["inbox"]),
+            Due {
+                inbox: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            of(&["boards", "settings"]),
+            Due {
+                wired: true,
+                boards: true,
+                settings: true,
+                inbox: false
+            }
+        );
+        let mut d = Due::default();
+        d.add(of(&["inbox"]));
+        d.add(of(&["agents"]));
+        assert!(d.inbox && d.wired && !d.boards);
     }
 
     #[test]

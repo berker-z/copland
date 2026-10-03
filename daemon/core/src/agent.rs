@@ -79,6 +79,26 @@ pub struct Wanted {
 /// Whether a reload has changed or removed the agent: the generation of its wanted binding has
 /// moved on from the one this loop was started with. Looked at between polls and before a run
 /// only, and never handed to a runtime, so a run in progress always finishes first.
+/// A run to stop by hand: the agent's slot and the run's short id. `RunStopper` sets it, and the
+/// loop whose run it is stops its runtime (SIGTERM to the group) and finishes the run as cancelled.
+pub type StopRequest = Option<(u64, String)>;
+
+/// Resolves once `rx` asks for this slot's run `run` to stop (never, once the daemon is gone).
+async fn stop_requested(mut rx: watch::Receiver<StopRequest>, slot: u64, run: String) {
+    loop {
+        if rx
+            .borrow_and_update()
+            .as_ref()
+            .is_some_and(|(s, r)| *s == slot && *r == run)
+        {
+            return;
+        }
+        if rx.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
 pub struct Retire {
     pub rx: watch::Receiver<Wanted>,
     pub generation: u64,
@@ -99,6 +119,8 @@ pub struct AgentLoop {
     state: watch::Sender<DaemonState>,
     shutdown: watch::Receiver<bool>,
     retire: Retire,
+    /// Runs stopped by hand.
+    stop_run: watch::Receiver<StopRequest>,
     /// Who the token is, once the server has said.
     me: Option<Identity>,
     guard: WakeGuard,
@@ -180,6 +202,7 @@ impl AgentLoop {
         state: watch::Sender<DaemonState>,
         shutdown: watch::Receiver<bool>,
         retire: Retire,
+        stop_run: watch::Receiver<StopRequest>,
         guard: WakeGuard,
     ) -> Result<Self> {
         let api = Api::new(&agent.url)?;
@@ -192,6 +215,7 @@ impl AgentLoop {
             state,
             shutdown,
             retire,
+            stop_run,
             me: None,
             guard,
             noted: Default::default(),
@@ -549,12 +573,13 @@ impl AgentLoop {
                 runtime_dir: &self.paths.runtime_dir,
             },
             self.shutdown.clone(),
+            stop_requested(self.stop_run.clone(), self.slot, short.clone()),
         )
         .await;
         drop(started);
         let ending = match exit {
             Exit::Code(0) => Ending::Completed,
-            Exit::Stopped => Ending::Cancelled,
+            Exit::Stopped | Exit::Cancelled => Ending::Cancelled,
             _ => Ending::Failed,
         };
         let status = self.finish(&run_id, ending).await;

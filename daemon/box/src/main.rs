@@ -7,6 +7,9 @@ mod agents;
 mod edit;
 mod feed;
 mod hyprland;
+mod menu;
+mod notify;
+mod prefs;
 mod runtime;
 mod scene;
 mod setup;
@@ -16,7 +19,9 @@ mod view;
 mod webts;
 mod wizard;
 
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -24,7 +29,7 @@ use std::thread::JoinHandle;
 use anyhow::{Context as _, Result};
 use clap::Parser;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
-use copland_daemon_core::{Config, Daemon, DaemonState, Paths};
+use copland_daemon_core::{Config, Daemon, DaemonState, Paths, RunStopper};
 use gpui::{
     AppContext as _, Application, Bounds, SharedString, WindowBounds, WindowDecorations, WindowKind, WindowOptions, px,
     size,
@@ -32,8 +37,10 @@ use gpui::{
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::agents::{Control, Reload};
-use crate::feed::Feed;
+use crate::agents::{Control, Reload, SetupAgain};
+use crate::feed::{Feed, Notices};
+use crate::menu::Prefs;
+use crate::notify::{Desktop, Notifier};
 use crate::scene::{Scene, Tune};
 use crate::theme::Theme;
 use crate::view::{BoxView, Source};
@@ -90,11 +97,6 @@ fn theme_in(path: &Path) -> Option<String> {
     table_in(path)?.get("theme")?.as_str().map(str::to_string)
 }
 
-/// `motion` from the config file: on unless it says `motion = false`.
-fn motion_in(path: &Path) -> bool {
-    table_in(path).and_then(|t| t.get("motion")?.as_bool()).unwrap_or(true)
-}
-
 fn pick_theme(args: &Args, path: &Path) -> Result<&'static Theme> {
     if let Some(name) = &args.theme {
         return Theme::named(name).with_context(|| {
@@ -140,20 +142,23 @@ struct Running {
     thread: Option<JoinHandle<()>>,
 }
 
+/// A daemon just started: it, what the window watches, and the ways back to it.
+struct Started {
+    running: Running,
+    state: watch::Receiver<DaemonState>,
+    /// The owner's view, when the config has an owner token.
+    feed: Option<watch::Receiver<Feed>>,
+    rt: tokio::runtime::Handle,
+    reload: mpsc::UnboundedSender<Reload>,
+    stopper: RunStopper,
+    /// Links of desktop notifications that were clicked.
+    clicks: Option<mpsc::UnboundedReceiver<String>>,
+}
+
 impl Running {
-    /// The daemon's state, the owner's feed when the config has an owner token, and what the
-    /// agents screen changes the running daemon through.
-    #[allow(clippy::type_complexity)]
-    fn start(
-        config: Config,
-        path: PathBuf,
-        finished: Arc<AtomicBool>,
-    ) -> Result<(
-        Self,
-        watch::Receiver<DaemonState>,
-        Option<watch::Receiver<Feed>>,
-        Control,
-    )> {
+    /// Start the daemon, and with an owner token the owner's feed, which also sends desktop
+    /// notifications while `notes` says so.
+    fn start(config: Config, finished: Arc<AtomicBool>, notes: Arc<AtomicBool>) -> Result<Started> {
         let owner = config.owner.clone();
         let feed = owner.as_ref().map(|o| {
             watch::channel(Feed {
@@ -163,6 +168,19 @@ impl Running {
         });
         let feed_tx = feed.as_ref().map(|f| f.0.clone());
         let feed_rx = feed.map(|f| f.1);
+        /* The bell's desktop half: only with a feed to say what needs you. */
+        let (notices, clicks) = match &owner {
+            Some(_) => {
+                let (tx, rx) = mpsc::unbounded_channel();
+                let notices = Notices {
+                    notifier: Notifier::new(notify::memory_path()),
+                    desktop: Desktop::start(tx),
+                    enabled: notes,
+                };
+                (Some(notices), Some(rx))
+            }
+            None => (None, None),
+        };
         let (state_tx, state_rx) = std::sync::mpsc::channel();
         let (stop, mut stop_rx) = oneshot::channel::<()>();
         let (reload_tx, mut reload_rx) = mpsc::unbounded_channel::<Reload>();
@@ -186,9 +204,13 @@ impl Running {
                         return;
                     }
                 };
-                let _ = state_tx.send(Ok((daemon.subscribe(), tokio::runtime::Handle::current())));
+                let _ = state_tx.send(Ok((
+                    daemon.subscribe(),
+                    tokio::runtime::Handle::current(),
+                    daemon.run_stopper(),
+                )));
                 if let (Some(owner), Some(tx)) = (owner, feed_tx) {
-                    tokio::spawn(feed::run(owner, tx, daemon.subscribe()));
+                    tokio::spawn(feed::run(owner, tx, daemon.subscribe(), notices));
                 }
                 let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
                 else {
@@ -225,22 +247,21 @@ impl Running {
                 finished.store(true, Ordering::Relaxed);
             });
         })?;
-        let (state, rt) = state_rx
+        let (state, rt, stopper) = state_rx
             .recv()
             .context("the daemon's thread ended before it started")??;
-        Ok((
-            Self {
+        Ok(Started {
+            running: Self {
                 stop: Some(stop),
                 thread: Some(thread),
             },
             state,
-            feed_rx,
-            Control {
-                config: path,
-                rt,
-                reload: reload_tx,
-            },
-        ))
+            feed: feed_rx,
+            rt,
+            reload: reload_tx,
+            stopper,
+            clicks,
+        })
     }
 
     /// Stop the agents (runs finish as cancelled) and wait for them.
@@ -253,6 +274,9 @@ impl Running {
         }
     }
 }
+
+/// Starts the daemon on a config: the window's next source.
+type Launch = Rc<dyn Fn(Config) -> Result<Source>>;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -272,38 +296,114 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let path = args.config.clone().unwrap_or_else(default_config_path);
-    let theme = pick_theme(&args, &path)?;
     let tune = Tune::default();
-    let motion = motion_in(&path);
+    /* The box's settings (the menu changes them): as the file says, even one the daemon refuses. */
+    let mut prefs = Prefs::from_table(table_in(&path).as_ref());
+    if let Some(t) = &args.theme {
+        /* --theme for this run only: drawn, not written. */
+        pick_theme(&args, &path)?;
+        prefs.theme = t.clone();
+    } else if prefs.theme != menu::FOLLOW && Theme::named(&prefs.theme).is_none() {
+        tracing::warn!("no theme {}; using {}", prefs.theme, theme::DEFAULT);
+    }
 
     /* The daemon, once there is one: started here, or by setup when it has written the config. */
     let running: Arc<Mutex<Option<Running>>> = Arc::default();
-    let launch = {
+    let stop_daemon: Arc<dyn Fn() + Send + Sync> = {
+        let running = running.clone();
+        let watching = Arc::new(AtomicBool::new(false));
+        Arc::new(move || {
+            let r = running.lock().expect("one writer").take();
+            if let Some(r) = r {
+                r.stop();
+            }
+            /* The daemon's runtime listened for SIGTERM and SIGINT, and its handler outlives it:
+            with no daemon (setting up again after signing out), they would do nothing. So
+            something answers them while none runs; a daemon started later answers its own. */
+            if !watching.swap(true, Ordering::Relaxed) {
+                let running = running.clone();
+                let _ = std::thread::Builder::new().name("signals".into()).spawn(move || {
+                    let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+                        return;
+                    };
+                    rt.block_on(async {
+                        let (Ok(mut term), Ok(mut int)) =
+                            (signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
+                        else {
+                            return;
+                        };
+                        loop {
+                            tokio::select! {
+                                _ = term.recv() => {}
+                                _ = int.recv() => {}
+                            }
+                            if running.lock().expect("one writer").is_none() {
+                                tracing::info!("signal: exiting");
+                                std::process::exit(0);
+                            }
+                        }
+                    });
+                });
+            }
+        })
+    };
+    /* Setup over the same config, for signing out; it needs the launcher, which needs it. */
+    let setup_again: Rc<OnceCell<SetupAgain>> = Rc::default();
+    let launch: Launch = {
         let running = running.clone();
         let path = path.clone();
-        move |config: Config| -> Result<Source> {
+        let notes = prefs.notifications.clone();
+        let setup_again = setup_again.clone();
+        let stop_daemon = stop_daemon.clone();
+        Rc::new(move |config: Config| -> Result<Source> {
             tracing::info!(agents = config.agents.len(), "starting");
             if config.owner.is_none() {
                 tracing::info!("no owner_token_file: drawing what the daemon knows (todo and doing)");
             }
             let finished = Arc::new(AtomicBool::new(false));
-            let (r, state, feed, control) = Running::start(config, path.clone(), finished.clone())?;
-            *running.lock().expect("one writer") = Some(r);
+            let s = Running::start(config, finished.clone(), notes.clone())?;
+            *running.lock().expect("one writer") = Some(s.running);
+            let setup_again = setup_again.clone();
+            let control = Control {
+                config: path.clone(),
+                rt: s.rt,
+                reload: s.reload,
+                stopper: s.stopper,
+                stop_daemon: stop_daemon.clone(),
+                setup: Rc::new(move |url, note| {
+                    let again = setup_again.get().expect("set before any window");
+                    let mut w = again(url, note.clone())?;
+                    if let Some(n) = note {
+                        w.note(n);
+                    }
+                    Ok(w)
+                }),
+            };
             Ok(Source::Live {
-                state,
-                feed,
+                state: s.state,
+                feed: s.feed,
                 finished,
                 control: Some(control),
+                clicks: s.clicks,
             })
-        }
+        })
     };
+    {
+        let launch = launch.clone();
+        let path = path.clone();
+        let _ = setup_again.set(Rc::new(move |url: Option<&str>, _note: Option<String>| {
+            let l = launch.clone();
+            Wizard::new(path.clone(), url, Box::new(move |c| l(c)))
+        }));
+    }
     /* No config (or one setup left half done) sets the box up; a broken one is shown, not replaced. */
     let wants_setup = !args.demo && (args.setup || !path.exists());
     let (scene, source) = if args.demo {
         (Scene::demo(tune, 0x5eed_c0b1), Source::Demo)
     } else if wants_setup {
         tracing::info!(config = %path.display(), "setting up");
-        let wizard = Wizard::new(path.clone(), args.url.as_deref(), Box::new(launch))?;
+        let l = launch.clone();
+        let wizard = Wizard::new(path.clone(), args.url.as_deref(), Box::new(move |c| l(c)))?;
         (Scene::live(tune), Source::Setup(Box::new(wizard)))
     } else {
         match Config::load(&path) {
@@ -320,34 +420,39 @@ fn main() -> Result<()> {
         }
     };
     let mut scene = scene;
-    scene.motion = motion;
-    let (w, h) = BoxView::window_size(&scene, tune.scale as f32, 1.0);
+    scene.motion = prefs.motion;
+    /* Compact only once there is a daemon to show: setup and the demo need the whole box. */
+    let compact = prefs.compact && matches!(source, Source::Live { .. });
+    let (w, h) = BoxView::size_for(&scene, compact);
+    /* The least the window may be is the compact box, so it can shrink to that later. */
+    let (min_w, min_h) = BoxView::size_for(&scene, true);
     let mut scene = Some(scene);
     let mut source = Some(source);
+    let mut prefs = Some(prefs);
     Application::new().run(move |cx| {
         let font: SharedString = pick_font(&cx.text_system().all_font_names()).into();
-        tracing::debug!(%font, theme = theme.name, "drawing");
+        tracing::debug!(%font, "drawing");
         let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: None,
                 kind: WindowKind::Normal,
-                /* Fixed size: min = max is what makes a tiling compositor float a window. GPUI
-                0.2.2 sends only the min size on Wayland (is_resizable does nothing on Linux),
-                so on Hyprland the box floats itself over IPC below. */
+                /* GPUI 0.2.2 sends only the min size on Wayland (is_resizable does nothing on
+                Linux), so on Hyprland the box floats and sizes itself over IPC below. The min is
+                the compact box's, so switching to compact can make the window that small. */
                 is_resizable: false,
                 is_minimizable: false,
                 app_id: Some(APP_ID.into()),
                 window_decorations: Some(WindowDecorations::Client),
-                window_min_size: Some(size(px(w), px(h))),
+                window_min_size: Some(size(px(min_w), px(min_h))),
                 ..Default::default()
             },
             |window, cx| {
                 let view = cx.new(|cx| {
                     BoxView::new(
                         scene.take().expect("one window"),
-                        theme,
+                        prefs.take().expect("one window"),
                         font,
                         source.take().expect("one window"),
                         cx,
@@ -362,7 +467,7 @@ fn main() -> Result<()> {
             cx.quit();
             return;
         }
-        hyprland::float_when_mapped(w, h);
+        hyprland::float_when_mapped(w, h, compact);
         cx.on_window_closed(|cx| cx.quit()).detach();
     });
     if let Some(r) = running.lock().expect("one writer").take() {

@@ -18,7 +18,7 @@ use anyhow::Result;
 use copland_daemon_core::api::{Api, DeviceIdentity, DevicePoll, DeviceStart, WiredAgent};
 use copland_daemon_core::config::AgentConfig;
 use copland_daemon_core::{Config, DaemonState, Phase, Reloaded};
-use gpui::{Context, KeyDownEvent, Task};
+use gpui::{Context, Task};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::edit;
@@ -40,13 +40,22 @@ pub struct Reload {
     pub reply: oneshot::Sender<Result<Reloaded>>,
 }
 
+/// Setup over the same config, the address filled in and a note to show (after signing out).
+pub type SetupAgain = std::rc::Rc<dyn Fn(Option<&str>, Option<String>) -> Result<crate::wizard::Wizard>>;
+
 /// How the window reaches the running daemon: its config file, its Tokio runtime (for the
-/// screen's network calls), and the way to hand it a changed config.
+/// screen's network calls), the way to hand it a changed config, to stop one of its runs, and
+/// for signing out, to stop it altogether and set the box up again.
 #[derive(Clone)]
 pub struct Control {
     pub config: PathBuf,
     pub rt: tokio::runtime::Handle,
     pub reload: mpsc::UnboundedSender<Reload>,
+    pub stopper: copland_daemon_core::RunStopper,
+    /// Stops the daemon (its runs finish as cancelled) and waits for it. Blocking.
+    pub stop_daemon: std::sync::Arc<dyn Fn() + Send + Sync>,
+    /// Setup over the same config, the address filled in and a note to show.
+    pub setup: SetupAgain,
 }
 
 /// What an agent this machine runs is launched with.
@@ -543,13 +552,8 @@ impl Agents {
         );
     }
 
-    /// A key, given the daemon's state and the owner's feed as the screen shows them.
-    pub fn key(&mut self, e: &KeyDownEvent, st: &DaemonState, feed: Option<&Feed>, cx: &mut Context<BoxView>) -> Key {
-        let name_ = e.keystroke.key.as_str();
-        if e.keystroke.modifiers.control && name_ == "q" {
-            cx.quit();
-            return Key::Handled;
-        }
+    /// A key by name (or a click as one), given the daemon's state and the owner's feed as the screen shows them.
+    pub fn press(&mut self, name_: &str, st: &DaemonState, feed: Option<&Feed>, cx: &mut Context<BoxView>) -> Key {
         if self.busy {
             return Key::Ignored;
         }
@@ -590,6 +594,21 @@ impl Agents {
         }
         let list = rows(&self.configured, st, wired(feed));
         let n = list.len();
+        /* A click on a row picks it; on the picked row, it does what space or enter would. */
+        let mut name_ = name_;
+        if let Some(i) = name_.strip_prefix("row:").and_then(|i| i.parse::<usize>().ok()) {
+            if i >= n {
+                return Key::Ignored;
+            }
+            if i != self.selected {
+                self.selected = i;
+                return Key::Handled;
+            }
+            name_ = match &list[i] {
+                Row::Here { .. } => "space",
+                Row::Away { .. } => "enter",
+            };
+        }
         self.selected = self.selected.min(n.saturating_sub(1));
         let row = list.get(self.selected).cloned();
         match (name_, &row) {
@@ -697,6 +716,7 @@ impl Agents {
             input: None,
             code: start.map(|s| s.user_code.clone()),
             keys,
+            clicks: Vec::new(),
         }
     }
 
@@ -716,8 +736,10 @@ impl Agents {
             Role::Muted,
         ));
         let mut lines = vec![Line(head, None)];
+        let mut clicks: Vec<Option<String>> = vec![None];
         if let Some(e) = &self.unreadable {
             lines.push(Line::one(format!("× daemon.toml: {e}"), Role::Red));
+            clicks.push(None);
         }
 
         let width = list
@@ -779,6 +801,7 @@ impl Agents {
                 }
             }
             lines.push(Line(spans, None));
+            clicks.push(Some(format!("row:{i}")));
         }
 
         let row = list.get(selected);
@@ -820,6 +843,7 @@ impl Agents {
         };
         if let Some((text, role)) = detail {
             lines.push(Line::one(text, role));
+            clicks.push(None);
         }
 
         let mut keys = Vec::new();
@@ -847,6 +871,7 @@ impl Agents {
             input: None,
             code: None,
             keys,
+            clicks,
         }
     }
 

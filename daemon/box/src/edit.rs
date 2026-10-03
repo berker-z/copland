@@ -245,6 +245,64 @@ pub fn add_agent(text: &str, table: &str) -> String {
     out
 }
 
+/// A top-level key (`theme`, `motion`, `boards`…) set to `value`, already written as TOML
+/// (`"nord"`, `false`, `["COPL"]`), or taken out with None. One that is there is replaced
+/// where it is, a comment on the lines before it kept; a new one goes after the last top-level
+/// key, or before the first table (and the comment lines just above it) when there is none.
+/// The rest of the file is left as it was.
+pub fn set_key(text: &str, key: &str, value: Option<&str>) -> String {
+    let stmts = statements(text);
+    let first_table = stmts
+        .iter()
+        .position(|s| matches!(s.kind, Kind::Header(_)))
+        .unwrap_or(stmts.len());
+    let top = &stmts[..first_table];
+    let line = value.map(|v| format!("{key} = {v}\n"));
+    if let Some(s) = top.iter().find(|s| s.kind == Kind::Key(key.into())) {
+        let mut out = String::from(&text[..s.range.start]);
+        if let Some(l) = &line {
+            out.push_str(l);
+        }
+        out.push_str(&text[s.range.end..]);
+        return out;
+    }
+    let Some(l) = line else { return text.to_string() };
+    let at = match top.iter().rev().find(|s| matches!(s.kind, Kind::Key(_))) {
+        Some(last) => last.range.end,
+        None => {
+            /* Before the first table, above the comment lines that introduce it. */
+            let mut i = first_table;
+            while i > 0 && stmts[i - 1].kind == Kind::Other && text[stmts[i - 1].range.clone()].trim().starts_with('#')
+            {
+                i -= 1;
+            }
+            stmts.get(i).map_or(text.len(), |s| s.range.start)
+        }
+    };
+    let mut out = String::from(&text[..at]);
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&l);
+    /* A new key straight above a table's comment or header gets a blank line between. */
+    let rest = &text[at..];
+    if top.iter().all(|s| !matches!(s.kind, Kind::Key(_))) && !rest.is_empty() && !rest.starts_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A TOML string, for `set_key`.
+pub fn toml_str(s: &str) -> String {
+    toml::Value::String(s.to_string()).to_string()
+}
+
+/// A TOML array of strings, for `set_key`.
+pub fn toml_strs(items: &[String]) -> String {
+    format!("[{}]", items.iter().map(|s| toml_str(s)).collect::<Vec<_>>().join(", "))
+}
+
 /// Write `text` as the config, once the daemon would take it: the file before it is kept as
 /// a backup (`daemon.toml.bak`, or `.bak.2`…, never over an older one), the new one written
 /// whole with mode 0600. Gives back the config as read, and the backup's path.
@@ -445,6 +503,61 @@ mod tests {
         assert!(save(&config, "nonsense = [").is_err());
         assert_eq!(fs::read_to_string(&config).unwrap(), text);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sets_the_boxs_own_keys_in_place_and_keeps_comments() {
+        let dir = scratch("keys");
+        let config = dir.join("daemon.toml");
+        let text = written(&dir);
+        fs::write(&config, &text).unwrap();
+        /* New keys go after owner_token_file, the last top-level key setup writes. */
+        let t = set_key(&text, "theme", Some(&toml_str("dracula")));
+        let t = set_key(&t, "motion", Some("false"));
+        let t = set_key(&t, "notifications", Some("false"));
+        let t = set_key(&t, "compact", Some("true"));
+        let t = set_key(&t, "boards", Some(&toml_strs(&["COPL".into(), "HOME".into()])));
+        let c = parse(&t);
+        assert_eq!(c.theme.as_deref(), Some("dracula"));
+        assert_eq!(
+            (c.motion, c.notifications, c.compact),
+            (Some(false), Some(false), Some(true))
+        );
+        assert_eq!(c.boards, Some(vec!["COPL".to_string(), "HOME".to_string()]));
+        assert_eq!(c.agents.len(), 2);
+        /* Every comment setup wrote is still there, and the agents' tables are untouched. */
+        for l in text.lines().filter(|l| l.starts_with('#')) {
+            assert!(t.contains(l), "lost {l:?}");
+        }
+        let (a, b) = (agent_blocks(&text).unwrap(), agent_blocks(&t).unwrap());
+        assert_eq!(text[a[0].range.start..], t[b[0].range.start..]);
+
+        /* Replaced in place, then taken out again: back to the file it was. */
+        let t2 = set_key(&t, "theme", Some(&toml_str("copland")));
+        assert_eq!(parse(&t2).theme.as_deref(), Some("copland"));
+        assert_eq!(t2.matches("theme = ").count(), 1);
+        let mut back = t2;
+        for k in ["theme", "motion", "notifications", "compact", "boards"] {
+            back = set_key(&back, k, None);
+        }
+        assert_eq!(back, text);
+        assert_eq!(set_key(&text, "theme", None), text);
+
+        /* Through save: a backup, and what the daemon reads. */
+        let (c, backup) = save(&config, &t).unwrap();
+        assert_eq!(c.compact, Some(true));
+        assert_eq!(fs::read_to_string(backup).unwrap(), text);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_key_in_a_file_with_no_top_level_keys_goes_above_the_first_table() {
+        let text = "# mine\n\n# the agent\n[[agent]]\nurl = \"http://x\"\n";
+        assert_eq!(
+            set_key(text, "theme", Some("\"nord\"")),
+            "# mine\n\ntheme = \"nord\"\n\n# the agent\n[[agent]]\nurl = \"http://x\"\n"
+        );
+        assert_eq!(set_key("", "motion", Some("false")), "motion = false\n");
     }
 
     #[test]

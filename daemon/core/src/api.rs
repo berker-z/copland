@@ -160,6 +160,31 @@ pub struct Wired {
     pub done_window_hours: u32,
 }
 
+/// One board from GET /api/boards, the parts the box shows.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardRef {
+    pub id: String,
+    /// "COPL": what task keys start with.
+    pub key: String,
+    pub name: String,
+    /// The person's private inbox board.
+    #[serde(default)]
+    pub is_inbox: bool,
+}
+
+/// GET /api/settings, the one setting the box follows.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct OwnSettings {
+    pub theme: String,
+}
+
+/// DELETE /api/tokens/self: which token went.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Revoked {
+    pub revoked: String,
+}
+
 /// POST /api/device/start: a code for the person to approve in the browser (COPL-47).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -382,6 +407,31 @@ impl Api {
     /// The token's person's agents' work, by pole (what the box draws). Refused for an agent's token.
     pub async fn wired(&self, cred: &Secret) -> ApiResult<Wired> {
         self.send(self.http.get(self.url("/api/wired")), cred).await
+    }
+
+    /// The boards the token's principal is on (the box's boards filter).
+    pub async fn boards(&self, cred: &Secret) -> ApiResult<Vec<BoardRef>> {
+        self.send(self.http.get(self.url("/api/boards")), cred).await
+    }
+
+    /// The token's person's settings, of which the box reads the theme. Refused for an agent's token.
+    pub async fn settings(&self, cred: &Secret) -> ApiResult<OwnSettings> {
+        self.send(self.http.get(self.url("/api/settings")), cred).await
+    }
+
+    /// Revoke the token this is called with, and nothing else (signing the box out).
+    pub async fn revoke_self(&self, token: &Secret) -> ApiResult<Revoked> {
+        self.send(self.http.delete(self.url("/api/tokens/self")), token).await
+    }
+
+    /// A GET with no credential at all, for a public JSON API (the box's release check).
+    pub async fn get_public<T: DeserializeOwned>(&self, path: &str) -> ApiResult<T> {
+        self.send_as(
+            self.http
+                .get(self.url(path))
+                .header("accept", "application/vnd.github+json"),
+        )
+        .await
     }
 
     /// One page of unread items, newest first.

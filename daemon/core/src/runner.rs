@@ -62,6 +62,8 @@ pub enum Exit {
     Signal(i32),
     /// The daemon stopped it on shutdown.
     Stopped,
+    /// This run was stopped by hand, from the box (`RunStopper`).
+    Cancelled,
     /// The daemon stopped it at the ceiling.
     TimedOut,
     /// It never started.
@@ -74,6 +76,7 @@ impl std::fmt::Display for Exit {
             Exit::Code(c) => write!(f, "exit {c}"),
             Exit::Signal(s) => write!(f, "signal {s}"),
             Exit::Stopped => write!(f, "stopped by the daemon"),
+            Exit::Cancelled => write!(f, "stopped from the box"),
             Exit::TimedOut => write!(f, "stopped at the run ceiling"),
             Exit::SpawnFailed(e) => write!(f, "did not start: {e}"),
         }
@@ -154,12 +157,22 @@ pub fn span(d: Duration) -> String {
     }
 }
 
-/// Start the runtime, keep its run alive while it lives, stop it if asked or once it reaches the ceiling. Returns how it ended.
-pub async fn run(launch: Launch<'_>, shutdown: watch::Receiver<bool>) -> Exit {
-    run_until(launch, shutdown, CEILING).await
+/// Start the runtime, keep its run alive while it lives, and stop it on shutdown, when `cancel`
+/// resolves (this run stopped by hand), or once it reaches the ceiling. Returns how it ended.
+pub async fn run(
+    launch: Launch<'_>,
+    shutdown: watch::Receiver<bool>,
+    cancel: impl std::future::Future<Output = ()>,
+) -> Exit {
+    run_until(launch, shutdown, cancel, CEILING).await
 }
 
-async fn run_until(launch: Launch<'_>, mut shutdown: watch::Receiver<bool>, ceiling: Duration) -> Exit {
+async fn run_until(
+    launch: Launch<'_>,
+    mut shutdown: watch::Receiver<bool>,
+    cancel: impl std::future::Future<Output = ()>,
+    ceiling: Duration,
+) -> Exit {
     let Launch {
         api,
         agent,
@@ -223,6 +236,7 @@ async fn run_until(launch: Launch<'_>, mut shutdown: watch::Receiver<bool>, ceil
     let pid = child.id();
     tracing::info!(run = %short(run_id), task = task_key, pid, log = %log.display(), "runtime started");
 
+    tokio::pin!(cancel);
     let deadline = Instant::now() + ceiling;
     let mut keepalive = interval_at(Instant::now() + KEEPALIVE, KEEPALIVE);
     let mut alive = true;
@@ -253,6 +267,11 @@ async fn run_until(launch: Launch<'_>, mut shutdown: watch::Receiver<bool>, ceil
                 tracing::warn!(run = %short(run_id), task = task_key, "still running at the ceiling of {}; stopping it", span(ceiling));
                 stop(&mut child, pid).await;
                 return Exit::TimedOut;
+            }
+            _ = &mut cancel => {
+                tracing::info!(run = %short(run_id), task = task_key, "stopped from the box");
+                stop(&mut child, pid).await;
+                return Exit::Cancelled;
             }
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
@@ -352,12 +371,51 @@ mod tests {
                 runtime_dir: &scratch,
             },
             shutdown,
+            std::future::pending(),
             Duration::from_millis(300),
         )
         .await;
         let _ = fs::remove_dir_all(&scratch);
         assert_eq!(exit, Exit::TimedOut);
         /* sleep dies on SIGTERM, so the grace period is not waited out. */
+        assert!(started.elapsed() < GRACE, "took {:?}", started.elapsed());
+    }
+
+    /// A run stopped by hand: its process group gets SIGTERM and it ends as cancelled.
+    #[tokio::test]
+    async fn a_run_can_be_stopped_by_hand() {
+        let scratch = std::env::temp_dir().join(format!("copland-cancel-{}", std::process::id()));
+        let agent = AgentConfig {
+            url: "http://127.0.0.1:9".into(),
+            handle: "me/dev".into(),
+            token: Secret::new("cpl_x"),
+            /* A child of its own, to show the whole group goes. */
+            command: vec!["sh".into(), "-c".into(), "sleep 30 & wait".into()],
+            workdir: std::env::temp_dir(),
+            client: "test".into(),
+        };
+        let api = Api::new(&agent.url).unwrap();
+        let (_tx, shutdown) = watch::channel(false);
+        let started = std::time::Instant::now();
+        let exit = run_until(
+            Launch {
+                api: &api,
+                agent: &agent,
+                handle: "me/dev",
+                run_id: "00000000-0000-0000-0000-000000000001",
+                secret: &Secret::new("cplr_x"),
+                task_key: "T-1",
+                brief: Brief::Work,
+                state_dir: &scratch,
+                runtime_dir: &scratch,
+            },
+            shutdown,
+            tokio::time::sleep(Duration::from_millis(300)),
+            CEILING,
+        )
+        .await;
+        let _ = fs::remove_dir_all(&scratch);
+        assert_eq!(exit, Exit::Cancelled);
         assert!(started.elapsed() < GRACE, "took {:?}", started.elapsed());
     }
 }

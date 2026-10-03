@@ -2,7 +2,8 @@
 //!
 //! ```toml
 //! poll_interval = 30            # seconds, optional
-//! # The box's alone (the headless daemon ignores them): theme, motion, and your own
+//! # The box's alone (the headless daemon ignores them): theme, motion, notifications,
+//! # compact, boards, and your own
 //! # token for /api/wired, for the agents' url or owner_url.
 //! owner_token_file = "~/.config/copland/me.token"
 //!
@@ -58,6 +59,13 @@ pub struct Config {
     pub theme: Option<String>,
     /// The box animates (`motion = false` makes it a still picture). Only the window reads it.
     pub motion: Option<bool>,
+    /// Desktop notifications for what needs you (`notifications = false` turns them off). Only the window reads it.
+    pub notifications: Option<bool>,
+    /// The box as its status line alone, in a small window. Only the window reads it.
+    pub compact: Option<bool>,
+    /// The boards whose tickets the box shows, by key; None is all of them. Display only: the
+    /// agents still wake for any board. Only the window reads it.
+    pub boards: Option<Vec<String>>,
     /// Your own token, for the box's view of all your agents' work. Only the window reads it.
     pub owner: Option<Owner>,
     /// Some token is written in the config itself.
@@ -91,6 +99,9 @@ struct RawConfig {
     poll_interval: Option<u64>,
     theme: Option<String>,
     motion: Option<bool>,
+    notifications: Option<bool>,
+    compact: Option<bool>,
+    boards: Option<Vec<String>>,
     owner_url: Option<String>,
     owner_token: Option<Secret>,
     owner_token_file: Option<String>,
@@ -256,6 +267,14 @@ impl Config {
             agents,
             theme: raw.theme.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()),
             motion: raw.motion,
+            notifications: raw.notifications,
+            compact: raw.compact,
+            boards: raw.boards.map(|b| {
+                b.iter()
+                    .map(|k| k.trim().to_ascii_uppercase())
+                    .filter(|k| !k.is_empty())
+                    .collect()
+            }),
             owner,
             inline_token,
         })
@@ -382,6 +401,14 @@ mod tests {
         assert_eq!(parse(&agent).unwrap().theme, None);
         let c = parse(&format!("theme = \"gruvbox\"\n{agent}")).unwrap();
         assert_eq!(c.theme.as_deref(), Some("gruvbox"));
+        assert_eq!((c.notifications, c.compact, c.boards), (None, None, None));
+        let c = parse(&format!(
+            "notifications = false\ncompact = true\nboards = [\"copl\", \" HOME \", \"\"]\n{agent}"
+        ))
+        .unwrap();
+        assert_eq!(c.notifications, Some(false));
+        assert_eq!(c.compact, Some(true));
+        assert_eq!(c.boards, Some(vec!["COPL".to_string(), "HOME".to_string()]));
     }
 
     #[test]

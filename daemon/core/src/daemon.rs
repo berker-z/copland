@@ -18,7 +18,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
-use crate::agent::{AgentLoop, Paths, Retire, Wanted};
+use crate::agent::{AgentLoop, Paths, Retire, StopRequest, Wanted};
 use crate::api::Api;
 use crate::config::{AgentConfig, Config};
 use crate::guard::WakeGuard;
@@ -37,6 +37,8 @@ pub struct Daemon {
     state: watch::Receiver<DaemonState>,
     state_tx: watch::Sender<DaemonState>,
     shutdown: watch::Sender<bool>,
+    /// Runs stopped by hand (`RunStopper`).
+    stop_run: watch::Sender<StopRequest>,
     loops: JoinSet<()>,
     slots: Vec<Slot>,
     /// Slots a reload removed whose loops may still be finishing a run.
@@ -44,6 +46,20 @@ pub struct Daemon {
     poll: Duration,
     paths: Arc<Paths>,
     next_slot: u64,
+}
+
+/// Stops one run of this daemon by hand: the agent's loop sends its runtime's process group
+/// SIGTERM (SIGKILL after the grace period), finishes the run as cancelled and remembers the
+/// task's items in its wake guard, as after any run, so it doesn't start again on them. Safe to
+/// call from any thread; asking for a run that has already ended does nothing.
+#[derive(Clone)]
+pub struct RunStopper(watch::Sender<StopRequest>);
+
+impl RunStopper {
+    /// Stop `run` (the short id `Phase::Running` shows) of the agent in `slot` (`AgentState::slot`).
+    pub fn stop(&self, slot: u64, run: &str) {
+        self.0.send_replace(Some((slot, run.to_string())));
+    }
 }
 
 /// What a reload did, by handle as configured.
@@ -62,10 +78,12 @@ impl Daemon {
         }
         let (state_tx, state) = watch::channel(DaemonState::default());
         let (shutdown, _) = watch::channel(false);
+        let (stop_run, _) = watch::channel(None);
         let mut daemon = Self {
             state,
             state_tx,
             shutdown,
+            stop_run,
             loops: JoinSet::new(),
             slots: Vec::new(),
             leaving: Vec::new(),
@@ -83,6 +101,11 @@ impl Daemon {
     /// The daemon's state, now and as it changes.
     pub fn subscribe(&self) -> watch::Receiver<DaemonState> {
         self.state.clone()
+    }
+
+    /// A handle that stops one run by hand, for the box.
+    pub fn run_stopper(&self) -> RunStopper {
+        RunStopper(self.stop_run.clone())
     }
 
     /// Start a supervisor for `agent`: in a new slot, its state listed last, or again in
@@ -109,6 +132,7 @@ impl Daemon {
                 self.paths.clone(),
                 self.state_tx.clone(),
                 self.shutdown.subscribe(),
+                self.stop_run.subscribe(),
             )
             .instrument(span),
         );
@@ -225,6 +249,7 @@ async fn supervise(
     paths: Arc<Paths>,
     state: watch::Sender<DaemonState>,
     shutdown: watch::Receiver<bool>,
+    stop_run: watch::Receiver<StopRequest>,
 ) {
     let mut guard = WakeGuard::default();
     let update = |f: &dyn Fn(&mut AgentState)| {
@@ -269,6 +294,7 @@ async fn supervise(
             state.clone(),
             shutdown.clone(),
             retire,
+            stop_run.clone(),
             guard,
         ) {
             Ok(worker) => guard = worker.run().await,

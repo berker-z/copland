@@ -72,9 +72,54 @@ pub fn dispatches(pid: u32, w: u32, h: u32) -> ([String; 3], String) {
     )
 }
 
+/// The dispatches that float the window of `pid` and give it `w`×`h` where it is (compact mode
+/// switched, COPL-65): no centring, so a window a rule placed stays in its corner.
+pub fn resizes(pid: u32, w: u32, h: u32) -> ([String; 2], String) {
+    let win = format!("window = \"pid:{pid}\"");
+    (
+        [
+            format!("dispatch hl.dsp.window.float({{ action = \"on\", {win} }})"),
+            format!("dispatch hl.dsp.window.resize({{ x = {w}, y = {h}, {win} }})"),
+        ],
+        format!("[[BATCH]]dispatch setfloating pid:{pid};dispatch resizewindowpixel exact {w} {h},pid:{pid}"),
+    )
+}
+
+/// Send the Lua dispatches, or the old batch when a config refuses those: a Lua config
+/// answers "ok" to its own syntax and an error to the old one. Whether it took.
+fn dispatch(sock: &PathBuf, lua: &[String], old: &str) -> bool {
+    let mut ok = true;
+    for d in lua {
+        ok &= request(sock, d).is_ok_and(|r| r.trim() == "ok");
+    }
+    ok || request(sock, old).is_ok_and(|r| r.split_whitespace().all(|r| r == "ok"))
+}
+
+/// Under Hyprland, give the box's window `w`×`h` now, floating, where it is. Off the main
+/// thread; does nothing anywhere else.
+pub fn resize(w: f32, h: f32) {
+    let Some(sock) = socket() else {
+        return;
+    };
+    let pid = std::process::id();
+    let (w, h) = (w.round() as u32, h.round() as u32);
+    let spawned = std::thread::Builder::new().name("hyprland".into()).spawn(move || {
+        let (lua, old) = resizes(pid, w, h);
+        if dispatch(&sock, &lua, &old) {
+            tracing::debug!(w, h, "hyprland: resized the window");
+        } else {
+            tracing::warn!("hyprland didn't resize the window");
+        }
+    });
+    if let Err(e) = spawned {
+        tracing::warn!("hyprland: {e}");
+    }
+}
+
 /// Under Hyprland, float the box's window at `w`×`h` once it is mapped, unless a rule already
-/// floats it. Off the main thread; does nothing anywhere else.
-pub fn float_when_mapped(w: f32, h: f32) {
+/// floats it; then, with `resize_floating` (compact mode), only its size is changed. Off the
+/// main thread; does nothing anywhere else.
+pub fn float_when_mapped(w: f32, h: f32, resize_floating: bool) {
     let Some(sock) = socket() else {
         return;
     };
@@ -86,18 +131,15 @@ pub fn float_when_mapped(w: f32, h: f32) {
             match request(&sock, "j/clients").ok().and_then(|c| floating(&c, pid)) {
                 Some(true) => {
                     tracing::debug!("hyprland: a rule floats the window already");
+                    if resize_floating {
+                        let (lua, old) = resizes(pid, w, h);
+                        dispatch(&sock, &lua, &old);
+                    }
                     return;
                 }
                 Some(false) => {
                     let (lua, old) = dispatches(pid, w, h);
-                    /* A Lua config answers "ok" to its own syntax and an error to the old one. */
-                    let mut ok = true;
-                    for d in &lua {
-                        ok &= request(&sock, d).is_ok_and(|r| r.trim() == "ok");
-                    }
-                    if !ok {
-                        ok = request(&sock, &old).is_ok_and(|r| r.split_whitespace().all(|r| r == "ok"));
-                    }
+                    let ok = dispatch(&sock, &lua, &old);
                     if ok {
                         tracing::debug!(w, h, "hyprland: floated the window");
                     } else {
@@ -196,6 +238,14 @@ mod tests {
         assert!(lua.iter().all(|d| d.contains("window = \"pid:9\"")));
         assert!(lua[1].contains("x = 548, y = 196"));
         assert!(old.contains("resizewindowpixel exact 548 196,pid:9"));
+    }
+
+    #[test]
+    fn resizes_its_own_window_where_it_is() {
+        let (lua, old) = resizes(9, 548, 26);
+        assert!(lua.iter().all(|d| d.contains("window = \"pid:9\"")));
+        assert!(lua[1].contains("x = 548, y = 26"));
+        assert!(!old.contains("centerwindow") && old.contains("resizewindowpixel exact 548 26,pid:9"));
     }
 
     #[test]

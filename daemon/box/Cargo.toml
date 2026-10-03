@@ -24,3 +24,10 @@ toml.workspace = true
 # on crates.io; all of its own dependencies come from crates.io too, so the
 # whole graph is pinned by this line and Cargo.lock.
 gpui = { version = "=0.2.2", default-features = false, features = ["wayland", "x11", "font-kit"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Desktop notifications over D-Bus (org.freedesktop.Notifications, COPL-64). Already in the
+# graph through GPUI (oo7, ashpd), exactly this version with these features, so naming it
+# here adds no crate and moves nothing; exact, so it never moves on its own. Async API on
+# async-io, which GPUI enables already; no blocking-api, no tokio feature.
+zbus = { version = "=5.13.2", default-features = false, features = ["async-io"] }
