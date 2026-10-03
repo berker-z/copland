@@ -75,6 +75,8 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
     .filter((u): u is NonNullable<typeof u> => u !== undefined);
   const taskLabels = labels.filter((l) => task.labelIds.includes(l.id));
   const pull = cardPull(task.code);
+  /* Review first (COPL-77): a person merges its PR. It stands out while that PR is open and waiting for them. */
+  const review = task.reviewFirst && !closed ? (pull?.state === "open" ? "waiting" : "quiet") : null;
   /* A run on it right now (claim_task). The server sends only live claims; one that lapsed since the last fetch is hidden here too. */
   const claimer =
     task.claim && !closed && Date.parse(task.claim.until) > Date.now()
@@ -116,7 +118,7 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
           </div>
           <LevelPill level={task.level} className="h-[1lh]" />
         </div>
-        {(showKey || parent || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0 || pull || claimer) && (
+        {(showKey || parent || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0 || pull || review || claimer) && (
           <div className="flex flex-wrap items-center gap-x-2 mt-0.5 text-xs">
             {showKey && <span className="text-faint">{task.key}</span>}
             {parent && <ParentLink parentKey={parent} onClick={onParent as () => void} />}
@@ -129,6 +131,14 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
               </span>
             )}
             {pull && <CodeBadge link={pull} />}
+            {review && (
+              <span
+                className={review === "waiting" ? "text-yellow" : "text-muted"}
+                title={review === "waiting" ? "review first: a person merges its PR, open and waiting for them" : "review first: a person merges its PR"}
+              >
+                review
+              </span>
+            )}
             {taskLabels.map((l) => (
               <span key={l.id} className={toneText(l.tone)}>
                 #{l.name}

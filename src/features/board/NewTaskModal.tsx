@@ -61,6 +61,7 @@ export function NewTaskModal({ detail, stageId, onClose, onCreated }: NewTaskMod
   const [assignees, setAssignees] = useState<string[]>([]);
   const [labels, setLabels] = useState<string[]>([]);
   const [brief, setBrief] = useState("");
+  const [reviewFirst, setReviewFirst] = useState(false);
   const [pending, setPending] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -103,6 +104,7 @@ export function NewTaskModal({ detail, stageId, onClose, onCreated }: NewTaskMod
         brief,
         assigneeIds: assignees,
         labelIds: labels,
+        ...(reviewFirst ? { reviewFirst } : {}),
       });
       for (const item of pending) {
         await send(
@@ -218,6 +220,20 @@ export function NewTaskModal({ detail, stageId, onClose, onCreated }: NewTaskMod
                   #{l.name}
                 </button>
               ))}
+            </div>
+          </Row>
+        )}
+
+        {/* Only where there is code: a board with a GitHub repo. */}
+        {detail.repos.length > 0 && (
+          <Row label="merge">
+            <div className="pt-1.5">
+              <Checkbox
+                checked={reviewFirst}
+                onChange={setReviewFirst}
+                label={<span className="text-ink">review first: the agent opens the PR, a person merges it</span>}
+                size={15}
+              />
             </div>
           </Row>
         )}
