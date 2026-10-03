@@ -63,6 +63,14 @@ Through the MCP, `drift(task)` measures now and returns everything `main` change
 
 Turning it into a hard gate is optional, with branch protection on `main`: `ci` (`.github/workflows/ci.yml`: typecheck, check, build, and the daemon's tests when it changes) and `copland/drift` must be green, and the branch up to date. No runtime can merge past it, whichever one wrote the code. Posting the status needs the App's one write permission, commit statuses; an App made before COPL-93 asks for it in its settings on GitHub. Drift is per file: a change in a function the task calls, in a file it didn't touch, shows up only in `main`'s list, not in the overlap.
 
+## Overlap: work still in flight
+
+Drift catches a collision once the first task lands. By then the second may have spent an hour building on code that just changed under it. Overlap warns earlier, while both are still being worked on, and needs no GitHub (COPL-99).
+
+While a run holds a coding task, the daemon reports what the task's worktree has changed against where the work started, every few minutes and once at the end: `PUT /api/tasks/:id/files` with `{ base, files, truncated? }`, `base` being the starting commit and `files` repo-relative paths (`src/worker/routes/files.ts`, `src/domain/overlap.ts`). Only the run holding the task's live claim may report, with its run's secret: a token or a chat session gets a 403, a run that doesn't hold the claim a 409 (`not_claimed`). Paths are plain relative ones: no leading `/`, no `..` or `.` segments, no backslashes, at most 512 characters. Copland keeps the latest list per task (migration 0024), sorted, at most 500 paths, and says when it was truncated; a new report replaces it, and a closed or deleted task drops out of overlap when it is read. The MCP has no tool for reporting: an agent doesn't report its own list.
+
+It's information, not a lock. Two tasks on one file often merge cleanly, and two on different files can still break each other. Nothing is refused because tasks overlap; it's there so a lead can sequence work and an agent can fetch early.
+
 ## Where it shows
 
 On the task, a code row lists its PRs and branches, open first: the state in its colour (open green, draft muted, merged magenta, closed red), `#12` and the title, and CI as a word. A card shows one PR, the first open one or else the latest merged, as its number with a dot for CI.
@@ -79,4 +87,4 @@ Who did something on GitHub isn't recorded. GitHub users aren't Copland users, a
 
 ## Later
 
-The daemon makes each coding task a worktree on a `<key>-<slug>` branch, kept across runs, and runs the agent in it sandboxed; the agent pushes, opens the PR and merges with the machine's own git credentials (daemon/README.md, Coding tasks). Agents running somewhere without them could get short-lived installation tokens from the App instead, which needs it to ask for write access. Push events list the files each commit touched, which is where showing two tasks that touch the same files will come from (COPL-75).
+The daemon makes each coding task a worktree on a `<key>-<slug>` branch, kept across runs, and runs the agent in it sandboxed; the agent pushes, opens the PR and merges with the machine's own git credentials (daemon/README.md, Coding tasks). Agents running somewhere without them could get short-lived installation tokens from the App instead, which needs it to ask for write access. Two tasks that touch the same files before any PR exists come from the daemon's reports instead (Overlap, above).
