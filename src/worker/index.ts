@@ -32,6 +32,7 @@ import { personalViewer } from "./access";
 import { finishLogin, logout, startCalendarConnect, startLogin } from "./auth";
 import { sweepStaleRuns } from "./deadRuns";
 import type { Env } from "./env";
+import { housekeep } from "./housekeeping";
 import { errorResponse, HttpError, notFound } from "./http";
 import { Changes, connectLive } from "./live";
 import { Router, type Params } from "./router";
@@ -78,7 +79,7 @@ import { getMyWork, getReady } from "./routes/work";
 import { getWired } from "./routes/wired";
 import { deleteClaim, getCurrentRun, getRun, postClaim, postRun, postRunFinish } from "./routes/runs";
 import { getInbox, postInboxDismiss, postInboxRead } from "./routes/inbox";
-import { getDevice, postDeviceApprove, postDeviceDeny, postDevicePoll, postDeviceStart } from "./routes/device";
+import { getDevice, postDeviceApprove, postDeviceDeny, postDevicePoll, postDeviceStart, sweepDeviceRequests } from "./routes/device";
 import { deleteOwnToken, deleteToken, getTokens, postToken, SELF_REVOKE_PATH } from "./routes/tokens";
 import { handleIntegration, isIntegrationPath } from "./integrations";
 import { getTaskDrift, postRevalidate } from "./drift";
@@ -483,8 +484,16 @@ export default {
     }
   },
 
-  /* The cron in wrangler.jsonc: supervised runs gone quiet put their tasks back (COPL-97). */
+  /*
+   * The cron in wrangler.jsonc: supervised runs gone quiet put their tasks
+   * back (COPL-97), device requests are tidied, and rows nothing reads any
+   * more are deleted (housekeeping.ts, COPL-112).
+   */
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     await sweepStaleRuns(env, ctx);
+    const changes = new Changes();
+    await sweepDeviceRequests(env, changes);
+    changes.publish(env, ctx, null);
+    await housekeep(env.DB);
   },
 } satisfies ExportedHandler<Env>;

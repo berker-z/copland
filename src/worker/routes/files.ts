@@ -88,7 +88,8 @@ export async function putTaskFiles(request: Request, env: Env, viewer: Viewer, i
 /**
  * GET /api/tasks/:id/overlap, viewer and up: the task's latest report and the
  * other open tasks on its board that share files with it, most shared first.
- * files is null before the first report; a closed task overlaps nothing.
+ * files is null before the first report, and again a week after the task
+ * closes (housekeeping.ts); a closed task overlaps nothing.
  */
 export async function getTaskOverlap(env: Env, viewer: Viewer, id: string): Promise<Response> {
   const { task } = await taskFor(env, viewer, id, "viewer");

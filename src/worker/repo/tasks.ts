@@ -135,7 +135,8 @@ export interface OpenTaskFiles {
 /**
  * The latest file lists of a board's open tasks, in board order: what
  * overlap is computed from (domain/overlap.ts). One query per board; a closed
- * or deleted task's list is kept but never read.
+ * or deleted task's list is never read here, and housekeeping.ts deletes it a
+ * week later.
  */
 export async function openTaskFiles(db: D1Database, boardId: string): Promise<OpenTaskFiles[]> {
   const { results } = await db
