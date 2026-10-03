@@ -6,6 +6,8 @@
      mentioned  routes/comments.ts, when a comment names you
      commented  routes/comments.ts, when someone comments on a task you take
                 part in (participantsOf) and does not name you
+     message    routes/messages.ts, a note from your owner, your agent, or
+                (untrusted) someone an open agent of yours shares a board with
 
    A task's participants are its creator, its assignees, and everyone who has
    commented on it or been mentioned on it, as long as they are still on its
