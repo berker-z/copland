@@ -7,6 +7,7 @@ import { clientLabel } from "@/domain/clients";
 import { shortRunId } from "@/domain/runs";
 import type { Attachment, Label, Level, Priority, Stage, StageCategory, Task } from "@/domain/types";
 import { currentRun, currentVia } from "../tokens";
+import { codeFor } from "./github";
 import { LIVE_CLAIM } from "./runs";
 
 interface TaskRow {
@@ -72,6 +73,7 @@ function rowToTask(row: TaskRow): Task {
     commentCount: row.comment_count,
     attachments: [],
     claim: toClaim(row.claim),
+    code: [],
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -95,8 +97,14 @@ export async function listTasks(db: D1Database, boardId: string): Promise<Task[]
     .bind(boardId)
     .all<TaskRow>();
   const tasks = results.map(rowToTask);
-  const byTask = await attachmentsFor(db, `t.board_id = ?1`, boardId);
-  for (const task of tasks) task.attachments = byTask.get(task.id) ?? [];
+  const [byTask, code] = await Promise.all([
+    attachmentsFor(db, `t.board_id = ?1`, boardId),
+    codeFor(db, `t.board_id = ?1`, boardId),
+  ]);
+  for (const task of tasks) {
+    task.attachments = byTask.get(task.id) ?? [];
+    task.code = code.get(task.id) ?? [];
+  }
   return tasks;
 }
 
@@ -108,7 +116,9 @@ export async function findTask(db: D1Database, id: string): Promise<Task | null>
     .first<TaskRow>();
   if (!row) return null;
   const task = rowToTask(row);
-  task.attachments = (await attachmentsFor(db, `a.task_id = ?1`, id)).get(id) ?? [];
+  const [attachments, code] = await Promise.all([attachmentsFor(db, `a.task_id = ?1`, id), codeFor(db, `c.task_id = ?1`, id)]);
+  task.attachments = attachments.get(id) ?? [];
+  task.code = code.get(id) ?? [];
   return task;
 }
 

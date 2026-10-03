@@ -185,6 +185,24 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   title's first line (the title wraps beside it, never under it), the last
   column of a list row, the right end of a Gantt label, a lane header and
   the `under…` picker, after the stage in the task modal's title.
+- `src/features/board/TaskCode.tsx`: a task's code from a connected
+  GitHub repo. States use the hues the way GitHub does: open `text-green`,
+  draft `text-muted`, merged `text-magenta`, closed `text-red`; CI is a
+  word after it (`ci passed` green, `ci failed` red, `ci running`
+  yellow). The task modal has a `code` row, PRs as icon, `#12` in
+  `text-muted` and the title in `text-ink` (accent on hover, opens GitHub),
+  a deleted branch struck through, and the repo in `text-faint` only when
+  the task has code from more than one. A card shows one PR on its meta
+  line, after files: icon and number in the state's hue and a `•` in the
+  CI's; a click opens GitHub, not the task. Board settings › github
+  (`RepoEditor.tsx`) lists repos with when GitHub was last heard from in
+  `text-muted`, `text-yellow` while it never has, and a two-step
+  `disconnect` like archive. For an admin, a select of the App's repos
+  and `connect`, then a `text-xs text-muted` line with the install link
+  in `text-accent`; for anyone else, one muted line saying an admin
+  connects repos. Settings › instance › github (`GithubSection.tsx`) is
+  the App: a `create GitHub App` button, or its name, owner, an `install
+  on repos` link styled as a button, and a two-step `forget the app`.
 - A card a run is working on right now (a live claim, routes/runs.ts) says
   so at the right of its meta line, before the avatars: `dev is on this`
   in `text-muted`, the agent's name without the owner, then in

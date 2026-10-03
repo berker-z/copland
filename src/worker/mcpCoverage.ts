@@ -135,6 +135,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /api/people": { skip: "browser: the share dialog's handle search; it refuses agents" },
   "PATCH /api/boards/:id/members/:userId": { skip: "admin: member roles" },
   "DELETE /api/boards/:id/members/:userId": { skip: "admin: removing members" },
+  "GET /api/boards/:id/repos/available": { skip: "admin: the repos the GitHub App can see, for an instance admin connecting one" },
+  "POST /api/boards/:id/repos": { skip: "admin: connecting a GitHub repo, which needs an instance admin who owns the board" },
+  "DELETE /api/boards/:id/repos/:repoId": { skip: "admin: disconnecting a GitHub repo" },
   "POST /api/boards/:id/stages": { skip: "admin: adding stages" },
   "PUT /api/boards/:id/stages/order": { skip: "admin: reordering stages" },
   "PATCH /api/stages/:id": { skip: "admin: editing stages" },
@@ -193,4 +196,10 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /api/device/:userCode": { skip: "browser: the /device approval page; tokens are refused" },
   "POST /api/device/approve": { skip: "browser: approving mints tokens, which only a person in the app does" },
   "POST /api/device/deny": { skip: "browser: the /device approval page; tokens are refused" },
+
+  /* GitHub: the repo's webhook, not a person or an assistant. */
+  "POST /api/github": { skip: "private: the GitHub App's webhook deliveries, unauthenticated and checked against its secret; what they record reaches assistants as the code in task summaries" },
+  "GET /api/admin/github": { skip: "admin: the instance's GitHub App" },
+  "POST /api/admin/github/manifest": { skip: "admin: making the GitHub App, a round trip through github.com in the admin's browser" },
+  "DELETE /api/admin/github": { skip: "admin: forgetting the GitHub App" },
 };

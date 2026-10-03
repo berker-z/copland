@@ -28,6 +28,7 @@ import { DashboardSection, ThemeSection } from "./Dashboard";
 import { ProfileSection } from "./Profile";
 
 import { Group, Section, button, input } from "./Section";
+import { GithubSection } from "./GithubSection";
 
 type ListKey = "coins" | "coingeckoCoins" | "coingeckoNfts";
 
@@ -321,7 +322,8 @@ export type SettingsPage =
   | "widgets"
   | "theme"
   | "keys"
-  | "people";
+  | "people"
+  | "github";
 
 interface Page {
   id: SettingsPage;
@@ -355,7 +357,12 @@ function pagesFor(me: Me, agents: Agent[]): Page[] {
     { id: "calendars", label: "calendars", group: "dashboard" },
     { id: "markets", label: "markets", group: "dashboard" },
     { id: "keys", label: "service keys", group: "dashboard" },
-    ...(me.user.isAdmin ? [{ id: "people" as const, label: "people", group: "instance" }] : []),
+    ...(me.user.isAdmin
+      ? [
+          { id: "people" as const, label: "people", group: "instance" },
+          { id: "github" as const, label: "github", group: "instance" },
+        ]
+      : []),
   ];
 }
 
@@ -391,6 +398,8 @@ function PageBody({ page, me, agents, go }: { page: SettingsPage; me: Me; agents
       return <VaultSection />;
     case "people":
       return <InstanceSection me={me} />;
+    case "github":
+      return <GithubSection />;
   }
   return null;
 }

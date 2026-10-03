@@ -52,6 +52,11 @@ export function asAccess<T>(access: ApiAccess, fn: () => T): T {
   return viaContext.run({ via: access.via, runId: access.runId ?? access.interactiveRunId ?? null }, fn);
 }
 
+/** Run fn as something that is not a token, such as a webhook: its events say `via`, with no run. */
+export function asVia<T>(via: string, fn: () => T): T {
+  return viaContext.run({ via, runId: null }, fn);
+}
+
 /** What made the current request's changes, when it was not the web app. */
 export function currentVia(): string | null {
   return viaContext.getStore()?.via ?? null;

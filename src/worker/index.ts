@@ -1,12 +1,14 @@
 /* ============================================================================
    Worker entry. Routing only; no business logic lives here.
    ----------------------------------------------------------------------------
-     /auth/*    sign-in: Google redirect, invite links, callback, logout
+     /auth/*    sign-in: Google redirect, invite links, callback, logout; the
+                GitHub App's creation callback (routes/github.ts)
      /api/*     resolve the viewer (API token, session cookie, or
                 DEV_USER_EMAIL on localhost) → route → JSON. A successful write then tells the
                 affected users' open tabs what changed (live.ts). Two
                 routes come before any of that and have no viewer at all:
-                a box's device login, start and poll (routes/device.ts).
+                a box's device login, start and poll (routes/device.ts),
+                and GitHub App's webhook deliveries (routes/github.ts).
      /api/live  a tab's WebSocket for those messages, or a daemon's (Bearer token)
      /mcp, /oauth/*, /.well-known/oauth-*
                 AI assistants: the MCP server and its OAuth (integrations.ts).
@@ -57,6 +59,16 @@ import {
   removeEvent,
 } from "./routes/calendar";
 import { deleteTaskAttachment, getAttachment, postTaskAttachment, postUpload } from "./routes/attachments";
+import {
+  deleteAdminGithub,
+  deleteRepo,
+  finishGithubApp,
+  getAdminGithub,
+  getAvailableRepos,
+  postManifest,
+  postRepo,
+  postWebhook,
+} from "./routes/github";
 import { deleteBoardDoc, getBoardDoc, patchBoardDoc, postBoardDoc, putBoardNotes } from "./routes/docs";
 import { deleteComment, getComments, getTaskEvents, patchComment, postComment } from "./routes/comments";
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
@@ -239,6 +251,14 @@ const api = new Router<Ctx>()
   .on("DELETE", "/api/boards/:id/docs/:docId", ({ env, viewer, changes }, p) =>
     deleteBoardDoc(env, viewer, p.id, p.docId, changes),
   )
+  /* GitHub repos on a board: an admin who owns it connects one of the App's repos; any owner disconnects (routes/github.ts). */
+  .on("GET", "/api/boards/:id/repos/available", ({ env, viewer }, { id }) => getAvailableRepos(env, viewer, id))
+  .on("POST", "/api/boards/:id/repos", ({ request, env, viewer, changes }, { id }) =>
+    postRepo(request, env, viewer, id, changes),
+  )
+  .on("DELETE", "/api/boards/:id/repos/:repoId", ({ env, viewer, changes }, p) =>
+    deleteRepo(env, viewer, p.id, p.repoId, changes),
+  )
   /* The share picker's search: handles and pictures, never emails; people only (requirePerson). */
   .on("GET", "/api/people", ({ env, viewer, url }) => getPeople(env, viewer, url))
 
@@ -314,7 +334,11 @@ const api = new Router<Ctx>()
   )
   .on("DELETE", "/api/admin/invites/:id", ({ env, viewer, changes }, { id }) =>
     deleteInvite(env, viewer, id, changes),
-  );
+  )
+  /* The instance's GitHub App (routes/github.ts, githubApp.ts); GitHub's redirect back is /auth/github/callback. */
+  .on("GET", "/api/admin/github", ({ env, viewer }) => getAdminGithub(env, viewer))
+  .on("POST", "/api/admin/github/manifest", ({ viewer, url }) => postManifest(viewer, url))
+  .on("DELETE", "/api/admin/github", ({ env, viewer, changes }) => deleteAdminGithub(env, viewer, changes));
 
 interface OpenCtx {
   request: Request;
@@ -325,13 +349,15 @@ interface OpenCtx {
 
 /**
  * The only API routes with no viewer: a box asking to be let in, and polling
- * for the answer with the device code only it holds (routes/device.ts).
- * Matched before identity is resolved, so a request here never acts as
- * anyone, whatever cookie or token came with it.
+ * for the answer with the device code only it holds (routes/device.ts); and
+ * GitHub delivering a webhook, signed with the secret only the instance's
+ * GitHub App holds (routes/github.ts). Matched before identity is resolved, so
+ * a request here never acts as anyone, whatever cookie or token came with it.
  */
 const open = new Router<OpenCtx>()
   .on("POST", "/api/device/start", ({ request, env, url, changes }) => postDeviceStart(request, env, url, changes))
-  .on("POST", "/api/device/poll", ({ request, env, url, changes }) => postDevicePoll(request, env, url, changes));
+  .on("POST", "/api/device/poll", ({ request, env, url, changes }) => postDevicePoll(request, env, url, changes))
+  .on("POST", "/api/github", ({ request, env, changes }) => postWebhook(request, env, changes));
 
 /**
  * The session rides in a cookie, so a page on another site could make the
@@ -373,6 +399,7 @@ async function handleAuth(request: Request, env: Env, url: URL): Promise<Respons
   if (invite) return startLogin(request, env, invite[1]);
   if (request.method === "GET" && url.pathname === "/auth/calendar") return startCalendarConnect(request, env);
   if (request.method === "GET" && url.pathname === "/auth/callback") return finishLogin(request, env);
+  if (request.method === "GET" && url.pathname === "/auth/github/callback") return finishGithubApp(request, env);
   if (request.method === "POST" && url.pathname === "/auth/logout") return logout(request, env);
   throw notFound(`No route for ${request.method} ${url.pathname}`);
 }

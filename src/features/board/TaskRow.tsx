@@ -11,6 +11,7 @@ import { Avatar } from "@/ui/Avatar";
 import { LevelPill } from "@/ui/LevelPill";
 import { dueClass, isDraft, shortDate, toneText } from "@/ui/tone";
 import { useLongPress } from "@/ui/useLongPress";
+import { cardPull, CodeBadge } from "./TaskCode";
 
 export const TASK_DRAG_TYPE = "application/x-copland-task";
 
@@ -73,6 +74,7 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
     .map((id) => members.find((m) => m.user.id === id)?.user)
     .filter((u): u is NonNullable<typeof u> => u !== undefined);
   const taskLabels = labels.filter((l) => task.labelIds.includes(l.id));
+  const pull = cardPull(task.code);
   /* A run on it right now (claim_task). The server sends only live claims; one that lapsed since the last fetch is hidden here too. */
   const claimer =
     task.claim && !closed && Date.parse(task.claim.until) > Date.now()
@@ -114,7 +116,7 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
           </div>
           <LevelPill level={task.level} className="h-[1lh]" />
         </div>
-        {(showKey || parent || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0 || claimer) && (
+        {(showKey || parent || task.dueDate || assignees.length > 0 || task.commentCount > 0 || taskLabels.length > 0 || task.attachments.length > 0 || pull || claimer) && (
           <div className="flex flex-wrap items-center gap-x-2 mt-0.5 text-xs">
             {showKey && <span className="text-faint">{task.key}</span>}
             {parent && <ParentLink parentKey={parent} onClick={onParent as () => void} />}
@@ -126,6 +128,7 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
                 {task.attachments.length}
               </span>
             )}
+            {pull && <CodeBadge link={pull} />}
             {taskLabels.map((l) => (
               <span key={l.id} className={toneText(l.tone)}>
                 #{l.name}

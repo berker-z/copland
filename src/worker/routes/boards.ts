@@ -28,6 +28,7 @@ import {
   uniqueBoardKey,
 } from "../repo/boards";
 import { boardNotes, listDocs } from "../repo/docs";
+import { listRepos } from "../repo/github";
 import { listLabels, listStages, listTasks } from "../repo/tasks";
 import { avatarUrl, findUserByEmail, findUserById, type UserRow } from "../repo/users";
 import { createInvite } from "./admin";
@@ -51,15 +52,16 @@ export async function getBoards(env: Env, viewer: Viewer): Promise<Response> {
 
 export async function getBoard(env: Env, viewer: Viewer, id: string): Promise<Response> {
   const board = await requireBoard(env.DB, viewer, id);
-  const [members, stages, labels, tasks, notes, docs] = await Promise.all([
+  const [members, stages, labels, tasks, notes, docs, repos] = await Promise.all([
     listMembers(env.DB, id),
     listStages(env.DB, id),
     listLabels(env.DB, id),
     listTasks(env.DB, id),
     boardNotes(env.DB, id),
     listDocs(env.DB, id),
+    listRepos(env.DB, id),
   ]);
-  const detail: BoardDetail = { board, members, stages, labels, tasks, notes, docs };
+  const detail: BoardDetail = { board, members, stages, labels, tasks, notes, docs, repos };
   return json(detail);
 }
 

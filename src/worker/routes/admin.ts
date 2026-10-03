@@ -49,7 +49,7 @@ function rowToInvite(row: InviteRow): Invite {
 }
 
 /** The admins' audience for admin-screen refreshes. */
-async function adminIds(env: Env): Promise<string[]> {
+export async function adminIds(env: Env): Promise<string[]> {
   const { results } = await env.DB.prepare(`SELECT id FROM users WHERE is_admin = 1`).all<{ id: string }>();
   return results.map((r) => r.id);
 }

@@ -313,7 +313,7 @@ function safeNext(raw: string | null): string {
   return raw;
 }
 
-function redirect(location: string, cookies: string[]): Response {
+export function redirect(location: string, cookies: string[]): Response {
   const headers = new Headers({ location });
   for (const c of cookies) headers.append("set-cookie", c);
   return new Response(null, { status: 302, headers });
@@ -350,7 +350,7 @@ function decodeState(raw: string | null): LoginState | null {
   }
 }
 
-function readCookie(request: Request, name: string): string | null {
+export function readCookie(request: Request, name: string): string | null {
   const header = request.headers.get("cookie");
   if (!header) return null;
   for (const part of header.split(";")) {
@@ -366,7 +366,7 @@ function readCookie(request: Request, name: string): string | null {
  * redirect back carry the login cookie (a top-level GET) while a form POST
  * from another site does not carry the session.
  */
-function cookie(name: string, value: string, opts: { path: string; maxAge: number; secure: boolean }): string {
+export function cookie(name: string, value: string, opts: { path: string; maxAge: number; secure: boolean }): string {
   const parts = [`${name}=${value}`, `Path=${opts.path}`, `Max-Age=${opts.maxAge}`, "HttpOnly", "SameSite=Lax"];
   if (opts.secure) parts.push("Secure");
   return parts.join("; ");

@@ -30,6 +30,7 @@ import { Attachments, useTaskAttachments } from "./Attachments";
 import { DateFields } from "./DateFields";
 import { LabelPicker } from "./LabelPicker";
 import { TaskActivity } from "./TaskActivity";
+import { CodeList } from "./TaskCode";
 
 const field = "max-w-full bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent disabled:opacity-60";
 
@@ -175,6 +176,12 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
         />
       ) : (
         <TaskView detail={detail} task={task} />
+      )}
+
+      {task.code.length > 0 && (
+        <Row label="code" text>
+          <CodeList links={task.code} />
+        </Row>
       )}
 
       <Row label="files">

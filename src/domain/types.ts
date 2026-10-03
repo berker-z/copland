@@ -4,6 +4,7 @@
    rules.
    ========================================================================== */
 
+import type { CodeLink } from "./github";
 import type { RunKind, RunStatus } from "./runs";
 
 export interface User {
@@ -140,6 +141,8 @@ export interface Task {
   attachments: Attachment[];
   /** A run working on it right now (routes/runs.ts), or null. Only live claims are sent. */
   claim: TaskClaim | null;
+  /** Branches and PRs naming it, from a connected repo's webhook (domain/github.ts); open ones first. */
+  code: CodeLink[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -220,6 +223,46 @@ export interface BoardDetail {
   notes: string;
   /** Its docs, metadata only; the bytes are fetched one at a time. */
   docs: BoardDoc[];
+  /** GitHub repos connected to it (domain/github.ts). */
+  repos: BoardRepo[];
+}
+
+/** A repo connected to a board, by an instance admin; the instance's GitHub App delivers its events. */
+export interface BoardRepo {
+  id: string;
+  /** "owner/name" */
+  repo: string;
+  /** Handle of the owner who connected it: the webhook acts as them. */
+  connectedBy: string | null;
+  createdAt: string;
+  /** When GitHub last delivered anything, and which event; null until the first. */
+  lastDeliveryAt: string | null;
+  lastEvent: string | null;
+}
+
+/** The instance's GitHub App (worker/githubApp.ts), as GET /api/admin/github and board settings see it. */
+export interface GithubApp {
+  slug: string;
+  /** Its page on GitHub, where its settings are. */
+  htmlUrl: string;
+  /** The account that owns it. */
+  owner: string;
+  /** Where to install it on more repos, or change which ones. */
+  installUrl: string;
+  createdAt: string;
+}
+
+/** GET /api/boards/:id/repos/available: what an admin can connect; repos is empty without an App. */
+export interface RepoChoices {
+  app: GithubApp | null;
+  /** "owner/name", the App's installed repos not on this board yet. */
+  repos: string[];
+}
+
+/** POST /api/admin/github/manifest: the form the browser posts to GitHub to make the App. */
+export interface AppManifestForm {
+  action: string;
+  manifest: string;
 }
 
 /** Longest a board's notes may be, in characters. */

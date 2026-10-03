@@ -1,6 +1,6 @@
 /* ============================================================================
-   Board settings, for owners (the gear): its stages and labels, what it is
-   called, and archiving it. The inbox is private, so it
+   Board settings, for owners (the gear): its stages and labels, the GitHub
+   repos connected to it (RepoEditor.tsx), what it is called, and archiving it. The inbox is private, so it
    has no archive section. Who is on the board, and adding people or agents,
    is the share dialog (ShareModal.tsx).
    ========================================================================== */
@@ -12,6 +12,7 @@ import type { BoardDetail } from "@/domain/types";
 import { send } from "@/lib/api";
 import { KEYS } from "@/lib/queries";
 import { ModalFrame } from "@/ui/ModalFrame";
+import { RepoEditor } from "./RepoEditor";
 import { LabelEditor, StageEditor } from "./StageEditor";
 
 const input = "bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent";
@@ -74,6 +75,10 @@ export function BoardSettingsModal({ detail, onClose }: { detail: BoardDetail; o
 
       <Section title="labels">
         <LabelEditor detail={detail} />
+      </Section>
+
+      <Section title="github">
+        <RepoEditor detail={detail} />
       </Section>
 
       <Section title="board">

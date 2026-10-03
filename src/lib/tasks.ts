@@ -125,6 +125,7 @@ export function useCreateTask(boardId: string) {
           commentCount: 0,
           attachments: [],
           claim: null,
+          code: [],
           createdBy: "",
           createdAt: now,
           updatedAt: now,

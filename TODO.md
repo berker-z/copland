@@ -108,8 +108,11 @@ docs/DESIGN.md under Touch.
       daemon/README.md.
 - [ ] Data export: everything a person has, as one download from settings.
 - [ ] Mail (v0.2): IMAP/JMAP first, narrow read-only grants for agents.
-- [ ] GitHub on boards: PRs that mention a task key show up on the task, a
-      merge can close it. Undecided; the options are in docs/GITHUB.md.
+- [ ] Code work (COPL-72): repos on boards are done (docs/GITHUB.md). Still to
+      do: a worktree and branch per claim in the daemon, opening the PR when a
+      run finishes (COPL-74); files each task touches and overlaps between
+      tasks (COPL-75); a lead run that breaks work down, and what to do about
+      overlaps (COPL-48).
 - [ ] Invite a friend for real and share a board; watch live updates between two people
 - [ ] A time zone setting, so "today" and "overdue" in the MCP stop meaning UTC
 - [ ] More MCP tools from the `not yet` entries in `src/worker/mcpCoverage.ts`
