@@ -204,7 +204,8 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   connects repos. Settings › instance › github (`GithubSection.tsx`) is
   the App: a `create GitHub App` button, or its name, owner, an `install
   on repos` link styled as a button, and a two-step `forget the app`.
-- The task modal's `merge` row, shown on a board with a GitHub repo (or when it is already on): a `Checkbox` labelled "review first: the agent opens the PR, a person merges it" in the form, one `text-ink` line in the read view when on, nothing when off.
+- The task modal's `merge` row, shown on a board with a GitHub repo (or when it is already on): a `Checkbox` labelled "review first: the agent opens the PR, a person merges it" in the form, one `text-ink` line in the read view when on, nothing when off. The new task form has the same row and checkbox on a board with a GitHub repo, off by default, and sends it on create.
+- An open card with review first says `review` on its meta line, right after the PR badge: `text-muted`, or `text-yellow` while its PR is open (not a draft) and waiting for the person who merges it. Its `title` says what it means. Nothing on a closed task.
 - A card a run is working on right now (a live claim, routes/runs.ts) says
   so at the right of its meta line, before the avatars: `dev is on this`
   in `text-muted`, the agent's name without the owner, then in
