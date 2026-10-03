@@ -5,6 +5,7 @@
    ========================================================================== */
 
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import type { TaskOverlapRead } from "@/domain/overlap";
 import type { MarketExtras, Note } from "@/domain/panes";
 import type { Settings, VaultEntry } from "@/domain/settings";
 import type { Agent, ApiToken, BoardDetail, BoardSummary, Inbox, Invite, Me, MyWork, Person, User, Wired } from "@/domain/types";
@@ -17,6 +18,8 @@ export const KEYS = {
   vault: ["vault"],
   boards: ["boards"],
   board: (id: string) => ["board", id],
+  /* Under its board's key: the report route notifies the board, and a task closing changes who overlaps. */
+  taskOverlap: (boardId: string, taskId: string) => ["board", boardId, "overlap", taskId],
   boardAll: ["board"],
   /* Under "board" on purpose: whatever changes a board can change whose work is whose. */
   myWork: ["board", "~mine"],
@@ -72,6 +75,15 @@ export const boardQuery = (id: string) => ({
 });
 
 export const useBoard = (id: string | null) => useQuery({ ...boardQuery(id ?? ""), enabled: id !== null });
+
+/** A task's own changed files and the open tasks sharing them (routes/files.ts), for the task modal on a board with code. */
+export const useTaskOverlap = (boardId: string, taskId: string, enabled: boolean) =>
+  useQuery({
+    queryKey: KEYS.taskOverlap(boardId, taskId),
+    queryFn: () => api<TaskOverlapRead>(`/tasks/${taskId}/overlap`),
+    enabled,
+    refetchInterval: fallbackPoll(60_000),
+  });
 
 export const useAdminUsers = () =>
   useQuery({
