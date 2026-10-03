@@ -1,0 +1,60 @@
+# Checks every pull request, the floor under the drift check (COPL-75,
+# docs/GITHUB.md): typecheck, the checks and the build, as AGENTS.md asks
+# before a commit, and the headless daemon's tests and lints when the PR
+# touches daemon/. One job, `ci`, so branch protection has one name to
+# require; the daemon part is skipped, not left pending, on PRs that don't
+# touch it. The box (daemon/box) needs GPUI's native libraries and is checked
+# by box-release.yml under Nix instead.
+
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the PR makes the run for the old one pointless.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          # The check runs TypeScript through node's type stripping (22.18+).
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run check
+      - run: npm run build
+
+      - name: Does it touch daemon/?
+        id: daemon
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ] || git diff --name-only "$base" HEAD -- daemon/ | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.daemon.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - if: steps.daemon.outputs.changed == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+      - if: steps.daemon.outputs.changed == 'true'
+        working-directory: daemon
+        run: cargo test && cargo clippy --all-targets -- -D warnings
