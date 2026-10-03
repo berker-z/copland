@@ -128,6 +128,7 @@ export function useCreateTask(boardId: string) {
           claim: null,
           reviewFirst: input.reviewFirst ?? false,
           code: [],
+          overlap: [],
           createdBy: "",
           createdAt: now,
           updatedAt: now,
