@@ -97,6 +97,36 @@ export function descendantIds<T extends { id: string; parentId: string | null }>
   return out;
 }
 
+/**
+ * How far a parent's work has got: its leaf descendants at any depth (tasks
+ * with no children of their own), so an epic with stories counts the tasks
+ * under them, not the stories. `done` is the leaves in a done stage, `total`
+ * every leaf but the cancelled ones, so all of them cancelled is 0/0.
+ * Milestones are checkpoints, not work, and are never counted. Undefined for
+ * a task with no children. Built on descendantIds, so a looped parent chain
+ * is walked once.
+ */
+export function progress<T extends { id: string; parentId: string | null; stageId: string; level: string }, S extends { id: string; category: StageCategory }>(
+  tasks: T[],
+  stages: S[],
+  rootId: string,
+): { done: number; total: number } | undefined {
+  const below = descendantIds(tasks, rootId);
+  if (below.size === 0) return undefined;
+  const parents = new Set(tasks.map((t) => t.parentId));
+  const category = new Map(stages.map((s) => [s.id, s.category]));
+  let done = 0;
+  let total = 0;
+  for (const t of tasks) {
+    if (!below.has(t.id) || parents.has(t.id) || t.level === "milestone") continue;
+    const c = category.get(t.stageId);
+    if (c === "cancelled") continue;
+    total++;
+    if (c === "done") done++;
+  }
+  return { done, total };
+}
+
 /* ---------------------------------------------------- parents follow -- */
 
 /** A parent the board moved because of its children, and the child it followed. */
