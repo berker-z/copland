@@ -148,6 +148,8 @@ struct Started {
     state: watch::Receiver<DaemonState>,
     /// The owner's view, when the config has an owner token.
     feed: Option<watch::Receiver<Feed>>,
+    /// True once the daemon has stopped by itself (a signal, or no agent left).
+    finished: watch::Receiver<bool>,
     rt: tokio::runtime::Handle,
     reload: mpsc::UnboundedSender<Reload>,
     stopper: RunStopper,
@@ -158,7 +160,7 @@ struct Started {
 impl Running {
     /// Start the daemon, and with an owner token the owner's feed, which also sends desktop
     /// notifications while `notes` says so.
-    fn start(config: Config, finished: Arc<AtomicBool>, notes: Arc<AtomicBool>) -> Result<Started> {
+    fn start(config: Config, notes: Arc<AtomicBool>) -> Result<Started> {
         let owner = config.owner.clone();
         let feed = owner.as_ref().map(|o| {
             watch::channel(Feed {
@@ -181,6 +183,7 @@ impl Running {
             }
             None => (None, None),
         };
+        let (finished_tx, finished) = watch::channel(false);
         let (state_tx, state_rx) = std::sync::mpsc::channel();
         let (stop, mut stop_rx) = oneshot::channel::<()>();
         let (reload_tx, mut reload_rx) = mpsc::unbounded_channel::<Reload>();
@@ -217,11 +220,12 @@ impl Running {
                     tracing::error!("can't listen for signals");
                     return;
                 };
-                loop {
+                /* By a signal, the window quits once the agents have stopped; by the window, it already has. */
+                let by_signal = loop {
                     tokio::select! {
-                        _ = term.recv() => { tracing::info!("SIGTERM: stopping"); break }
-                        _ = int.recv() => { tracing::info!("SIGINT: stopping"); break }
-                        _ = &mut stop_rx => { tracing::info!("window closed: stopping"); break }
+                        _ = term.recv() => { tracing::info!("SIGTERM: stopping"); break true }
+                        _ = int.recv() => { tracing::info!("SIGINT: stopping"); break true }
+                        _ = &mut stop_rx => { tracing::info!("window closed: stopping"); break false }
                         /* The agents screen changed daemon.toml: run what it says now, here. */
                         Some(req) = reload_rx.recv() => {
                             let done = daemon.reload(req.config);
@@ -232,11 +236,11 @@ impl Running {
                         }
                         _ = daemon.join() => {
                             tracing::error!("no agent left to watch");
-                            finished.store(true, Ordering::Relaxed);
+                            finished_tx.send_replace(true);
                             return;
                         }
                     }
-                }
+                };
                 daemon.shutdown();
                 /* As the headless daemon: a second signal means now. */
                 tokio::select! {
@@ -244,7 +248,9 @@ impl Running {
                     _ = term.recv() => { tracing::warn!("second signal: exiting without waiting"); std::process::exit(1); }
                     _ = int.recv() => { tracing::warn!("second signal: exiting without waiting"); std::process::exit(130); }
                 }
-                finished.store(true, Ordering::Relaxed);
+                if by_signal {
+                    finished_tx.send_replace(true);
+                }
             });
         })?;
         let (state, rt, stopper) = state_rx
@@ -257,6 +263,7 @@ impl Running {
             },
             state,
             feed: feed_rx,
+            finished,
             rt,
             reload: reload_tx,
             stopper,
@@ -360,8 +367,7 @@ fn main() -> Result<()> {
             if config.owner.is_none() {
                 tracing::info!("no owner_token_file: drawing what the daemon knows (todo and doing)");
             }
-            let finished = Arc::new(AtomicBool::new(false));
-            let s = Running::start(config, finished.clone(), notes.clone())?;
+            let s = Running::start(config, notes.clone())?;
             *running.lock().expect("one writer") = Some(s.running);
             let setup_again = setup_again.clone();
             let control = Control {
@@ -382,7 +388,7 @@ fn main() -> Result<()> {
             Ok(Source::Live {
                 state: s.state,
                 feed: s.feed,
-                finished,
+                finished: s.finished,
                 control: Some(control),
                 clicks: s.clicks,
             })

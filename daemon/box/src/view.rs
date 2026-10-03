@@ -9,8 +9,6 @@
 //! The title bar has the bell (what needs you, COPL-64) and ≡ (the menu, COPL-65).
 //! In compact mode the window is the status line alone, the bell and ≡ at its end.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use copland_daemon_core::{DaemonState, Phase};
@@ -73,8 +71,8 @@ pub enum Source {
         state: watch::Receiver<DaemonState>,
         /// The owner's view from `/api/wired`, when the config has an owner token.
         feed: Option<watch::Receiver<Feed>>,
-        /// Set once the daemon has stopped by itself (a signal, or no agent left).
-        finished: Arc<AtomicBool>,
+        /// True once the daemon has stopped by itself (a signal, or no agent left).
+        finished: watch::Receiver<bool>,
         /// For the menu and the agents screen: the config file and the way to the running daemon.
         control: Option<Control>,
         /// Links of desktop notifications that were clicked, to open.
@@ -629,9 +627,14 @@ pub fn budgets(l: &Layout, spacing: f32, cell: f32, zoom: f32) -> [f32; 4] {
 fn watch_source(source: &mut Source, cx: &mut Context<BoxView>) -> Vec<Task<()>> {
     let mut watchers = Vec::new();
     if let Source::Live {
-        state, feed, clicks, ..
+        state,
+        feed,
+        finished,
+        clicks,
+        ..
     } = source
     {
+        watchers.push(quit_when_finished(finished.clone(), cx));
         watchers.push(redraw_on(state.clone(), cx));
         if let Some(feed) = feed {
             watchers.push(redraw_on(feed.clone(), cx));
@@ -648,6 +651,27 @@ fn watch_source(source: &mut Source, cx: &mut Context<BoxView>) -> Vec<Task<()>>
         }
     }
     watchers
+}
+
+/// Whether the daemon stopped by itself: true once it says so, false if its thread ended without.
+async fn stopped_by_itself(mut finished: watch::Receiver<bool>) -> bool {
+    finished.wait_for(|f| *f).await.is_ok()
+}
+
+/// Quit once the daemon has stopped by itself, unless it was stopped to sign out. Not from
+/// render: a window the compositor isn't showing (another workspace) gets no frames, and
+/// SIGTERM would stop the daemon and leave the process up (COPL-101).
+fn quit_when_finished(finished: watch::Receiver<bool>, cx: &mut Context<BoxView>) -> Task<()> {
+    cx.spawn(async move |this, cx| {
+        if !stopped_by_itself(finished).await {
+            return;
+        }
+        let _ = this.update(cx, |view, cx| {
+            if !view.menu.as_ref().is_some_and(|m| m.signing_out) {
+                cx.quit();
+            }
+        });
+    })
 }
 
 /// Notify the view whenever `rx` changes, until its sender is gone.
@@ -838,12 +862,6 @@ pub fn board_from(st: &DaemonState, feed: Option<&Feed>, now: f64, wall: SystemT
 
 impl Render for BoxView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let signing_out = self.menu.as_ref().is_some_and(|m| m.signing_out);
-        if let Source::Live { finished, .. } = &self.source {
-            if finished.load(Ordering::Relaxed) && !signing_out {
-                cx.quit();
-            }
-        }
         let feed = self.feed_now();
         let th = self.prefs.theme_now(feed.as_ref());
         self.scene.motion = self.prefs.motion;
@@ -1260,6 +1278,29 @@ mod tests {
     use super::*;
     use copland_daemon_core::AgentState;
     use copland_daemon_core::api::{Wired, WiredAgent, WiredTask};
+
+    /// The window's quit waits on the daemon's word alone, with no redraw to notice it
+    /// (COPL-101), and a daemon thread that ends without saying so doesn't quit it.
+    #[test]
+    fn quits_on_the_daemons_word_not_on_a_frame() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (tx, rx) = watch::channel(false);
+        let waiting = std::thread::spawn(move || rt.block_on(stopped_by_itself(rx)));
+        std::thread::sleep(Duration::from_millis(20));
+        tx.send_replace(true);
+        assert!(waiting.join().unwrap());
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (tx, rx) = watch::channel(false);
+        drop(tx);
+        assert!(!rt.block_on(stopped_by_itself(rx)));
+    }
 
     /// The lists against `src/features/wired/WiredPane.tsx`: its number constants and its
     /// `budgets` rule at the web's scales. The padding is the box's own (the window's margin

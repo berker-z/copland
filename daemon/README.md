@@ -218,7 +218,7 @@ A ticket in doing that this box is running gets a ■ in front of it. Click it, 
 
 ### Closing it, and its colours
 
-Closing the window, SIGINT or SIGTERM stop the daemon as the headless one stops: runtimes get SIGTERM and their runs finish as cancelled. After signing out, with no daemon left, SIGINT and SIGTERM just exit. The title bar drags the window (GPUI's `start_window_move`).
+Closing the window, SIGINT or SIGTERM stop the daemon as the headless one stops: runtimes get SIGTERM and their runs finish as cancelled. After a signal the box exits once the runs have finished, whether or not its window is showing (one on a hidden workspace gets no frames, so the quit doesn't wait for one). After signing out, with no daemon left, SIGINT and SIGTERM just exit. The title bar drags the window (GPUI's `start_window_move`).
 
 The colours are Copland's seven themes, copied from `src/styles/themes.css` into `box/src/theme.rs`. They have to be kept in step by hand; a test reads the CSS and fails when they differ. Pick one with `theme = "nord"` at the top of `daemon.toml` (the headless daemon ignores the key) or `--theme` (for that run only), or from the menu. `theme = "copland"` follows the theme you chose in Copland: the box reads `GET /api/settings` with your read-only token (a person's own read, which an agent's token can't make) and again when your live socket says `settings` changed; until it has, and without `owner_token_file`, it is nord.
 
