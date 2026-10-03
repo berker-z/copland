@@ -35,6 +35,8 @@ pub enum Brief {
     Commented,
     /// No claim (the task is closed); it was mentioned there.
     Closed,
+    /// No claim (the task waits on tasks that aren't done); it was mentioned or commented on there.
+    Waiting,
 }
 
 /// The prompt the runtime starts with. Short: the MCP guide carries the rest.
@@ -51,6 +53,9 @@ pub fn prompt(handle: &str, task_key: &str, brief: Brief) -> String {
         ),
         Brief::Closed => format!(
             "You are @{handle}. You were mentioned on {task_key}, which is closed. Read it with get_task, answer in its comments, and don't reopen it or take it over."
+        ),
+        Brief::Waiting => format!(
+            "You are @{handle}. There is something for you on {task_key}, which waits on tasks that aren't done yet. Read it with get_task, answer in its comments if it needs you, and don't start the work."
         ),
     }
 }
@@ -334,6 +339,7 @@ mod tests {
             "You are @me/dev. You were mentioned on COPL-9, which isn't yours. Read it with get_task, answer in its comments, and don't take it over."
         );
         assert!(prompt("me/dev", "COPL-9", Brief::Closed).contains("which is closed"));
+        assert!(prompt("me/dev", "COPL-9", Brief::Waiting).contains("don't start the work"));
     }
 
     #[test]

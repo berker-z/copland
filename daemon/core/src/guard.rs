@@ -119,6 +119,8 @@ pub enum Refused {
 pub fn refused(code: Option<&str>, wake: &Wake) -> Refused {
     match code {
         Some("claimed") => Refused::Hold,
+        /* Waiting on tasks that aren't done: answer what was said, but those closing is what lets it start. */
+        Some("waiting") if wake.mentioned || wake.commented => Refused::Answer(Brief::Waiting),
         Some("assigned_elsewhere") if wake.mentioned => Refused::Answer(Brief::Mentioned),
         Some("assigned_elsewhere") if wake.commented => Refused::Answer(Brief::Commented),
         Some("closed") if wake.mentioned => Refused::Answer(Brief::Closed),
@@ -356,6 +358,8 @@ mod tests {
     #[test]
     fn refusals_by_reason() {
         assert_eq!(refused(Some("claimed"), &one("assigned")), Refused::Hold);
+        assert_eq!(refused(Some("waiting"), &one("mentioned")), Refused::Answer(Brief::Waiting));
+        assert_eq!(refused(Some("waiting"), &one("assigned")), Refused::Skip);
         assert_eq!(
             refused(Some("assigned_elsewhere"), &one("mentioned")),
             Refused::Answer(Brief::Mentioned)

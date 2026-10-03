@@ -182,6 +182,18 @@ export async function postClaim(env: Env, viewer: Viewer, id: string, changes: C
   if (task.completedAt !== null || stage?.category === "done" || stage?.category === "cancelled") {
     throw refused(`${task.key} is closed; move it back to an open stage before claiming it`, "closed");
   }
+  /* Work that builds on other work starts once that work is done (or dropped): for a coding task, merged. */
+  const { results: waiting } = await db
+    .prepare(
+      `SELECT t.number FROM task_dependencies d JOIN tasks t ON t.id = d.depends_on_id
+        WHERE d.task_id = ?1 AND t.deleted_at IS NULL AND t.completed_at IS NULL ORDER BY t.number`,
+    )
+    .bind(task.id)
+    .all<{ number: number }>();
+  if (waiting.length) {
+    const keys = waiting.map((w) => `${board.key}-${w.number}`).join(", ");
+    throw refused(`${task.key} waits on ${keys}, which ${waiting.length === 1 ? "isn't" : "aren't"} done yet; claim it once ${waiting.length === 1 ? "it is" : "they are"}`, "waiting");
+  }
   if (task.assigneeIds.length > 0 && !task.assigneeIds.includes(me)) {
     const { results } = await db
       .prepare(`SELECT handle FROM users WHERE id IN (${task.assigneeIds.map((_, i) => `?${i + 1}`).join(",")})`)
