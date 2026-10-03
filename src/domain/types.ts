@@ -178,6 +178,14 @@ export interface AlsoMoved {
 export type TaskWrite = Task & { alsoMoved?: AlsoMoved[] };
 
 /** GET /api/tasks/mine: which tasks are yours and which you handed to your agents (routes/work.ts). */
+/** GET /api/tasks/ready: one task the caller can start now (routes/work.ts getReady). */
+export interface ReadyTask {
+  id: string;
+  key: string;
+  boardId: string;
+  updatedAt: string;
+}
+
 export interface MyWork {
   mine: { taskId: string; boardId: string }[];
   /** Always empty for an agent. */

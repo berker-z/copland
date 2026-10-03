@@ -86,6 +86,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
       "delete_doc",
     ],
   },
+  "GET /api/tasks/ready": { skip: "not yet: what the caller can start now (todo, dependencies closed, unclaimed); the daemon pulls it, an assistant asks my_work" },
   "GET /api/tasks/mine": { tools: ["my_work"] },
   "GET /api/inbox": { tools: ["inbox", "mark_read"] },
   "POST /api/inbox/read": { tools: ["mark_read"] },

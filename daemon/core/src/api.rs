@@ -92,6 +92,21 @@ pub struct Task {
     pub claim: Option<Claim>,
 }
 
+/// GET /api/tasks/ready: one task the agent can start now (COPL-86).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadyTask {
+    pub id: String,
+    pub key: String,
+    pub board_id: String,
+    pub updated_at: String,
+}
+
+#[derive(Deserialize)]
+struct Ready {
+    tasks: Vec<ReadyTask>,
+}
+
 /// The part of GET /api/boards/:id the daemon reads: the GitHub repos connected to it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BoardRepos {
@@ -447,6 +462,19 @@ impl Api {
                 .header("accept", "application/vnd.github+json"),
         )
         .await
+    }
+
+    /// The agent's tasks it can start now: assigned, in a todo stage, dependencies closed, unclaimed.
+    /// An instance from before COPL-86 has no such route; that reads as nothing ready.
+    pub async fn ready(&self, cred: &Secret) -> ApiResult<Vec<ReadyTask>> {
+        match self
+            .send::<Ready>(self.http.get(self.url("/api/tasks/ready")), cred)
+            .await
+        {
+            Ok(r) => Ok(r.tasks),
+            Err(e) if e.status() == Some(404) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
     }
 
     /// One page of unread items, newest first.

@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::api::InboxItem;
+use crate::api::{InboxItem, ReadyTask};
 use crate::runner::Brief;
 
 /// Who the agent is, as the server says: what its own items are told apart by.
@@ -68,6 +68,27 @@ pub struct Plan {
 }
 
 /// Group unread items by task, leaving out the agent's own and those without a task.
+/// Add the tasks the agent can start now (GET /api/tasks/ready) to the plan, as wakes with no
+/// items: nothing was said, the task is simply ready. One already woken by its inbox stays as it
+/// is. The guard treats them like any other: a task a run already had wakes again only once it changed.
+pub fn add_ready(plan: &mut Plan, ready: &[ReadyTask]) {
+    for r in ready {
+        if plan.wakes.iter().any(|w| w.task_id == r.id) {
+            continue;
+        }
+        plan.wakes.push(Wake {
+            task_id: r.id.clone(),
+            task_key: r.key.clone(),
+            items: Vec::new(),
+            oldest: r.updated_at.clone(),
+            mentioned: false,
+            commented: false,
+        });
+    }
+    plan.wakes
+        .sort_by(|a, b| a.oldest.cmp(&b.oldest).then_with(|| a.task_id.cmp(&b.task_id)));
+}
+
 pub fn plan(me: &Identity, items: &[InboxItem]) -> Plan {
     let mut plan = Plan::default();
     let mut by_task: HashMap<String, Wake> = HashMap::new();
@@ -403,5 +424,51 @@ mod tests {
         assert_eq!(g.remembered(), 1);
         g.retain(&Plan::default());
         assert_eq!(g.remembered(), 0);
+    }
+
+    fn ready(id: &str, key: &str, at: &str) -> ReadyTask {
+        ReadyTask {
+            id: id.into(),
+            key: key.into(),
+            board_id: "b".into(),
+            updated_at: at.into(),
+        }
+    }
+
+    #[test]
+    fn ready_work_wakes_without_inbox_items_once_until_it_changes() {
+        let mut p = Plan::default();
+        p.wakes.push(Wake {
+            task_id: "t1".into(),
+            task_key: "T-1".into(),
+            items: vec!["i1".into()],
+            oldest: "2026-10-03T10:00:00Z".into(),
+            mentioned: false,
+            commented: false,
+        });
+        add_ready(
+            &mut p,
+            &[
+                ready("t1", "T-1", "2026-10-03T09:00:00Z"),
+                ready("t2", "T-2", "2026-10-03T08:00:00Z"),
+            ],
+        );
+        /* The inbox wake stays as it was; the ready one joins, oldest first. */
+        assert_eq!(
+            p.wakes.iter().map(|w| w.task_key.as_str()).collect::<Vec<_>>(),
+            ["T-2", "T-1"]
+        );
+        assert_eq!(p.wakes[1].items, ["i1"]);
+        let pulled = p.wakes[0].clone();
+        assert!(pulled.items.is_empty());
+
+        let mut g = WakeGuard::default();
+        assert_eq!(g.check(&pulled), Check::New);
+        g.remember(&pulled, Some("u1".into()), false);
+        let Check::Seen { updated_at, held } = g.check(&pulled) else {
+            panic!("a pulled task a run had is seen");
+        };
+        assert!(!WakeGuard::again(&updated_at, held, Some(("u1", false))));
+        assert!(WakeGuard::again(&updated_at, held, Some(("u2", false))));
     }
 }

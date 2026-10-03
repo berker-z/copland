@@ -73,7 +73,7 @@ import { deleteBoardDoc, getBoardDoc, patchBoardDoc, postBoardDoc, putBoardNotes
 import { deleteComment, getComments, getTaskEvents, patchComment, postComment } from "./routes/comments";
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
 import { deleteTask, getTask, patchTask, postTask } from "./routes/tasks";
-import { getMyWork } from "./routes/work";
+import { getMyWork, getReady } from "./routes/work";
 import { getWired } from "./routes/wired";
 import { deleteClaim, getCurrentRun, getRun, postClaim, postRun, postRunFinish } from "./routes/runs";
 import { getInbox, postInboxDismiss, postInboxRead } from "./routes/inbox";
@@ -267,6 +267,8 @@ const api = new Router<Ctx>()
   )
   /* Before /api/tasks/:id, which would otherwise take "mine" for a task. */
   .on("GET", "/api/tasks/mine", ({ env, viewer }) => getMyWork(env, viewer))
+  /* Also before /:id: what the caller can start now; the daemon pulls it (COPL-86). */
+  .on("GET", "/api/tasks/ready", ({ env, viewer }) => getReady(env, viewer))
   .on("GET", "/api/tasks/:id", ({ env, viewer }, { id }) => getTask(env, viewer, id))
   .on("PATCH", "/api/tasks/:id", ({ request, env, viewer, changes }, { id }) =>
     patchTask(request, env, viewer, id, changes),

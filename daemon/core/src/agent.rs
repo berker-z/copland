@@ -20,7 +20,7 @@ use tracing::Instrument;
 
 use crate::api::{Api, ApiError, Ending, InboxItem, Me};
 use crate::config::AgentConfig;
-use crate::guard::{Check, Identity, Plan, Refused, Wake, WakeGuard, plan, refused};
+use crate::guard::{Check, Identity, Plan, Refused, Wake, WakeGuard, add_ready, plan, refused};
 use crate::live::{self, FALLBACK_POLL, Heard, Link};
 use crate::runner::{self, Brief, Exit, Launch};
 use crate::state::{AgentState, DaemonState, Phase, RunSummary};
@@ -436,8 +436,9 @@ impl AgentLoop {
         let generation = self.retire.generation;
         let mut link = live.link.clone();
         let since = tokio::time::Instant::now();
-        /* A task the guard remembers wakes again on a change to it, which is a board change. */
-        let board = self.guard.remembered() > 0;
+        /* A board change can make work ready (a dependency closed, a lead assigned itself a task,
+           COPL-86) or wake a task the guard remembers, so it is always worth a poll, spaced out. */
+        let board = true;
         /* Set once a board change is heard: when the poll it asks for is due. */
         let mut board_due: Option<tokio::time::Instant> = None;
         loop {
@@ -579,7 +580,14 @@ impl AgentLoop {
     async fn tick(&mut self, runs: &mut JoinSet<Done>) -> Result<()> {
         let me = self.identity().await?;
         let (unread, items) = self.unread().await?;
-        let plan: Plan = plan(&me, &items);
+        let mut plan: Plan = plan(&me, &items);
+        /* Work nobody said anything about but that can start now: a task the agent gave itself, one whose dependencies just closed. */
+        let ready = self
+            .api
+            .ready(&self.agent.token)
+            .await
+            .map_err(|e| anyhow!("reading what is ready: {e}"))?;
+        add_ready(&mut plan, &ready);
         let waiting: Vec<String> = plan.wakes.iter().map(|w| w.task_key.clone()).collect();
         self.update(|s| {
             s.last_poll = Some(SystemTime::now());

@@ -110,8 +110,8 @@ docs/DESIGN.md under Touch.
 - [ ] Mail (v0.2): IMAP/JMAP first, narrow read-only grants for agents.
 - [ ] Code work (COPL-72): repos on boards are done (docs/GITHUB.md). Coding runs
       in a sandboxed worktree per task, dependencies before claims and review
-      first are done (COPL-74). Still to do: starting tasks whose
-      dependencies just closed without waiting for the inbox; files each task touches and overlaps between
+      first are done (COPL-74). The daemon also pulls ready work
+      (COPL-86). Still to do: files each task touches and overlaps between
       tasks (COPL-75); a lead run that breaks work down, and what to do about
       overlaps (COPL-48).
 - [ ] Invite a friend for real and share a board; watch live updates between two people
