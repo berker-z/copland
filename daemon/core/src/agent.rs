@@ -844,6 +844,7 @@ impl RunCtx {
                 handle: me,
                 run_id: &run_id,
                 secret: &started.secret,
+                task_id: &wake.task_id,
                 task_key: &key,
                 brief,
                 state_dir: &self.paths.state_dir,

@@ -188,6 +188,14 @@ pub struct Run {
     pub claims: Vec<String>,
 }
 
+/// PUT /api/tasks/:id/files: what was kept.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesReported {
+    pub count: u32,
+    pub truncated: bool,
+}
+
 /// POST /api/runs: the run and its secret, given once.
 #[derive(Debug, Deserialize)]
 pub struct StartedRun {
@@ -575,6 +583,24 @@ impl Api {
             .post(self.url(&format!("/api/runs/{id}/finish")))
             .json(&json!({ "status": ending.as_str(), "interrupted": ending == Ending::Interrupted }));
         self.send(req, token).await
+    }
+
+    /// Report the files the task's work has changed (COPL-103), with the secret of the run holding
+    /// its claim. Refused with a 409 (`not_claimed`) once that run no longer holds it.
+    pub async fn report_files(
+        &self,
+        run_secret: &Secret,
+        task_id: &str,
+        changes: &crate::workspace::Changes,
+    ) -> ApiResult<FilesReported> {
+        let body = json!({ "base": changes.base, "files": changes.files, "truncated": changes.truncated });
+        self.send(
+            self.http
+                .put(self.url(&format!("/api/tasks/{task_id}/files")))
+                .json(&body),
+            run_secret,
+        )
+        .await
     }
 
     /// Claim a task for the run whose secret this is.
