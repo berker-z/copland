@@ -280,6 +280,13 @@ pub struct OwnSettings {
     pub theme: String,
 }
 
+/// POST /api/messages: the message as sent (`SentMessage` in `src/domain/types.ts`), the parts the box reads.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SentMessage {
+    pub id: String,
+    pub to: Actor,
+}
+
 /// DELETE /api/tokens/self: which token went.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Revoked {
@@ -306,6 +313,10 @@ pub struct DeviceStart {
 pub struct DeviceIdentity {
     pub handle: String,
     pub token: Secret,
+    /// "read" or "write", for the person's token; an agent's, and one from a server older than
+    /// COPL-109, leave it out.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// POST /api/device/poll.
@@ -488,11 +499,22 @@ impl Api {
 
     /// Ask for a device code: the one call made with no credential, since getting one is what it is for.
     /// `agents` (handles or ids) are the ones the approval page ticks to begin with; empty leaves it
-    /// to the page (every agent that isn't paused). A server older than COPL-55 ignores it.
-    pub async fn device_start(&self, client: &str, host: &str, agents: &[String]) -> ApiResult<DeviceStart> {
+    /// to the page (every agent that isn't paused). A server older than COPL-55 ignores it. `write`
+    /// asks for a read-and-write token for the person instead (COPL-109), with no agents; a server
+    /// older than that ignores it and hands back a read-only one, which `DeviceIdentity::scope` shows.
+    pub async fn device_start(
+        &self,
+        client: &str,
+        host: &str,
+        agents: &[String],
+        write: bool,
+    ) -> ApiResult<DeviceStart> {
         let mut body = json!({ "client": client, "host": host });
         if !agents.is_empty() {
             body["agents"] = json!(agents);
+        }
+        if write {
+            body["write"] = json!(true);
         }
         self.send_as(self.http.post(self.url("/api/device/start")).json(&body))
             .await
@@ -560,6 +582,27 @@ impl Api {
         }
         self.send(self.http.get(self.url("/api/inbox")).query(&query), cred)
             .await
+    }
+
+    /// Send a message to `to` (a handle or id): the person's write token, to one of their agents.
+    pub async fn send_message(&self, cred: &Secret, to: &str, text: &str) -> ApiResult<SentMessage> {
+        self.send(
+            self.http
+                .post(self.url("/api/messages"))
+                .json(&json!({ "to": to, "text": text })),
+            cred,
+        )
+        .await
+    }
+
+    /// Mark these inbox items read (a write). The inbox it answers with is not read here.
+    pub async fn mark_read(&self, cred: &Secret, ids: &[String]) -> ApiResult<()> {
+        self.send::<serde::de::IgnoredAny>(
+            self.http.post(self.url("/api/inbox/read")).json(&json!({ "ids": ids })),
+            cred,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// A task by id or key.
@@ -651,9 +694,19 @@ mod tests {
             panic!("not approved")
         };
         assert_eq!((url.as_str(), owner.unwrap().handle.as_str()), ("http://x", "me"));
+        assert!(agents[0].scope.is_none());
         assert_eq!(agents[0].token.expose(), "cpl_a");
         assert!(!format!("{:?}", agents[0]).contains("cpl_a"));
         assert!(serde_json::from_str::<DevicePoll>(r#"{"status":"maybe"}"#).is_err());
+        /* A write token says so (COPL-109). */
+        let p: DevicePoll = serde_json::from_str(
+            r#"{"status":"approved","url":"http://x","owner":{"handle":"me","token":"cpl_w","scope":"write"},"agents":[]}"#,
+        )
+        .unwrap();
+        let DevicePoll::Approved { owner, .. } = p else {
+            panic!("not approved")
+        };
+        assert_eq!(owner.unwrap().scope.as_deref(), Some("write"));
     }
 
     #[test]

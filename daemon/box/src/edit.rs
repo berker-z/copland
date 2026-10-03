@@ -325,7 +325,7 @@ pub fn save_agent_token(config: &Path, handle: &str, token: &str) -> Result<Path
     let base = setup::agent_name(handle);
     let path = (1..)
         .map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") })
-        .filter(|n| n != "me")
+        .filter(|n| n != "me" && n != "me.write")
         .map(|n| dir.join(format!("{n}.token")))
         .find(|p| !p.exists())
         .expect("some free name");

@@ -1,11 +1,11 @@
 /* ============================================================================
-   Device login: the agents a box asks for (src/domain/device.ts, COPL-55).
+   Device login: what a box asks for (src/domain/device.ts, COPL-55, COPL-109).
    ----------------------------------------------------------------------------
-   Run: npm run check. What POST /api/device/start accepts in `agents`, and
+   Run: npm run check. What POST /api/device/start accepts in `agents` and `write`, and
    which of the person's agents the /device page ticks to begin with.
    ========================================================================== */
 
-import { MAX_DEVICE_AGENTS, parseWantedAgents, preselectAgents } from "../src/domain/device.ts";
+import { MAX_DEVICE_AGENTS, parseWantedAgents, parseWriteAsk, preselectAgents } from "../src/domain/device.ts";
 
 const cases: Array<[string, boolean]> = [];
 const t = (name: string, pass: boolean) => cases.push([name, pass]);
@@ -29,6 +29,17 @@ t("control characters are refused", wanted(["me/a\u0007"]) === "error");
 t("an overlong entry is refused", wanted(["x".repeat(101)]) === "error");
 t("too many are refused", wanted(Array.from({ length: MAX_DEVICE_AGENTS + 1 }, (_, i) => `me/a${i}`)) === "error");
 t("as many as allowed pass", Array.isArray(wanted(Array.from({ length: MAX_DEVICE_AGENTS }, (_, i) => `me/a${i}`))));
+
+/* A write token (COPL-109): its own ask, never with agents. */
+const write = (raw: unknown, wanted: string[] | null = null) => {
+  const r = parseWriteAsk(raw, wanted);
+  return "error" in r ? "error" : r.write;
+};
+t("no write is the read-only token", write(undefined) === false && write(null) === false && write(false) === false);
+t("write: true asks for it", write(true) === true);
+t("write that isn't a boolean is refused", write("yes") === "error" && write(1) === "error");
+t("write with agents is refused", write(true, ["me/dev"]) === "error");
+t("agents without write are fine", write(false, ["me/dev"]) === false);
 
 /* Preselection. */
 const mine = [

@@ -11,7 +11,8 @@
 //!
 //! With the same token it also reads what the menu and the bell show (COPL-64,
 //! COPL-65), each when its topic says it changed and on the same clock: the
-//! person's unread mentions (`/api/inbox?unread=true`, "inbox"), their boards
+//! person's unread mentions and their agents' messages (`/api/inbox?unread=true`, "inbox";
+//! messages since COPL-109), their boards
 //! (`/api/boards`, "boards") and their theme (`/api/settings`, "settings").
 //! After each read the notifier decides whether anything new needs saying.
 
@@ -36,7 +37,7 @@ pub const EVERY_LIVE: Duration = Duration::from_secs(120);
 const SETTLE: Duration = Duration::from_secs(2);
 /// Reads the live socket asks for are at least this far apart.
 const SPACING: Duration = Duration::from_secs(1);
-/// Unread mentions read at most this many pages of a hundred.
+/// The unread inbox is read at most this many pages of a hundred.
 const INBOX_PAGES: usize = 3;
 
 /// What `/api/wired` is made of: tasks on boards (board), which boards the person is on
@@ -101,8 +102,8 @@ pub struct Feed {
     pub refused: bool,
     /// The owner's live socket.
     pub live: Link,
-    /// The person's unread mentions, newest first, once read.
-    pub mentions: Option<Vec<InboxItem>>,
+    /// The person's unread mentions and messages (from their agents), newest first, once read.
+    pub inbox: Option<Vec<InboxItem>>,
     /// The boards the person is on, once read.
     pub boards: Option<Vec<BoardRef>>,
     /// The person's theme in Copland, once read.
@@ -204,13 +205,18 @@ impl Drop for Abort {
     }
 }
 
-/// The person's unread mentions, newest first: a few pages of their unread inbox at most.
-async fn mentions(api: &Api, owner: &Owner) -> Result<Vec<InboxItem>, copland_daemon_core::api::ApiError> {
+/// What the bell lists from the person's inbox: mentions and messages.
+fn wanted_item(i: &InboxItem) -> bool {
+    matches!(i.kind.as_str(), "mentioned" | "message")
+}
+
+/// The person's unread mentions and messages, newest first: a few pages of their unread inbox at most.
+async fn unread(api: &Api, owner: &Owner) -> Result<Vec<InboxItem>, copland_daemon_core::api::ApiError> {
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..INBOX_PAGES {
         let page = api.inbox_unread(&owner.token, 100, cursor.as_deref()).await?;
-        out.extend(page.items.into_iter().filter(|i| i.kind == "mentioned"));
+        out.extend(page.items.into_iter().filter(wanted_item));
         match page.next {
             Some(n) => cursor = Some(n),
             None => break,
@@ -297,10 +303,10 @@ pub async fn run(
             }
         }
         if checked && now.inbox {
-            match mentions(&api, &owner).await {
+            match unread(&api, &owner).await {
                 Ok(m) => {
                     extra_said[0] = None;
-                    tx.send_modify(|f| f.mentions = Some(m));
+                    tx.send_modify(|f| f.inbox = Some(m));
                 }
                 Err(e) => quiet(&mut extra_said[0], "your inbox", e.to_string()),
             }

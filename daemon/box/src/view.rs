@@ -399,6 +399,17 @@ impl BoxView {
         b
     }
 
+    /// A key while a message to an agent is typed: the agents screen's, every one of them.
+    fn compose_key(&mut self, e: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        let Some((st, _)) = self.live() else { return false };
+        let Some(a) = self.menu.as_mut().and_then(Menu::composing) else {
+            return false;
+        };
+        a.type_key(e, &st, cx);
+        cx.notify();
+        true
+    }
+
     /// A key by name, or a click as one: the menu's when it is open, else the live view's.
     fn press(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let live = self.live();
@@ -1073,6 +1084,9 @@ impl Render for BoxView {
                 let k = &e.keystroke;
                 if k.modifiers.control && k.key == "q" {
                     cx.quit();
+                    return;
+                }
+                if this.compose_key(e, cx) {
                     return;
                 }
                 this.press(&k.key, window, cx);
