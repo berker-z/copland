@@ -35,7 +35,7 @@ import { RUN_LEASE_MS } from "@/domain/runs";
 import type { ApiAccess, ApiToken, ApiTokenScope, Viewer } from "@/domain/types";
 import { HttpError, nowIso, randomToken, sha256Hex } from "./http";
 import { INTERACTIVE_RUN_OF_TOKEN, interactiveSince, runTouchStatements } from "./repo/runs";
-import { findUserById, type UserRow } from "./repo/users";
+import type { UserRow } from "./repo/users";
 
 export const TOKEN_PREFIX = "cpl_";
 /** A run's secret. Not "cpl_…", so a lookup knows which table to ask. */
@@ -103,6 +103,27 @@ interface TokenRow {
 
 const TOKEN_COLUMNS = `t.id, t.user_id, t.kind, t.name, t.scope, t.client, t.created_at, t.last_used_at, t.expires_at`;
 
+/* The token's user, in the same query as the token: prefixed, since a token has an id and a kind of its own. */
+type UserColumns = { [K in keyof UserRow as `u_${K}`]: UserRow[K] };
+
+const USER_COLUMNS = `u.id AS u_id, u.email AS u_email, u.google_sub AS u_google_sub, u.handle AS u_handle,
+  u.avatar_key AS u_avatar_key, u.is_admin AS u_is_admin, u.disabled_at AS u_disabled_at, u.kind AS u_kind,
+  u.owner_id AS u_owner_id`;
+
+function toUserRow(row: UserColumns): UserRow {
+  return {
+    id: row.u_id,
+    email: row.u_email,
+    google_sub: row.u_google_sub,
+    handle: row.u_handle,
+    avatar_key: row.u_avatar_key,
+    is_admin: row.u_is_admin,
+    disabled_at: row.u_disabled_at,
+    kind: row.u_kind,
+    owner_id: row.u_owner_id,
+  };
+}
+
 function toToken(row: TokenRow): ApiToken {
   return {
     id: row.id,
@@ -130,17 +151,15 @@ export async function tokenAccess(
   if (!secret.startsWith(TOKEN_PREFIX)) return null;
   const row = await db
     .prepare(
-      `SELECT ${TOKEN_COLUMNS}, ${INTERACTIVE_RUN_OF_TOKEN} AS interactive_run_id
+      `SELECT ${TOKEN_COLUMNS}, ${USER_COLUMNS}, ${INTERACTIVE_RUN_OF_TOKEN} AS interactive_run_id
          FROM api_tokens t JOIN users u ON u.id = t.user_id AND u.disabled_at IS NULL
         WHERE t.token_hash = ?1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?2)`,
     )
     .bind(await sha256Hex(secret), nowIso(), interactiveSince())
-    .first<TokenRow & { interactive_run_id: string | null }>();
+    .first<TokenRow & UserColumns & { interactive_run_id: string | null }>();
   if (!row) return null;
-  const user = await findUserById(db, row.user_id);
-  if (!user) return null;
   return {
-    user,
+    user: toUserRow(row),
     access: {
       tokenId: row.id,
       kind: row.kind,
@@ -185,7 +204,7 @@ export async function liveTokenIds(db: D1Database, ids: string[]): Promise<Set<s
 async function runAccess(db: D1Database, secret: string): Promise<{ user: UserRow; access: ApiAccess } | null> {
   const row = await db
     .prepare(
-      `SELECT ${TOKEN_COLUMNS}, r.id AS run_id, r.client AS run_client
+      `SELECT ${TOKEN_COLUMNS}, ${USER_COLUMNS}, r.id AS run_id, r.client AS run_client
          FROM runs r
          JOIN api_tokens t ON t.id = r.token_id AND t.user_id = r.user_id
          JOIN users u ON u.id = r.user_id AND u.disabled_at IS NULL
@@ -193,12 +212,10 @@ async function runAccess(db: D1Database, secret: string): Promise<{ user: UserRo
           AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?2)`,
     )
     .bind(await sha256Hex(secret), nowIso(), new Date(Date.now() - RUN_LEASE_MS).toISOString())
-    .first<TokenRow & { run_id: string; run_client: string | null }>();
+    .first<TokenRow & UserColumns & { run_id: string; run_client: string | null }>();
   if (!row) return null;
-  const user = await findUserById(db, row.user_id);
-  if (!user) return null;
   return {
-    user,
+    user: toUserRow(row),
     access: {
       tokenId: row.id,
       kind: row.kind,
