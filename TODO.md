@@ -118,7 +118,9 @@ docs/DESIGN.md under Touch.
       the Worker's five-minute cron. Still to do (epic COPL-96): a conflict the
       agent can't resolve becomes a sibling task (COPL-98), and showing
       overlaps between tasks still being worked on, before any PR exists, so
-      a lead can sequence them (COPL-99). The cron and the put-back have run
+      a lead can sequence them (COPL-99; the Worker stores each task's
+      changed files, COPL-102, and the daemon, reading and the card
+      follow). The cron and the put-back have run
       against the dev server only (`/cdn-cgi/handler/scheduled`); the installed
       box 0.2.0 still finishes runs as plain cancelled on shutdown, which now
       parks their tasks in backlog, until a box release sends `interrupted`.

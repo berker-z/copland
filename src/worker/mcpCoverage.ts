@@ -122,6 +122,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /api/runs/:id/finish": { tools: ["finish_run"] },
   "POST /api/tasks/:id/claim": { tools: ["claim_task"] },
   "DELETE /api/tasks/:id/claim": { tools: ["release_task"] },
+  "PUT /api/tasks/:id/files": {
+    skip: "private: the daemon reports a task's changed files from its worktree with the run's secret; an agent doesn't report its own list",
+  },
 
   /* A board's notes and docs. The doc list rides on GET /api/boards/:id;
      write_doc creates a text doc or rewrites one by name. Uploading a file's

@@ -82,6 +82,7 @@ import { getDevice, postDeviceApprove, postDeviceDeny, postDevicePoll, postDevic
 import { deleteOwnToken, deleteToken, getTokens, postToken, SELF_REVOKE_PATH } from "./routes/tokens";
 import { handleIntegration, isIntegrationPath } from "./integrations";
 import { getTaskDrift, postRevalidate } from "./drift";
+import { putTaskFiles } from "./routes/files";
 import { asAccess, bearerFrom, requireWriteScope, touchStatements } from "./tokens";
 import { getMarketExtras } from "./routes/markets";
 import { deleteNote, getNotes, patchNote, postNote } from "./routes/notes";
@@ -316,6 +317,10 @@ const api = new Router<Ctx>()
   )
   .on("POST", "/api/tasks/:id/claim", ({ env, viewer, changes }, { id }) => postClaim(env, viewer, id, changes))
   .on("DELETE", "/api/tasks/:id/claim", ({ env, viewer, changes }, { id }) => deleteClaim(env, viewer, id, changes))
+  /* Overlap (routes/files.ts): the run holding a task reports the files its work changed. */
+  .on("PUT", "/api/tasks/:id/files", ({ request, env, viewer, changes }, { id }) =>
+    putTaskFiles(request, env, viewer, id, changes),
+  )
 
   .on("POST", "/api/boards/:id/stages", ({ request, env, viewer, changes }, { id }) =>
     postStage(request, env, viewer, id, changes),
