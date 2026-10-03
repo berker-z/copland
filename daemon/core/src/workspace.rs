@@ -338,6 +338,51 @@ fn repo_of(code_dir: &Path, key: &str) -> Option<String> {
     expected.join(".git").is_dir().then_some(repo)
 }
 
+/// How many paths a report keeps, as the Worker does (`TASK_FILES_CAP` in `src/domain/overlap.ts`).
+pub const FILES_CAP: usize = 500;
+/// The longest path the Worker takes (`TASK_FILE_MAX`); a longer one would refuse the whole report.
+const FILE_MAX: usize = 512;
+
+/// What a task's worktree has changed (COPL-103), as `PUT /api/tasks/:id/files` takes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Changes {
+    /// The commit the list is against: the merge base with the default branch.
+    pub base: String,
+    /// Repo-relative paths, sorted, deduplicated, at most `FILES_CAP`.
+    pub files: Vec<String>,
+    /// More changed than `FILES_CAP`.
+    pub truncated: bool,
+}
+
+/// The files the task's work has changed: tracked changes against the merge base with the default
+/// branch (committed or not), plus untracked files that aren't ignored. Against the merge base and
+/// not the commit the work started from, so main merged into the branch doesn't count as the
+/// task's. The workspace's base stands in when there is no merge base. Paths the Worker would
+/// refuse (control characters, backslashes, longer than it keeps) are left out, rather than have
+/// them refuse the lot.
+pub async fn changed_files(ws: &Workspace) -> Result<Changes> {
+    let base = match git(&ws.dir, &["merge-base", "HEAD", &ws.target]).await {
+        Ok(b) if !b.is_empty() => b,
+        _ => ws.base.clone(),
+    };
+    let tracked = git_raw(&ws.dir, &["diff", "--name-only", "--no-renames", "-z", &base, "--"]).await?;
+    let untracked = git_raw(&ws.dir, &["ls-files", "--others", "--exclude-standard", "-z"]).await?;
+    Ok(capped(base, tracked.split('\0').chain(untracked.split('\0'))))
+}
+
+/// Sorted, deduplicated and capped the way the Worker keeps a report.
+fn capped<'a>(base: String, paths: impl Iterator<Item = &'a str>) -> Changes {
+    let mut files: Vec<String> = paths
+        .filter(|p| !p.is_empty() && p.len() <= FILE_MAX && !p.contains('\\') && !p.chars().any(char::is_control))
+        .map(str::to_string)
+        .collect();
+    files.sort();
+    files.dedup();
+    let truncated = files.len() > FILES_CAP;
+    files.truncate(FILES_CAP);
+    Changes { base, files, truncated }
+}
+
 /// "origin/main", from the clone's idea of the remote's HEAD.
 async fn default_branch(clone: &Path) -> Result<String> {
     if let Ok(head) = git(clone, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).await {
@@ -379,6 +424,11 @@ async fn existing_branch(clone: &Path, key: &str) -> Result<Option<String>> {
 
 /// Run git in `dir`; its trimmed stdout, or an error with its stderr.
 async fn git(dir: &Path, args: &[&str]) -> Result<String> {
+    Ok(git_raw(dir, args).await?.trim().to_string())
+}
+
+/// Run git in `dir`; its stdout as it is, for `-z` lists, where a path may end in a space.
+async fn git_raw(dir: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -394,7 +444,7 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 #[cfg(test)]
@@ -539,6 +589,97 @@ mod tests {
         assert_eq!(back.branch, "copl-5-do-the-thing");
         assert_eq!(git(&back.dir, &["log", "-1", "--format=%s"]).await.unwrap(), "work");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    async fn commit(dir: &Path, files: &[(&str, &str)], message: &str) {
+        for (name, text) in files {
+            std::fs::write(dir.join(name), text).unwrap();
+            git(dir, &["add", name]).await.unwrap();
+        }
+        git(
+            dir,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "--quiet",
+                "-m",
+                message,
+            ],
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn changed_files_are_the_tasks_own() {
+        let root = scratch("changed");
+        let remote = origin(&root).await;
+        let elsewhere = root.join("elsewhere");
+        git(&root, &["clone", "--quiet", &remote, &elsewhere.to_string_lossy()])
+            .await
+            .unwrap();
+        commit(&elsewhere, &[("old.txt", "1"), ("main.txt", "1")], "before").await;
+        git(&elsewhere, &["push", "--quiet", "origin", "main"]).await.unwrap();
+
+        let code = root.join("code");
+        let ws = realize(&code, &remote, "o/r", "COPL-11", "Changes").await.unwrap();
+        /* Committed, an uncommitted edit to a tracked file, an untracked file, and an ignored one. */
+        commit(&ws.dir, &[("mine.txt", "1"), (".gitignore", "ignored.txt\n")], "mine").await;
+        std::fs::write(ws.dir.join("old.txt"), "2").unwrap();
+        std::fs::write(ws.dir.join("new file .txt"), "1").unwrap();
+        std::fs::write(ws.dir.join("ignored.txt"), "1").unwrap();
+
+        /* Main moves on and is merged in: what it changed is not the task's. */
+        commit(&elsewhere, &[("theirs.txt", "1"), ("main.txt", "2")], "theirs").await;
+        git(&elsewhere, &["push", "--quiet", "origin", "main"]).await.unwrap();
+        git(&ws.dir, &["fetch", "--quiet", "origin"]).await.unwrap();
+        git(
+            &ws.dir,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "merge",
+                "--quiet",
+                "--no-edit",
+                "origin/main",
+            ],
+        )
+        .await
+        .unwrap();
+
+        let changes = changed_files(&ws).await.unwrap();
+        assert_eq!(
+            changes.files,
+            vec![".gitignore", "mine.txt", "new file .txt", "old.txt"]
+        );
+        assert_eq!(changes.base, git(&ws.dir, &["rev-parse", "origin/main"]).await.unwrap());
+        assert!(!changes.truncated);
+
+        /* No merge base (a target that isn't there): the workspace's base stands in. */
+        let lost = Workspace {
+            target: "origin/nowhere".into(),
+            ..ws.clone()
+        };
+        assert_eq!(changed_files(&lost).await.unwrap().base, ws.base);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn changes_are_kept_as_the_worker_keeps_them() {
+        let many: Vec<String> = (0..FILES_CAP + 2).rev().map(|i| format!("f{i:04}")).collect();
+        let c = capped("b".into(), many.iter().map(String::as_str).chain(["f0000", ""]));
+        assert_eq!(c.files.len(), FILES_CAP);
+        assert_eq!(c.files[0], "f0000");
+        assert!(c.truncated);
+        let long = "x".repeat(FILE_MAX + 1);
+        let c = capped("b".into(), ["b", "a\\b", "tab\there", long.as_str(), "a"].into_iter());
+        assert_eq!(c.files, vec!["a", "b"]);
+        assert!(!c.truncated);
     }
 
     #[tokio::test]

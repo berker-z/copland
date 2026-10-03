@@ -16,7 +16,7 @@ use tokio::time::{Instant, interval_at, timeout};
 use crate::api::Api;
 use crate::config::{AgentConfig, Secret, fill_command};
 use crate::sandbox::{self, Writable};
-use crate::workspace::Workspace;
+use crate::workspace::{self, Changes, Workspace};
 
 /// How often a live runtime's run is kept alive. The lease is ten minutes.
 pub const KEEPALIVE: Duration = Duration::from_secs(120);
@@ -163,6 +163,8 @@ pub struct Launch<'a> {
     pub handle: &'a str,
     pub run_id: &'a str,
     pub secret: &'a Secret,
+    /// The task's id, for what the run reports about it.
+    pub task_id: &'a str,
     pub task_key: &'a str,
     pub brief: Brief,
     pub state_dir: &'a Path,
@@ -210,6 +212,7 @@ async fn run_until(
         handle,
         run_id,
         secret,
+        task_id,
         task_key,
         brief,
         state_dir,
@@ -310,10 +313,14 @@ async fn run_until(
     let deadline = Instant::now() + ceiling;
     let mut keepalive = interval_at(Instant::now() + KEEPALIVE, KEEPALIVE);
     let mut alive = true;
-    loop {
+    /* A worker's worktree: its changed files are reported while it works and once at the end. */
+    let reported = workspace.filter(|ws| brief == Brief::Work && !ws.read_only);
+    let mut reporter = Reporter::default();
+    let mut report = interval_at(Instant::now() + REPORT_EVERY, REPORT_EVERY);
+    let exit = loop {
         tokio::select! {
             status = child.wait() => {
-                return match status {
+                break match status {
                     Ok(s) => match (s.code(), std::os::unix::process::ExitStatusExt::signal(&s)) {
                         (Some(c), _) => Exit::Code(c),
                         (None, Some(sig)) => Exit::Signal(sig),
@@ -333,25 +340,35 @@ async fn run_until(
                     Err(e) => tracing::warn!(run = %short(run_id), "keepalive failed: {e}"),
                 }
             }
+            _ = report.tick(), if alive && reported.is_some() => {
+                if let Some(ws) = reported {
+                    reporter.report(api, secret, task_id, ws).await;
+                }
+            }
             _ = tokio::time::sleep_until(deadline) => {
                 tracing::warn!(run = %short(run_id), task = task_key, "still running at the ceiling of {}; stopping it", span(ceiling));
                 stop(&mut child, pid).await;
-                return Exit::TimedOut;
+                break Exit::TimedOut;
             }
             _ = &mut cancel => {
                 tracing::info!(run = %short(run_id), task = task_key, "stopped from the box");
                 stop(&mut child, pid).await;
-                return Exit::Cancelled;
+                break Exit::Cancelled;
             }
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
                     tracing::info!(run = %short(run_id), "stopping the runtime");
                     stop(&mut child, pid).await;
-                    return Exit::Stopped;
+                    break Exit::Stopped;
                 }
             }
         }
+    };
+    /* The runtime is done, the run not yet finished: the last word on what the work changed. */
+    if let Some(ws) = reported.filter(|_| alive) {
+        reporter.report(api, secret, task_id, ws).await;
     }
+    exit
 }
 
 /// SIGTERM to the runtime's process group, then SIGKILL after the grace period.
@@ -366,6 +383,55 @@ async fn stop(child: &mut tokio::process::Child, pid: Option<u32>) {
             unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
         }
         let _ = child.wait().await;
+    }
+}
+
+/// How often a coding run's changed files are reported (COPL-103): its own clock, slower than the
+/// keepalive, so a large repo doesn't run git every keepalive.
+pub const REPORT_EVERY: Duration = Duration::from_secs(180);
+
+/// A run's reports of its task's changed files (COPL-103): sent while it works and once when its
+/// runtime is done, only when the list differs from the last one sent, and never again once Copland
+/// refuses one (the claim is gone). A failed report is logged and never fails the run.
+#[derive(Debug, Default)]
+pub struct Reporter {
+    last: Option<Changes>,
+    stopped: bool,
+}
+
+impl Reporter {
+    /// What to send now, or None: nothing new since the last report, or reports have stopped.
+    fn due(&self, now: Changes) -> Option<Changes> {
+        (!self.stopped && self.last.as_ref() != Some(&now)).then_some(now)
+    }
+
+    /// List the workspace's changes and send them when they are new.
+    pub async fn report(&mut self, api: &Api, secret: &Secret, task_id: &str, ws: &Workspace) {
+        if self.stopped || ws.read_only {
+            return;
+        }
+        let changes = match workspace::changed_files(ws).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(task = %ws.key, "listing its changed files: {e:#}");
+                return;
+            }
+        };
+        let Some(changes) = self.due(changes) else {
+            return;
+        };
+        match api.report_files(secret, task_id, &changes).await {
+            Ok(r) => {
+                tracing::debug!(task = %ws.key, files = r.count, truncated = r.truncated, "changed files reported");
+                self.last = Some(changes);
+            }
+            Err(e) if e.is_refusal() => {
+                /* The claim is gone (the task closed or moved on, or the run finished): no more reports. */
+                tracing::info!(task = %ws.key, "changed files refused ({e}); no more reports");
+                self.stopped = true;
+            }
+            Err(e) => tracing::warn!(task = %ws.key, "reporting changed files failed: {e}"),
+        }
     }
 }
 
@@ -446,6 +512,73 @@ mod tests {
         assert!(prompt_for("me/dev", "COPL-9", Brief::Waiting).contains("don't start the work"));
     }
 
+    fn changes(files: &[&str]) -> Changes {
+        Changes {
+            base: "abc1234".into(),
+            files: files.iter().map(|f| f.to_string()).collect(),
+            truncated: false,
+        }
+    }
+
+    /// A list is sent again only when it changed, and nothing once Copland has refused one.
+    #[test]
+    fn reports_are_sent_on_change_only() {
+        let mut r = Reporter::default();
+        assert!(r.due(changes(&["a"])).is_some());
+        r.last = Some(changes(&["a"]));
+        assert!(r.due(changes(&["a"])).is_none());
+        assert!(r.due(changes(&["a", "b"])).is_some());
+        assert!(
+            r.due(Changes {
+                base: "def5678".into(),
+                ..changes(&["a"])
+            })
+            .is_some()
+        );
+        r.stopped = true;
+        assert!(r.due(changes(&["c"])).is_none());
+    }
+
+    /// A report that can't reach Copland is kept for the next tick: not recorded as sent, not stopped.
+    #[tokio::test]
+    async fn a_failed_report_is_tried_again() {
+        let dir = std::env::temp_dir().join(format!("copland-report-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        git(&["commit", "--quiet", "--allow-empty", "-m", "first"]);
+        fs::write(dir.join("new.txt"), "1").unwrap();
+        let ws = Workspace {
+            repo: "o/r".into(),
+            key: "COPL-9".into(),
+            dir: dir.clone(),
+            clone: dir.clone(),
+            branch: "main".into(),
+            base: git(&["rev-parse", "HEAD"]),
+            target: "origin/main".into(),
+            fresh: false,
+            read_only: false,
+            pull_requests: true,
+        };
+        let api = Api::new("http://127.0.0.1:9").unwrap();
+        let mut r = Reporter::default();
+        r.report(&api, &Secret::new("cplr_x"), "t-1", &ws).await;
+        assert!(r.last.is_none() && !r.stopped);
+        /* What it would have sent: the untracked file, against the commit (no origin/main here). */
+        assert_eq!(workspace::changed_files(&ws).await.unwrap().files, vec!["new.txt"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn spans_read_plainly() {
         assert_eq!(span(CEILING), "2h");
@@ -479,6 +612,7 @@ mod tests {
                 handle: "me/dev",
                 run_id: "00000000-0000-0000-0000-000000000000",
                 secret: &Secret::new("cplr_x"),
+                task_id: "t-1",
                 task_key: "T-1",
                 brief: Brief::Work,
                 state_dir: &scratch,
@@ -523,6 +657,7 @@ mod tests {
                 handle: "me/dev",
                 run_id: "00000000-0000-0000-0000-000000000001",
                 secret: &Secret::new("cplr_x"),
+                task_id: "t-1",
                 task_key: "T-1",
                 brief: Brief::Work,
                 state_dir: &scratch,
