@@ -7,6 +7,7 @@ import { clientLabel } from "@/domain/clients";
 import { shortRunId } from "@/domain/runs";
 import type { Attachment, Label, Level, Priority, Stage, StageCategory, Task } from "@/domain/types";
 import { currentRun, currentVia } from "../tokens";
+import { overlaps } from "@/domain/overlap";
 import { codeFor } from "./github";
 import { LIVE_CLAIM } from "./runs";
 
@@ -77,6 +78,7 @@ function rowToTask(row: TaskRow): Task {
     claim: toClaim(row.claim),
     reviewFirst: row.review_first === 1,
     code: [],
+    overlap: [],
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -100,15 +102,77 @@ export async function listTasks(db: D1Database, boardId: string): Promise<Task[]
     .bind(boardId)
     .all<TaskRow>();
   const tasks = results.map(rowToTask);
-  const [byTask, code] = await Promise.all([
+  const [byTask, code, files] = await Promise.all([
     attachmentsFor(db, `t.board_id = ?1`, boardId),
     codeFor(db, `t.board_id = ?1`, boardId),
+    openTaskFiles(db, boardId),
   ]);
+  const shared = overlaps(files);
+  const keyOf = new Map(files.map((f) => [f.id, f.key]));
   for (const task of tasks) {
     task.attachments = byTask.get(task.id) ?? [];
     task.code = code.get(task.id) ?? [];
+    task.overlap = (shared.get(task.id) ?? []).map((o) => ({ key: keyOf.get(o.taskId)!, files: o.shared.length }));
   }
   return tasks;
+}
+
+/** An open task's latest changed files (migrations/0024_task_files.sql), with who is on it. */
+export interface OpenTaskFiles {
+  id: string;
+  key: string;
+  title: string;
+  base: string;
+  files: string[];
+  truncated: boolean;
+  reportedAt: string;
+  /** Handles. */
+  assignees: string[];
+  /** The handle whose run holds its live claim, or null. */
+  claimedBy: string | null;
+}
+
+/**
+ * The latest file lists of a board's open tasks, in board order: what
+ * overlap is computed from (domain/overlap.ts). One query per board; a closed
+ * or deleted task's list is kept but never read.
+ */
+export async function openTaskFiles(db: D1Database, boardId: string): Promise<OpenTaskFiles[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT t.id, b.key || '-' || t.number AS key, t.title, f.base, f.files, f.truncated, f.reported_at,
+              (SELECT group_concat(u.handle, ' ') FROM task_assignees a JOIN users u ON u.id = a.user_id
+                WHERE a.task_id = t.id) AS assignees,
+              (SELECT u.handle FROM task_claims c JOIN runs r ON r.id = c.run_id JOIN users u ON u.id = c.user_id
+                WHERE c.task_id = t.id AND ${LIVE_CLAIM}) AS claimed_by
+         FROM task_files f JOIN tasks t ON t.id = f.task_id JOIN boards b ON b.id = t.board_id
+              JOIN stages s ON s.id = t.stage_id
+        WHERE t.board_id = ?1 AND t.deleted_at IS NULL AND s.category NOT IN ('done', 'cancelled')
+        ORDER BY t.rank, t.number`,
+    )
+    .bind(boardId)
+    .all<{
+      id: string;
+      key: string;
+      title: string;
+      base: string;
+      files: string;
+      truncated: number;
+      reported_at: string;
+      assignees: string | null;
+      claimed_by: string | null;
+    }>();
+  return results.map((r) => ({
+    id: r.id,
+    key: r.key,
+    title: r.title,
+    base: r.base,
+    files: JSON.parse(r.files) as string[],
+    truncated: r.truncated === 1,
+    reportedAt: r.reported_at,
+    assignees: r.assignees ? r.assignees.split(" ") : [],
+    claimedBy: r.claimed_by,
+  }));
 }
 
 /** A live (not deleted) task, or null. Access is the caller's job. */

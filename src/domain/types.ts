@@ -146,9 +146,22 @@ export interface Task {
   reviewFirst: boolean;
   /** Branches and PRs naming it, from a connected repo's webhook (domain/github.ts); open ones first. */
   code: CodeLink[];
+  /**
+   * Other open tasks on its board whose latest changed files (the daemon's
+   * reports) share some with its own, most shared first, and how many files
+   * (domain/overlap.ts, COPL-104). Open tasks only, and only on a board's
+   * task list: a single task read leaves it empty.
+   */
+  overlap: TaskOverlap[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Another open task a task shares changed files with: its key and how many files. */
+export interface TaskOverlap {
+  key: string;
+  files: number;
 }
 
 /** A run's live hold on a task: whose run, which run, and until when unless renewed. */
