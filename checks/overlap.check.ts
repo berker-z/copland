@@ -6,10 +6,10 @@
    files; paths are plain repo-relative ones; a report is sorted, deduplicated
    and capped at TASK_FILES_CAP, and says when it was truncated; a report
    replaces the last one, and one that says nothing new is told apart; and
-   which tasks share files with which (COPL-104).
+   which tasks share files with which (COPL-104), and how a card says so (COPL-105).
    ========================================================================== */
 
-import { overlaps, parseFileReport, pathProblem, reportRefusal, sameReport, TASK_FILE_MAX, TASK_FILES_ACCEPTED, TASK_FILES_CAP, type FileReport } from "../src/domain/overlap.ts";
+import { overlaps, overlapTitle, OVERLAP_TITLE_TASKS, parseFileReport, pathProblem, reportRefusal, sameReport, TASK_FILE_MAX, TASK_FILES_ACCEPTED, TASK_FILES_CAP, type FileReport } from "../src/domain/overlap.ts";
 
 const cases: Array<[string, boolean]> = [];
 const t = (name: string, pass: boolean) => cases.push([name, pass]);
@@ -90,6 +90,14 @@ t("a task never overlaps itself", [...o].every(([id, list]) => list.every((x) =>
 t("a duplicate path in one list counts once", eq(overlaps([{ id: "p", files: ["f", "f"] }, { id: "q", files: ["f"] }]).get("p")?.[0].shared, ["f"]));
 t("no lists, no overlap", overlaps([]).size === 0);
 t("one task alone overlaps nothing", overlaps([{ id: "p", files: ["f"] }]).size === 0);
+
+/* A card's tooltip (COPL-105). */
+t("sharing nothing says nothing", overlapTitle([]) === "");
+t("one task, one file", overlapTitle([{ key: "COPL-12", files: 1 }]) === "shares 1 file with COPL-12");
+t("several tasks, each with its count, in the order given", overlapTitle([{ key: "COPL-12", files: 3 }, { key: "COPL-15", files: 1 }]) === "shares 3 files with COPL-12, 1 file with COPL-15");
+const crowd = Array.from({ length: OVERLAP_TITLE_TASKS + 2 }, (_, i) => ({ key: `COPL-${i + 1}`, files: 1 }));
+t("past a few, the rest are counted", overlapTitle(crowd).endsWith(", and files with 2 more tasks") && !overlapTitle(crowd).includes(`COPL-${OVERLAP_TITLE_TASKS + 1}`));
+t("one past the few is one more task", overlapTitle(crowd.slice(0, OVERLAP_TITLE_TASKS + 1)).endsWith(", and files with 1 more task"));
 
 let failed = 0;
 for (const [name, pass] of cases) {

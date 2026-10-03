@@ -20,6 +20,7 @@ import { Check, Link2, Pencil } from "lucide-react";
 import { Avatar, peopleFirst } from "@/ui/Avatar";
 import { LEVELS, PRIORITIES, type BoardDetail, type Task } from "@/domain/types";
 import { progress, taskPath } from "@/domain/tasks";
+import { useTaskOverlap } from "@/lib/queries";
 import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
 import { DeleteButton } from "@/ui/DeleteButton";
@@ -31,6 +32,7 @@ import { DateFields } from "./DateFields";
 import { LabelPicker } from "./LabelPicker";
 import { TaskActivity } from "./TaskActivity";
 import { CodeList } from "./TaskCode";
+import { OverlapList } from "./TaskOverlap";
 
 const field = "max-w-full bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent disabled:opacity-60";
 
@@ -57,6 +59,8 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
   const update = useUpdateTask(detail.board.id);
   const remove = useDeleteTask(detail.board.id);
   const files = useTaskAttachments(detail.board.id, taskId);
+  /* Only where there is code: the daemon reports a task's changed files on a board with a repo. */
+  const overlap = useTaskOverlap(detail.board.id, taskId, detail.repos.length > 0).data;
   const canEdit = detail.board.role !== "viewer";
   const [mode, setMode] = useState<"view" | "edit">("view");
   const editMode = canEdit && mode === "edit";
@@ -181,6 +185,12 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
       {task.code.length > 0 && (
         <Row label="code" text>
           <CodeList links={task.code} />
+        </Row>
+      )}
+
+      {overlap && (overlap.files || overlap.overlaps.length > 0) && (
+        <Row label="overlap" text>
+          <OverlapList data={overlap} />
         </Row>
       )}
 

@@ -23,7 +23,7 @@
    and is information, not a lock.
    ========================================================================== */
 
-import { overlaps, parseFileReport, reportRefusal, sameReport } from "@/domain/overlap";
+import { overlaps, parseFileReport, reportRefusal, sameReport, type TaskOverlapRead } from "@/domain/overlap";
 import type { Viewer } from "@/domain/types";
 import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, nowIso, readJson } from "../http";
@@ -100,7 +100,7 @@ export async function getTaskOverlap(env: Env, viewer: Viewer, id: string): Prom
   ]);
   const byId = new Map(open.map((t) => [t.id, t]));
   const others = byId.has(task.id) ? (overlaps(open).get(task.id) ?? []) : [];
-  return json({
+  const body: TaskOverlapRead = {
     files: mine && {
       reported_at: mine.reported_at,
       base: mine.base,
@@ -118,5 +118,6 @@ export async function getTaskOverlap(env: Env, viewer: Viewer, id: string): Prom
         reported_at: t.reportedAt,
       };
     }),
-  });
+  };
+  return json(body);
 }
