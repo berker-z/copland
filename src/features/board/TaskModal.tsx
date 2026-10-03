@@ -281,6 +281,12 @@ function TaskView({ detail, task }: { detail: BoardDetail; task: Task }) {
         </Row>
       )}
 
+      {task.reviewFirst && (
+        <Row label="merge" text>
+          <span className="text-ink">review first: a person merges the PR</span>
+        </Row>
+      )}
+
       {task.brief.trim() && (
         <Row label="notes" text>
           <p className="text-ink leading-relaxed whitespace-pre-wrap break-words">{task.brief}</p>
@@ -432,6 +438,19 @@ function TaskForm({ detail, task, others, title, brief, setTitle, setBrief, setE
           </select>
         </div>
       </Row>
+      {/* Only where there is code: a board with a GitHub repo. */}
+      {(detail.repos.length > 0 || task.reviewFirst) && (
+        <Row label="merge">
+          <div className="pt-1.5">
+            <Checkbox
+              checked={task.reviewFirst}
+              onChange={(next) => save({ reviewFirst: next })}
+              label={<span className="text-ink">review first: the agent opens the PR, a person merges it</span>}
+              size={15}
+            />
+          </div>
+        </Row>
+      )}
 
       <Row label="notes">
         <textarea

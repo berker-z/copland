@@ -82,6 +82,11 @@ function parseDate(raw: unknown, name: string): string | null {
   return raw;
 }
 
+function parseFlag(raw: unknown, name: string): boolean {
+  if (typeof raw !== "boolean") throw badRequest(`\`${name}\` must be true or false`);
+  return raw;
+}
+
 function parseIdList(raw: unknown, name: string): string[] {
   if (!Array.isArray(raw) || raw.some((x) => typeof x !== "string") || raw.length > 50) {
     throw badRequest(`\`${name}\` must be an array of ids`);
@@ -318,6 +323,8 @@ export async function postTask(
     level = body.level as Level;
   }
 
+  const reviewFirst = body.reviewFirst === undefined ? false : parseFlag(body.reviewFirst, "reviewFirst");
+
   const rank = typeof body.rank === "number" && Number.isFinite(body.rank) ? body.rank : await bottomRank(db, stage.id);
   const id = crypto.randomUUID();
   const now = nowIso();
@@ -349,8 +356,8 @@ export async function postTask(
     db
       .prepare(
         `INSERT INTO tasks (id, board_id, number, title, brief, stage_id, rank, priority, start_date, due_date,
-                            completed_at, parent_id, level, created_by, created_at, updated_at)
-         SELECT ?1, ?2, next_number, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14
+                            completed_at, parent_id, level, review_first, created_by, created_at, updated_at)
+         SELECT ?1, ?2, next_number, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?15, ?13, ?14, ?14
            FROM boards WHERE id = ?2`,
       )
       .bind(
@@ -368,6 +375,7 @@ export async function postTask(
         level,
         viewer.user.id,
         now,
+        reviewFirst ? 1 : 0,
       ),
     db.prepare(`UPDATE boards SET next_number = next_number + 1 WHERE id = ?1`).bind(board.id),
     ...assigneeIds.map((uid) =>
@@ -443,7 +451,8 @@ export async function patchTask(
   const set = (column: string, field: keyof Task, value: unknown) => {
     if (task[field] === value) return;
     sets.push(`${column} = ?${values.length + 2}`);
-    values.push(value);
+    /* SQLite has no booleans: a flag is stored as 0 or 1. */
+    values.push(typeof value === "boolean" ? Number(value) : value);
     before[field] = task[field];
     after[field] = value;
   };
@@ -451,6 +460,7 @@ export async function patchTask(
   if (body.title !== undefined) set("title", "title", parseTitle(body.title));
   if (body.brief !== undefined) set("brief", "brief", parseBrief(body.brief));
   if (body.priority !== undefined) set("priority", "priority", parsePriority(body.priority));
+  if (body.reviewFirst !== undefined) set("review_first", "reviewFirst", parseFlag(body.reviewFirst, "reviewFirst"));
 
   const startDate = body.startDate === undefined ? task.startDate : parseDate(body.startDate, "startDate");
   const dueDate = body.dueDate === undefined ? task.dueDate : parseDate(body.dueDate, "dueDate");

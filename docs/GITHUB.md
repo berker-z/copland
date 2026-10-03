@@ -36,6 +36,8 @@ Only a merge into the repo's default branch moves anything. Such a PR moves the 
 
 The move goes through the same code as a move in the app, as the admin who connected the repo. Their role on the board is checked at the time of the merge, so if they've left it or become a viewer the PR is still linked but the task doesn't move. Parents follow their children and claims end as for any move, and the history says "berker-z via GitHub". Opening a PR doesn't move a task: claiming it already put it in an active stage.
 
+Who merges is up to the task. By default an agent working it merges its own PR once CI is green, with the machine's own git credentials (the App stays read-only), and the merge is what closes the task, so agents never move coding tasks to done themselves. A task with **review first** set (a checkbox under merge in the task, `review_first` through the MCP, migration 0020) stops at the open PR for a person to review and merge. Done means merged, which is also what lets a task that depends on it be claimed (COPL-78).
+
 ## Where it shows
 
 On the task, a code row lists its PRs and branches, open first: the state in its colour (open green, draft muted, merged magenta, closed red), `#12` and the title, and CI as a word. A card shows one PR, the first open one or else the latest merged, as its number with a dot for CI.

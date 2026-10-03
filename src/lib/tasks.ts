@@ -34,6 +34,7 @@ export type TaskPatch = Partial<
     | "parentId"
     | "level"
     | "dependsOn"
+    | "reviewFirst"
   >
 >;
 
@@ -125,6 +126,7 @@ export function useCreateTask(boardId: string) {
           commentCount: 0,
           attachments: [],
           claim: null,
+          reviewFirst: input.reviewFirst ?? false,
           code: [],
           createdBy: "",
           createdAt: now,

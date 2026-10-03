@@ -141,6 +141,8 @@ export interface Task {
   attachments: Attachment[];
   /** A run working on it right now (routes/runs.ts), or null. Only live claims are sent. */
   claim: TaskClaim | null;
+  /** An agent working it opens the PR and leaves the merge to a person (COPL-77); off, it merges itself once CI is green. */
+  reviewFirst: boolean;
   /** Branches and PRs naming it, from a connected repo's webhook (domain/github.ts); open ones first. */
   code: CodeLink[];
   createdBy: string;

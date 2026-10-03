@@ -25,6 +25,7 @@ interface TaskRow {
   completed_at: string | null;
   parent_id: string | null;
   level: Level | null;
+  review_first: number;
   assignee_ids: string | null;
   label_ids: string | null;
   depends_on: string | null;
@@ -73,6 +74,7 @@ function rowToTask(row: TaskRow): Task {
     commentCount: row.comment_count,
     attachments: [],
     claim: toClaim(row.claim),
+    reviewFirst: row.review_first === 1,
     code: [],
     createdBy: row.created_by,
     createdAt: row.created_at,
