@@ -4,7 +4,7 @@
    rules.
    ========================================================================== */
 
-import type { RunStatus } from "./runs";
+import type { RunKind, RunStatus } from "./runs";
 
 export interface User {
   id: string;
@@ -57,6 +57,8 @@ export interface MeAccess {
   via: string;
   /** The run this is a run's secret for, or null for the token itself. */
   runId: string | null;
+  /** For the token itself: its live interactive run (made by its first claim), or null. */
+  interactiveRunId: string | null;
 }
 
 /* ---------------------------------------------------------------- boards --- */
@@ -149,6 +151,10 @@ export interface TaskClaim {
   runId: string;
   /** "8f31": how the run is named to people. */
   run: string;
+  /** supervised: a launcher's (the daemon's) run; interactive: a chat session's. */
+  kind: RunKind;
+  /** The program, as people say it ("Claude Code"), when known. */
+  client: string | null;
   until: string;
 }
 
@@ -339,6 +345,8 @@ export interface Run {
   short: string;
   /** The program doing the work, as people say it ("Codex"), when known. */
   client: string | null;
+  /** supervised: started by a launcher with POST /api/runs; interactive: a chat session's, made by its first claim. */
+  kind: RunKind;
   /** stale: still running on paper, but not heard from for longer than the lease. */
   status: RunStatus;
   startedAt: string;
@@ -369,6 +377,12 @@ export interface ApiAccess {
   via: string;
   /** Set when the secret was a run's (routes/runs.ts); the token above is the one that started it. */
   runId?: string;
+  /**
+   * Set when the secret was the token itself and it has a live interactive
+   * run (a chat session that claimed a task without a run's secret): the
+   * request renews it and its claims, and its events carry it.
+   */
+  interactiveRunId?: string;
 }
 
 /* ----------------------------------------------------------- attachments -- */

@@ -187,10 +187,14 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   the `under…` picker, after the stage in the task modal's title.
 - A card a run is working on right now (a live claim, routes/runs.ts) says
   so at the right of its meta line, before the avatars: `dev is on this`
-  in `text-muted`, the agent's name without the owner, with the full handle
-  and the run in `title`. Nothing for a lapsed claim or a closed task. A
+  in `text-muted`, the agent's name without the owner, then in
+  `text-faint` what kind of run: `· run 8f31` for a supervised one (the
+  daemon's), `· Claude Code` (the client, or `chat`) for an interactive
+  one. It truncates rather than overflow a narrow column. The full handle,
+  the kind and the run are in `title`. Nothing for a lapsed claim or a closed task. A
   task's history adds `· run 8f31` in `text-faint` after "via", and an
-  agent's settings page lists its latest runs with the status in a hue:
+  agent's settings page lists its latest runs, each with its kind in
+  `text-faint` and the status in a hue:
   running `text-ink`, stale `text-yellow`, failed `text-red`, completed
   `text-muted`, cancelled `text-faint`.
 - `src/features/wired/`: the /wired pane, the one place the app draws

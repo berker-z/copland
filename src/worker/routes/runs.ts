@@ -1,7 +1,9 @@
 /* ============================================================================
-   Runs and claims (migrations/0015_runs_claims.sql, docs/AGENT-IDENTITIES.md).
+   Runs and claims (migrations/0015_runs_claims.sql, 0018_interactive_runs.sql,
+   docs/AGENT-IDENTITIES.md).
    ----------------------------------------------------------------------------
      POST   /api/runs               { client? } → { run, secret }
+     GET    /api/runs/current       { run: { id, short, kind } | null }: this credential's run
      GET    /api/runs/:id           the run, with what it has claimed
      POST   /api/runs/:id/finish    { status: completed | failed | cancelled }
      POST   /api/tasks/:id/claim    this run takes the task
@@ -18,6 +20,15 @@
    One lease length (RUN_LEASE_MS, domain/runs.ts) and nothing that sweeps: a
    run gone quiet reads as stale, and its claims lapse, when someone looks.
 
+   That is a supervised run. A chat session (Claude Code, Codex in a
+   terminal) has no launcher to start one, so a claim made with a token and
+   no run's secret runs under the token's interactive run, made right there
+   if it has none (repo/runs.ts interactiveRun). Every request with that
+   token renews it, as every request with a secret renews its run; for
+   Claude Code, a hook calling the MCP's `heartbeat` makes that every tool
+   use. GET /api/runs/current is what heartbeat calls: it reads nothing,
+   since the renewing happens in tokens.ts touchStatements for any request.
+
    Claiming is how a run takes work. It needs a run, the editor role, and a
    task that is open and either unassigned (the claimer takes it) or assigned
    to the claimer; one assigned to anyone else is refused. One live claim per
@@ -30,24 +41,39 @@
    why: closed, assigned_elsewhere or claimed (domain/runs.ts).
 
    A claim ends with its run (finish, or the principal paused, deleted or
-   disabled), with an explicit release, when its task closes or is deleted,
-   and when the claimer comes off the task's assignees (routes/tasks.ts).
+   disabled), with an explicit release, when its task closes, is deleted or
+   goes to a blocked stage, and when the claimer comes off the task's
+   assignees (routes/tasks.ts).
    ========================================================================== */
 
-import { RUN_ENDINGS, shortRunId, type ClaimRefusal, type RunEnding } from "@/domain/runs";
+import { clientLabel } from "@/domain/clients";
+import { RUN_ENDINGS, shortRunId, type ClaimRefusal, type RunEnding, type RunKind } from "@/domain/runs";
 import type { StartedRun, Viewer } from "@/domain/types";
 import { personOf } from "../access";
 import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
 import { boardAudience } from "../repo/boards";
-import { claimUntil, finishRunStatements, findRun, LIVE_CLAIM } from "../repo/runs";
+import { claimUntil, finishRunStatements, findRun, interactiveRun, LIVE_CLAIM } from "../repo/runs";
 import { bottomRank, eventStatement, findTask, listStages } from "../repo/tasks";
-import { mint, RUN_PREFIX } from "../tokens";
+import { enterRun, mint, RUN_PREFIX } from "../tokens";
 import { followStatements, requireAssignable, taskFor, written } from "./tasks";
 
-const NO_RUN =
-  "Claiming needs a run: whoever starts your runtime calls POST /api/runs with your token and gives you the run's secret. Without one, assign yourself and move the task to an active stage instead.";
+const NO_TOKEN =
+  "Claiming is for a connection with a token (an assistant, or whatever launches one); in the app, assign yourself and move the task instead.";
+
+/**
+ * GET /api/runs/current: the run this credential works in, a run's secret's
+ * or the token's interactive one, or null. From the resolved credential
+ * alone, no query: the MCP's heartbeat calls it on every tool use, and the
+ * request's own touch (tokens.ts) is what renews the run.
+ */
+export async function getCurrentRun(viewer: Viewer): Promise<Response> {
+  const a = viewer.access;
+  const id = a?.runId ?? a?.interactiveRunId ?? null;
+  const kind: RunKind = a?.runId ? "supervised" : "interactive";
+  return json({ run: id ? { id, short: shortRunId(id), kind } : null });
+}
 
 /** POST /api/runs { client? }: a new run of the token's principal, and its secret, once. */
 export async function postRun(request: Request, env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
@@ -116,15 +142,18 @@ interface ClaimRow {
   user_id: string;
   claimed_until: string;
   handle: string;
+  kind: RunKind | null;
+  client: string | null;
   live: number;
 }
 
 async function currentClaim(db: D1Database, taskId: string): Promise<ClaimRow | null> {
   return db
     .prepare(
-      `SELECT c.run_id, c.user_id, c.claimed_until, u.handle,
+      `SELECT c.run_id, c.user_id, c.claimed_until, u.handle, r.kind, r.client,
               (SELECT count(*) FROM runs r WHERE r.id = c.run_id AND ${LIVE_CLAIM}) AS live
-         FROM task_claims c JOIN users u ON u.id = c.user_id WHERE c.task_id = ?1`,
+         FROM task_claims c JOIN users u ON u.id = c.user_id LEFT JOIN runs r ON r.id = c.run_id
+        WHERE c.task_id = ?1`,
     )
     .bind(taskId)
     .first<ClaimRow>();
@@ -133,13 +162,19 @@ async function currentClaim(db: D1Database, taskId: string): Promise<ClaimRow | 
 /** A claim refused, with the reason a program reads (domain/runs.ts CLAIM_REFUSALS). */
 const refused = (message: string, code: ClaimRefusal) => conflict(message, code);
 
-const heldBy = (c: ClaimRow) => `@${c.handle}'s run ${shortRunId(c.run_id)}, until ${c.claimed_until}`;
+const heldBy = (c: ClaimRow) =>
+  c.kind === "interactive"
+    ? `@${c.handle}'s interactive session${c.client ? ` in ${clientLabel(c.client)}` : ""} (run ${shortRunId(c.run_id)}), until ${c.claimed_until}`
+    : `@${c.handle}'s run ${shortRunId(c.run_id)}, until ${c.claimed_until}`;
 
 /** POST /api/tasks/:id/claim. See the header for every rule. */
 export async function postClaim(env: Env, viewer: Viewer, id: string, changes: Changes): Promise<Response> {
   const db = env.DB;
-  const runId = viewer.access?.runId;
-  if (!runId) throw forbidden(NO_RUN);
+  const access = viewer.access;
+  if (!access) throw forbidden(NO_TOKEN);
+  /* A run's secret claims for its run; a token for its interactive run, made below if it has none yet. */
+  const kind: RunKind = access.runId ? "supervised" : "interactive";
+  let runId = access.runId ?? access.interactiveRunId;
   const { task, board } = await taskFor(env, viewer, id, "editor");
   const me = viewer.user.id;
   const stages = await listStages(db, board.id);
@@ -162,6 +197,11 @@ export async function postClaim(env: Env, viewer: Viewer, id: string, changes: C
 
   const assigning = task.assigneeIds.length === 0;
   if (assigning) await requireAssignable(db, viewer, board.id, [me]);
+  if (!runId) {
+    runId = await interactiveRun(db, me, access);
+    /* What this request writes from here on carries the new run, as it would have had it existed already. */
+    enterRun(runId);
+  }
   /* Under way: the first active stage, unless it is in one already, or the board has none. */
   const active = stage?.category === "active" ? undefined : stages.find((s) => s.category === "active");
   const rank = active ? await bottomRank(db, active.id) : task.rank;
@@ -194,7 +234,7 @@ export async function postClaim(env: Env, viewer: Viewer, id: string, changes: C
            WHERE task_claims.run_id = excluded.run_id OR task_claims.claimed_until <= ?4
               OR NOT EXISTS (SELECT 1 FROM runs WHERE id = task_claims.run_id AND status = 'running')`,
         )
-        .bind(task.id, runId, me, now, claimUntil()),
+        .bind(task.id, runId, me, now, claimUntil(kind)),
       /* The guard: unless this run now holds the claim, insert a row that breaks
          NOT NULL, which fails the batch and undoes all of it. That is what keeps
          two runs racing for one task from both winning. */

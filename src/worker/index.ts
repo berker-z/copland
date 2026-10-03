@@ -63,10 +63,10 @@ import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage,
 import { deleteTask, getTask, patchTask, postTask } from "./routes/tasks";
 import { getMyWork } from "./routes/work";
 import { getWired } from "./routes/wired";
-import { deleteClaim, getRun, postClaim, postRun, postRunFinish } from "./routes/runs";
+import { deleteClaim, getCurrentRun, getRun, postClaim, postRun, postRunFinish } from "./routes/runs";
 import { getInbox, postInboxDismiss, postInboxRead } from "./routes/inbox";
 import { getDevice, postDeviceApprove, postDeviceDeny, postDevicePoll, postDeviceStart } from "./routes/device";
-import { deleteToken, getTokens, postToken } from "./routes/tokens";
+import { deleteOwnToken, deleteToken, getTokens, postToken, SELF_REVOKE_PATH } from "./routes/tokens";
 import { handleIntegration, isIntegrationPath } from "./integrations";
 import { asAccess, bearerFrom, requireWriteScope, touchStatements } from "./tokens";
 import { getMarketExtras } from "./routes/markets";
@@ -132,6 +132,9 @@ const api = new Router<Ctx>()
   .on("DELETE", "/api/vault/:name", mine(null, ({ env, viewer, changes }, { name }) => deleteVault(env, viewer, name, changes)))
   .on("GET", "/api/tokens", mine(null, ({ env, viewer }) => getTokens(env, viewer)))
   .on("POST", "/api/tokens", mine(null, ({ request, env, viewer, changes }) => postToken(request, env, viewer, changes)))
+  /* Not mine(grant): a token, a person's or an agent's, revoking itself and
+     nothing else (routes/tokens.ts). Before /:id, which would take "self". */
+  .on("DELETE", "/api/tokens/self", ({ env, viewer, changes }) => deleteOwnToken(env, viewer, changes))
   .on("DELETE", "/api/tokens/:id", mine(null, ({ env, viewer, changes }, { id }) => deleteToken(env, viewer, id, changes)))
   /* Device login (routes/device.ts): a person approves a box in the app, never
      with a token. The box's own two routes are in `open`, below. */
@@ -274,6 +277,8 @@ const api = new Router<Ctx>()
   /* Runs and claims (routes/runs.ts). Not mine(grant): a run is its principal's
      own, an agent's included, and claims are board work, checked by requireBoard. */
   .on("POST", "/api/runs", ({ request, env, viewer, changes }) => postRun(request, env, viewer, changes))
+  /* Before /:id, which would take "current". */
+  .on("GET", "/api/runs/current", ({ viewer }) => getCurrentRun(viewer))
   .on("GET", "/api/runs/:id", ({ env, viewer }, { id }) => getRun(env, viewer, id))
   .on("POST", "/api/runs/:id/finish", ({ request, env, viewer, changes }, { id }) =>
     postRunFinish(request, env, viewer, id, changes),
@@ -385,7 +390,8 @@ async function runApi(
   viewer: Viewer,
   tab: string | null,
 ): Promise<Response> {
-  requireWriteScope(viewer, request.method);
+  /* A token revoking itself only takes access away, so a read-only one may too. */
+  if (!(request.method === "DELETE" && url.pathname === SELF_REVOKE_PATH)) requireWriteScope(viewer, request.method);
   const changes = new Changes();
   const pending = api.dispatch(request.method, url.pathname, { request, env, viewer, url, changes });
   if (!pending) throw notFound(`No route for ${request.method} ${url.pathname}`);

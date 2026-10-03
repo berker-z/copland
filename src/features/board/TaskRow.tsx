@@ -133,8 +133,19 @@ export function TaskRow({ task, members, labels = [], lead, showKey = true, pare
             ))}
             <span className="flex-1" />
             {claimer && task.claim && (
-              <span className="text-muted whitespace-nowrap" title={`${claimer.handle}, run ${task.claim.run}, working on it now`}>
+              <span
+                className="text-muted min-w-0 truncate"
+                title={
+                  task.claim.kind === "interactive"
+                    ? `${claimer.handle}, interactive: a chat session${task.claim.client ? ` in ${task.claim.client}` : ""} (run ${task.claim.run}), working on it now`
+                    : `${claimer.handle}, supervised run ${task.claim.run} (started by a launcher), working on it now`
+                }
+              >
                 {claimer.handle.split("/").pop()} is on this
+                <span className="text-faint">
+                  {" · "}
+                  {task.claim.kind === "interactive" ? (task.claim.client ?? "chat") : `run ${task.claim.run}`}
+                </span>
               </span>
             )}
             {assignees.map((u) => (

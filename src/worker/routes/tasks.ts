@@ -19,8 +19,9 @@
    child. The response lists them under alsoMoved.
 
    A run's claim on a task (routes/runs.ts) does not survive the task
-   closing, being deleted, or the claimer coming off its assignees: every
-   write here ends with releaseClaimsStatement for the board.
+   closing, being deleted, moving to a blocked stage, or the claimer coming
+   off its assignees: every write here ends with releaseClaimsStatement
+   for the board.
    ========================================================================== */
 
 import {

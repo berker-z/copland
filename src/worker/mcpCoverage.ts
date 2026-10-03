@@ -106,10 +106,13 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   /* Runs and claims. A run is started over HTTP by whatever launches the
      runtime, which hands the runtime the run's secret: the model works inside
      a run, it does not mint one (a session cannot switch its own credential
-     anyway). whoami reads the current run; finish_run ends it. */
+     anyway). A chat session's interactive run is made by its first
+     claim_task instead. whoami reads the current run; finish_run ends it;
+     heartbeat is the Claude Code hook's call that keeps it alive. */
   "POST /api/runs": {
     skip: "private: starting a run mints a credential; whoever launches the runtime (a daemon, a script) calls it with the principal's token and hands the runtime the secret, so no model holds a token that makes more",
   },
+  "GET /api/runs/current": { tools: ["heartbeat"] },
   "GET /api/runs/:id": { tools: ["whoami"] },
   "POST /api/runs/:id/finish": { tools: ["finish_run"] },
   "POST /api/tasks/:id/claim": { tools: ["claim_task"] },
@@ -182,6 +185,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /api/tokens": { skip: "browser: token management never goes through a token" },
   "POST /api/tokens": { skip: "browser: token management never goes through a token" },
   "DELETE /api/tokens/:id": { skip: "browser: token management never goes through a token" },
+  "DELETE /api/tokens/self": { skip: "private: a box signing out revokes the token it holds; an assistant has no business ending the credential it is connected with" },
 
   /* Device login: a box asks, a person approves in the app, the box collects its tokens. */
   "POST /api/device/start": { skip: "private: the box's own unauthenticated first step; it mints nothing and no assistant should be asking to be let in" },

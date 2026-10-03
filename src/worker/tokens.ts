@@ -21,6 +21,12 @@
    principal and scope, plus the run, which rides along in viaContext the
    same way and lands on every event as run_id. It stops resolving the
    moment the run ends, or that token is revoked or expires.
+
+   A token can also have an interactive run (repo/runs.ts interactiveRun):
+   a chat session's, made by its first claim without a run's secret. The
+   lookup brings it along while it is live, so every request with the token
+   renews it and its claims and stamps it on the events, the same as a run's
+   secret would; it is never a credential of its own.
    ========================================================================== */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -28,7 +34,7 @@ import { clientLabel } from "@/domain/clients";
 import { RUN_LEASE_MS } from "@/domain/runs";
 import type { ApiAccess, ApiToken, ApiTokenScope, Viewer } from "@/domain/types";
 import { HttpError, nowIso, randomToken, sha256Hex } from "./http";
-import { runTouchStatements } from "./repo/runs";
+import { INTERACTIVE_RUN_OF_TOKEN, interactiveSince, runTouchStatements } from "./repo/runs";
 import { findUserById, type UserRow } from "./repo/users";
 
 export const TOKEN_PREFIX = "cpl_";
@@ -43,12 +49,18 @@ const viaContext = new AsyncLocalStorage<{ via: string; runId: string | null }>(
 
 /** Run fn as a token's request: its events say what made them, and which run. */
 export function asAccess<T>(access: ApiAccess, fn: () => T): T {
-  return viaContext.run({ via: access.via, runId: access.runId ?? null }, fn);
+  return viaContext.run({ via: access.via, runId: access.runId ?? access.interactiveRunId ?? null }, fn);
 }
 
 /** What made the current request's changes, when it was not the web app. */
 export function currentVia(): string | null {
   return viaContext.getStore()?.via ?? null;
+}
+
+/** The request just made its token's interactive run (a first claim): the events it writes from here on carry it. */
+export function enterRun(runId: string): void {
+  const store = viaContext.getStore();
+  if (store && !store.runId) store.runId = runId;
 }
 
 /** The run the current request came through, if any. */
@@ -113,16 +125,25 @@ export async function tokenAccess(
   if (!secret.startsWith(TOKEN_PREFIX)) return null;
   const row = await db
     .prepare(
-      `SELECT ${TOKEN_COLUMNS}
+      `SELECT ${TOKEN_COLUMNS}, ${INTERACTIVE_RUN_OF_TOKEN} AS interactive_run_id
          FROM api_tokens t JOIN users u ON u.id = t.user_id AND u.disabled_at IS NULL
         WHERE t.token_hash = ?1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?2)`,
     )
-    .bind(await sha256Hex(secret), nowIso())
-    .first<TokenRow>();
+    .bind(await sha256Hex(secret), nowIso(), interactiveSince())
+    .first<TokenRow & { interactive_run_id: string | null }>();
   if (!row) return null;
   const user = await findUserById(db, row.user_id);
   if (!user) return null;
-  return { user, access: { tokenId: row.id, kind: row.kind, scope: row.scope, via: viaLabel(row) } };
+  return {
+    user,
+    access: {
+      tokenId: row.id,
+      kind: row.kind,
+      scope: row.scope,
+      via: viaLabel(row),
+      ...(row.interactive_run_id ? { interactiveRunId: row.interactive_run_id } : {}),
+    },
+  };
 }
 
 /**
@@ -163,7 +184,7 @@ async function runAccess(db: D1Database, secret: string): Promise<{ user: UserRo
          FROM runs r
          JOIN api_tokens t ON t.id = r.token_id AND t.user_id = r.user_id
          JOIN users u ON u.id = r.user_id AND u.disabled_at IS NULL
-        WHERE r.token_hash = ?1 AND r.status = 'running' AND r.last_seen_at > ?3
+        WHERE r.token_hash = ?1 AND r.kind = 'supervised' AND r.status = 'running' AND r.last_seen_at > ?3
           AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?2)`,
     )
     .bind(await sha256Hex(secret), nowIso(), new Date(Date.now() - RUN_LEASE_MS).toISOString())
@@ -186,7 +207,8 @@ async function runAccess(db: D1Database, secret: string): Promise<{ user: UserRo
 /**
  * What a request with a token keeps fresh, to run under waitUntil:
  * last_used_at at most every five minutes (a busy agent should not write per
- * call), and for a run its last_seen_at and its claims (repo/runs.ts).
+ * call), and for a run, the secret's or the token's interactive one, its
+ * last_seen_at and its claims (repo/runs.ts).
  */
 export function touchStatements(db: D1Database, access: ApiAccess): D1PreparedStatement[] {
   return [
@@ -196,7 +218,8 @@ export function touchStatements(db: D1Database, access: ApiAccess): D1PreparedSt
           WHERE id = ?1 AND (last_used_at IS NULL OR last_used_at < ?3)`,
       )
       .bind(access.tokenId, nowIso(), inSeconds(-5 * 60)),
-    ...(access.runId ? runTouchStatements(db, access.runId) : []),
+    ...(access.runId ? runTouchStatements(db, access.runId, "supervised") : []),
+    ...(access.interactiveRunId ? runTouchStatements(db, access.interactiveRunId, "interactive") : []),
   ];
 }
 
@@ -261,6 +284,15 @@ export async function revokeToken(db: D1Database, userId: string, id: string): P
           AND (user_id = ?2 OR user_id IN (SELECT id FROM users WHERE owner_id = ?2))`,
     )
     .bind(id, userId, nowIso())
+    .run();
+  return result.meta.changes > 0;
+}
+
+/** One personal token, by the request that came with it (DELETE /api/tokens/self). */
+export async function revokeOwnToken(db: D1Database, tokenId: string): Promise<boolean> {
+  const result = await db
+    .prepare(`UPDATE api_tokens SET revoked_at = ?2 WHERE id = ?1 AND kind = 'personal' AND revoked_at IS NULL`)
+    .bind(tokenId, nowIso())
     .run();
   return result.meta.changes > 0;
 }

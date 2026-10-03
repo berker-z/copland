@@ -6,6 +6,8 @@ dist/
 .DS_Store
 backups/
 
-# Tooling injected into this directory by the environment, not project files
-.claude/
+# Tooling injected into this directory by the environment, not project files,
+# except the project settings: the Copland heartbeat hook (COPL-69)
+.claude/*
+!.claude/settings.json
 .mcp.json

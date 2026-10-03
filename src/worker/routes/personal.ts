@@ -21,7 +21,15 @@ import { listVault, removeVault, sealVault } from "../vault";
 export async function getMe(env: Env, viewer: Viewer): Promise<Response> {
   const a = viewer.access;
   const access: Pick<Me, "access"> = a
-    ? { access: { kind: a.kind, scope: a.scope, via: a.via, runId: a.runId ?? null } }
+    ? {
+        access: {
+          kind: a.kind,
+          scope: a.scope,
+          via: a.via,
+          runId: a.runId ?? null,
+          interactiveRunId: a.interactiveRunId ?? null,
+        },
+      }
     : {};
   if (viewer.agent) {
     const inbox = await inboxIdFor(env.DB, viewer.agent.owner.id);

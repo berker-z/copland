@@ -64,6 +64,13 @@ docs/DESIGN.md under Touch.
 - [ ] Runs and claims (COPL-7, COPL-8) were tested through the API and `/mcp`;
       in the browser only the card marker and the history line were looked
       at. The runs list on an agent's settings page hasn't been seen.
+- [ ] Interactive runs (COPL-69) were tested through the API and `/mcp`
+      with plain node calls, and the card marker and the runs list looked at
+      in Chrome. The Claude Code hook in `.claude/settings.json` has not run
+      for real: after deploying, reload Claude Code in this repo and check
+      that a claim from a chat session stays live across twenty minutes of
+      non-Copland tool use, that the hook adds nothing to the conversation,
+      and how much latency the synchronous round trip adds per tool use.
 - [ ] Device login (COPL-47) was tested with curl and a node script
       against the dev server, and once end to end with `copland-box --setup`
       against the dev server, approved on `/device` in Chrome, through to
@@ -75,6 +82,13 @@ docs/DESIGN.md under Touch.
       MCP with the run's secret and may call its tools without asking. Paste
       (ctrl+v) in setup's address field was only tested as editing logic,
       not against a real Wayland clipboard.
+- [ ] The box's bell and menu (COPL-64, COPL-65) were tested end to end on
+      Hyprland with mako against a dev server: notifications, their click,
+      every panel, compact, stopping a run and signing out. Not yet: another
+      notification server (dunst, GNOME, KDE) and its handling of the default
+      action, compact on a compositor other than Hyprland, the autostart
+      entry actually starting the box at a real login, and macOS, which sends
+      no notifications yet (`box/src/notify.rs`).
 - [ ] Boards from before migration 0012 got a backlog stage but no blocked
       one, so agents there can only comment when they need an answer. Add a
       blocked stage by hand in board settings where agents work.
@@ -242,7 +256,11 @@ docs/DESIGN.md under Touch.
   claim per task (`claim_task`): assigns an unassigned task, moves it to
   active, parents follow, and two racing runs can't both win. Released by
   finishing, closing, unassigning, pausing. MCP: `claim_task`,
-  `release_task`, `finish_run`, `whoami` shows the run. Migration 0015
+  `release_task`, `finish_run`, `whoami` shows the run. Migration 0015.
+  Interactive runs (COPL-69): a claim with a plain token makes that token's
+  interactive run, kept alive by any call with it and in Claude Code by a
+  hook calling `heartbeat` (`.claude/settings.json`); fifteen-minute
+  lease. Everyone claims; moving to blocked releases. Migration 0018
 - The daemon, headless (COPL-9): `daemon/`, a Rust workspace (`core` is the
   loop, `cli` the `copland-daemon` binary). Per agent in
   `~/.config/copland/daemon.toml`: poll the unread inbox, start a run, claim

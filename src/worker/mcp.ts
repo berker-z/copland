@@ -20,7 +20,7 @@
 
 import type { CalendarEvents, CalendarSetup } from "@/domain/calendar";
 import { NOTE_CONTENT_MAX, NOTE_NAME_MAX, type Note } from "@/domain/panes";
-import { RUN_ENDINGS, RUN_LEASE_MS, shortRunId, type ClaimRefusal } from "@/domain/runs";
+import { INTERACTIVE_LEASE_MS, RUN_ENDINGS, RUN_LEASE_MS, shortRunId, type ClaimRefusal } from "@/domain/runs";
 import { addDays, descendantIds, isDate, taskPath } from "@/domain/tasks";
 import {
   LEVELS,
@@ -70,12 +70,12 @@ const CLAIM_REFUSED: Record<ClaimRefusal, string> = {
   closed: "It is closed. If you were asked something on it, answer in its comments; don't reopen it unless asked.",
   assigned_elsewhere:
     "It isn't yours. If you were mentioned on it, read it with get_task and answer in its comments; don't take it over.",
-  claimed: "Another run is on it. Leave it; it can be claimed once that run ends or its claim lapses.",
+  claimed: "Another run or chat session is on it. Leave it; it can be claimed once that run ends or its claim lapses.",
 };
 
 const SUPPORTED_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 /** The tool interface's version, for serverInfo. Bump when tools change shape. */
-const SERVER_VERSION = "1.3.0";
+const SERVER_VERSION = "1.4.0";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -96,7 +96,7 @@ Call the guide tool once before your first change: it explains every board the u
 
 - Tasks are identified by keys like CPL-12 (board key + number), case-insensitive.
 - The user's inbox is their private board; create_task puts a task there when no board is given.
-- A stage's category says what it means: backlog (parked; leave it unless asked), todo (ready to pick up), active (being worked on), blocked (waiting on a person) are open; done and cancelled close a task. Take work from todo stages or what is assigned to you. Start a task with claim_task when this connection is a run (whoami says); otherwise assign yourself and move it to an active stage.
+- A stage's category says what it means: backlog (parked; leave it unless asked), todo (ready to pick up), active (being worked on), blocked (waiting on a person) are open; done and cancelled close a task. Take work from todo stages or what is assigned to you. Start a task with claim_task, whoever and wherever you are, and let it go with release_task when you stop working on it before it is done.
 - Dates are YYYY-MM-DD. People are given by handle (@sam or sam) or email, stages and labels by name; "me" is the connected user.
 - Pass only the arguments a tool lists, with the types it lists: an unknown or mistyped argument is refused, never ignored.
 - Prefer list_tasks with filters, or my_work, over fetching whole boards.
@@ -469,7 +469,7 @@ function summarize(detail: BoardDetail, task: Task, origin: string) {
     ...(task.dependsOn.length ? { depends_on: task.dependsOn.map(keyOf) } : {}),
     ...(children ? { children } : {}),
     /* A run is on it right now (claim_task). */
-    ...(task.claim ? { claimed_by: person(task.claim.userId), run: task.claim.run } : {}),
+    ...(task.claim ? { claimed_by: person(task.claim.userId), run: task.claim.run, run_kind: task.claim.kind } : {}),
     comments: task.commentCount,
     url: `${origin}${taskPath(task.key)}`,
   };
@@ -615,8 +615,12 @@ function guide(details: BoardDetail[], ctx: Ctx): string {
       }.`
     : `You are connected as **@${v.user.handle}** (${v.user.email}), with ${scope}. You act as them: on each board you can do exactly what their role there allows, and every change you make shows in the task's history as "${v.user.handle} via ${via}".`;
   const run = v.access?.runId
-    ? ` This connection is **run ${shortRunId(v.access.runId)}**: claim_task works, everything you do is recorded as part of the run, and finish_run ends it.`
-    : " This connection is not a run, so claim_task refuses: to take a task, assign yourself and move it to an active stage.";
+    ? ` This connection is **run ${shortRunId(v.access.runId)}**, a supervised run started by whatever launched you: everything you do is recorded as part of the run, and finish_run ends it.`
+    : v.access?.interactiveRunId
+      ? ` This connection has an interactive run, **run ${shortRunId(v.access.interactiveRunId)}**, made by its first claim_task: everything you do is recorded as part of it, and it holds your claims while you keep calling.`
+      : v.access?.scope === "read"
+        ? " This connection is read-only, so it cannot claim tasks."
+        : " This connection has no run yet: your first claim_task makes an interactive one for it.";
   out.push(`# Copland: a guide for AI assistants
 
 ${who}${run} Today is ${today()} (UTC).${
@@ -628,9 +632,9 @@ ${who}${run} Today is ${today()} (UTC).${
 - **Boards.** A board is a set of tasks moving through stages, left to right. Everyone has an **inbox**: a private board only they see, where their own todos live. Other boards can be shared.
 - **Roles.** On each board the user is an owner (everything, including members and stages), an editor (tasks, labels, comments) or a viewer (reads and comments only). A tool refuses what the role does not allow.
 - **Stages and categories.** Every stage has a category, in the order work flows: backlog (parked, not committed to), todo (ready to be picked up), active (someone is on it), blocked (waiting on a person), done, cancelled. The first four are open; a task in a done or cancelled stage is closed, and moving it back to an open stage reopens it. Stage names are the board's own; the category is what they mean. A new task without a stage lands in the board's first todo stage (without one, its first open stage that is not backlog); pass stage: "backlog" to park it.
-- **Taking work.** Work from todo stages, or what is assigned to you (my_work); never pick up a backlog task unless asked to. Work agreed in conversation goes on the board as tasks before you build it, not only into your reply. When you start a task, take it with claim_task: it assigns it to you if nobody has it, moves it to the board's first active stage, and shows everyone that a run of yours is on it. claim_task needs a run (see Runs and claims); without one, assign yourself (update_task assignees ["me"]) and move the task to an active stage instead. Move it to done when it is delivered (shipped, sent, live; not merely drafted), so the board stays true without anyone tidying it. Move the tasks you work on, not their parents: a parent follows its children by itself. When a child goes active or blocked, a parent in backlog, todo or a closed stage moves to the board's first active stage; when a child finishes and every child is then closed with at least one done, an open parent moves to the first done stage (only a child finishing does that: adding, moving or deleting a child never closes a parent); a child back in todo reopens a closed parent to todo. It carries up the tree (a task can move its story, and the story its epic), and the tool's response lists those parents under also_moved. A child parked in backlog is still open work and holds its parent open; cancel or delete work that is truly dropped. Children that are all cancelled leave the parent alone, and a parent already active or blocked is not moved back. Move a parent by hand only to correct it; it stays there until one of its children changes again.
-- **Waiting on someone.** When you need an answer or a decision, comment with an @mention of the person who can give it (a question only in a brief, or only in your reply to the user, reaches nobody), and move the task to the board's blocked stage (move_task { stage: "blocked" }). Once answered, move it back to an active stage and carry on. On a board without a blocked stage, just comment.
-- **Runs and claims.** A run is one working session of a principal. Whatever launched you (a daemon, a script) may have started one and connected you through it; whoami says so. Every call through a run keeps it alive and goes into the task history with it ("dev via Codex · run 8f31"); a run not heard from for ${RUN_LEASE_MS / 60_000} minutes shows as stale. A claim is a run's hold on a task, so two runs never work the same one: a task has at most one live claim, claim_task refuses while another run holds it, and refuses a task assigned to someone other than you. A claim lasts while your run keeps calling (any call renews it) and ends by itself when the run goes quiet for ${RUN_LEASE_MS / 60_000} minutes or ends, the task closes, or you come off its assignees; release_task lets go of one without closing the task. A summary's claimed_by and run say who is on a task right now. Blocked is not crashed: when you need an answer, comment with an @mention, move the task to blocked, and you may end your run with finish_run; the task stays assigned to you, and a later run picks it up again with claim_task once answered. finish_run is a connection's last call: after it, the run's credential stops working.
+- **Taking work.** Work from todo stages, or what is assigned to you (my_work); never pick up a backlog task unless asked to. Work agreed in conversation goes on the board as tasks before you build it, not only into your reply. When you start a task, take it with claim_task: it assigns it to you if nobody has it, moves it to the board's first active stage, and shows everyone that you are on it right now. Everyone claims, whether something launched you or you are in a chat session (see Runs and claims); when you stop working on a task before it is done, let it go with release_task. Move it to done when it is delivered (shipped, sent, live; not merely drafted), so the board stays true without anyone tidying it. Move the tasks you work on, not their parents: a parent follows its children by itself. When a child goes active or blocked, a parent in backlog, todo or a closed stage moves to the board's first active stage; when a child finishes and every child is then closed with at least one done, an open parent moves to the first done stage (only a child finishing does that: adding, moving or deleting a child never closes a parent); a child back in todo reopens a closed parent to todo. It carries up the tree (a task can move its story, and the story its epic), and the tool's response lists those parents under also_moved. A child parked in backlog is still open work and holds its parent open; cancel or delete work that is truly dropped. Children that are all cancelled leave the parent alone, and a parent already active or blocked is not moved back. Move a parent by hand only to correct it; it stays there until one of its children changes again.
+- **Waiting on someone.** When you need an answer or a decision, comment with an @mention of the person who can give it (a question only in a brief, or only in your reply to the user, reaches nobody), and move the task to the board's blocked stage (move_task { stage: "blocked" }). Moving it to blocked releases your claim; once answered, claim it again (claim_task moves it back to active) and carry on. On a board without a blocked stage, just comment.
+- **Runs and claims.** A run is one working session of a principal, of one of two kinds. A supervised run is started by whatever launched you (the daemon, a script), which connects you through it and keeps it alive while your process lives. An interactive run is a chat session's: the first claim_task over a connection that is not a supervised run makes one for that connection (one per connection, so two chat windows on the same connection share it). whoami says which you are in. Every call through a run keeps it alive and goes into the task history with it ("dev via Codex · run 8f31"); a supervised run not heard from for ${RUN_LEASE_MS / 60_000} minutes, or an interactive one for ${INTERACTIVE_LEASE_MS / 60_000}, shows as stale. In Claude Code, a hook the user sets up calls heartbeat on every tool use, so the run stays alive while you work in other tools; elsewhere any call to Copland does it. A claim is a run's hold on a task, so two runs never work the same one: a task has at most one live claim, claim_task refuses while another run or session holds it, and refuses a task assigned to someone other than you. A claim lasts while your run keeps calling and ends by itself when the run goes quiet for its lease or ends, the task closes or moves to blocked, or you come off its assignees; release_task lets go of one without closing the task. In a chat session, release what you stop working on, so the board does not say you are on it after you have moved on. A summary's claimed_by, run and run_kind say who is on a task right now. Blocked is not crashed: when you need an answer, comment with an @mention and move the task to blocked, which releases your claim; the task stays assigned to you, and you or a later run claim it again once answered. finish_run ends your run and releases its claims. For a supervised run it is the connection's last call: after it, the run's credential stops working. For an interactive run the connection keeps working, and the next claim_task starts a new run.
 - **Keys.** A board has a short key (CPL); its tasks are numbered, so CPL-12 is task 12 on that board. Keys are unique across the instance and case-insensitive.
 - **Planning.** Any task can have a level (epic > story > task, plus milestone), a parent (a task on the same board) and depends_on (tasks on the same board this one is blocked by). All three are optional: a task without them is an ordinary task. Breaking work down means creating the pieces as tasks with parent set, never writing them as a list in the parent's brief: the board shows a task's children, and a list in a brief goes stale the moment one moves. An epic's brief says what it is for and why; its stories are its children. Children are work: a record that starts out done (a decision, a note) filed as a child can close an open parent, so keep such records as tasks of their own that name the work in their brief. list_tasks with parent lists a task's children, with under its whole subtree.
 - **People** go by a handle (@sam): unique on the instance, chosen by each person in their settings. Assignees and members are shown by handle.
@@ -685,7 +689,7 @@ ${d.stages.map((s) => `${s.position}. **${s.name}** (${s.category}): ${CATEGORY_
 - "Ask the reviewer to look at LNCH-4" → comment_on_task { task: "LNCH-4", text: "@berker-z/reviewer can you look at this?" }
 - You need Sam to choose between two designs on LNCH-4 → comment_on_task { task: "LNCH-4", text: "@sam A or B?" }, then move_task { task: "LNCH-4", stage: "blocked" }
 - "What can I pick up on the launch board?" → list_tasks { board: "launch", stage: "todo" }
-- Starting on LNCH-4 → claim_task { task: "LNCH-4" }; without a run, update_task { task: "LNCH-4", assignees: ["me"], stage: "active" }
+- Starting on LNCH-4 → claim_task { task: "LNCH-4" }; stopping before it is done → release_task { task: "LNCH-4" }
 - "What's left of the LNCH-2 epic?" → list_tasks { under: "LNCH-2" }
 - "Anything for me?" → inbox
 - "Check LNCH-4 against the spec" → read_doc { board: "LNCH", doc: "spec" }, then get_task { task: "LNCH-4" }
@@ -733,11 +737,11 @@ const TOOLS: Tool[] = [
     name: "whoami",
     title: "Who am I",
     description:
-      "Who this connection acts as: a person (handle, email, whether they are an instance admin) or one of their agents (handle \"owner/name\" and agent_of, the person it acts for); the inbox's board key (for an agent, its owner's inbox if it was added there, else null), how many boards they are on, access (\"read and write\" or \"read-only\": a read-only connection cannot change anything), and run: the run this connection belongs to (id, status, since, the tasks it has claimed), or null when it is not a run and claim_task refuses.",
+      "Who this connection acts as: a person (handle, email, whether they are an instance admin) or one of their agents (handle \"owner/name\" and agent_of, the person it acts for); the inbox's board key (for an agent, its owner's inbox if it was added there, else null), how many boards they are on, access (\"read and write\" or \"read-only\": a read-only connection cannot change anything), and run: the run this connection works in (id; kind, supervised when something launched you through it, interactive when claim_task made it for a chat session; status, since, the tasks it has claimed), or null when it has none yet (the first claim_task makes one).",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(_args, ctx) {
-      const runId = ctx.viewer.access?.runId;
+      const runId = ctx.viewer.access?.runId ?? ctx.viewer.access?.interactiveRunId;
       const [me, boards, run] = await Promise.all([
         ctx.call<Me>("GET", "/api/me"),
         ctx.call<BoardSummary[]>("GET", "/api/boards"),
@@ -751,7 +755,7 @@ const TOOLS: Tool[] = [
         boards: boards.length,
         /* /api/me says what the token may do; a connection without one (none today) can do anything its roles allow. */
         access: me.access?.scope === "read" ? "read-only" : "read and write",
-        run: run ? { id: run.short, status: run.status, since: run.startedAt, claims: run.claims } : null,
+        run: run ? { id: run.short, kind: run.kind, status: run.status, since: run.startedAt, claims: run.claims } : null,
       };
     },
   },
@@ -816,7 +820,7 @@ const TOOLS: Tool[] = [
     name: "list_tasks",
     title: "List tasks",
     description:
-      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, category (the stage's: backlog|todo|active|blocked|done|cancelled), status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields (level, parent, depends_on, children: a count) when set, claimed_by and run when a run is on it right now (claim_task), comment count and url (the task's own link: its board with the task open). Filters combine. parent lists a task's direct children; under lists everything below it at any depth (its children, their children and so on, not the task itself), which is how to see what is left of an epic. Both refuse a key that is on none of your boards. status still applies, so pass status: \"all\" to include closed work under a task.",
+      "Find tasks. Defaults to open tasks on every board you are on, soonest due first (undated last), 50 at most. Returns { total, tasks: [summary] } where a summary has key, title, board, stage, category (the stage's: backlog|todo|active|blocked|done|cancelled), status (open|done|cancelled), priority, start, due, overdue, assignees, labels, planning fields (level, parent, depends_on, children: a count) when set, claimed_by, run and run_kind (supervised or interactive) when a run is on it right now (claim_task), comment count and url (the task's own link: its board with the task open). Filters combine. parent lists a task's direct children; under lists everything below it at any depth (its children, their children and so on, not the task itself), which is how to see what is left of an epic. Both refuse a key that is on none of your boards. status still applies, so pass status: \"all\" to include closed work under a task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1060,7 +1064,7 @@ const TOOLS: Tool[] = [
   {
     name: "claim_task",
     title: "Claim a task",
-    description: `Take a task for this run: the way to start work on it. Needs a run (whoami's run is not null) and the editor role; without a run it refuses, and you assign yourself and move the task to an active stage instead. An unassigned task is assigned to you; one assigned to you (with or without others) is fine; one assigned only to others is refused, as is a closed task. A task has at most one live claim: refused while another run holds it, replaced once that claim lapses or its run ends; claiming again with the same run just renews it. Moves the task to the board's first active stage unless it is in one already, and its parents follow (see the guide). The claim lasts while this run keeps calling (any call renews it) and lapses after ${RUN_LEASE_MS / 60_000} quiet minutes; it ends when the run finishes, the task closes, or you come off its assignees. Returns { claimed: summary } (with claimed_by and run), plus also_moved for parents that moved. A refusal says why in its first words, "Not claimed (closed)", "(assigned_elsewhere)" or "(claimed)", and what to do instead: on a task that isn't yours you can still answer in its comments.`,
+    description: `Take a task: the way to start work on it, for everyone. Needs the editor role and a read and write connection. Over a supervised run's connection (something launched you through it) the claim is that run's; over any other connection it is this connection's interactive run, which the first claim makes (whoami shows it then). An unassigned task is assigned to you; one assigned to you (with or without others) is fine; one assigned only to others is refused, as is a closed task. A task has at most one live claim: refused while another run or chat session holds it, replaced once that claim lapses or its run ends; claiming again with the same run just renews it. Moves the task to the board's first active stage unless it is in one already, and its parents follow (see the guide). The claim lasts while this connection keeps calling (any call renews it; in Claude Code the heartbeat hook does on every tool use) and lapses after ${RUN_LEASE_MS / 60_000} quiet minutes for a supervised run, ${INTERACTIVE_LEASE_MS / 60_000} for an interactive one; it ends when the run finishes, the task closes or moves to blocked, or you come off its assignees, and with release_task. Returns { claimed: summary } (with claimed_by, run and run_kind), plus also_moved for parents that moved. A refusal says why in its first words, "Not claimed (closed)", "(assigned_elsewhere)" or "(claimed)", and what to do instead: on a task that isn't yours you can still answer in its comments.`,
     inputSchema: { type: "object", properties: { task: TASK }, required: ["task"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     async run(args, ctx) {
@@ -1080,7 +1084,7 @@ const TOOLS: Tool[] = [
     name: "release_task",
     title: "Release a claimed task",
     description:
-      "Let go of your claim on a task without closing it: it keeps its stage and its assignees, and another run (yours or anyone's it is assigned to) can claim it. Refused when you hold no claim on it. You rarely need this: closing the task, coming off its assignees or finishing your run releases it anyway. Returns { released: summary }.",
+      "Let go of your claim on a task without closing it: it keeps its stage and its assignees, and another run or session (yours or anyone's it is assigned to) can claim it. Refused when you hold no claim on it. Closing the task, moving it to blocked, coming off its assignees or finishing your run releases it anyway; in a chat session, use this when you stop working on a task that stays open. Returns { released: summary }.",
     inputSchema: { type: "object", properties: { task: TASK }, required: ["task"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     async run(args, ctx) {
@@ -1092,7 +1096,7 @@ const TOOLS: Tool[] = [
   {
     name: "finish_run",
     title: "Finish this run",
-    description: `End the run this connection belongs to, as ${RUN_ENDINGS.join(", ")}: completed when the work it set out to do is done or handed off (moving a task to blocked to wait for an answer and finishing is completed), failed when it could not do it, cancelled when it stopped for another reason. Its claims are released; the tasks keep their stage and assignees. Make it your last call: after it, this connection's credential stops working, and whatever started the run may also finish it for you. Refused when this connection is not a run. Returns { finished: { id, status, since, ended } }.`,
+    description: `End the run this connection belongs to, as ${RUN_ENDINGS.join(", ")}: completed when the work it set out to do is done or handed off (moving a task to blocked to wait for an answer and finishing is completed), failed when it could not do it, cancelled when it stopped for another reason. Its claims are released; the tasks keep their stage and assignees. For a supervised run (something launched you through it) make it your last call: after it, this connection's credential stops working, and whatever started the run may also finish it for you. For an interactive run (a chat session's, made by claim_task) the connection keeps working and the next claim_task starts a new run. Refused when this connection has no run. Returns { finished: { id, status, since, ended } }.`,
     inputSchema: {
       type: "object",
       properties: { status: { type: "string", enum: [...RUN_ENDINGS], description: "How it ended" } },
@@ -1101,10 +1105,23 @@ const TOOLS: Tool[] = [
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     async run(args, ctx) {
-      const runId = ctx.viewer.access?.runId;
-      if (!runId) throw new Error("This connection is not a run, so there is nothing to finish.");
+      const runId = ctx.viewer.access?.runId ?? ctx.viewer.access?.interactiveRunId;
+      if (!runId) throw new Error("This connection has no run (claim_task makes one), so there is nothing to finish.");
       const run = await ctx.call<Run>("POST", `/api/runs/${runId}/finish`, { status: fold(String(args.status)) });
       return { finished: { id: run.short, status: run.status, since: run.startedAt, ended: run.endedAt } };
+    },
+  },
+  {
+    name: "heartbeat",
+    title: "Keep this session's claims alive",
+    description:
+      "For a Claude Code hook, not for you to call: an empty call that keeps this connection's run, and the tasks it has claimed, alive while you work in other tools. Any call to Copland does the same, so you never need it yourself. Allowed on a read-only connection, where it does nothing. Returns an empty text, so a hook adds nothing to the conversation.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, idempotentHint: true },
+    async run(_args, ctx) {
+      /* The renewing is the request's own touch (tokens.ts touchStatements); this reads nothing. */
+      await ctx.call("GET", "/api/runs/current");
+      return "";
     },
   },
   {

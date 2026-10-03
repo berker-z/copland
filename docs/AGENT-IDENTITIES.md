@@ -38,7 +38,7 @@ The handle is stored whole (`berker-z/codex`) so every query reading `users.hand
 - Making a token, or approving on the OAuth consent page, asks who it acts as: me, one of my agents, or a new agent. "Me" tokens stay, for scripts.
 - Only the owner adds their agent to a board, the owner's inbox included.
 - Personal agents only, no instance agents.
-- Agents never make boards, invite people or manage tokens.
+- Agents never make boards, invite people or manage tokens. The one token call any token may make, an agent's included, is revoking itself (`DELETE /api/tokens/self`): it names nothing, so it reaches no other token, and it only takes access away, so a read-only token may make it too. It is how a box signs out (COPL-65). A run's secret can't use it (it would end the token behind the run), and neither can an OAuth connection (its refresh token would outlive it).
 - Deleting an agent ends its tokens and takes it off boards and assignments. It is renamed "berker-z/codex (deleted 1a2b)", which is how its comments and history read, and frees "codex" for a new agent that inherits nothing.
 - Any member may bring their own agent onto a board, at most at their own role. Board owners can remove it, and can never make it an owner.
 - What an agent is for (its description) is told to it in the MCP guide.
@@ -62,13 +62,54 @@ Why this order, and what Copland is for, is in [DIRECTION.md](DIRECTION.md).
 
 A run is one working session of a principal (`migrations/0015_runs_claims.sql`, `src/worker/routes/runs.ts`). Whatever launches the runtime calls `POST /api/runs` with the principal's own token and gets back a secret, `cplr_…`, that it hands to the runtime instead of the token. That secret resolves through the token that started the run (`tokens.ts`), so it is the same principal with the same scope, plus the run. It never has more: a read-only token can't start a run at all, since starting one is a write, and a run's secret can't start another run or touch token management. It stops working when the run finishes or goes stale (ten minutes without a call, so a run nobody finished leaves no live credential behind), when its token is revoked or expires, and when its agent is paused or its owner disabled. A launcher keeps a quiet runtime alive by calling `GET /api/runs/:id` with the secret. A person can start runs too; a script that wants its changes grouped is the obvious case.
 
-Every call through a run is its sign of life. It moves `last_seen_at` (at most once a minute) and stamps `run_id` on every event the request writes, so history reads "dev via Codex · run 8f31". There is one lease, `RUN_LEASE_MS` in `src/domain/runs.ts`, ten minutes, and nothing sweeps. A running run not heard from for longer than that reads as stale wherever it is shown. Finishing (`POST /api/runs/:id/finish`, completed, failed or cancelled) is the run's own or its principal's; pausing or deleting the agent cancels its runs.
+Every call through a run is its sign of life. It moves `last_seen_at` (at most once a minute) and stamps `run_id` on every event the request writes, so history reads "dev via Codex · run 8f31". The lease is `RUN_LEASE_MS` in `src/domain/runs.ts`, ten minutes, and nothing sweeps. A running run not heard from for longer than that reads as stale wherever it is shown. Finishing (`POST /api/runs/:id/finish`, completed, failed or cancelled) is the run's own or its principal's; pausing or deleting the agent cancels its runs.
 
 A claim is a run holding a task: one live claim per task, in `task_claims`. Assignment is the durable part ("dev owns this"), the claim the temporary one ("this run is on it now"). `POST /api/tasks/:id/claim` needs a run and the editor role. An unassigned task gets assigned to the claimer; one assigned to the claimer is fine; one assigned only to others is refused, and so is a closed one. A refusal is a 409 with a `code` beside the message, `closed`, `assigned_elsewhere` or `claimed`, so a daemon can tell "wait for that run" from "not yours"; `claim_task` puts the code in its first words. The task moves to the board's first active stage unless it is already in one, and its parents follow. Another run's live claim is refused; a lapsed one, or one whose run ended, is replaced. The claim, the assignment and the move are one D1 batch whose second statement fails unless this run ended up holding the claim, so two runs racing for a task can't both win.
 
-A claim is live while `claimed_until` is in the future and its run is running. Any call by the run pushes `claimed_until` a lease ahead, so a run that goes quiet loses its claims when it goes stale, and the task stays assigned for the next run to pick up. Claims are also released when the run finishes, when the task closes or is deleted, when the claimer comes off its assignees (the last statement of every task write), and with `DELETE /api/tasks/:id/claim`. The card says "dev is on this" while a claim is live, and the MCP summary carries `claimed_by` and `run`.
+A claim is live while `claimed_until` is in the future and its run is running. Any call by the run pushes `claimed_until` a lease ahead, so a run that goes quiet loses its claims when it goes stale, and the task stays assigned for the next run to pick up. Claims are also released when the run finishes, when the task closes or is deleted, when it moves to a blocked stage, when the claimer comes off its assignees (the last statement of every task write), and with `DELETE /api/tasks/:id/claim`. Blocked releases because the task is now waiting on a person, not on the run; whoever picks it up after the answer claims it again. The card says "dev is on this · run 8f31" while a claim is live, and the MCP summary carries `claimed_by`, `run` and `run_kind`.
 
-Over the MCP the model works inside a run; it doesn't start one. A session can't switch its own credential mid-connection, so a `start_run` tool would hand the model a secret it has no use for. It gets `claim_task`, `release_task` and `finish_run`, and `whoami` and the guide say whether the connection is a run. Without one, `claim_task` refuses and the guide says to assign yourself and move the task to active instead. Blocked isn't crashed: a run can move its task to blocked, ask its question and finish, and a later run claims the task again once someone answers.
+Over the MCP the model works inside a run; it doesn't start one. A session can't switch its own credential mid-connection, so a `start_run` tool would hand the model a secret it has no use for. It gets `claim_task`, `release_task` and `finish_run`, and `whoami` and the guide say which run the connection is in. Blocked isn't crashed: a run can move its task to blocked, ask its question and finish, and a later run claims the task again once someone answers.
+
+### Interactive runs
+
+Everything above is a supervised run: something (the daemon, a script) holds the process and keeps the run alive while it lives. A chat session is different. Claude Code in a terminal, Codex, Hermes: nobody launched them through `POST /api/runs`, and they connect with a plain token or an OAuth connection. They claim too (COPL-68 decided that everyone claims, and the old "assign yourself and move it to active" fallback is gone), so a claim needs a run they can have without a launcher.
+
+That's the interactive run (`migrations/0018_interactive_runs.sql`, `runs.kind` is `supervised` or `interactive`). `POST /api/tasks/:id/claim` with a token and no run secret finds the token's running interactive run, or makes one right there (`interactiveRun` in `src/worker/repo/runs.ts`), and claims for it. From then on the claim behaves exactly like a supervised one: one live claim per task, the same refusal codes, the same moves. The daemon sees an interactive claim as `claimed` and backs off like it does for another daemon run.
+
+There is one interactive run per credential, not per chat window. Claude Code sends no session id to an MCP server, so the Worker can't tell two windows on the same connection apart; they share a run. An OAuth connection is one `api_tokens` row however often it refreshes, so a refresh doesn't start a new run. The run's `token_hash` is the hash of a secret nobody is given, so it is never a credential of its own; the token is.
+
+Liveness comes from the token. The token lookup in `src/worker/tokens.ts` brings along its live interactive run, and every request with that token renews the run and its claims (the same once-a-minute touch a run secret gets) and stamps the run on its events. The interactive lease is `INTERACTIVE_LEASE_MS`, fifteen minutes, a little longer than the supervised one because a person reads and types between calls. A stale interactive run is not revived: its claims have lapsed and the next claim ends it (cancelled) and starts a new one. `finish_run` over such a connection ends the interactive run and releases its claims, and the connection keeps working.
+
+Calls to Copland alone would let a claim lapse while the model spends twenty minutes in the editor. For Claude Code a hook fixes that. A hook of type `mcp_tool` calls a tool through Claude Code's own MCP connection, so it carries the connection's credentials without anyone copying a token into a script. The MCP has a `heartbeat` tool for it: no arguments, it reads nothing (`GET /api/runs/current` answers from the resolved credential), returns empty text so the hook adds nothing to the conversation, and works on a read-only connection, where it does nothing. The request's own touch does the renewing. This repo ships the hook in `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "^(?!mcp__copland__)",
+        "hooks": [{ "type": "mcp_tool", "server": "copland", "tool": "heartbeat", "timeout": 10 }]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [{ "type": "mcp_tool", "server": "copland", "tool": "heartbeat", "timeout": 10 }]
+      }
+    ]
+  }
+}
+```
+
+Copy it into `~/.claude/settings.json` to have it everywhere. `server` is whatever name the Copland MCP server has in your Claude Code config. Some things about it, checked against the Claude Code hooks reference:
+
+- There is no periodic hook event, so "on every tool use" is the heartbeat. `PostToolUse` fires for subagents' tool calls too.
+- `async` is only for `command` hooks, so an `mcp_tool` hook is synchronous: each tool use waits for one round trip to the Worker. The `timeout` caps that at ten seconds; a failure is a non-blocking error and the tool use goes on.
+- The matcher is a JavaScript regex that skips Copland's own tools: they renew the run anyway, and it rules out a hook calling a Copland tool from firing itself.
+- `UserPromptSubmit` renews the run when the person comes back with a prompt, inside the lease. Whatever text a hook's tool returns there would be added to the model's context, which is why `heartbeat` returns nothing.
+- The hook never starts an OAuth flow. If the server isn't connected, the hook errors without blocking.
+- Claude Code picks up edits to settings files while it runs. The tool has to exist on the server, though: until the Worker with `heartbeat` is deployed, every tool use shows a hook error.
+
+Codex, Hermes and other clients have no such hook. For them any call to Copland renews the run, and the fifteen-minute lease decides when a quiet session's claims lapse. The guide tells every assistant to let go (`release_task`) of a task it stops working on, so the card doesn't say it's on it for the next quarter of an hour.
 
 ## Device login
 

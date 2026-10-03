@@ -3,6 +3,7 @@
    lookups the task routes start from.
    ========================================================================== */
 
+import { clientLabel } from "@/domain/clients";
 import { shortRunId } from "@/domain/runs";
 import type { Attachment, Label, Level, Priority, Stage, StageCategory, Task } from "@/domain/types";
 import { currentRun, currentVia } from "../tokens";
@@ -27,7 +28,7 @@ interface TaskRow {
   label_ids: string | null;
   depends_on: string | null;
   comment_count: number;
-  /** "user_id run_id claimed_until" of a live claim, or null. */
+  /** "user_id run_id claimed_until kind client" of a live claim, or null (client may be empty or hold spaces). */
   claim: string | null;
   created_by: string;
   created_at: string;
@@ -38,8 +39,15 @@ const ids = (csv: string | null) => (csv ? csv.split(",") : []);
 
 function toClaim(packed: string | null): Task["claim"] {
   if (!packed) return null;
-  const [userId, runId, until] = packed.split(" ");
-  return { userId, runId, run: shortRunId(runId), until };
+  const [userId, runId, until, kind, ...client] = packed.split(" ");
+  return {
+    userId,
+    runId,
+    run: shortRunId(runId),
+    kind: kind === "interactive" ? "interactive" : "supervised",
+    client: client.join(" ") ? clientLabel(client.join(" ")) : null,
+    until,
+  };
 }
 
 function rowToTask(row: TaskRow): Task {
@@ -76,7 +84,7 @@ const TASK_SELECT = `
          (SELECT group_concat(label_id) FROM task_labels WHERE task_id = t.id) AS label_ids,
          (SELECT group_concat(depends_on_id) FROM task_dependencies WHERE task_id = t.id) AS depends_on,
          (SELECT count(*) FROM comments WHERE task_id = t.id) AS comment_count,
-         (SELECT c.user_id || ' ' || c.run_id || ' ' || c.claimed_until
+         (SELECT c.user_id || ' ' || c.run_id || ' ' || c.claimed_until || ' ' || r.kind || ' ' || coalesce(r.client, '')
             FROM task_claims c JOIN runs r ON r.id = c.run_id
            WHERE c.task_id = t.id AND ${LIVE_CLAIM}) AS claim
     FROM tasks t JOIN boards b ON b.id = t.board_id`;
