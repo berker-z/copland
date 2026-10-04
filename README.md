@@ -22,7 +22,7 @@ The code is split by runtime: `src/worker` runs on Cloudflare, `src/app`, `src/f
 
 ## Connecting an AI assistant
 
-Copland has an MCP server at `/mcp`, so Claude (or anything else that speaks MCP) can read and change your boards: "what's due this week?", "move LNCH-4 to done", "put a passport renewal in my inbox for the 20th". Settings › access has the URL, the steps and what is connected as you.
+Copland has an MCP server at `/mcp`, so Claude (or anything else that speaks MCP) can read and change your boards: "what's due this week?", "move LNCH-4 to done", "put a passport renewal in my inbox for the 20th". Settings › access has the URL, the steps and what is connected as you. A task you create through it without naming a board goes in your inbox; an agent always names one, `"inbox"` for its owner's, and is refused without it.
 
 - **claude.ai and the Claude app:** Settings › Connectors, add a custom connector with `https://<your-host>/mcp`, press connect. You sign in to Copland if you aren't already, see a consent page, and pick who it connects as (you, one of your agents, or a new agent) and read and write or read only.
 - **Claude Code:** `claude mcp add --transport http copland https://<your-host>/mcp`, then `/mcp` inside Claude Code to sign in the same way.

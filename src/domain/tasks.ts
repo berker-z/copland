@@ -52,6 +52,19 @@ export const TITLE_MAX = 200;
 export const BRIEF_MAX = 20_000;
 
 /**
+ * The board a new task goes on, as create_task was given it (COPL-125). A
+ * person without one gets their inbox. An agent names one, "inbox" included:
+ * "on copland" read as the app once put an agent's tasks in its owner's inbox.
+ */
+export function newTaskBoard(board: unknown, isAgent: boolean): unknown {
+  if (board !== undefined && board !== null && board !== "") return board;
+  if (!isAgent) return "inbox";
+  throw new Error(
+    'Name a board: an agent\'s create_task needs board (a board\'s name or key, or "inbox" for your owner\'s inbox). The guide lists your boards.',
+  );
+}
+
+/**
  * A task's own link, from the site root: its board with its modal open
  * (BoardScreen's ?task=). A key is always BOARD-N, so the board is the key
  * up to its last dash. The box builds the same link (daemon/box view.rs).
