@@ -953,7 +953,7 @@ const TOOLS: Tool[] = [
     name: "get_task",
     title: "Get a task",
     description:
-      "One task in full: everything list_tasks returns (code and overlap included), plus the brief (markdown), created and updated times, its children (when it has any), and the comment thread (oldest first). Use a key like CPL-12.",
+      "One task in full: everything list_tasks returns (code and overlap included), plus the brief (markdown), created and updated times, its children (when it has any), and the comment thread (oldest first: by, at, text, edited when it was, and images [{ name, url }] when the comment has any; the url opens for a board member signed in to Copland). Use a key like CPL-12.",
     inputSchema: { type: "object", properties: { task: TASK }, required: ["task"], additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(args, ctx) {
@@ -968,7 +968,13 @@ const TOOLS: Tool[] = [
         ...(children.length
           ? { children: children.map((t) => `${t.key} ${t.title}${t.level ? ` (${t.level})` : ""}`) }
           : {}),
-        thread: comments.map((c) => ({ by: `@${c.authorHandle}`, at: c.createdAt, text: c.text, ...(c.editedAt ? { edited: true } : {}) })),
+        thread: comments.map((c) => ({
+          by: `@${c.authorHandle}`,
+          at: c.createdAt,
+          text: c.text,
+          ...(c.editedAt ? { edited: true } : {}),
+          ...(c.attachments.length ? { images: c.attachments.map((a) => ({ name: a.name, url: `${ctx.origin}${a.url}` })) } : {}),
+        })),
       };
     },
   },

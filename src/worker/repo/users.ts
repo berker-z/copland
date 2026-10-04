@@ -97,8 +97,12 @@ export interface GoogleProfile {
 
 /** Why a sign-in was refused; auth.ts turns it into a reason on the login screen. */
 export class SignInRefused extends Error {
-  constructor(readonly reason: "disabled" | "mismatch" | "not_invited" | "invite_used" | "invite_email") {
+  /* A declared field, not a parameter property: the checks load this with node's type stripping. */
+  readonly reason: "disabled" | "mismatch" | "not_invited" | "invite_used" | "invite_email";
+
+  constructor(reason: SignInRefused["reason"]) {
     super(reason);
+    this.reason = reason;
   }
 }
 

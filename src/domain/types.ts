@@ -357,8 +357,19 @@ export interface Comment {
   text: string;
   /** Who it mentions, resolved when it was written: ids, with their handles as they are now. */
   mentions: { id: string; handle: string }[];
+  /** Its images, oldest first (COPL-117). Never in the task's own attachments. */
+  attachments: CommentAttachment[];
   createdAt: string;
   editedAt: string | null;
+}
+
+/** An image on a comment; url is the authenticated /api/attachments/<key>. */
+export interface CommentAttachment {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  url: string;
 }
 
 /** One row of a task's history (GET /api/tasks/:id/events). */

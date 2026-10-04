@@ -10,17 +10,26 @@
    A new comment also reaches the task's other participants as "commented";
    editing one reaches only whoever it newly names.
 
+   A new comment can carry images (attachments: [key], COPL-117): uploads
+   claimed like a task attachment's, written in the same batch as the
+   comment, so it goes in with all of them or not at all. They are rows of
+   the attachments table with the comment's id, read through the same GET
+   and the same board check, and not in the task's own list. An edit leaves
+   them alone; deleting the comment deletes them and their R2 objects.
+
    History is the board's event log filtered to the task, with the actor's
    handle joined in, newest first.
    ========================================================================== */
 
+import { isCommentImage, parseCommentImages } from "@/domain/commentImages";
 import { shortRunId } from "@/domain/runs";
-import type { Comment, TaskEvent, Viewer } from "@/domain/types";
+import type { Comment, CommentAttachment, TaskEvent, Viewer } from "@/domain/types";
 import { requireBoard } from "../access";
 import type { Env } from "../env";
 import { badRequest, forbidden, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
 import { boardAudience, listMembers } from "../repo/boards";
+import { claimUpload, PREFIX } from "./attachments";
 import { inboxAudience, inboxStatements, mentionedIn, participantsOf, type NewInboxItem } from "../repo/inbox";
 import { eventStatement } from "../repo/tasks";
 import { avatarUrl } from "../repo/users";
@@ -48,7 +57,7 @@ async function boardOfTask(db: D1Database, viewer: Viewer, taskId: string) {
 }
 
 async function listComments(db: D1Database, taskId: string): Promise<Comment[]> {
-  const [comments, mentions] = await Promise.all([
+  const [comments, mentions, images] = await Promise.all([
     db
       .prepare(
         `SELECT c.id, c.task_id, c.author_id, u.handle AS author_handle, u.avatar_key AS author_avatar, c.text, c.created_at, c.edited_at
@@ -75,7 +84,20 @@ async function listComments(db: D1Database, taskId: string): Promise<Comment[]> 
       )
       .bind(taskId)
       .all<{ comment_id: string; id: string; handle: string }>(),
+    db
+      .prepare(
+        `SELECT id, comment_id, name, mime, size, key FROM attachments
+          WHERE task_id = ?1 AND comment_id IS NOT NULL AND key IS NOT NULL ORDER BY created_at`,
+      )
+      .bind(taskId)
+      .all<{ id: string; comment_id: string; name: string; mime: string; size: number; key: string }>(),
   ]);
+  const imagesOf = new Map<string, CommentAttachment[]>();
+  for (const r of images.results) {
+    const list = imagesOf.get(r.comment_id) ?? [];
+    list.push({ id: r.id, name: r.name, type: r.mime, size: r.size, url: `/api/${r.key}` });
+    imagesOf.set(r.comment_id, list);
+  }
   return comments.results.map((r) => ({
     id: r.id,
     taskId: r.task_id,
@@ -84,6 +106,7 @@ async function listComments(db: D1Database, taskId: string): Promise<Comment[]> 
     authorAvatar: avatarUrl(r.author_avatar),
     text: r.text,
     mentions: mentions.results.filter((m) => m.comment_id === r.id).map((m) => ({ id: m.id, handle: m.handle })),
+    attachments: imagesOf.get(r.id) ?? [],
     createdAt: r.created_at,
     editedAt: r.edited_at,
   }));
@@ -113,10 +136,29 @@ function mentionStatements(db: D1Database, viewer: Viewer, boardId: string, task
   };
 }
 
+/**
+ * A new comment's images: each key the caller's own unattached upload, and
+ * an image a browser shows inline. Claimed here, written with the comment.
+ */
+async function claimImages(env: Env, viewer: Viewer, raw: unknown) {
+  const parsed = parseCommentImages(raw);
+  if (!parsed.ok) throw badRequest(parsed.reason);
+  return Promise.all(
+    parsed.keys.map(async (key) => {
+      const upload = await claimUpload(env, viewer, key);
+      if (!isCommentImage(upload.mime)) throw badRequest(`Only PNG, JPEG, GIF and WebP images go on a comment, not ${upload.mime}`);
+      return { id: crypto.randomUUID(), name: upload.name ?? "image", mime: upload.mime, size: upload.size, key: upload.key };
+    }),
+  );
+}
+
+/** POST /api/tasks/:id/comments { text, attachments?: [key] } */
 export async function postComment(request: Request, env: Env, viewer: Viewer, taskId: string, changes: Changes) {
   const db = env.DB;
   const board = await boardOfTask(db, viewer, taskId);
-  const text = parseText((await readJson(request)).text);
+  const body = await readJson(request);
+  const text = parseText(body.text);
+  const images = await claimImages(env, viewer, body.attachments);
   const id = crypto.randomUUID();
   const named = mentionedIn(text, await listMembers(db, board.id));
   const mentions = mentionStatements(db, viewer, board.id, taskId, id, named);
@@ -126,6 +168,14 @@ export async function postComment(request: Request, env: Env, viewer: Viewer, ta
     .map((userId) => ({ userId, kind: "commented", boardId: board.id, taskId, commentId: id, actorId: viewer.user.id }));
   await db.batch([
     db.prepare(`INSERT INTO comments (id, task_id, author_id, text) VALUES (?1, ?2, ?3, ?4)`).bind(id, taskId, viewer.user.id, text),
+    /* A key claimed twice at once loses here, on attachments.key UNIQUE, and takes its comment with it. */
+    ...images.map((f) =>
+      db
+        .prepare(
+          `INSERT INTO attachments (id, task_id, comment_id, name, mime, size, kind, key, added_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'image', ?7, ?8)`,
+        )
+        .bind(f.id, taskId, id, f.name, f.mime, f.size, f.key, viewer.user.id),
+    ),
     ...mentions.statements,
     ...inboxStatements(db, commented),
     eventStatement(db, { boardId: board.id, taskId, actorId: viewer.user.id, kind: "comment.added" }),
@@ -179,7 +229,16 @@ export async function deleteComment(env: Env, viewer: Viewer, id: string, change
   if (row.author_id !== viewer.user.id && board.role !== "owner") {
     throw forbidden("Only the author or a board owner can delete a comment");
   }
-  await db.prepare(`DELETE FROM comments WHERE id = ?1`).bind(id).run();
+  const { results: images } = await db
+    .prepare(`SELECT key FROM attachments WHERE comment_id = ?1 AND key IS NOT NULL`)
+    .bind(id)
+    .all<{ key: string }>();
+  await db.batch([
+    db.prepare(`DELETE FROM attachments WHERE comment_id = ?1`).bind(id),
+    db.prepare(`DELETE FROM comments WHERE id = ?1`).bind(id),
+  ]);
+  /* After the rows: an object without a row is unreachable, a row without its object is a broken image. */
+  if (images.length) await env.FILES.delete(images.map((i) => i.key).filter((k) => k.startsWith(PREFIX)));
   changes.notify(await boardAudience(db, board.id), "board");
   return json(await listComments(db, row.task_id));
 }
