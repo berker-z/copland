@@ -10,6 +10,11 @@
 //! the machine can. A runtime's own sandbox can still go on top, in its
 //! command.
 //!
+//! It has a process namespace of its own (COPL-120): when the runtime exits,
+//! or is stopped, everything it started goes with it. `--new-session` puts
+//! the runtime outside the process group the daemon signals, so without that
+//! a dev server it backgrounded would outlive the run and keep its port.
+//!
 //! It needs `bwrap` on PATH and unprivileged user namespaces. Without them a
 //! coding run doesn't start, rather than starting unsandboxed.
 
@@ -36,6 +41,7 @@ pub fn wrap(argv: &[String], w: &Writable) -> Vec<String> {
         BWRAP,
         "--die-with-parent",
         "--new-session",
+        "--unshare-pid",
         "--ro-bind",
         "/",
         "/",
@@ -75,6 +81,7 @@ mod tests {
         assert_eq!(argv[0], "bwrap");
         let s = argv.join(" ");
         assert!(s.contains("--ro-bind / /"));
+        assert!(s.contains("--unshare-pid"));
         assert!(s.contains("--bind /c/work/COPL-1 /c/work/COPL-1"));
         assert!(s.contains("--bind /c/repos/o/r/.git /c/repos/o/r/.git"));
         assert!(s.contains("--bind-try /h/.claude /h/.claude"));
@@ -144,5 +151,47 @@ mod tests {
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         assert!(!worktree.join("read").exists() && extra.join("read").exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What a run starts in the background, detached the way a dev server is, ends with the run
+    /// (COPL-120), so it doesn't hold its port after the run is over.
+    #[test]
+    fn what_a_run_leaves_running_ends_with_it() {
+        if std::process::Command::new(BWRAP).arg("--version").output().is_err() {
+            eprintln!("no bwrap here; skipping");
+            return;
+        }
+        /* A duration nothing else on the machine sleeps for, to find it by afterwards. */
+        let marker = format!("{}.5", 86_400 + std::process::id());
+        let w = Writable {
+            dirs: Vec::new(),
+            extra: Vec::new(),
+            chdir: env!("CARGO_MANIFEST_DIR").into(),
+        };
+        let script = format!("setsid nohup sleep {marker} >/dev/null 2>&1 & sleep 0.2");
+        let argv = wrap(&["sh".into(), "-c".into(), script], &w);
+        let out = std::process::Command::new(&argv[0]).args(&argv[1..]).output().unwrap();
+        if !out.status.success() && String::from_utf8_lossy(&out.stderr).contains("namespace") {
+            eprintln!(
+                "bwrap can't make namespaces here; skipping: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let left = || {
+            std::fs::read_dir("/proc")
+                .unwrap()
+                .filter_map(|e| std::fs::read(e.ok()?.path().join("cmdline")).ok())
+                .any(|c| c.split(|&b| b == 0).any(|a| a == marker.as_bytes()))
+        };
+        /* The namespace goes as its first process exits; give the kernel a moment. */
+        for _ in 0..40 {
+            if !left() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("`sleep {marker}` outlived its sandbox");
     }
 }

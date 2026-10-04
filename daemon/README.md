@@ -98,7 +98,7 @@ The worktree belongs to the task, not to a run: a run that crashed, a later run 
 
 What the run does follows the task's level (COPL-87). A task, a leaf, is a worker's: it gets the worktree above, codes, and opens one PR. An epic or a story, or a task that has children, is a lead's: it gets no worktree but the clone itself, checked out at the default branch's head (detached) and read-only in the sandbox, and is told to plan the work into child tasks with `depends_on` where one needs another's result, assign them, and leave the parent open. Children assigned to the agent start by themselves (they are ready work, step 2), side by side up to `max_runs`, each in its own worktree, and the parent closes when they are done. A milestone runs nothing. The run gets `COPLAND_ROLE` (`worker` or `lead`) besides the variables below, and `COPLAND_INTEGRATE`: `pull-request` on GitHub, `fast-forward` on a plain remote, whose worker is told to fast-forward `main` and close the task itself. A plain remote's clone goes under `repos/git/<host>/<path>`.
 
-`code_command` runs inside bubblewrap (`core/src/sandbox.rs`), whatever the runtime is. Everything is readable and nothing writable except the worktree, the clone's `.git` (where the worktree's commits go), a fresh empty `/tmp`, and what `writable` lists: the runtime's own state and the caches its builds use. Without `bwrap` the run doesn't start. bubblewrap can't limit hosts, so a coding run reaches the network the way the machine does, and it can push wherever your git credentials can. A runtime's own sandbox can go on top, in its command.
+`code_command` runs inside bubblewrap (`core/src/sandbox.rs`), whatever the runtime is. Everything is readable and nothing writable except the worktree, the clone's `.git` (where the worktree's commits go), a fresh empty `/tmp`, and what `writable` lists: the runtime's own state and the caches its builds use. Without `bwrap` the run doesn't start. bubblewrap can't limit hosts, so a coding run reaches the network the way the machine does, and it can push wherever your git credentials can. A runtime's own sandbox can go on top, in its command. The run has a process namespace of its own (`--unshare-pid`), so whatever it started, a dev server it left in the background included, ends when the runtime does, however that ends: it doesn't keep running, or hold its port, after the run.
 
 ```toml
 code_dir = "~/copland"   # top level; optional, ~/copland by default
@@ -141,6 +141,35 @@ owner_url = "https://copland.example.com"       # only when the agents are on mo
 `owner_write_token_file` (or `owner_write_token` inline) is a second token of yours, read and write, for what the box writes as you: a message to one of your agents and your inbox marked read (COPL-109). It comes with `owner_token_file` or not at all, and is for the same Copland. You don't make it by hand: the first time you message an agent from the agents screen, the box asks for it with a device login of its own (below), keeps it in `me.write.token` beside the config (0600) and adds the key. The read-only token stays what it reads with; only someone who wants to write from the box holds a write token on disk, and it can do anything you can. One Copland refuses is forgotten (the key and the file go), so the next message asks again.
 
 `copland-daemon --check` reads the config, checks it, asks each instance who the token is and prints what it would run. It fails on a token it can't use: a read-only one (runs and claims are writes), or a run's secret (`cplr_…`) given in place of the agent's own token. The daemon checks the same at startup, through `/api/me`'s `access`, and stops watching that agent with an error; when no agent is left it exits. `COPLAND_LOG=debug` shows each poll's decisions and keepalives.
+
+### Screenshots
+
+A coding run can start Copland's dev server and take screenshots of it in a headless browser, inside the sandbox, to see a UI change before it opens the PR (COPL-120). The daemon needs nothing for it beyond the `writable` above, and `daemon.toml` has no setting for it:
+
+- **The browser** is whichever Chrome or Chromium is on the daemon's `PATH`, which the run inherits (`google-chrome`, or `chromium` from nixpkgs). It isn't in the flake's dev shell: a box from the package doesn't go through that shell, and Chromium is far too big to make everyone building the box download it. Playwright isn't needed; its downloaded browsers don't run on NixOS without nix-ld anyway.
+- **Chrome's own sandbox works under ours.** Unprivileged user namespaces nest, so its renderers still get their own user and process namespaces and seccomp, and it needs no `--no-sandbox`.
+- **Writable paths:** the profile goes in the run's fresh `/tmp` (`--user-data-dir`), so nothing of the browser's needs to be in `writable`. Chrome still tries `~/.config/google-chrome` and `~/.pki/nssdb`, logs that they are read-only, and carries on. Wrangler keeps local D1 and R2 in the worktree's `.wrangler/`, and its own state in `~/.config/.wrangler`, which the example lists; vite's cache is in `node_modules/.vite`.
+- **Ports:** the network is the machine's, so runs side by side share `localhost`. Vite moves to the next free port when 5173 is taken, and the Cloudflare plugin does the same with its inspector port, so read the URL from the log rather than assuming it. The server binds `localhost` only, and ends with the run.
+
+A fresh worktree has no `.dev.vars`; the run writes one (it is gitignored) with a throwaway `VAULT_KEY` and a `DEV_USER_EMAIL`, which signs every localhost request in as that user, and applies the migrations to its own local D1. Then, from the worktree:
+
+```sh
+npm ci
+printf 'VAULT_KEY=%s\nDEV_USER_EMAIL=dev@example.com\n' "$(head -c 32 /dev/urandom | base64)" > .dev.vars
+npm run db:migrate
+npx vite > /tmp/dev.log 2>&1 &
+until url=$(grep -o -m1 'http://localhost:[0-9]*' /tmp/dev.log); do sleep 1; done
+until curl -sf -o /dev/null "$url/api/me"; do sleep 1; done
+shot() {
+  google-chrome --headless --disable-gpu --no-first-run --disable-crash-reporter --hide-scrollbars \
+    --user-data-dir=/tmp/chrome --window-size="$1" --virtual-time-budget=8000 \
+    --screenshot="$2" "$url$3" 2>/dev/null
+}
+shot 1440,900 /tmp/board-desktop.png /b/DEMO
+shot 390,844 /tmp/board-390.png /b/DEMO
+```
+
+The local database starts empty: the first request makes the dev user, and a board to look at comes from the API (`POST /api/boards`, then `POST /api/boards/:id/tasks`, with `curl` and a JSON body). `--virtual-time-budget` lets the page fetch and render before the shot is taken. 390 is a phone's width, where the board turns into its swipeable mobile layout.
 
 ## Building
 
