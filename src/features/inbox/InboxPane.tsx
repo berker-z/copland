@@ -7,8 +7,10 @@
    points at one, its task. One from someone you don't trust that way (not
    your own agent: someone else's agent answering you) reads like a
    comment, smaller and muted. "reply" under a message opens one line
-   that answers it (replyTo), about the same task, and sending marks it read. Clicking an item marks it read and opens
-   its task over the dashboard, the way the tasks pane does. × dismisses an item for good. Read items stay, dimmed, until
+   that answers it (replyTo), about the same task, and sending marks it read. Clicking an item opens
+   its task over the dashboard, the way the tasks pane does, and opening a
+   task marks every unread item on it read (useReadOnOpen, domain/inbox.ts),
+   except messages: clicking a message marks that one read itself. × dismisses an item for good. Read items stay, dimmed, until
    dismissed. The first 50 load; "older" at the foot loads the next page
    (the route's cursor), so nothing old is out of reach.
 
@@ -17,43 +19,15 @@
    ========================================================================== */
 
 import { useState } from "react";
-import { useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { Check, CornerDownRight, X } from "lucide-react";
-import type { Inbox, InboxItem } from "@/domain/types";
-import { send } from "@/lib/api";
-import { KEYS, useBoard, useInbox } from "@/lib/queries";
+import type { InboxItem } from "@/domain/types";
+import { useBoard, useInbox } from "@/lib/queries";
 import { Avatar } from "@/ui/Avatar";
 import { when } from "@/ui/tone";
 import { WidgetFrame } from "@/ui/WidgetFrame";
 import { TaskModal } from "../board/TaskModal";
+import { useInboxWrite } from "./inboxWrite";
 import { MessageInput } from "./MessageInput";
-
-/* The answer is the first page as it is now. Rather than swap it in, which
-   could shift what the pages already loaded hold, the write is applied to
-   every loaded page and the count taken from the answer. */
-function useInboxWrite(path: "/inbox/read" | "/inbox/dismiss") {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (ids?: string[]) => send<Inbox>("POST", path, ids ? { ids } : {}),
-    onSuccess: (inbox, ids) => {
-      const hit = (item: InboxItem) => ids === undefined || ids.includes(item.id);
-      const now = new Date().toISOString();
-      queryClient.setQueryData<InfiniteData<Inbox, string | null>>(KEYS.inbox, (old) =>
-        old && {
-          ...old,
-          pages: old.pages.map((page) => ({
-            ...page,
-            unread: inbox.unread,
-            items:
-              path === "/inbox/dismiss"
-                ? page.items.filter((item) => !hit(item))
-                : page.items.map((item) => (item.readAt === null && hit(item) ? { ...item, readAt: now } : item)),
-          })),
-        },
-      );
-    },
-  });
-}
 
 const VERB: Record<InboxItem["kind"], string> = {
   assigned: "gave you",
@@ -155,7 +129,7 @@ export function MarkAllRead({ className = "tap p-1 hover:text-accent transition-
   );
 }
 
-/** The items, newest first. Opening one marks it read and hands its task to `onOpen`. */
+/** The items, newest first. Opening one hands its task to `onOpen`; a message is marked read on the click. */
 export function InboxItems({ onOpen }: { onOpen: (target: InboxTarget) => void }) {
   const { data: inbox, error, hasNextPage, fetchNextPage, isFetchingNextPage } = useInbox();
   const markRead = useInboxWrite("/inbox/read");
@@ -172,7 +146,9 @@ export function InboxItems({ onOpen }: { onOpen: (target: InboxTarget) => void }
           key={item.id}
           item={item}
           onOpen={() => {
-            if (item.readAt === null) markRead.mutate([item.id]);
+            /* An opened task marks its own items read (useReadOnOpen in
+               TaskModal), all at once; a message it leaves alone. */
+            if (item.readAt === null && (item.kind === "message" || !item.task)) markRead.mutate([item.id]);
             if (item.task) onOpen({ boardId: item.task.boardId, taskId: item.task.id });
           }}
           onDismiss={() => dismiss.mutate([item.id])}

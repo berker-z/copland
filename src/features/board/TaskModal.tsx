@@ -12,6 +12,9 @@
    (taskPath: its board with this modal open). Opened over the dashboard
    (tasks, inbox, /wired), the key in the header is that link too, to go
    and see the task where it lives.
+
+   Opening it marks your unread inbox items on it read, messages aside
+   (useReadOnOpen, domain/inbox.ts): reading the task is reading them.
    ========================================================================== */
 
 import { useEffect, useState, type ReactNode } from "react";
@@ -24,6 +27,7 @@ import { useTaskOverlap } from "@/lib/queries";
 import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
 import { DeleteButton } from "@/ui/DeleteButton";
+import { useReadOnOpen } from "../inbox/inboxWrite";
 import { LevelPill } from "@/ui/LevelPill";
 import { ModalFrame } from "@/ui/ModalFrame";
 import { dueClass, PRIORITY_CLASS, shortDate, toneText } from "@/ui/tone";
@@ -59,6 +63,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
   const update = useUpdateTask(detail.board.id);
   const remove = useDeleteTask(detail.board.id);
   const files = useTaskAttachments(detail.board.id, taskId);
+  useReadOnOpen(taskId);
   /* Only where there is code: the daemon reports a task's changed files on a board with a repo. */
   const overlap = useTaskOverlap(detail.board.id, taskId, detail.repos.length > 0).data;
   const canEdit = detail.board.role !== "viewer";
