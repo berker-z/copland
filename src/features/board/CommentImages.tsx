@@ -172,12 +172,12 @@ export function PendingImages({ pending, onRemove }: { pending: Pending[]; onRem
     <div className="mt-1.5 flex flex-wrap gap-1.5">
       {pending.map((p) => (
         <span key={p.id} className="relative block border border-faint">
-          <img src={p.preview} alt={p.name} className={`block h-16 w-auto max-w-28 object-cover ${p.key ? "" : "opacity-50"}`} />
+          <img src={p.preview} alt={p.name} className={`block h-20 w-auto max-w-36 object-cover ${p.key ? "" : "opacity-50"}`} />
           {!p.key && <Hourglass size={14} className="absolute left-1 top-1 text-muted" aria-label="uploading" />}
           <button
             type="button"
             onClick={() => onRemove(p.id)}
-            className="tap absolute right-0.5 top-0.5 bg-surface/90 p-0.5 text-muted hover:text-red"
+            className="absolute right-0.5 top-0.5 bg-surface/90 p-0.5 pointer-coarse:p-1.5 text-muted hover:text-red"
             aria-label={`Remove ${p.name}`}
           >
             <X size={13} />

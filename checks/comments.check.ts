@@ -105,7 +105,8 @@ const a = upload("sam");
 const b = upload("sam", "image/webp");
 const posted = (await (await postComment(req({ text: "look", attachments: [a, b] }), env, sam, "t1", changes)).json()) as Comment[];
 const mine = posted[0];
-t("a comment goes in with its images, in order", mine.attachments.map((x) => x.url).join(",") === `/api/${a},/api/${b}`);
+/* At GET /api/attachments/<key>, the download route every attachment is served from (COPL-118). */
+t("a comment goes in with its images, in order, each at the download route",mine.attachments.map((x) => x.url).join(",") === `/api/attachments/${a},/api/attachments/${b}`);
 t("each image says its name, type and size", mine.attachments[1].name === "pic2.png" && mine.attachments[1].type === "image/webp" && mine.attachments[1].size === 102);
 t("the thread reads them back, for a viewer too", (await thread(ada))[0].attachments.length === 2);
 t("they keep the task's id, so the board check reads them", count(`SELECT count(*) AS n FROM attachments WHERE task_id = 't1' AND comment_id IS NOT NULL`) === 2);
