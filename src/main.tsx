@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router";
 import { App } from "@/app/App";
+import { liveCatchesUp } from "@/lib/liveState";
 import { cachedTheme } from "@/lib/settings";
 import "@/styles/index.css";
 
@@ -11,7 +12,8 @@ document.documentElement.dataset.theme = cachedTheme();
 
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { retry: 1, refetchOnWindowFocus: true },
+    /* While the live socket is on, it does the catching up itself (lib/liveSocket.ts). */
+    queries: { retry: 1, refetchOnWindowFocus: () => !liveCatchesUp(), refetchOnReconnect: () => !liveCatchesUp() },
   },
 });
 

@@ -29,6 +29,9 @@ docs/DESIGN.md under Touch.
       real Google calendar (the flow works locally and accounts connect).
 - [ ] Connect Claude over MCP (settings › access, or as an agent) and try
       "what's on my plate?" and "what's on my calendar this week?".
+- [ ] A background tab is quiet (COPL-132): `wrangler tail` with a tab in
+      the background for five minutes shows nothing from it but its socket
+      closing once, and bringing it back one round of refetches.
 
 ### Small things noticed
 
@@ -450,3 +453,13 @@ docs/DESIGN.md under Touch.
   flows at the same 15 (`FPS` in daemon/box/src/scene.rs, in place of
   20), its sway stays at 12, and travel is capped at 30 with a timer
   rather than drawn on every display frame
+- A hidden tab lets go of its socket (COPL-132). Chromium woke a background
+  tab once a minute and its socket died with 1001 each time, and every drop
+  refetched everything twice (on close and again on open). Now a hidden tab
+  closes its socket itself, marks what it has stale and fetches nothing
+  (no reconnects, no polls); shown again, it reconnects and refetches once
+  the socket is open. A visible tab's drop puts the polls back without
+  fetching and refetches once on reconnect. React Query's own refetch on
+  focus and on reconnect stand down while the live socket does the
+  catching up (`liveCatchesUp`). The socket's life moved to
+  `src/lib/liveSocket.ts`, pinned by `checks/live.check.ts`.
