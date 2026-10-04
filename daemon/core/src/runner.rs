@@ -232,12 +232,21 @@ pub fn program(argv: &[String]) -> &str {
 
 /// Whether `program` can be started: a path that is an executable file, or a name found on PATH.
 pub fn found(program: &str) -> bool {
+    locate(program).is_some()
+}
+
+/// Where `program` would be started from: itself when it is a path to an executable file, else the
+/// first one by that name on PATH.
+pub fn locate(program: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let runs = |p: &Path| fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
     if program.contains('/') {
-        return runs(Path::new(program));
+        return runs(Path::new(program)).then(|| PathBuf::from(program));
     }
-    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| runs(&dir.join(program))))
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|p| runs(p))
 }
 
 /// A file deleted when this is dropped.
@@ -1056,6 +1065,9 @@ mod tests {
         assert!(found("sh"));
         assert!(!found("copland-no-such-program"));
         assert!(!found("/nonexistent/claude"));
+        let sh = locate("sh").unwrap();
+        assert!(sh.ends_with("sh"));
+        assert_eq!(locate(&sh.to_string_lossy()), Some(sh));
         assert_eq!(
             program(&["/run/current-system/sw/bin/claude".into(), "-p".into()]),
             "claude"

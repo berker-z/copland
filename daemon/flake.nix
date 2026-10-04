@@ -14,6 +14,8 @@
   # xkbcommon, fontconfig) that NixOS does not put on a default library
   # path, so the box gets them on its RPATH. That way they don't leak to
   # what it starts (runtimes, the browser) the way LD_LIBRARY_PATH would.
+  # bubblewrap, which coding runs start in, is pinned the same way: its store
+  # path is built into both binaries instead of looked for on PATH.
   #
   # The dev shell brings no Rust toolchain on purpose: it uses the cargo
   # already on PATH, so builds inside and outside the shell share one
@@ -105,6 +107,13 @@
             // {
               cargoArtifacts = deps;
               nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.resvg ];
+
+              # Coding runs start inside bubblewrap (core/src/sandbox.rs). Its
+              # store path is built in, so the box finds it whatever PATH it
+              # was started with (a desktop launcher's has none), and nothing
+              # is added to the environment of what it starts (COPL-137).
+              # Only here, not in the deps: our crates are what read it.
+              COPLAND_BWRAP = "${pkgs.bubblewrap}/bin/bwrap";
 
               # A launcher entry and an icon, so it is an app on the desktop.
               # The entry is release/copland-box.desktop, the same file the
