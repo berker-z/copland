@@ -104,7 +104,8 @@ async function claimingRuns(db: D1Database, taskId: string): Promise<Array<"runn
 
 /**
  * Put back what a supervised run held, now that it has ended (its status is
- * already stored). `tasks` were read before it ended, since ending it
+ * already stored), saying how it ended when its finish gave a reason
+ * ("via Copland: run 8f31 failed (exit 1 after 3.8s)"). `tasks` were read before it ended, since ending it
  * deletes its claims. Moves that are refused (the principal lost the
  * editor role meanwhile) are skipped: the task stays where it is.
  */
@@ -114,12 +115,14 @@ export async function putBack(
   death: RunDeath,
   tasks: string[],
   changes: Changes,
+  reason: string | null = null,
 ): Promise<void> {
   if (!tasks.length) return;
   const db = env.DB;
   const viewer = await principal(db, run.userId);
   if (!viewer) return;
-  const via = `${VIA} ${shortRunId(run.id)} ${HOW[death]}`;
+  const died = `${shortRunId(run.id)} ${HOW[death]}${reason ? ` (${reason})` : ""}`;
+  const via = `${VIA} ${died}`;
   for (const taskId of tasks) {
     const task = await findTask(db, taskId);
     if (!task || task.completedAt || !task.assigneeIds.includes(run.userId)) continue;
@@ -146,7 +149,7 @@ export async function putBack(
       if (want === "blocked") {
         const owner = viewer.agent?.owner.handle ?? viewer.user.handle;
         const text =
-          `@${owner} run ${shortRunId(run.id)} ${HOW[death]}, and that makes ${strikes} runs in a row that died on ${task.key} without finishing. ` +
+          `@${owner} run ${died}, and that makes ${strikes} runs in a row that died on ${task.key} without finishing. ` +
           `It waits here instead of starting again, and whatever it left (a branch, a worktree) is kept. Move it back to todo once it can go on.`;
         const say = new Request("https://copland.invalid/", { method: "POST", body: JSON.stringify({ text }) });
         await asVia(via, () => postComment(say, env, viewer, taskId, changes));

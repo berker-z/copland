@@ -1,6 +1,7 @@
 //! What the daemon is doing, as a value anyone can watch. The headless binary
 //! only logs; a window (COPL-33) subscribes to this and draws it.
 
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::live::Link;
@@ -77,6 +78,15 @@ pub struct RunSummary {
     pub task: String,
     /// completed, failed, cancelled, or "skipped: …" when the claim was refused.
     pub outcome: String,
+    /// It went wrong (COPL-136): its runtime died or never started, or the run couldn't get going.
+    /// The box says so on the agent's line until its next run.
+    pub failed: bool,
+    /// How its runtime ended, as the run log's last line says ("exit 1 after 3.8s"), once launched.
+    pub how: Option<String>,
+    /// The plain word for a runtime that died at once with nothing to say (`runner::Ended::hint`).
+    pub hint: Option<String>,
+    /// The run's log, once its runtime was launched.
+    pub log: Option<PathBuf>,
     pub ended: SystemTime,
 }
 

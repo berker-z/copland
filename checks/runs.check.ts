@@ -3,10 +3,11 @@
    ----------------------------------------------------------------------------
    Run: npm run check. A supervised run goes stale after RUN_LEASE_MS, an
    interactive one after INTERACTIVE_LEASE_MS; an ended run is never stale.
-   A dead supervised run puts its tasks back by how it died (COPL-97).
+   A dead supervised run puts its tasks back by how it died (COPL-97), and
+   a finish's reason is one short line (COPL-136).
    ========================================================================== */
 
-import { INTERACTIVE_LEASE_MS, leaseFor, returnTo, RUN_LEASE_MS, runStatus, STRIKES, strikesOf } from "../src/domain/runs.ts";
+import { INTERACTIVE_LEASE_MS, leaseFor, returnTo, RUN_LEASE_MS, RUN_REASON_MAX, runReason, runStatus, STRIKES, strikesOf } from "../src/domain/runs.ts";
 
 const cases: Array<[string, boolean]> = [];
 const t = (name: string, pass: boolean) => cases.push([name, pass]);
@@ -28,6 +29,10 @@ t("the third dead run in a row waits for a person", returnTo("failed", STRIKES) 
 t("strikes count failed runs back from the newest", strikesOf(["failed", "failed", "completed", "failed"]) === 2);
 t("a completed or cancelled run ends the streak", strikesOf(["completed", "failed"]) === 0 && strikesOf(["failed", "cancelled", "failed"]) === 1);
 t("no runs, no strikes", strikesOf([]) === 0);
+t("a finish's reason is kept on one line", runReason("exit 1\n after  3.8s ") === "exit 1 after 3.8s");
+t("no reason, or a blank one, is none", runReason(undefined) === null && runReason(null) === null && runReason("  ") === null);
+t("a reason that isn't a string is refused", runReason(1) === undefined);
+t("a reason past the cap is refused, at the cap kept", runReason("x".repeat(RUN_REASON_MAX + 1)) === undefined && runReason("x".repeat(RUN_REASON_MAX)) !== undefined);
 
 let failed = 0;
 for (const [name, pass] of cases) {
