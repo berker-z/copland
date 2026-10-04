@@ -112,7 +112,8 @@ docs/DESIGN.md under Touch.
       and aarch64 tarballs, an unsigned macOS arm64 app, and the Nix
       package pushed to Cachix. Not yet run on GitHub; the cache, its
       secret and its key in `flake.nix` are still to set up, and the Mac
-      build has never run on a Mac. Still to do: a second runtime (Codex) to prove the binding, and
+      build has never run on a Mac (its coding sandbox, Seatbelt, is
+      checked by CI on macos-14 only, COPL-140). Still to do: a second runtime (Codex) to prove the binding, and
       backoff for a runtime that keeps failing. Known gaps are in
       daemon/README.md.
 - [ ] Data export: everything a person has, as one download from settings.

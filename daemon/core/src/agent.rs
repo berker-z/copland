@@ -29,7 +29,7 @@ use crate::config::AgentConfig;
 use crate::guard::{Check, Identity, Message, Plan, Refused, Wake, WakeGuard, add_ready, plan, refused};
 use crate::live::{self, FALLBACK_POLL, Heard, Link};
 use crate::runner::{self, Brief, Ended, Exit, Launch, MESSAGES};
-use crate::sandbox::BWRAP;
+use crate::sandbox::{self, PROGRAM};
 use crate::state::{AgentState, DaemonState, Phase, RunSummary};
 use crate::workspace::{self, Workspace};
 
@@ -148,6 +148,9 @@ pub struct AgentLoop {
     spawned: HashMap<Id, String>,
     /// What this machine lacks to start the agent's runs, as of the last poll.
     missing: Missing,
+    /// Where the sandbox program was found and what `sandbox::probe` said of it there: run once
+    /// per place it is found, not every poll.
+    probed: Option<(PathBuf, Option<String>)>,
 }
 
 /// A run going on a task.
@@ -279,6 +282,7 @@ impl AgentLoop {
             swept: None,
             spawned: HashMap::new(),
             missing: Missing::default(),
+            probed: None,
         })
     }
 
@@ -591,18 +595,34 @@ impl AgentLoop {
         Ok((total, items))
     }
 
+    /// Whether the sandbox works where it is found (COPL-140): what the agent's line says when it
+    /// doesn't, None when it does or isn't found (which `Missing` says). Tried once per place it
+    /// is found, which in effect is once at startup: after fixing what it said, restart.
+    fn probe(&mut self) -> Option<String> {
+        let at = runner::locate(PROGRAM)?;
+        if self.probed.as_ref().is_none_or(|(p, _)| *p != at) {
+            let said = sandbox::probe().err().map(|e| sandbox::broken(&e));
+            self.probed = Some((at, said));
+        }
+        self.probed.as_ref().and_then(|(_, said)| said.clone())
+    }
+
     /// One poll. True when a run was launched (or tried), so the caller looks again at once.
     /// One poll: start a run for each task that needs one, as far as `max_runs` and the workdir allow.
     async fn tick(&mut self, runs: &mut JoinSet<Done>) -> Result<()> {
-        let missing = Missing::of(&self.agent, runner::found);
+        let mut missing = Missing::of(&self.agent, runner::found);
+        if missing.coding {
+            missing.broken = self.probe();
+        }
         if missing != self.missing {
             match missing.message() {
                 Some(m) => tracing::warn!("{m}"),
                 /* Where bwrap is, so a Nix build shows it uses its own (COPL-137). */
-                None => match runner::locate(BWRAP).filter(|_| missing.coding) {
-                    Some(bwrap) => tracing::info!(
-                        "every program its runs need is found, bwrap at {}",
-                        bwrap.display()
+                None => match runner::locate(PROGRAM).filter(|_| missing.coding) {
+                    Some(at) => tracing::info!(
+                        "every program its runs need is found, {} at {}",
+                        runner::program(&[PROGRAM.to_string()]),
+                        at.display()
                     ),
                     None => tracing::info!("every program its runs need is found"),
                 },
@@ -797,15 +817,18 @@ pub fn role_of(code_command: bool, repo: bool, level: Option<&str>, has_children
 }
 
 /// What this machine lacks to start an agent's runs (COPL-136): its command's program, and for
-/// coding work `bwrap` and its `code_command`'s. Looked at every poll, before a run is started or
-/// a task claimed, so a missing program fails nothing and costs no task a strike: the runs it
-/// would stop wait, and the agent's line says why.
+/// coding work the sandbox's (`bwrap`, or `sandbox-exec` on macOS) and its `code_command`'s, or a
+/// sandbox that is there but doesn't work (COPL-140). Looked at every poll, before a run is
+/// started or a task claimed, so a missing program fails nothing and costs no task a strike: the
+/// runs it would stop wait, and the agent's line says why.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Missing {
     /// The program runs in `workdir` (and message runs) start, when it can't be found.
     pub workdir: Option<String>,
-    /// The first of `bwrap` and the coding runtime that can't be found.
+    /// The first of the sandbox and the coding runtime that can't be found.
     pub code: Option<String>,
+    /// The sandbox is there and `sandbox::probe` failed: what the agent's line says of it.
+    pub broken: Option<String>,
     /// The agent has a `code_command`, so coding runs are its own.
     pub coding: bool,
 }
@@ -818,37 +841,49 @@ impl Missing {
         let code = agent
             .code_command
             .as_ref()
-            .and_then(|c| absent(&BWRAP.to_string()).or_else(|| c.first().and_then(absent)));
+            .and_then(|c| absent(&PROGRAM.to_string()).or_else(|| c.first().and_then(absent)));
         Self {
             workdir,
             code,
+            broken: None,
             coding: agent.code_command.is_some(),
         }
     }
 
-    /// What the agent's line says ("bwrap not found on PATH: coding runs can't start"), or None
-    /// when nothing is missing.
+    /// What the agent's line says ("bwrap not found on PATH: coding runs can't start; install
+    /// …"), or None when nothing is missing.
     pub fn message(&self) -> Option<String> {
         let not_found = |p: &str, what: &str| format!("{p} not found on PATH: {what}");
-        match (&self.workdir, &self.code) {
+        /* Linux distributions all package it under one name; say it. */
+        let coding = |c: &str| match c {
+            "bwrap" => format!(
+                "{}; install the bubblewrap package (Arch, Debian, Ubuntu and Fedora all call it that)",
+                not_found(c, "coding runs can't start")
+            ),
+            _ => not_found(c, "coding runs can't start"),
+        };
+        let mut said = match (&self.workdir, &self.code) {
             (None, None) => None,
             (Some(w), Some(c)) if w == c => Some(not_found(w, "runs can't start")),
-            (Some(w), Some(c)) => Some(format!(
-                "{}; {}",
-                not_found(w, "runs can't start"),
-                not_found(c, "coding runs can't start")
-            )),
+            (Some(w), Some(c)) => Some(format!("{}; {}", not_found(w, "runs can't start"), coding(c))),
             (Some(w), None) if self.coding => Some(not_found(w, "only coding runs can start")),
             (Some(w), None) => Some(not_found(w, "runs can't start")),
-            (None, Some(c)) => Some(not_found(c, "coding runs can't start")),
+            (None, Some(c)) => Some(coding(c)),
+        };
+        if let Some(b) = self.broken.as_ref().filter(|_| self.coding) {
+            said = Some(match said {
+                Some(s) => format!("{s}; {b}"),
+                None => b.clone(),
+            });
         }
+        said
     }
 
     /// Whether a run of this role can't start: workdir runs need the command, coding runs the rest.
     fn stops(&self, role: Role) -> bool {
         match role {
             Role::Workdir => self.workdir.is_some(),
-            Role::Worker | Role::Lead => self.code.is_some(),
+            Role::Worker | Role::Lead => self.code.is_some() || self.broken.is_some(),
             Role::Skip => false,
         }
     }
@@ -1386,15 +1421,49 @@ mod tests {
         assert_eq!(none.message(), None);
         assert!(!none.stops(Role::Workdir) && !none.stops(Role::Worker));
 
-        let no_bwrap = Missing::of(&a, |p| p != BWRAP);
+        /* Missing bwrap says which package has it (COPL-140). */
+        let no_bwrap = Missing::of(&a, |p| p != PROGRAM);
         assert_eq!(
             no_bwrap.message().as_deref(),
-            Some("bwrap not found on PATH: coding runs can't start")
+            Some(if cfg!(target_os = "macos") {
+                "sandbox-exec not found on PATH: coding runs can't start"
+            } else {
+                "bwrap not found on PATH: coding runs can't start; install the bubblewrap package (Arch, Debian, Ubuntu and Fedora all call it that)"
+            })
         );
         assert!(no_bwrap.stops(Role::Worker) && no_bwrap.stops(Role::Lead));
         assert!(!no_bwrap.stops(Role::Workdir) && !no_bwrap.stops(Role::Skip));
 
-        let no_claude = Missing::of(&a, |p| p == BWRAP);
+        /* There but not working: said, and it stops coding runs only. */
+        let broken = Missing {
+            broken: Some(sandbox::broken("setting up uid map: Permission denied")),
+            ..none.clone()
+        };
+        let said = broken.message().expect("said");
+        assert!(said.contains("setting up uid map: Permission denied") && said.contains("coding runs can't start"));
+        if cfg!(target_os = "linux") {
+            assert!(
+                said.contains("AppArmor") && said.contains("bubblewrap package"),
+                "{said}"
+            );
+        }
+        assert!(broken.stops(Role::Worker) && broken.stops(Role::Lead) && !broken.stops(Role::Workdir));
+        let both = Missing {
+            broken: broken.broken.clone(),
+            ..Missing::of(&agent(&["codex", "exec"], Some(&claude)), |p| p != "codex")
+        };
+        assert_eq!(
+            both.message().as_deref(),
+            Some(format!("codex not found on PATH: only coding runs can start; {said}").as_str())
+        );
+        /* Without coding runs a broken sandbox is nothing to say. */
+        let plain = Missing {
+            broken: broken.broken.clone(),
+            ..Missing::of(&agent(&claude, None), |_| true)
+        };
+        assert_eq!(plain.message(), None);
+
+        let no_claude = Missing::of(&a, |p| p == PROGRAM);
         assert_eq!(
             no_claude.message().as_deref(),
             Some("claude not found on PATH: runs can't start")
@@ -1407,13 +1476,13 @@ mod tests {
             Some("codex not found on PATH: only coding runs can start")
         );
         assert_eq!(
-            Missing::of(&other, |p| p == BWRAP).message().as_deref(),
+            Missing::of(&other, |p| p == PROGRAM).message().as_deref(),
             Some("codex not found on PATH: runs can't start; claude not found on PATH: coding runs can't start")
         );
 
         /* No code_command: bwrap is never needed. */
         let plain = agent(&claude, None);
-        assert_eq!(Missing::of(&plain, |p| p != BWRAP).message(), None);
+        assert_eq!(Missing::of(&plain, |p| p != PROGRAM).message(), None);
         assert_eq!(
             Missing::of(&plain, |_| false).message().as_deref(),
             Some("claude not found on PATH: runs can't start")
