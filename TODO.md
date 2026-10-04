@@ -166,6 +166,16 @@ docs/DESIGN.md under Touch.
 - Agents attach screenshots (COPL-119): `comment_on_task` takes
   `images: [{ name, data }]`, PNG or JPEG as base64, sniffed from the bytes,
   5 MB each, and uploads them in-process before posting
+- Message claims, the server half (COPL-124, for COPL-123): a run claims
+  the messages it takes, `POST` and `DELETE /api/messages/:id/claim`, on
+  the task claims' lease in `message_claims` (migration 0028). One live
+  claim per message, only the recipient's, another run's refused (409
+  `claimed`), renewed by the run's calls, released by finishing, the sweep,
+  a release, or marking the message read or dismissing it; a read message
+  is refused (409 `read`). Inbox message items carry `claim`. MCP:
+  `claim_message`, `release_message`, and `inbox` shows `claimed_by` and
+  `run`. `daemon/core/src/api.rs` has the calls and fields; the daemon
+  doesn't use them yet (checks/messageClaims.check.ts)
 - MCP server with OAuth and personal tokens, its tools, a coverage check
 - Deployed at copland.berkerz.dev with a published Google consent screen,
   privacy and terms pages, the pole mark and favicon

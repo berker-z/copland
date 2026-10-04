@@ -29,13 +29,20 @@
    Taken off a board, or the task deleted, and it quietly drops out: an inbox
    never shows a title its reader is no longer allowed to read. A message
    that points at no task (routes/messages.ts) is always shown.
+
+   A message item says which run is handling it right now (message.claim,
+   POST /api/messages/:id/claim in routes/runs.ts), so a daemon skips one
+   another run holds. Marking it read or dismissing it releases that claim.
    ========================================================================== */
 
+import { shortRunId, type RunKind } from "@/domain/runs";
+import { clientLabel } from "@/domain/clients";
 import type { Inbox, InboxItem, Viewer } from "@/domain/types";
 import { boardsFor } from "../access";
 import type { Env } from "../env";
 import { badRequest, base64url, fromBase64url, json, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
+import { releaseReadMessagesStatement } from "../repo/runs";
 import { avatarUrl } from "../repo/users";
 
 const DEFAULT_LIMIT = 50;
@@ -101,6 +108,11 @@ interface Row {
   message_id: string | null;
   message: string | null;
   trusted: number | null;
+  claim_user: string | null;
+  claim_run: string | null;
+  claim_until: string | null;
+  claim_kind: RunKind | null;
+  claim_client: string | null;
   created_at: string;
   read_at: string | null;
 }
@@ -122,6 +134,8 @@ export async function readInbox(env: Env, viewer: Viewer, query: InboxQuery = {}
       `SELECT i.id, i.kind, i.task_id, t.number, t.title, b.id AS board_id, b.key AS board_key, b.name AS board_name,
               i.actor_id, u.handle AS actor_handle, u.avatar_key AS actor_avatar, i.via, c.text AS comment,
               m.id AS message_id, m.text AS message, (u.owner_id = i.user_id OR me.owner_id = u.id) AS trusted,
+              mc.user_id AS claim_user, mr.id AS claim_run,
+              mc.claimed_until AS claim_until, mr.kind AS claim_kind, mr.client AS claim_client,
               i.created_at, i.read_at
          FROM inbox_items i
          LEFT JOIN tasks t ON t.id = i.task_id AND t.deleted_at IS NULL
@@ -130,6 +144,8 @@ export async function readInbox(env: Env, viewer: Viewer, query: InboxQuery = {}
          JOIN users me ON me.id = i.user_id
          LEFT JOIN comments c ON c.id = i.comment_id
          LEFT JOIN messages m ON m.id = i.message_id
+         LEFT JOIN message_claims mc ON mc.message_id = i.message_id AND mc.claimed_until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         LEFT JOIN runs mr ON mr.id = mc.run_id AND mr.status = 'running'
         WHERE i.user_id = ?1 AND ${visible}${page}
         ORDER BY i.created_at DESC, i.id DESC LIMIT ${limit + 1}`,
     )
@@ -156,7 +172,25 @@ export async function readInbox(env: Env, viewer: Viewer, query: InboxQuery = {}
     actor: { id: r.actor_id, handle: r.actor_handle, avatar: avatarUrl(r.actor_avatar) },
     via: r.via,
     comment: r.comment,
-    message: r.message_id ? { id: r.message_id, text: r.message ?? "", trusted: r.trusted === 1 } : null,
+    message: r.message_id
+      ? {
+          id: r.message_id,
+          text: r.message ?? "",
+          trusted: r.trusted === 1,
+          /* A claim is live while it has not lapsed and its run is running: both joins matched. */
+          claim:
+            r.claim_run && r.claim_user && r.claim_until && r.claim_kind
+              ? {
+                  userId: r.claim_user,
+                  runId: r.claim_run,
+                  run: shortRunId(r.claim_run),
+                  kind: r.claim_kind,
+                  client: r.claim_client ? clientLabel(r.claim_client) : null,
+                  until: r.claim_until,
+                }
+              : null,
+        }
+      : null,
     createdAt: r.created_at,
     readAt: r.read_at,
   }));
@@ -171,33 +205,40 @@ export async function getInbox(env: Env, viewer: Viewer, url: URL): Promise<Resp
   return json(await readInbox(env, viewer, inboxQuery(url)));
 }
 
-/** POST /api/inbox/read { ids? }: these, or with no ids everything unread. Ids already read are skipped. */
+/**
+ * POST /api/inbox/read { ids? }: these, or with no ids everything unread.
+ * Ids already read are skipped. A message read is dealt with, so its claim
+ * goes with it.
+ */
 export async function postInboxRead(request: Request, env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
   const body = await readJson(request);
   const now = nowIso();
+  const release = releaseReadMessagesStatement(env.DB, viewer.user.id);
   if (body.ids === undefined) {
-    await env.DB.prepare(`UPDATE inbox_items SET read_at = ?2 WHERE user_id = ?1 AND read_at IS NULL`)
-      .bind(viewer.user.id, now)
-      .run();
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE inbox_items SET read_at = ?2 WHERE user_id = ?1 AND read_at IS NULL`).bind(viewer.user.id, now),
+      release,
+    ]);
   } else {
     if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== "string") || body.ids.length > 200) {
       throw badRequest("`ids` must be a list of inbox item ids");
     }
     const ids = body.ids as string[];
     if (ids.length) {
-      await env.DB.prepare(
-        `UPDATE inbox_items SET read_at = ?2
-          WHERE user_id = ?1 AND read_at IS NULL AND id IN (${ids.map((_, n) => `?${n + 3}`).join(",")})`,
-      )
-        .bind(viewer.user.id, now, ...ids)
-        .run();
+      await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE inbox_items SET read_at = ?2
+            WHERE user_id = ?1 AND read_at IS NULL AND id IN (${ids.map((_, n) => `?${n + 3}`).join(",")})`,
+        ).bind(viewer.user.id, now, ...ids),
+        release,
+      ]);
     }
   }
   changes.notify([viewer.user.id], "inbox");
   return json(await readInbox(env, viewer));
 }
 
-/** POST /api/inbox/dismiss { ids }: out of the inbox for good, read or not. Only your own. */
+/** POST /api/inbox/dismiss { ids }: out of the inbox for good, read or not. Only your own; a message's claim goes too. */
 export async function postInboxDismiss(request: Request, env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
   const body = await readJson(request);
   if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== "string") || body.ids.length > 200) {
@@ -205,11 +246,13 @@ export async function postInboxDismiss(request: Request, env: Env, viewer: Viewe
   }
   const ids = body.ids as string[];
   if (ids.length) {
-    await env.DB.prepare(
-      `DELETE FROM inbox_items WHERE user_id = ?1 AND id IN (${ids.map((_, n) => `?${n + 2}`).join(",")})`,
-    )
-      .bind(viewer.user.id, ...ids)
-      .run();
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM inbox_items WHERE user_id = ?1 AND id IN (${ids.map((_, n) => `?${n + 2}`).join(",")})`).bind(
+        viewer.user.id,
+        ...ids,
+      ),
+      releaseReadMessagesStatement(env.DB, viewer.user.id),
+    ]);
   }
   changes.notify([viewer.user.id], "inbox");
   return json(await readInbox(env, viewer));

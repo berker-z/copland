@@ -164,7 +164,7 @@ export interface TaskOverlap {
   files: number;
 }
 
-/** A run's live hold on a task: whose run, which run, and until when unless renewed. */
+/** A run's live hold on a task (or a message, InboxMessage.claim): whose run, which run, and until when unless renewed. */
 export interface TaskClaim {
   userId: string;
   runId: string;
@@ -520,6 +520,17 @@ export interface InboxMessage {
   text: string;
   /** From the recipient's owner, or to a person from their own agent. Anyone else's is untrusted, like a comment. */
   trusted: boolean;
+  /**
+   * The run handling it right now (POST /api/messages/:id/claim), or null.
+   * Only live claims are sent; only the recipient's runs ever hold one.
+   */
+  claim: TaskClaim | null;
+}
+
+/** POST /api/messages/:id/claim: the message and the claim this run now holds on it. */
+export interface MessageClaimed {
+  messageId: string;
+  claim: TaskClaim;
 }
 
 /** POST /api/messages: the message as sent. */

@@ -77,7 +77,16 @@ import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage,
 import { deleteTask, getTask, patchTask, postTask } from "./routes/tasks";
 import { getMyWork, getReady } from "./routes/work";
 import { getWired } from "./routes/wired";
-import { deleteClaim, getCurrentRun, getRun, postClaim, postRun, postRunFinish } from "./routes/runs";
+import {
+  deleteClaim,
+  deleteMessageClaim,
+  getCurrentRun,
+  getRun,
+  postClaim,
+  postMessageClaim,
+  postRun,
+  postRunFinish,
+} from "./routes/runs";
 import { getInbox, postInboxDismiss, postInboxRead } from "./routes/inbox";
 import { getRecipients, postMessage } from "./routes/messages";
 import { getDevice, postDeviceApprove, postDeviceDeny, postDevicePoll, postDeviceStart, sweepDeviceRequests } from "./routes/device";
@@ -322,6 +331,9 @@ const api = new Router<Ctx>()
   )
   .on("POST", "/api/tasks/:id/claim", ({ env, viewer, changes }, { id }) => postClaim(env, viewer, id, changes))
   .on("DELETE", "/api/tasks/:id/claim", ({ env, viewer, changes }, { id }) => deleteClaim(env, viewer, id, changes))
+  /* A message's claim (COPL-124): only its recipient's runs, like the inbox it sits in. */
+  .on("POST", "/api/messages/:id/claim", ({ env, viewer, changes }, { id }) => postMessageClaim(env, viewer, id, changes))
+  .on("DELETE", "/api/messages/:id/claim", ({ env, viewer, changes }, { id }) => deleteMessageClaim(env, viewer, id, changes))
   /* Overlap (routes/files.ts): the run holding a task reports the files its work changed, and anyone on the board reads which open tasks share them. */
   .on("PUT", "/api/tasks/:id/files", ({ request, env, viewer, changes }, { id }) =>
     putTaskFiles(request, env, viewer, id, changes),

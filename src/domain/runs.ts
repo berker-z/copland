@@ -59,6 +59,15 @@ export const CLAIM_REFUSALS = ["closed", "assigned_elsewhere", "claimed", "waiti
 export type ClaimRefusal = (typeof CLAIM_REFUSALS)[number];
 
 /**
+ * Why POST /api/messages/:id/claim said no (COPL-124): another run holds a
+ * live claim on the message ("claimed", which passes when that run ends or
+ * its claim lapses), or its inbox item is read or dismissed already ("read":
+ * it has been dealt with, and a read message is never claimed again).
+ */
+export const MESSAGE_CLAIM_REFUSALS = ["claimed", "read"] as const;
+export type MessageClaimRefusal = (typeof MESSAGE_CLAIM_REFUSALS)[number];
+
+/**
  * How a supervised run ended, as far as the tasks it held are concerned
  * (COPL-97): failed (the runtime or the agent said so), stale (nobody heard
  * from it for its lease: the launcher or the machine went away), cancelled
