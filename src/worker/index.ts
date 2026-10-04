@@ -79,7 +79,7 @@ import { getMyWork, getReady } from "./routes/work";
 import { getWired } from "./routes/wired";
 import { deleteClaim, getCurrentRun, getRun, postClaim, postRun, postRunFinish } from "./routes/runs";
 import { getInbox, postInboxDismiss, postInboxRead } from "./routes/inbox";
-import { postMessage } from "./routes/messages";
+import { getRecipients, postMessage } from "./routes/messages";
 import { getDevice, postDeviceApprove, postDeviceDeny, postDevicePoll, postDeviceStart, sweepDeviceRequests } from "./routes/device";
 import { deleteOwnToken, deleteToken, getTokens, postToken, SELF_REVOKE_PATH } from "./routes/tokens";
 import { handleIntegration, isIntegrationPath } from "./integrations";
@@ -141,6 +141,7 @@ const api = new Router<Ctx>()
   .on("POST", "/api/inbox/dismiss", ({ request, env, viewer, changes }) => postInboxDismiss(request, env, viewer, changes))
   /* Not mine(grant) either: a message is from whoever sends it, to someone's own inbox. */
   .on("POST", "/api/messages", ({ request, env, viewer, changes }) => postMessage(request, env, viewer, changes))
+  .on("GET", "/api/messages/recipients", ({ env, viewer }) => getRecipients(env, viewer))
 
   .on("GET", "/api/settings", mine(null, ({ env, viewer }) => getSettings(env, viewer)))
   .on("PATCH", "/api/settings", mine(null, ({ request, env, viewer, changes }) => patchSettings(request, env, viewer, changes)))

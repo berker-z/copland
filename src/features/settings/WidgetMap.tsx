@@ -403,6 +403,18 @@ function Sketch({ id }: { id: PaneId }) {
           ))}
         </div>
       );
+    case "nudge":
+      return (
+        <div className="space-y-[5px]" aria-hidden>
+          {[50, 65].map((w, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <span className="w-[6px] h-[6px] bg-faint/70" />
+              <span className={i === 0 ? "h-[3px] bg-accent/70" : line} style={{ width: `${w}%` }} />
+            </div>
+          ))}
+          <span className="block h-[7px] w-[85%] border border-faint/70" />
+        </div>
+      );
     case "markets":
       return (
         <div className="space-y-[5px]" aria-hidden>

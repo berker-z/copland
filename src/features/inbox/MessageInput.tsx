@@ -1,6 +1,6 @@
 /* ============================================================================
    One line to message someone (POST /api/messages, routes/messages.ts):
-   to one of your agents from its page or from a task (a nudge), or a reply
+   to an agent from the /nudge pane (NudgePane.tsx), or a reply
    from the inbox. Enter sends; the line clears and says "sent" for a moment.
    Who may message whom is the Worker's (domain/messages.ts): a refusal
    shows under the line as it came.

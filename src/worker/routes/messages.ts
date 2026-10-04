@@ -2,7 +2,8 @@
    Messages: a short note to an agent, or from one to its owner (COPL-106,
    migrations/0025_messages.sql).
    ----------------------------------------------------------------------------
-     POST /api/messages  { to?, text, taskId?, replyTo? } → SentMessage
+     POST /api/messages             { to?, text, taskId?, replyTo? } → SentMessage
+     GET  /api/messages/recipients  → Recipient[], whom the viewer may message
 
    `to` is a user id or a handle ("@sam/dev" or "sam/dev"). `replyTo` is the
    id of a message the viewer was sent; the reply goes back to its sender,
@@ -18,12 +19,13 @@
    item lands in the recipient's inbox, and they hear about it on "inbox".
    ========================================================================== */
 
-import { MESSAGE_MAX, mayMessage, type MessageParty } from "@/domain/messages";
-import type { SentMessage, Viewer } from "@/domain/types";
+import { MESSAGE_MAX, mayMessage, recipientsOf, type MessageParty } from "@/domain/messages";
+import type { Recipient, SentMessage, Viewer } from "@/domain/types";
 import { requireBoard } from "../access";
 import type { Env } from "../env";
 import { badRequest, forbidden, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
+import { rowToUser, type UserRow } from "../repo/users";
 import { currentVia } from "../tokens";
 
 interface PartyRow {
@@ -176,4 +178,49 @@ export async function postMessage(request: Request, env: Env, viewer: Viewer, ch
     createdAt,
   };
   return json(sent, { status: 201 });
+}
+
+interface CandidateRow extends UserRow {
+  work_from: "owner" | "members";
+  shares: number;
+  running: number;
+}
+
+/**
+ * GET /api/messages/recipients: the agents the viewer may message, for the
+ * nudge pane (COPL-115). The candidates are their own agents and the agents
+ * open to members on a board they share, each held against mayMessage with
+ * the same shared-board fact postMessage asks for, so the list never offers
+ * someone a send would refuse. Disabled agents are left out, as findParty
+ * leaves them out of sending.
+ */
+export async function getRecipients(env: Env, viewer: Viewer): Promise<Response> {
+  const db = env.DB;
+  const sender = await db.prepare(`${PARTY} WHERE u.id = ?1`).bind(viewer.user.id).first<PartyRow>();
+  if (!sender) throw notFound("No such user");
+  const { results } = await db
+    .prepare(
+      `SELECT u.*, a.work_from,
+              EXISTS (SELECT 1 FROM board_members p
+                        JOIN board_members m ON m.board_id = p.board_id AND m.user_id = u.id
+                        JOIN board_members o ON o.board_id = p.board_id AND o.user_id = u.owner_id
+                       WHERE p.user_id = ?1) AS shares,
+              EXISTS (SELECT 1 FROM runs r WHERE r.user_id = u.id AND r.status = 'running') AS running
+         FROM users u JOIN agents a ON a.user_id = u.id
+        WHERE u.kind = 'agent' AND u.disabled_at IS NULL AND (u.owner_id = ?1 OR a.work_from = 'members')`,
+    )
+    .bind(sender.id)
+    .all<CandidateRow>();
+  const candidates = results.map((row) => ({
+    row,
+    handle: row.handle,
+    sharesBoard: row.shares === 1,
+    party: party(row),
+  }));
+  const list: Recipient[] = recipientsOf(party(sender), candidates).map(({ row }) => ({
+    user: rowToUser(row),
+    own: row.owner_id === sender.id,
+    running: row.running === 1,
+  }));
+  return json(list);
 }

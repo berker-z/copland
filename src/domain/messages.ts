@@ -64,18 +64,17 @@ export function mayMessage(
 }
 
 /**
- * Whom a nudge on a task offers to message (COPL-108): the viewer's own
- * agents among the board's members, those assigned to the task first, then
- * by handle. Other people's agents are left out even when they are open to
- * members: the browser doesn't know which are, and a nudge is the owner's.
+ * Whom the nudge pane offers (COPL-115, GET /api/messages/recipients): the
+ * agents among `candidates` that `viewer` may message by mayMessage, their
+ * own first, then by handle. `sharesBoard` is the same fact postMessage
+ * asks for. Recipients are agents only: between people, comments.
  */
-export function nudgeTargets<U extends { id: string; kind: "person" | "agent"; ownerId: string | null; handle: string }>(
-  users: U[],
-  viewerId: string,
-  assigneeIds: string[],
-): U[] {
-  const assigned = (u: U) => Number(!assigneeIds.includes(u.id));
-  return users
-    .filter((u) => u.kind === "agent" && u.ownerId === viewerId)
-    .sort((a, b) => assigned(a) - assigned(b) || a.handle.localeCompare(b.handle));
+export function recipientsOf<C extends { party: MessageParty; handle: string; sharesBoard: boolean }>(
+  viewer: MessageParty,
+  candidates: C[],
+): C[] {
+  const theirs = (c: C) => Number(c.party.ownerId !== viewer.id);
+  return candidates
+    .filter((c) => c.party.kind === "agent" && mayMessage(viewer, c.party, { sharesBoard: c.sharesBoard }).ok)
+    .sort((a, b) => theirs(a) - theirs(b) || a.handle.localeCompare(b.handle));
 }

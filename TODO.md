@@ -380,6 +380,16 @@ docs/DESIGN.md under Touch.
   task and marks it read. Shared input: `src/features/inbox/MessageInput.tsx`.
   Checked in headless Chrome against the dev server; not on a phone. The
   nudge is in the task modal only, not on cards
+- The /nudge pane (COPL-115, for COPL-44) replaces COPL-108's line on the
+  agent's settings page and the nudge in the task modal: a dashboard pane
+  (`src/features/inbox/NudgePane.tsx`, on by default under /wired) listing
+  whom you may message from `GET /api/messages/recipients` (your own agents
+  first, then others' agents open to members on a board you share;
+  `recipientsOf` in domain/messages.ts, checked in checks/messages.check.ts),
+  each saying when it has a run going. Picking one opens the message input
+  under it. `nudgeTargets` is gone. Messages no longer carry a task from the
+  browser, only from the MCP and replies. Looked at in headless Chrome at
+  desktop width and 390px
 - Messages in the box (COPL-109, for COPL-44): `m` on an agent in the
   agents screen opens one line and sends it as you (`POST /api/messages`),
   saying it waits for the next run while one is going here; the bell lists
