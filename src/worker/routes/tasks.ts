@@ -36,7 +36,7 @@ import {
   LEVELS,
   PRIORITIES,
   type AlsoMoved,
-  type BoardSummary,
+  type BoardAccess,
   type Level,
   type Priority,
   type Stage,
@@ -157,7 +157,7 @@ async function boardGraph(db: D1Database, boardId: string) {
   return { parent, dependsOn };
 }
 
-async function checkParent(db: D1Database, board: BoardSummary, taskId: string | null, parentId: string | null) {
+async function checkParent(db: D1Database, board: BoardAccess, taskId: string | null, parentId: string | null) {
   if (parentId === null) return;
   const { parent } = await boardGraph(db, board.id);
   if (!parent.has(parentId)) throw badRequest("`parentId` is not a task on this board");
@@ -167,7 +167,7 @@ async function checkParent(db: D1Database, board: BoardSummary, taskId: string |
   }
 }
 
-async function checkDependencies(db: D1Database, board: BoardSummary, taskId: string, dependsOn: string[]) {
+async function checkDependencies(db: D1Database, board: BoardAccess, taskId: string, dependsOn: string[]) {
   if (dependsOn.length === 0) return;
   const graph = await boardGraph(db, board.id);
   if (dependsOn.some((id) => !graph.parent.has(id))) throw badRequest("`dependsOn` must all be tasks on this board");
@@ -211,7 +211,7 @@ interface FollowRow {
 export async function followStatements(
   db: D1Database,
   viewer: Viewer,
-  board: BoardSummary,
+  board: BoardAccess,
   stages: Stage[],
   child: { id: string; number: number },
   change: { stageId?: string; parentId?: string | null; rank?: number; created?: boolean; deleted?: boolean },

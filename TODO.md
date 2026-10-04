@@ -184,6 +184,13 @@ docs/DESIGN.md under Touch.
   The message prompt names the task a message is about and reads "on
   <name>" as one of the agent's boards. Tested live with two daemons on one
   agent token and four messages: each was in exactly one run
+- Access checks count nothing (COPL-133, for COPL-131): `requireBoard` and
+  `boardsFor` read only membership and role (`BoardAccess`); the member and
+  open task counts are `GET /api/boards`'s alone (`boardSummariesFor`), and
+  `GET /api/boards/:id`'s `board` no longer carries them. The open count
+  reads a partial index of open tasks (`tasks_open`, migration 0029). Rows
+  read locally: `/api/inbox` 770 to 19, `/api/wired` 771 to 20, a board
+  route's access check about 125 to 1 (checks/access.check.ts)
 - MCP server with OAuth and personal tokens, its tools, a coverage check
 - Deployed at copland.berkerz.dev with a published Google consent screen,
   privacy and terms pages, the pole mark and favicon
