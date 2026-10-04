@@ -4,7 +4,8 @@
 //! It draws only when something changes: 30 frames a second while an item travels,
 //! 15 (the web scene's cap, `scene::FPS`) while a run's current flows, twelve while the
 //! wires only sway, once a second while a run's timer shows, and otherwise when the
-//! daemon or the owner's feed says something new.
+//! daemon or the owner's feed says something new. Compact, with only the status line to show,
+//! it redraws for the scene once a second at most. Hidden, it draws nothing: the compositor stops asking.
 //!
 //! The title bar has the bell (what needs you, COPL-64) and ≡ (the menu, COPL-65).
 //! In compact mode the window is the status line alone, the bell and ≡ at its end.
@@ -53,6 +54,9 @@ const SWAY: Duration = Duration::from_millis(83);
 const TICK: Duration = Duration::from_secs(1);
 /// Otherwise, now and then, for the done list's slow fade.
 const IDLE: Duration = Duration::from_secs(30);
+/// The most of the scene the compact box catches up on in one go: past a second's gap, only
+/// a sway that nobody sees falls behind.
+const CATCH_UP: f64 = 2.0;
 /// While setup waits on something: the dots after "waiting".
 const DOTS: Duration = Duration::from_millis(250);
 /// A first press of "stop this run" waits this long for the second.
@@ -880,19 +884,7 @@ impl Render for BoxView {
         let th = self.prefs.theme_now(feed.as_ref());
         self.scene.motion = self.prefs.motion;
         let now = self.began.elapsed().as_secs_f64();
-        if let Some(board) = self.board(now) {
-            self.scene.sync(&board);
-        }
-        self.scene.step(now);
-        if self.scene.moving() {
-            self.redraw_in(TRAVEL, cx);
-        } else if self.scene.ambient() {
-            self.redraw_in(if self.scene.ticking() { CURRENT } else { SWAY }, cx);
-        } else if self.scene.ticking() {
-            self.redraw_in(TICK, cx);
-        } else {
-            self.redraw_in(IDLE, cx);
-        }
+        let board = self.board(now);
         if self.menu.is_some() && !matches!(self.source, Source::Live { .. }) {
             self.menu = None;
         }
@@ -933,6 +925,34 @@ impl Render for BoxView {
             let (w, h) = Self::size_for(&self.scene, compact);
             window.resize(size(px(w), px(h)));
             crate::hyprland::resize(w, h);
+        }
+
+        /* Compact hides the scene, and the status line changes only as a run's timer ticks or an
+        item arrives, so it steps once a second and catches up on the frames in between. A window
+        that can't be seen at all needs nothing here: GPUI draws on the compositor's frame callbacks,
+        which a hidden window doesn't get, so render isn't called and no timer is set (COPL-129). */
+        if compact {
+            /* The frames before what just arrived, so it starts from where it arrived. */
+            self.scene.catch_up(now, CATCH_UP);
+            if let Some(board) = &board {
+                self.scene.sync(board);
+            }
+            let changing = self.scene.moving() || self.scene.ticking();
+            self.redraw_in(if changing { TICK } else { IDLE }, cx);
+        } else {
+            if let Some(board) = &board {
+                self.scene.sync(board);
+            }
+            self.scene.step(now);
+            if self.scene.moving() {
+                self.redraw_in(TRAVEL, cx);
+            } else if self.scene.ambient() {
+                self.redraw_in(if self.scene.ticking() { CURRENT } else { SWAY }, cx);
+            } else if self.scene.ticking() {
+                self.redraw_in(TICK, cx);
+            } else {
+                self.redraw_in(IDLE, cx);
+            }
         }
 
         /* The largest whole multiple of the natural size the window has room for, in whole device

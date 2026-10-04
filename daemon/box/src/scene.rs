@@ -943,6 +943,19 @@ impl Scene {
         }
     }
 
+    /// Every frame since the last one at the web scene's rate, `most` seconds of them at most,
+    /// as if the scene had been drawn all along. For when it isn't drawn but where its items are
+    /// still shows (the compact box's status line), so they keep their pace between steps a
+    /// second apart; `step` alone moves them two frames' worth per call.
+    pub fn catch_up(&mut self, now: f64, most: f64) {
+        let frame = 1.0 / FPS;
+        self.last = self.last.max(now - most);
+        while now - self.last > frame {
+            self.step(self.last + frame);
+        }
+        self.step(now);
+    }
+
     /// One frame of the prototype's loop, at `now` seconds.
     pub fn step(&mut self, now: f64) {
         let dt = (now - self.last).clamp(0.0, 2.0 / FPS);
@@ -1876,6 +1889,40 @@ mod tests {
         run(&mut s, &board, 600, 700);
         assert_eq!(s.working(), 0);
         assert_eq!(s.items.len(), 1);
+    }
+
+    /// The second at which A-1, queued and then taken at 2 s, has got to work and come to rest,
+    /// with the scene moved on once a second by `on`.
+    fn settled_at(on: impl Fn(&mut Scene, f64)) -> u32 {
+        let mut s = Scene::live(Tune::default());
+        let mut board = Board {
+            todo: vec!["A-1".into(), "A-2".into()],
+            ready: true,
+            ..Default::default()
+        };
+        run(&mut s, &board, 0, 120);
+        board.todo = vec!["A-2".into()];
+        board.doing = vec![doing("A-1", true)];
+        (3..60)
+            .find(|&sec| {
+                on(&mut s, sec as f64);
+                s.sync(&board);
+                s.working() == 1 && !s.moving()
+            })
+            .expect("A-1 never got to work")
+    }
+
+    #[test]
+    fn catching_up_keeps_the_pace_of_every_frame() {
+        let every_frame = settled_at(|s, now| {
+            for f in 1..=60 {
+                s.step(now - 1.0 + f as f64 / 60.0);
+            }
+        });
+        let caught_up = settled_at(|s, now| s.catch_up(now, 2.0));
+        let stepped = settled_at(|s, now| s.step(now));
+        assert_eq!(caught_up, every_frame);
+        assert!(stepped > every_frame + 1, "{stepped} vs {every_frame}");
     }
 
     #[test]
