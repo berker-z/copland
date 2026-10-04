@@ -332,6 +332,7 @@ mod tests {
             client: "Claude Code".into(),
             code_command: None,
             writable: Vec::new(),
+            runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
         }

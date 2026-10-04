@@ -29,7 +29,7 @@ use crate::config::AgentConfig;
 use crate::guard::{Check, Identity, Message, Plan, Refused, Wake, WakeGuard, add_ready, plan, refused};
 use crate::live::{self, FALLBACK_POLL, Heard, Link};
 use crate::runner::{self, Brief, Ended, Exit, Launch, MESSAGES};
-use crate::sandbox::{self, PROGRAM};
+use crate::sandbox;
 use crate::state::{AgentState, DaemonState, Phase, RunSummary};
 use crate::workspace::{self, Workspace};
 
@@ -148,9 +148,9 @@ pub struct AgentLoop {
     spawned: HashMap<Id, String>,
     /// What this machine lacks to start the agent's runs, as of the last poll.
     missing: Missing,
-    /// Where the sandbox program was found and what `sandbox::probe` said of it there: run once
-    /// per place it is found, not every poll.
-    probed: Option<(PathBuf, Option<String>)>,
+    /// Which backend's program was found where, and what its `probe` said there: run once per
+    /// backend and place, not every poll.
+    probed: Option<(&'static str, PathBuf, Option<String>)>,
 }
 
 /// A run going on a task.
@@ -599,12 +599,17 @@ impl AgentLoop {
     /// doesn't, None when it does or isn't found (which `Missing` says). Tried once per place it
     /// is found, which in effect is once at startup: after fixing what it said, restart.
     fn probe(&mut self) -> Option<String> {
-        let at = runner::locate(PROGRAM)?;
-        if self.probed.as_ref().is_none_or(|(p, _)| *p != at) {
-            let said = sandbox::probe().err().map(|e| sandbox::broken(&e));
-            self.probed = Some((at, said));
+        let backend = sandbox::of(&self.agent);
+        let at = runner::locate(backend.program())?;
+        if self
+            .probed
+            .as_ref()
+            .is_none_or(|(name, p, _)| *name != backend.name() || *p != at)
+        {
+            let said = backend.probe().err().map(|e| backend.broken(&e));
+            self.probed = Some((backend.name(), at, said));
         }
-        self.probed.as_ref().and_then(|(_, said)| said.clone())
+        self.probed.as_ref().and_then(|(_, _, said)| said.clone())
     }
 
     /// One poll. True when a run was launched (or tried), so the caller looks again at once.
@@ -617,15 +622,20 @@ impl AgentLoop {
         if missing != self.missing {
             match missing.message() {
                 Some(m) => tracing::warn!("{m}"),
-                /* Where bwrap is, so a Nix build shows it uses its own (COPL-137). */
-                None => match runner::locate(PROGRAM).filter(|_| missing.coding) {
-                    Some(at) => tracing::info!(
-                        "every program its runs need is found, {} at {}",
-                        runner::program(&[PROGRAM.to_string()]),
-                        at.display()
-                    ),
-                    None => tracing::info!("every program its runs need is found"),
-                },
+                /* Where the sandbox is, so a Nix build shows it uses its own bwrap (COPL-137). */
+                None => {
+                    let backend = sandbox::of(&self.agent);
+                    match runner::locate(backend.program()).filter(|_| missing.coding) {
+                        Some(at) => tracing::info!(
+                            "every program its runs need is found, {} at {} (the {} sandbox, for runtime {})",
+                            runner::program(&[backend.program().to_string()]),
+                            at.display(),
+                            backend.name(),
+                            self.agent.runtime.name()
+                        ),
+                        None => tracing::info!("every program its runs need is found"),
+                    }
+                }
             }
             self.missing = missing;
         }
@@ -841,7 +851,7 @@ impl Missing {
         let code = agent
             .code_command
             .as_ref()
-            .and_then(|c| absent(&PROGRAM.to_string()).or_else(|| c.first().and_then(absent)));
+            .and_then(|c| absent(&sandbox::of(agent).program().to_string()).or_else(|| c.first().and_then(absent)));
         Self {
             workdir,
             code,
@@ -1407,6 +1417,7 @@ mod tests {
             client: "test".into(),
             code_command: code.map(argv),
             writable: Vec::new(),
+            runtime: crate::config::Runtime::detect(&argv(code.unwrap_or(command))),
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
         }
@@ -1417,12 +1428,15 @@ mod tests {
     fn a_missing_program_is_said_and_stops_only_its_runs() {
         let claude = ["/run/current-system/sw/bin/claude", "-p"];
         let a = agent(&claude, Some(&claude));
+        /* The agent's backend, the platform's fallback for now; Codex's too (COPL-141). */
+        let program = sandbox::of(&a).program();
+        assert_eq!(program, sandbox::of(&agent(&claude, Some(&["codex"]))).program());
         let none = Missing::of(&a, |_| true);
         assert_eq!(none.message(), None);
         assert!(!none.stops(Role::Workdir) && !none.stops(Role::Worker));
 
         /* Missing bwrap says which package has it (COPL-140). */
-        let no_bwrap = Missing::of(&a, |p| p != PROGRAM);
+        let no_bwrap = Missing::of(&a, |p| p != program);
         assert_eq!(
             no_bwrap.message().as_deref(),
             Some(if cfg!(target_os = "macos") {
@@ -1436,7 +1450,7 @@ mod tests {
 
         /* There but not working: said, and it stops coding runs only. */
         let broken = Missing {
-            broken: Some(sandbox::broken("setting up uid map: Permission denied")),
+            broken: Some(sandbox::of(&a).broken("setting up uid map: Permission denied")),
             ..none.clone()
         };
         let said = broken.message().expect("said");
@@ -1463,7 +1477,7 @@ mod tests {
         };
         assert_eq!(plain.message(), None);
 
-        let no_claude = Missing::of(&a, |p| p == PROGRAM);
+        let no_claude = Missing::of(&a, |p| p == program);
         assert_eq!(
             no_claude.message().as_deref(),
             Some("claude not found on PATH: runs can't start")
@@ -1476,13 +1490,13 @@ mod tests {
             Some("codex not found on PATH: only coding runs can start")
         );
         assert_eq!(
-            Missing::of(&other, |p| p == PROGRAM).message().as_deref(),
+            Missing::of(&other, |p| p == program).message().as_deref(),
             Some("codex not found on PATH: runs can't start; claude not found on PATH: coding runs can't start")
         );
 
         /* No code_command: bwrap is never needed. */
         let plain = agent(&claude, None);
-        assert_eq!(Missing::of(&plain, |p| p != PROGRAM).message(), None);
+        assert_eq!(Missing::of(&plain, |p| p != program).message(), None);
         assert_eq!(
             Missing::of(&plain, |_| false).message().as_deref(),
             Some("claude not found on PATH: runs can't start")

@@ -247,6 +247,20 @@ mod tests {
         assert!(claude[at + 1..].iter().all(|a| a.starts_with("mcp__copland__")));
     }
 
+    /// The daemon reads each template's runtime off it, for its sandbox (COPL-141): Codex's `sh`
+    /// wrapper included, by the name it gives its script.
+    #[test]
+    fn the_daemon_knows_each_template_for_its_runtime() {
+        use copland_daemon_core::config::Runtime as Kind;
+        for r in Runtime::ALL {
+            let kind = match r {
+                Runtime::ClaudeCode => Kind::ClaudeCode,
+                Runtime::Codex => Kind::Codex,
+            };
+            assert_eq!(Kind::detect(&r.command()), kind, "{r:?}");
+        }
+    }
+
     /// The run's hooks are Copland's own `.claude/settings.json`, byte for byte but for spacing, so a
     /// run in that repo runs the heartbeat once, and a change to one is a change to both (COPL-139).
     #[test]

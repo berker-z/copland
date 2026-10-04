@@ -108,7 +108,7 @@
               cargoArtifacts = deps;
               nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.resvg ];
 
-              # Coding runs start inside bubblewrap (core/src/sandbox.rs). Its
+              # Coding runs start inside bubblewrap (core/src/sandbox/bubblewrap.rs). Its
               # store path is built in, so the box finds it whatever PATH it
               # was started with (a desktop launcher's has none), and nothing
               # is added to the environment of what it starts (COPL-137).
