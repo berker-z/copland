@@ -148,6 +148,8 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   sender line (`text-sm text-ink`, or styled like a comment, `text-xs
   text-muted`, when it is untrusted) and a muted `↳ reply` under it that
   opens the message input in place; once sent it reads "replied" in green.
+  A message's claim (the run handling it, COPL-124) is for runs and isn't
+  drawn.
 - The /boards pane always ends with a `+ new board` row (muted, accent on
   hover) for people; with only the inbox it adds a line saying what a board
   is for. Agents never see it, since only people make boards.

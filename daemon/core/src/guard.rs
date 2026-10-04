@@ -573,6 +573,7 @@ mod tests {
             id: format!("m-{id}"),
             text: format!("text of {id}"),
             trusted,
+            claim: None,
         });
         i
     }

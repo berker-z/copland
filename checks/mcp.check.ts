@@ -16,6 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import { ROUTE_COVERAGE } from "../src/worker/mcpCoverage.ts";
+import { newTaskBoard } from "../src/domain/tasks.ts";
 
 const cases: Array<[string, boolean]> = [];
 const t = (name: string, pass: boolean) => cases.push([name, pass]);
@@ -127,6 +128,32 @@ t(
 t(
   "the guide's Leading section marks children people see review_first",
   /changes what people see is review_first/.test(leading) && leading.includes("create_task review_first"),
+);
+
+/* create_task's board (COPL-125): a person may leave it out, an agent names it. */
+const refused = (f: () => unknown) => {
+  try {
+    f();
+    return false;
+  } catch (error) {
+    return error instanceof Error && error.message.startsWith("Name a board");
+  }
+};
+t("a person's create_task without board goes to their inbox", newTaskBoard(undefined, false) === "inbox" && newTaskBoard("", false) === "inbox");
+t("an agent's create_task without board is refused", refused(() => newTaskBoard(undefined, true)) && refused(() => newTaskBoard("", true)) && refused(() => newTaskBoard(null, true)));
+t("an agent's create_task with board \"inbox\" goes to the inbox", newTaskBoard("inbox", true) === "inbox");
+t("a named board is used as given, by people and agents", newTaskBoard("copland", true) === "copland" && newTaskBoard("COPL", false) === "COPL");
+t(
+  "create_task calls load with newTaskBoard, never a bare inbox default",
+  /load\(ctx, newTaskBoard\(args\.board, !!ctx\.viewer\.agent\)\)/.test(toolSource.get("create_task") ?? "") &&
+    !/args\.board \?\? "inbox"/.test(mcp),
+);
+
+/* The guide's inbox text (COPL-125): a task's run handles only its task's items. */
+const inbox = para("Inbox");
+t(
+  "the guide says a task's supervised run handles only that task's items and messages get a run of their own",
+  /supervised run started for a task handles only that task's items/.test(inbox) && /A message is handled by a run of its own/.test(inbox),
 );
 
 let failed = 0;
