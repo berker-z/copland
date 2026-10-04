@@ -88,7 +88,7 @@ export function useCommentEdits(boardId: string, taskId: string) {
   };
   return {
     add: useMutation({
-      mutationFn: (text: string) => send<Comment[]>("POST", `/tasks/${taskId}/comments`, { text }),
+      mutationFn: (comment: { text: string; attachments: string[] }) => send<Comment[]>("POST", `/tasks/${taskId}/comments`, comment),
       onSuccess: done,
     }),
     edit: useMutation({

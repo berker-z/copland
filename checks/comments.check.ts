@@ -13,7 +13,7 @@
 import { d1, r2, sqlite } from "./worker.ts";
 import type { Comment, Viewer } from "../src/domain/types.ts";
 
-const { COMMENT_IMAGES_MAX, isCommentImage, parseCommentImages } = await import("../src/domain/commentImages.ts");
+const { COMMENT_IMAGES_MAX, admitCommentImages, isCommentImage, parseCommentImages } = await import("../src/domain/commentImages.ts");
 const { deleteComment, getComments, patchComment, postComment } = await import("../src/worker/routes/comments.ts");
 const { findTask } = await import("../src/worker/repo/tasks.ts");
 
@@ -36,6 +36,27 @@ t("one over the cap is refused, saying why", (() => {
 })());
 t("png, jpeg, gif and webp are images", ["image/png", "image/jpeg", "image/gif", "image/webp", "IMAGE/PNG; x=1"].every(isCommentImage));
 t("svg, pdf and the rest are not", !["image/svg+xml", "image/avif", "application/pdf", "text/plain", ""].some(isCommentImage));
+
+/* The comment box's check before it uploads (COPL-118). */
+const f = (name: string, type: string) => ({ name, type });
+const names = (v: { take: { name: string }[] }) => v.take.map((x) => x.name).join(",");
+t("the box takes images in order", (() => {
+  const v = admitCommentImages(0, [f("a.png", "image/png"), f("b.jpg", "image/jpeg")]);
+  return names(v) === "a.png,b.jpg" && v.refused === null;
+})());
+t("the box turns a non-image away by name and keeps the images", (() => {
+  const v = admitCommentImages(0, [f("a.png", "image/png"), f("brief.pdf", "application/pdf")]);
+  return names(v) === "a.png" && !!v.refused?.includes("brief.pdf");
+})());
+t("a file with no type is not an image", admitCommentImages(0, [f("x", "")]).take.length === 0);
+t("the box fills up to the cap and says why it stopped", (() => {
+  const v = admitCommentImages(COMMENT_IMAGES_MAX - 1, [f("a.png", "image/png"), f("b.png", "image/png")]);
+  return names(v) === "a.png" && !!v.refused?.includes(String(COMMENT_IMAGES_MAX));
+})());
+t("a full box takes nothing", (() => {
+  const v = admitCommentImages(COMMENT_IMAGES_MAX, [f("a.png", "image/png")]);
+  return v.take.length === 0 && v.refused !== null;
+})());
 
 /* The routes. */
 const db = sqlite();
