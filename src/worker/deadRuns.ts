@@ -28,6 +28,9 @@
    claims and live updates are the ordinary ones, and the history says why
    in its `via`. Interactive runs (chat sessions) put nothing back: a person
    closing a chat is not a crash, and their task is theirs to move.
+
+   Messages need no putting back (COPL-124): a dead run's message claims
+   end with it, and the message, still unread, waits for the next run.
    ========================================================================== */
 
 import { leaseFor, returnTo, shortRunId, strikesOf, type RunDeath, type RunEnding } from "@/domain/runs";
@@ -177,6 +180,10 @@ export async function sweepStaleRuns(env: Env, ctx: ExecutionContext): Promise<v
         .bind(r.id, new Date().toISOString(), lapsed),
       db
         .prepare(`DELETE FROM task_claims WHERE run_id = ?1 AND EXISTS (SELECT 1 FROM runs WHERE id = ?1 AND status != 'running')`)
+        .bind(r.id),
+      /* Its messages go back to unclaimed, for the next run to take. */
+      db
+        .prepare(`DELETE FROM message_claims WHERE run_id = ?1 AND EXISTS (SELECT 1 FROM runs WHERE id = ?1 AND status != 'running')`)
         .bind(r.id),
     ]);
     if (!ended.meta.changes) continue;

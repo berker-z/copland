@@ -8,6 +8,8 @@
      POST   /api/runs/:id/finish    { status: completed | failed | cancelled }
      POST   /api/tasks/:id/claim    this run takes the task
      DELETE /api/tasks/:id/claim    this run lets it go
+     POST   /api/messages/:id/claim     this run takes the message (COPL-124)
+     DELETE /api/messages/:id/claim     this run lets it go
 
    A run is started with a principal's own token, never a session: whoever
    launches the runtime (a daemon, a script) calls POST /api/runs and hands
@@ -50,11 +52,31 @@
    A supervised run that dies (failed, cancelled, or past its lease, which
    the cron's sweep ends as failed) puts the tasks it held back where the
    next run, or a person, will find them (deadRuns.ts, COPL-97).
+
+   Messages are claimed the same way (migrations/0028_message_claims.sql),
+   so two runs never handle one message: a run, the same lease and the same
+   renewal, one live claim per message, another run's refused (409
+   "claimed") until it lapses or its run ends, the same run's renewed, and
+   the same guard against two racing. Only the message's recipient may
+   claim it (anyone else gets the 404 a message that isn't there gets), and
+   only while its inbox item is unread: marking it read or dismissing it
+   releases the claim (routes/inbox.ts), and a read message is never
+   claimed again (409 "read"), so a run that fetched the inbox before
+   another run finished with a message cannot take it after. A claim ends
+   with its run, its finish, or a release; a dead run's message is simply
+   unclaimed and unread, there for the next run.
    ========================================================================== */
 
 import { clientLabel } from "@/domain/clients";
-import { RUN_ENDINGS, shortRunId, type ClaimRefusal, type RunEnding, type RunKind } from "@/domain/runs";
-import type { StartedRun, Viewer } from "@/domain/types";
+import {
+  RUN_ENDINGS,
+  shortRunId,
+  type ClaimRefusal,
+  type MessageClaimRefusal,
+  type RunEnding,
+  type RunKind,
+} from "@/domain/runs";
+import type { MessageClaimed, StartedRun, TaskClaim, Viewer } from "@/domain/types";
 import { personOf } from "../access";
 import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } from "../http";
@@ -311,4 +333,118 @@ export async function deleteClaim(env: Env, viewer: Viewer, id: string, changes:
   if (result.meta.changes === 0) throw notFound(`You hold no claim on ${task.key}`);
   changes.notify(await boardAudience(db, board.id), "board");
   return json(await findTask(db, task.id));
+}
+
+/* ------------------------------------------------------------- messages -- */
+
+interface MessageRow {
+  id: string;
+  /** Unread in the recipient's inbox; 0 once read or dismissed. */
+  unread: number;
+}
+
+/** The viewer's message by id, or the 404 that anyone else's, or one that isn't there, gets. */
+async function ownMessage(db: D1Database, viewer: Viewer, id: string): Promise<MessageRow> {
+  const row = await db
+    .prepare(
+      `SELECT m.id, EXISTS (SELECT 1 FROM inbox_items i WHERE i.message_id = m.id AND i.user_id = m.recipient_id AND i.read_at IS NULL) AS unread
+         FROM messages m WHERE m.id = ?1 AND m.recipient_id = ?2`,
+    )
+    .bind(id, viewer.user.id)
+    .first<MessageRow>();
+  if (!row) throw notFound("No message of yours has that id");
+  return row;
+}
+
+async function currentMessageClaim(db: D1Database, messageId: string): Promise<ClaimRow | null> {
+  return db
+    .prepare(
+      `SELECT c.run_id, c.user_id, c.claimed_until, u.handle, r.kind, r.client,
+              (SELECT count(*) FROM runs r WHERE r.id = c.run_id AND ${LIVE_CLAIM}) AS live
+         FROM message_claims c JOIN users u ON u.id = c.user_id LEFT JOIN runs r ON r.id = c.run_id
+        WHERE c.message_id = ?1`,
+    )
+    .bind(messageId)
+    .first<ClaimRow>();
+}
+
+const messageRefused = (message: string, code: MessageClaimRefusal) => conflict(message, code);
+const READ = "That message is read or dismissed already: it has been dealt with, and is not claimed again";
+
+/** POST /api/messages/:id/claim. See the header for every rule. */
+export async function postMessageClaim(env: Env, viewer: Viewer, id: string, changes: Changes): Promise<Response> {
+  const db = env.DB;
+  const access = viewer.access;
+  if (!access) throw forbidden("Claiming a message is for a connection with a token (an assistant, or whatever launches one)");
+  const kind: RunKind = access.runId ? "supervised" : "interactive";
+  let runId = access.runId ?? access.interactiveRunId;
+  const message = await ownMessage(db, viewer, id);
+  const existing = await currentMessageClaim(db, message.id);
+  if (existing?.live && existing.run_id !== runId) throw messageRefused(`That message is already claimed by ${heldBy(existing)}`, "claimed");
+  if (!message.unread) throw messageRefused(READ, "read");
+  const me = viewer.user.id;
+  if (!runId) {
+    runId = await interactiveRun(db, me, access);
+    enterRun(runId);
+  }
+  const now = nowIso();
+  try {
+    await db.batch([
+      /* Take it: new, or replacing a claim that lapsed or whose run ended, or renewing our own. */
+      db
+        .prepare(
+          `INSERT INTO message_claims (message_id, run_id, user_id, claimed_at, claimed_until) VALUES (?1, ?2, ?3, ?4, ?5)
+           ON CONFLICT (message_id) DO UPDATE SET
+             claimed_at = CASE WHEN message_claims.run_id = excluded.run_id THEN message_claims.claimed_at ELSE excluded.claimed_at END,
+             run_id = excluded.run_id, user_id = excluded.user_id, claimed_until = excluded.claimed_until
+           WHERE message_claims.run_id = excluded.run_id OR message_claims.claimed_until <= ?4
+              OR NOT EXISTS (SELECT 1 FROM runs WHERE id = message_claims.run_id AND status = 'running')`,
+        )
+        .bind(message.id, runId, me, now, claimUntil(kind)),
+      /* The guard, as for a task: unless this run now holds the claim, and the
+         message is still unread (a mark_read may have landed since we looked),
+         break NOT NULL and fail the batch. */
+      db
+        .prepare(
+          `INSERT INTO message_claims (message_id, run_id, user_id, claimed_until)
+           SELECT ?1, NULL, NULL, NULL
+            WHERE NOT EXISTS (SELECT 1 FROM message_claims WHERE message_id = ?1 AND run_id = ?2)
+               OR NOT EXISTS (SELECT 1 FROM inbox_items WHERE message_id = ?1 AND user_id = ?3 AND read_at IS NULL)`,
+        )
+        .bind(message.id, runId, me),
+    ]);
+  } catch (error) {
+    const held = await currentMessageClaim(db, message.id);
+    if (held?.live && held.run_id !== runId) throw messageRefused(`That message was just claimed by ${heldBy(held)}`, "claimed");
+    if (!(await ownMessage(db, viewer, id)).unread) throw messageRefused(READ, "read");
+    throw error;
+  }
+  const held = await currentMessageClaim(db, message.id);
+  if (!held) throw new Error("Message claim reported success but no row");
+  changes.notify([me], "inbox");
+  const claim: TaskClaim = {
+    userId: held.user_id,
+    runId: held.run_id,
+    run: shortRunId(held.run_id),
+    kind: held.kind ?? kind,
+    client: held.client ? clientLabel(held.client) : null,
+    until: held.claimed_until,
+  };
+  return json({ messageId: message.id, claim } satisfies MessageClaimed);
+}
+
+/**
+ * DELETE /api/messages/:id/claim: let it go, unread, for another run to
+ * take. The claim must be the viewer's own (any credential of theirs).
+ */
+export async function deleteMessageClaim(env: Env, viewer: Viewer, id: string, changes: Changes): Promise<Response> {
+  const db = env.DB;
+  const message = await ownMessage(db, viewer, id);
+  const result = await db
+    .prepare(`DELETE FROM message_claims WHERE message_id = ?1 AND user_id = ?2`)
+    .bind(message.id, viewer.user.id)
+    .run();
+  if (result.meta.changes === 0) throw notFound("You hold no claim on that message");
+  changes.notify([viewer.user.id], "inbox");
+  return json({ messageId: message.id, claim: null });
 }

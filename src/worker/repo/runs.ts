@@ -1,11 +1,12 @@
 /* ============================================================================
    Runs and claims: the reads and the statements other modules batch
-   (migrations/0015_runs_claims.sql, routes/runs.ts).
+   (migrations/0015_runs_claims.sql, 0028_message_claims.sql, routes/runs.ts).
    ----------------------------------------------------------------------------
    A claim is live while claimed_until is in the future and its run is
    running; LIVE_CLAIM says so in SQL, and every read of a claim goes
    through it. Nothing deletes a lapsed claim on a timer: it is replaced by
    the next claim, or released with its run, its task, or its assignee.
+   Message claims follow the same lease and end with their run too.
    ========================================================================== */
 
 import { clientLabel } from "@/domain/clients";
@@ -25,23 +26,26 @@ export const claimUntil = (kind: RunKind) => at(leaseFor(kind));
 
 /**
  * What any call through a run keeps alive, at most once a minute so a busy
- * run does not write per call: the run's last_seen_at, and its claims that
- * have not lapsed yet. A claim that lapsed stays lapsed; the run claims
- * again if it still wants the task.
+ * run does not write per call: the run's last_seen_at, and its claims (on
+ * tasks and on messages) that have not lapsed yet. A claim that lapsed stays
+ * lapsed; the run claims again if it still wants the task or the message.
  */
 export function runTouchStatements(db: D1Database, runId: string, kind: RunKind): D1PreparedStatement[] {
   const now = new Date().toISOString();
+  const renew = (table: "task_claims" | "message_claims") =>
+    db
+      .prepare(
+        `UPDATE ${table} SET claimed_until = ?2
+          WHERE run_id = ?1 AND claimed_until > ?3 AND claimed_until < ?4
+            AND EXISTS (SELECT 1 FROM runs WHERE id = ?1 AND status = 'running')`,
+      )
+      .bind(runId, claimUntil(kind), now, at(leaseFor(kind) - 60_000));
   return [
     db
       .prepare(`UPDATE runs SET last_seen_at = ?2 WHERE id = ?1 AND status = 'running' AND last_seen_at < ?3`)
       .bind(runId, now, at(-60_000)),
-    db
-      .prepare(
-        `UPDATE task_claims SET claimed_until = ?2
-          WHERE run_id = ?1 AND claimed_until > ?3 AND claimed_until < ?4
-            AND EXISTS (SELECT 1 FROM runs WHERE id = ?1 AND status = 'running')`,
-      )
-      .bind(runId, claimUntil(kind), now, at(leaseFor(kind) - 60_000)),
+    renew("task_claims"),
+    renew("message_claims"),
   ];
 }
 
@@ -75,6 +79,7 @@ export async function interactiveRun(db: D1Database, userId: string, access: Api
   const id = crypto.randomUUID();
   await db.batch([
     db.prepare(`DELETE FROM task_claims WHERE run_id IN (${STALE})`).bind(access.tokenId, lapsed),
+    db.prepare(`DELETE FROM message_claims WHERE run_id IN (${STALE})`).bind(access.tokenId, lapsed),
     db
       .prepare(`UPDATE runs SET status = 'cancelled', ended_at = ?3 WHERE id IN (${STALE})`)
       .bind(access.tokenId, lapsed, now),
@@ -117,6 +122,7 @@ export async function claimedBoards(db: D1Database, userId: string): Promise<str
 export function endRunsStatements(db: D1Database, userId: string): D1PreparedStatement[] {
   return [
     db.prepare(`DELETE FROM task_claims WHERE run_id IN ${RUNS_OF}`).bind(userId),
+    db.prepare(`DELETE FROM message_claims WHERE run_id IN ${RUNS_OF}`).bind(userId),
     db
       .prepare(`UPDATE runs SET status = 'cancelled', ended_at = ?2 WHERE status = 'running' AND id IN ${RUNS_OF}`)
       .bind(userId, new Date().toISOString()),
@@ -130,6 +136,7 @@ export function finishRunStatements(db: D1Database, runId: string, status: RunEn
       .prepare(`UPDATE runs SET status = ?2, ended_at = ?3 WHERE id = ?1 AND status = 'running'`)
       .bind(runId, status, new Date().toISOString()),
     db.prepare(`DELETE FROM task_claims WHERE run_id = ?1`).bind(runId),
+    db.prepare(`DELETE FROM message_claims WHERE run_id = ?1`).bind(runId),
   ];
 }
 
@@ -151,6 +158,22 @@ export function releaseClaimsStatement(db: D1Database, boardId: string): D1Prepa
                OR NOT EXISTS (SELECT 1 FROM task_assignees a WHERE a.task_id = task_claims.task_id AND a.user_id = task_claims.user_id))`,
     )
     .bind(boardId);
+}
+
+/**
+ * A principal's message claims whose message is no longer unread in their
+ * inbox (marked read, or dismissed): it has been dealt with, so the claim
+ * has done its job. The last statement of every inbox write.
+ */
+export function releaseReadMessagesStatement(db: D1Database, userId: string): D1PreparedStatement {
+  return db
+    .prepare(
+      `DELETE FROM message_claims
+        WHERE user_id = ?1
+          AND NOT EXISTS (SELECT 1 FROM inbox_items i
+                           WHERE i.message_id = message_claims.message_id AND i.user_id = ?1 AND i.read_at IS NULL)`,
+    )
+    .bind(userId);
 }
 
 interface RunRow {

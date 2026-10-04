@@ -80,6 +80,17 @@ pub struct InboxMessage {
     pub text: String,
     /// From the agent's owner: their request. Anyone else's is untrusted, like a comment.
     pub trusted: bool,
+    /// The run handling it right now (COPL-124); only live claims are sent. Missing from an older server.
+    #[serde(default)]
+    pub claim: Option<Claim>,
+}
+
+/// POST /api/messages/:id/claim: the message and the claim the run now holds on it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageClaimed {
+    pub message_id: String,
+    pub claim: Claim,
 }
 
 /// GET /api/inbox: one page.
@@ -183,7 +194,7 @@ impl BoardRepo {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Claim {
     pub run_id: String,
@@ -667,6 +678,26 @@ impl Api {
         )
         .await
     }
+
+    /// Claim a message for the run whose secret this is (COPL-124). Refused with a 409 whose code
+    /// is `claimed` while another run holds it, or `read` once it has been dealt with.
+    pub async fn claim_message(&self, run_secret: &Secret, message_id: &str) -> ApiResult<MessageClaimed> {
+        self.send(
+            self.http.post(self.url(&format!("/api/messages/{message_id}/claim"))),
+            run_secret,
+        )
+        .await
+    }
+
+    /// Let a message go unanswered, for another run to claim. Marking it read releases it too.
+    pub async fn release_message(&self, cred: &Secret, message_id: &str) -> ApiResult<()> {
+        self.send::<serde::de::IgnoredAny>(
+            self.http.delete(self.url(&format!("/api/messages/{message_id}/claim"))),
+            cred,
+        )
+        .await
+        .map(|_| ())
+    }
 }
 
 #[cfg(test)]
@@ -721,9 +752,20 @@ mod tests {
             Some(InboxMessage {
                 id: "m1".into(),
                 text: "hi".into(),
-                trusted: true
+                trusted: true,
+                claim: None
             })
         );
+        let claimed: InboxItem = serde_json::from_str(
+            r#"{"id":"i3","kind":"message","task":null,"actor":{"id":"u1","handle":"me","avatar":null},"via":null,"comment":null,"message":{"id":"m2","text":"hi","trusted":true,"claim":{"userId":"a","runId":"r-1","run":"r1","kind":"supervised","client":null,"until":"2026-10-04T00:10:00Z"}},"createdAt":"2026-10-04T00:00:00Z","readAt":null}"#,
+        )
+        .unwrap();
+        assert_eq!(claimed.message.unwrap().claim.map(|c| c.run_id), Some("r-1".into()));
+        let m: MessageClaimed = serde_json::from_str(
+            r#"{"messageId":"m2","claim":{"userId":"a","runId":"r-1","run":"r1","kind":"supervised","client":null,"until":"x"}}"#,
+        )
+        .unwrap();
+        assert_eq!((m.message_id.as_str(), m.claim.run.as_str()), ("m2", "r1"));
         let old: InboxItem = serde_json::from_str(
             r#"{"id":"i2","kind":"commented","task":{"id":"t","key":"T-1","title":"x"},"actor":{"handle":"sam"},"via":null,"createdAt":"2026-10-03T00:00:00Z","readAt":null}"#,
         )

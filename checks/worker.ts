@@ -5,7 +5,9 @@
    and wrangler resolve and node does not. The hook below resolves both to
    the .ts file (node strips the types), so a check can import a route and
    call it. Import this before any Worker module, and import those with
-   `await import(...)` so the hook is in place first.
+   `await import(...)` so the hook is in place first. "cloudflare:workers"
+   (live.ts's DurableObject base) resolves to a stand-in class, so a module
+   that reaches live.ts loads; nothing in a check opens a Durable Object.
 
    d1() is the real migrations on an in-memory node:sqlite database behind
    the slice of D1 the routes use: prepare, bind, first, all, run, and batch
@@ -21,6 +23,9 @@ const SRC = new URL("../src/", import.meta.url);
 
 registerHooks({
   resolve(specifier, context, next) {
+    if (specifier === "cloudflare:workers") {
+      return { url: "data:text/javascript,export class DurableObject {}", shortCircuit: true };
+    }
     let url: URL | null = null;
     if (specifier.startsWith("@/")) url = new URL(specifier.slice(2), SRC);
     else if (specifier.startsWith(".") && context.parentURL?.startsWith(SRC.href)) url = new URL(specifier, context.parentURL);

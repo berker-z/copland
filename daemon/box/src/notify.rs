@@ -521,6 +521,7 @@ mod tests {
             id: format!("m-{id}"),
             text: text.into(),
             trusted: true,
+            claim: None,
         });
         i
     }
