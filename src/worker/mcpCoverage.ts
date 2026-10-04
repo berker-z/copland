@@ -131,8 +131,8 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   },
 
   /* A board's notes and docs. The doc list rides on GET /api/boards/:id;
-     write_doc creates a text doc or rewrites one by name. Uploading a file's
-     bytes stays in the browser (POST /api/uploads). */
+     write_doc creates a text doc or rewrites one by name. Uploading a doc's
+     file stays in the browser (POST /api/uploads). */
   "PUT /api/boards/:id/notes": { tools: ["set_board_notes"] },
   "POST /api/boards/:id/docs": { tools: ["write_doc"] },
   "GET /api/boards/:id/docs/:docId": { tools: ["read_doc"] },
@@ -176,8 +176,11 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /api/calendar/events": { skip: "not yet: creating an event" },
   "PUT /api/calendar/events/:calendarId/:eventId": { skip: "not yet: editing an event" },
   "DELETE /api/calendar/events/:calendarId/:eventId": { skip: "not yet: deleting an event" },
-  /* Attachments. Files are bytes a JSON-RPC tool cannot carry well. */
-  "POST /api/uploads": { skip: "browser: raw file bytes, uploaded from the task screen and the board's docs; write_doc writes text docs without it" },
+  /* Attachments. Files are bytes a JSON-RPC tool carries badly, with one
+     exception: comment_on_task takes small images as base64 and uploads them
+     as raw bytes. Other files go up from the task screen and the board's
+     docs; write_doc writes text docs without an upload. */
+  "POST /api/uploads": { tools: ["comment_on_task"] },
   "GET /api/attachments/attachments/:id": { skip: "browser: file downloads (attachments and board docs); read_doc reads text docs through their own route" },
   "POST /api/tasks/:id/attachments": { skip: "not yet: attaching a link to a task" },
   "DELETE /api/tasks/:id/attachments/:attachmentId": { skip: "not yet: removing an attachment" },

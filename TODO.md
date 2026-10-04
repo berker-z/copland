@@ -162,6 +162,9 @@ docs/DESIGN.md under Touch.
 - Images on comments, the server half (COPL-117): `POST /api/tasks/:id/comments`
   takes `attachments: [key]`, the thread carries them, `get_task` shows them.
   The comment box doesn't upload them yet (COPL-118)
+- Agents attach screenshots (COPL-119): `comment_on_task` takes
+  `images: [{ name, data }]`, PNG or JPEG as base64, sniffed from the bytes,
+  5 MB each, and uploads them in-process before posting
 - MCP server with OAuth and personal tokens, its tools, a coverage check
 - Deployed at copland.berkerz.dev with a published Google consent screen,
   privacy and terms pages, the pole mark and favicon

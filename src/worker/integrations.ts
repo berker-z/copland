@@ -18,7 +18,7 @@ import type { Viewer } from "@/domain/types";
 import type { Env } from "./env";
 import { errorResponse, HttpError, notFound, UnauthenticatedError } from "./http";
 import { Changes } from "./live";
-import { CallError, handleMcp, type ApiCall } from "./mcp";
+import { apiRequest, CallError, handleMcp, type ApiCall } from "./mcp";
 import {
   authorizationServerMetadata,
   authorize,
@@ -50,11 +50,7 @@ export function isIntegrationPath(path: string): boolean {
 function apiCaller(viewer: Viewer, url: URL, runApi: RunApi): ApiCall {
   return async <T>(method: string, path: string, body?: unknown): Promise<T> => {
     const target = new URL(path, url.origin);
-    const request = new Request(target, {
-      method,
-      headers: { "content-type": "application/json" },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    const request = apiRequest(target, method, body);
     let response: Response;
     try {
       response = await runApi(request, target, viewer, null);
