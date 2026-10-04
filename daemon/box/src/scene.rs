@@ -518,6 +518,9 @@ const DEMO_POOL: [&str; 10] = [
 pub const MAX_BEADS: usize = 4;
 /// The done list's header stays lit this long after the newest, in seconds (live).
 pub const DONE_LIT: f64 = 15.0 * 60.0;
+/// The web scene's frame cap (`FPS` in scene.ts); the window draws a run's current at it
+/// (`view.rs`).
+pub const FPS: f64 = 15.0;
 
 /// Where the i-th resting item of todo sits on the wire into doing.
 fn queue_t(i: usize) -> f32 {
@@ -942,7 +945,7 @@ impl Scene {
 
     /// One frame of the prototype's loop, at `now` seconds.
     pub fn step(&mut self, now: f64) {
-        let dt = (now - self.last).clamp(0.0, 0.05);
+        let dt = (now - self.last).clamp(0.0, 2.0 / FPS);
         self.last = now;
         self.now = now;
         let sdt = dt as f32;
@@ -1089,7 +1092,7 @@ impl Scene {
         self.flash_done = (self.flash_done - sdt * 0.8).max(0.0);
     }
 
-    /// Something is travelling, fading or settling: the window should draw every frame.
+    /// Something is travelling, fading or settling: the window should keep drawing, 30 frames a second.
     pub fn moving(&self) -> bool {
         self.flash_done > 0.0
             || self.items.iter().any(|i| match i.state {
@@ -1101,7 +1104,7 @@ impl Scene {
             })
     }
 
-    /// Something only sways, pulses or blinks: worth drawing, but not at full rate.
+    /// Something only sways, pulses or blinks: worth drawing, but not as often.
     pub fn ambient(&self) -> bool {
         self.motion
     }
@@ -1641,6 +1644,7 @@ mod tests {
                 "DUTY" => v.duty.into(),
                 "SOFT" => v.soft.into(),
                 "MAX_BEADS" => MAX_BEADS as f64,
+                "FPS" => FPS,
                 "POLE_H" => POLE_H.into(),
                 "TOP" => TOP.into(),
                 "TAIL" => TAIL.into(),
