@@ -1,7 +1,9 @@
 /* ============================================================================
    The lower half of a task: comments, and what happened to it.
    ----------------------------------------------------------------------------
-   Comments are plain text with line breaks kept. Ctrl/Cmd+Enter posts.
+   Comments are plain text with line breaks kept, and their images under
+   it (CommentImages.tsx): paste or drop one on the box to add it.
+   Ctrl/Cmd+Enter posts.
    History reads the event log; field changes are spelled out in words
    rather than dumped as JSON, since the log is for people.
    ========================================================================== */
@@ -12,6 +14,7 @@ import type { BoardDetail, TaskEvent } from "@/domain/types";
 import { useCommentEdits, useComments, useTaskEvents } from "@/lib/boardEdits";
 import { useMe } from "@/lib/queries";
 import { when } from "@/ui/tone";
+import { CommentImages, PendingImages, PickImages, useCommentImages, useDropTarget } from "./CommentImages";
 import { CommentText, MentionTextarea } from "./Mentions";
 
 const FIELD_NAMES: Record<string, string> = {
@@ -71,13 +74,23 @@ export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: 
   const events = useTaskEvents(taskId, tab === "history");
   const edits = useCommentEdits(detail.board.id, taskId);
   const [draft, setDraft] = useState("");
+  const images = useCommentImages();
+  const drop = useDropTarget(images.onFiles);
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
   const isOwner = detail.board.role === "owner";
 
   const post = () => {
     const text = draft.trim();
-    if (!text) return;
-    edits.add.mutate(text, { onSuccess: () => setDraft("") });
+    if (!text || images.uploading) return;
+    edits.add.mutate(
+      { text, attachments: images.keys },
+      {
+        onSuccess: () => {
+          setDraft("");
+          images.clear();
+        },
+      },
+    );
   };
 
   const tabButton = (id: typeof tab, label: string) => (
@@ -142,20 +155,29 @@ export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: 
               ) : (
                 <CommentText comment={c} />
               )}
+              <CommentImages images={c.attachments} />
             </div>
           ))}
-          <MentionTextarea
-            members={detail.members}
-            value={draft}
-            onValue={setDraft}
-            onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && (e.preventDefault(), post())}
-            placeholder="write a comment, @ to mention (ctrl+enter to post)"
-            className="w-full min-h-16 bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent [field-sizing:content]"
-          />
-          <div className="flex justify-end mt-1.5">
+          <div {...drop.handlers} className={drop.over ? "outline outline-1 outline-dashed outline-offset-2 outline-accent" : ""}>
+            <MentionTextarea
+              members={detail.members}
+              value={draft}
+              onPaste={images.onPaste}
+              onValue={setDraft}
+              onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && (e.preventDefault(), post())}
+              placeholder="write a comment, @ to mention, paste or drop images (ctrl+enter to post)"
+              className="w-full min-h-16 bg-raised border border-faint px-2 py-1.5 text-ink placeholder:text-faint focus:outline-none focus:border-accent [field-sizing:content]"
+            />
+            <PendingImages pending={images.pending} onRemove={images.remove} />
+          </div>
+          {images.error && <p className="text-red text-xs mt-1">{images.error}</p>}
+          <div className="flex items-center justify-end gap-2 mt-1.5">
+            <PickImages onFiles={images.onFiles} disabled={edits.add.isPending} />
+            <span className="flex-1" />
+            {images.uploading && <span className="text-xs text-muted">uploading…</span>}
             <button
               onClick={post}
-              disabled={!draft.trim() || edits.add.isPending}
+              disabled={!draft.trim() || images.uploading || edits.add.isPending}
               className="px-3 py-1 pointer-coarse:py-2.5 border border-faint text-ink hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
             >
               post

@@ -159,9 +159,10 @@ docs/DESIGN.md under Touch.
   planning (levels, parents, dependencies) on every board, attachments
   (images, files, links) checked per board, board notes and docs that the
   MCP guide lists for agents (COPL-27)
-- Images on comments, the server half (COPL-117): `POST /api/tasks/:id/comments`
-  takes `attachments: [key]`, the thread carries them, `get_task` shows them.
-  The comment box doesn't upload them yet (COPL-118)
+- Images on comments (COPL-117, COPL-118): `POST /api/tasks/:id/comments`
+  takes `attachments: [key]`, the thread shows them as thumbnails that open
+  full size, the comment box takes them by paste, drop or picker, and
+  `get_task` shows them
 - Agents attach screenshots (COPL-119): `comment_on_task` takes
   `images: [{ name, data }]`, PNG or JPEG as base64, sniffed from the bytes,
   5 MB each, and uploads them in-process before posting

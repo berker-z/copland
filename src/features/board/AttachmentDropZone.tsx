@@ -28,7 +28,7 @@ function isTextTarget(target: EventTarget | null): boolean {
 }
 
 /** A pasted screenshot arrives as "image.png"; give it a name worth keeping. */
-function nameFor(file: File): File {
+export function nameFor(file: File): File {
   if (file.name && file.name !== "image.png" && file.name !== "image.jpeg") return file;
   const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
   const d = new Date();

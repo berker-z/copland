@@ -34,6 +34,28 @@ export function parseCommentImages(raw: unknown): { ok: true; keys: string[] } |
   return { ok: true, keys };
 }
 
+/**
+ * Files offered to a comment box that already holds `held` images: the ones
+ * it takes, in order, and why it turned any away (non-images, or past the
+ * cap). The browser's check before it uploads; the Worker checks again.
+ */
+export function admitCommentImages<F extends { name: string; type: string }>(
+  held: number,
+  files: F[],
+): { take: F[]; refused: string | null } {
+  const images = files.filter((f) => isCommentImage(f.type));
+  const others = files.filter((f) => !isCommentImage(f.type));
+  const room = Math.max(0, COMMENT_IMAGES_MAX - held);
+  const take = images.slice(0, room);
+  const reasons: string[] = [];
+  if (others.length) {
+    const what = others.length === 1 ? `“${others[0].name}” isn't` : `${others.length} files aren't`;
+    reasons.push(`${what} PNG, JPEG, GIF or WebP, the images a comment takes`);
+  }
+  if (images.length > room) reasons.push(`A comment can have at most ${COMMENT_IMAGES_MAX} images`);
+  return { take, refused: reasons.length ? reasons.join(". ") : null };
+}
+
 /* ---------------------------------------------------- from an assistant --- */
 
 /**

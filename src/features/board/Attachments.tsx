@@ -23,8 +23,30 @@ import { AttachmentDropZone } from "./AttachmentDropZone";
 
 const input = "bg-raised border border-faint px-2 py-1 text-ink placeholder:text-faint focus:outline-none focus:border-accent";
 
-/** Full-size look at one image or file. Escape closes this, not the modal under it. */
-function Viewer({ attachment, onClose }: { attachment: Attachment; onClose: () => void }) {
+/** What the viewer shows: a file by name, with where it opens and where it downloads. */
+export interface Viewable {
+  name: string;
+  type: string;
+  size: number;
+  image: boolean;
+  src: string;
+  download: string;
+}
+
+const viewable = (a: Attachment): Viewable => ({
+  name: a.name,
+  type: a.type,
+  size: a.size,
+  image: a.kind === "image",
+  src: attachmentHref(a),
+  download: attachmentHref(a, true),
+});
+
+/**
+ * Full-size look at one image or file. Escape closes this, not the modal
+ * under it. The comment thread opens its images here too.
+ */
+export function Viewer({ file: attachment, onClose }: { file: Viewable; onClose: () => void }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -44,7 +66,7 @@ function Viewer({ attachment, onClose }: { attachment: Attachment; onClose: () =
             <span className="block text-xs text-muted">{formatBytes(attachment.size)}</span>
           </span>
           <span className="flex shrink-0 items-center gap-1 text-muted">
-            <a href={attachmentHref(attachment, true)} download={attachment.name} className="p-2 hover:text-accent" title="Download">
+            <a href={attachment.download} download={attachment.name} className="p-2 hover:text-accent" title="Download">
               <Download size={16} />
             </a>
             <button onClick={onClose} className="tap p-2 hover:text-yellow" title="Close">
@@ -52,11 +74,11 @@ function Viewer({ attachment, onClose }: { attachment: Attachment; onClose: () =
             </button>
           </span>
         </header>
-        {attachment.kind === "image" ? (
-          <img src={attachmentHref(attachment)} alt={attachment.name} className="max-h-[78vh] w-auto object-contain" />
+        {attachment.image ? (
+          <img src={attachment.src} alt={attachment.name} className="max-h-[78vh] w-auto object-contain" />
         ) : (
           /* <object> renders PDFs natively where the browser can. */
-          <object data={attachmentHref(attachment)} type={attachment.type} className="h-[72vh] w-[min(88vw,48rem)]">
+          <object data={attachment.src} type={attachment.type} className="h-[72vh] w-[min(88vw,48rem)]">
             <p className="p-6 text-muted">This file can't be previewed here. Use the download button.</p>
           </object>
         )}
@@ -165,7 +187,7 @@ export function Attachments({ items, canEdit, busy, error, onFiles, onLink, onRe
       )}
 
       {items.length === 0 && !canEdit && <p className="text-faint text-sm">no files or links</p>}
-      {viewing && <Viewer attachment={viewing} onClose={() => setViewing(null)} />}
+      {viewing && <Viewer file={viewable(viewing)} onClose={() => setViewing(null)} />}
     </div>
   );
 }
