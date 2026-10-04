@@ -26,6 +26,7 @@ import { MESSAGE_MAX } from "@/domain/messages";
 import {
   INTERACTIVE_LEASE_MS,
   RUN_ENDINGS,
+  RUN_REASON_MAX,
   RUN_LEASE_MS,
   shortRunId,
   type ClaimRefusal,
@@ -1293,10 +1294,13 @@ const TOOLS: Tool[] = [
   {
     name: "finish_run",
     title: "Finish this run",
-    description: `End the run this connection belongs to, as ${RUN_ENDINGS.join(", ")}: completed when the work it set out to do is done or handed off (moving a task to blocked to wait for an answer and finishing is completed), failed when it could not do it, cancelled when it stopped for another reason. Its claims, on tasks and on messages, are released; a message it held and did not mark read is unclaimed again, for the next run. For a supervised run, how it ended moves the tasks it held that are still in an active stage: failed puts them back in todo for the next run (blocked, with a word to the owner, after three dead runs in a row), cancelled parks them in backlog, and completed leaves them where they are, so move a task where it belongs (done, blocked) before finishing completed. For a supervised run (something launched you through it) make it your last call: after it, this connection's credential stops working, and whatever started the run may also finish it for you. For an interactive run (a chat session's, made by claim_task) the connection keeps working and the next claim_task starts a new run. Refused when this connection has no run. Returns { finished: { id, status, since, ended } }.`,
+    description: `End the run this connection belongs to, as ${RUN_ENDINGS.join(", ")}: completed when the work it set out to do is done or handed off (moving a task to blocked to wait for an answer and finishing is completed), failed when it could not do it, cancelled when it stopped for another reason. Its claims, on tasks and on messages, are released; a message it held and did not mark read is unclaimed again, for the next run. For a supervised run, how it ended moves the tasks it held that are still in an active stage: failed puts them back in todo for the next run (blocked, with a word to the owner, after three dead runs in a row), cancelled parks them in backlog, and completed leaves them where they are, so move a task where it belongs (done, blocked) before finishing completed. For a supervised run (something launched you through it) make it your last call: after it, this connection's credential stops working, and whatever started the run may also finish it for you. For an interactive run (a chat session's, made by claim_task) the connection keeps working and the next claim_task starts a new run. reason says how it ended in one short line (at most ${RUN_REASON_MAX} characters, like "tests won't run: node is missing"); it shows on the run in settings and in the history of a task it puts back. Never paste output or logs into it. Refused when this connection has no run. Returns { finished: { id, status, since, ended, reason } }.`,
     inputSchema: {
       type: "object",
-      properties: { status: { type: "string", enum: [...RUN_ENDINGS], description: "How it ended" } },
+      properties: {
+        status: { type: "string", enum: [...RUN_ENDINGS], description: "How it ended" },
+        reason: { type: "string", description: `Why, in one short line of at most ${RUN_REASON_MAX} characters (optional)` },
+      },
       required: ["status"],
       additionalProperties: false,
     },
@@ -1304,8 +1308,10 @@ const TOOLS: Tool[] = [
     async run(args, ctx) {
       const runId = ctx.viewer.access?.runId ?? ctx.viewer.access?.interactiveRunId;
       if (!runId) throw new Error("This connection has no run (claim_task makes one), so there is nothing to finish.");
-      const run = await ctx.call<Run>("POST", `/api/runs/${runId}/finish`, { status: fold(String(args.status)) });
-      return { finished: { id: run.short, status: run.status, since: run.startedAt, ended: run.endedAt } };
+      const body: Record<string, unknown> = { status: fold(String(args.status)) };
+      if (args.reason !== undefined) body.reason = args.reason;
+      const run = await ctx.call<Run>("POST", `/api/runs/${runId}/finish`, body);
+      return { finished: { id: run.short, status: run.status, since: run.startedAt, ended: run.endedAt, reason: run.reason } };
     },
   },
   {

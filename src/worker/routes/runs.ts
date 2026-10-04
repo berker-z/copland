@@ -5,7 +5,7 @@
      POST   /api/runs               { client? } → { run, secret }
      GET    /api/runs/current       { run: { id, short, kind } | null }: this credential's run
      GET    /api/runs/:id           the run, with what it has claimed
-     POST   /api/runs/:id/finish    { status: completed | failed | cancelled }
+     POST   /api/runs/:id/finish    { status: completed | failed | cancelled, interrupted?, reason? }| failed | cancelled }
      POST   /api/tasks/:id/claim    this run takes the task
      DELETE /api/tasks/:id/claim    this run lets it go
      POST   /api/messages/:id/claim     this run takes the message (COPL-124)
@@ -70,6 +70,8 @@
 import { clientLabel } from "@/domain/clients";
 import {
   RUN_ENDINGS,
+  RUN_REASON_MAX,
+  runReason,
   shortRunId,
   type ClaimRefusal,
   type MessageClaimRefusal,
@@ -141,11 +143,14 @@ export async function getRun(env: Env, viewer: Viewer, id: string): Promise<Resp
 }
 
 /**
- * POST /api/runs/:id/finish { status, interrupted? }: the run is over, its
- * claims are released, and its secret stops working. A supervised run that
- * did not complete puts back the tasks it held (deadRuns.ts): `interrupted`
- * says a cancel was its launcher's own (shutting down, reloading), not a
- * person stopping the work. Finishing one already over changes nothing and
+ * POST /api/runs/:id/finish { status, interrupted?, reason? }: the run is
+ * over, its claims are released, and its secret stops working. A supervised
+ * run that did not complete puts back the tasks it held (deadRuns.ts):
+ * `interrupted` says a cancel was its launcher's own (shutting down,
+ * reloading, a runtime that couldn't start), not a person stopping the work.
+ * `reason` is how it ended in one short line (COPL-136: "exit 1 after
+ * 3.8s"), kept on the run and said in the history of a task it puts back;
+ * never a log's contents. Finishing one already over changes nothing and
  * answers with it as it is, so a retry is harmless.
  */
 export async function postRunFinish(request: Request, env: Env, viewer: Viewer, id: string, changes: Changes) {
@@ -155,6 +160,8 @@ export async function postRunFinish(request: Request, env: Env, viewer: Viewer, 
     throw badRequest(`\`status\` must be one of ${RUN_ENDINGS.join(", ")}`);
   }
   if (body.interrupted !== undefined && typeof body.interrupted !== "boolean") throw badRequest("`interrupted` must be a boolean");
+  const reason = runReason(body.reason);
+  if (reason === undefined) throw badRequest(`\`reason\` must be a string of at most ${RUN_REASON_MAX} characters`);
   const started = await ownRun(db, viewer, id);
   const held = await claimedBy(db, id);
   const { results: boards } = await db
@@ -164,10 +171,10 @@ export async function postRunFinish(request: Request, env: Env, viewer: Viewer, 
     )
     .bind(id)
     .all<{ board_id: string }>();
-  const [ended] = await db.batch(finishRunStatements(db, id, body.status as RunEnding));
+  const [ended] = await db.batch(finishRunStatements(db, id, body.status as RunEnding, reason));
   const death = deathOf(body.status as RunEnding, body.interrupted === true);
   if (ended.meta.changes && started.kind === "supervised" && death) {
-    await putBack(env, { id, userId: started.userId }, death, held, changes);
+    await putBack(env, { id, userId: started.userId }, death, held, changes, reason);
   }
   for (const b of boards) changes.notify(await boardAudience(db, b.board_id), "board");
   if (viewer.agent) changes.notify([personOf(viewer)], "agents");

@@ -166,6 +166,80 @@ impl std::fmt::Display for Exit {
     }
 }
 
+/// How long a reason sent with a run's finish may be: Copland's `RUN_REASON_MAX`.
+pub const REASON_MAX: usize = 160;
+
+/// A runtime that ends badly this soon, having written nothing, most likely never got going:
+/// its setup, not the task.
+pub const FAST: Duration = Duration::from_secs(10);
+
+/// How a runtime's run went (COPL-136): its exit, how long it ran, and whether it wrote
+/// anything to the log after the daemon's header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ended {
+    pub exit: Exit,
+    pub took: Duration,
+    pub silent: bool,
+}
+
+impl Ended {
+    /// How it ended in a line: the run log's footer, the reason sent to Copland, the box's word.
+    /// "exit 1 after 3.8s"; a runtime that never started says why instead.
+    pub fn reason(&self) -> String {
+        let line = match &self.exit {
+            Exit::SpawnFailed(_) => self.exit.to_string(),
+            exit => format!("{exit} after {}", took(self.took)),
+        };
+        clip(&line.split_whitespace().collect::<Vec<_>>().join(" "), REASON_MAX)
+    }
+
+    /// The plain word for a runtime that died at once with nothing to say: almost always its
+    /// setup on this machine, not the task. `runtime` is its program ("claude").
+    pub fn hint(&self, runtime: &str) -> Option<String> {
+        let died = matches!(self.exit, Exit::Code(c) if c != 0) || matches!(self.exit, Exit::Signal(_));
+        (died && self.silent && self.took < FAST)
+            .then(|| format!("{runtime} exited at once with no output: check the runtime outside the box"))
+    }
+}
+
+/// "3.8s", "4m 12s", "1h 20m": how long a run took, the way its footer says it.
+pub fn took(d: Duration) -> String {
+    let s = d.as_secs();
+    if s < 60 {
+        format!("{:.1}s", d.as_secs_f64())
+    } else if s < 3600 {
+        format!("{}m {}s", s / 60, s % 60)
+    } else {
+        format!("{}h {}m", s / 3600, s % 3600 / 60)
+    }
+}
+
+/// At most `max` characters, the cut marked.
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max - 1).collect();
+    out.push('…');
+    out
+}
+
+/// The program a command starts, as people say it: "claude" for `/run/…/bin/claude -p …`.
+pub fn program(argv: &[String]) -> &str {
+    argv.first()
+        .map_or("the runtime", |p| p.rsplit('/').next().unwrap_or(p))
+}
+
+/// Whether `program` can be started: a path that is an executable file, or a name found on PATH.
+pub fn found(program: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let runs = |p: &Path| fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
+    if program.contains('/') {
+        return runs(Path::new(program));
+    }
+    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| runs(&dir.join(program))))
+}
+
 /// A file deleted when this is dropped.
 struct TempFile(PathBuf);
 
@@ -247,20 +321,52 @@ pub fn span(d: Duration) -> String {
 }
 
 /// Start the runtime, keep its run alive while it lives, and stop it on shutdown, when `cancel`
-/// resolves (this run stopped by hand), or once it reaches the ceiling. Returns how it ended.
+/// resolves (this run stopped by hand), or once it reaches the ceiling. Returns how it ended, which
+/// the run log's last line says too, whatever the ending (COPL-136).
 pub async fn run(
     launch: Launch<'_>,
     shutdown: watch::Receiver<bool>,
     cancel: impl std::future::Future<Output = ()>,
-) -> Exit {
+) -> Ended {
     run_until(launch, shutdown, cancel, CEILING).await
 }
 
 async fn run_until(
     launch: Launch<'_>,
+    shutdown: watch::Receiver<bool>,
+    cancel: impl std::future::Future<Output = ()>,
+    ceiling: Duration,
+) -> Ended {
+    let log = log_path(launch.state_dir, launch.run_id);
+    let started = std::time::Instant::now();
+    let mut header = None;
+    let exit = supervise(launch, shutdown, cancel, ceiling, &mut header).await;
+    /* Silent: nothing after the header, or no header at all (it never got that far). */
+    let silent = header.is_none_or(|len| fs::metadata(&log).map_or(true, |m| m.len() <= len));
+    let ended = Ended {
+        exit,
+        took: started.elapsed(),
+        silent,
+    };
+    let footer = (|| -> Result<()> {
+        private_dir(log.parent().expect("log path has a parent"))?;
+        writeln!(private_file(&log, true)?, "# copland-daemon: {}", ended.reason())?;
+        Ok(())
+    })();
+    if let Err(e) = footer {
+        tracing::warn!(log = %log.display(), "writing the run log's last line: {e:#}");
+    }
+    ended
+}
+
+/// Start the runtime and wait for it, as `run` says. `header` is set to the log's length once
+/// the daemon's header is in it, so what the runtime wrote after can be told from nothing.
+async fn supervise(
+    launch: Launch<'_>,
     mut shutdown: watch::Receiver<bool>,
     cancel: impl std::future::Future<Output = ()>,
     ceiling: Duration,
+    header: &mut Option<u64>,
 ) -> Exit {
     let Launch {
         api,
@@ -322,6 +428,7 @@ async fn run_until(
         cwd.display(),
         argv
     );
+    *header = log_file.metadata().ok().map(|m| m.len());
     let stderr = match log_file.try_clone() {
         Ok(f) => f,
         Err(e) => return Exit::SpawnFailed(e.to_string()),
@@ -755,7 +862,7 @@ mod tests {
         let api = Api::new(&agent.url).unwrap();
         let (_tx, shutdown) = watch::channel(false);
         let started = std::time::Instant::now();
-        let exit = run_until(
+        let ended = run_until(
             Launch {
                 api: &api,
                 agent: &agent,
@@ -776,7 +883,7 @@ mod tests {
         )
         .await;
         let _ = fs::remove_dir_all(&scratch);
-        assert_eq!(exit, Exit::TimedOut);
+        assert_eq!(ended.exit, Exit::TimedOut);
         /* sleep dies on SIGTERM, so the grace period is not waited out. */
         assert!(started.elapsed() < GRACE, "took {:?}", started.elapsed());
     }
@@ -801,7 +908,7 @@ mod tests {
         let api = Api::new(&agent.url).unwrap();
         let (_tx, shutdown) = watch::channel(false);
         let started = std::time::Instant::now();
-        let exit = run_until(
+        let ended = run_until(
             Launch {
                 api: &api,
                 agent: &agent,
@@ -822,7 +929,137 @@ mod tests {
         )
         .await;
         let _ = fs::remove_dir_all(&scratch);
-        assert_eq!(exit, Exit::Cancelled);
+        assert_eq!(ended.exit, Exit::Cancelled);
         assert!(started.elapsed() < GRACE, "took {:?}", started.elapsed());
+    }
+
+    /// Run `command` to its end with nothing in its way; gives how it ended and its log.
+    async fn ran(command: &[&str], name: &str) -> (Ended, String) {
+        let scratch = std::env::temp_dir().join(format!("copland-{name}-{}", std::process::id()));
+        let agent = AgentConfig {
+            url: "http://127.0.0.1:9".into(),
+            handle: "me/dev".into(),
+            token: Secret::new("cpl_x"),
+            command: command.iter().map(|s| s.to_string()).collect(),
+            workdir: std::env::temp_dir(),
+            client: "test".into(),
+            code_command: None,
+            writable: Vec::new(),
+            code_dir: "/tmp/copland-code".into(),
+            max_runs: 10,
+        };
+        let api = Api::new(&agent.url).unwrap();
+        let (_tx, shutdown) = watch::channel(false);
+        let run_id = "00000000-0000-0000-0000-000000000002";
+        let ended = run_until(
+            Launch {
+                api: &api,
+                agent: &agent,
+                handle: "me/dev",
+                run_id,
+                secret: &Secret::new("cplr_x"),
+                task_id: "t-1",
+                task_key: "T-1",
+                brief: Brief::Work,
+                messages: &[],
+                state_dir: &scratch,
+                runtime_dir: &scratch,
+                workspace: None,
+            },
+            shutdown,
+            std::future::pending(),
+            CEILING,
+        )
+        .await;
+        let log = fs::read_to_string(log_path(&scratch, run_id)).unwrap_or_default();
+        let _ = fs::remove_dir_all(&scratch);
+        (ended, log)
+    }
+
+    /// A runtime that dies at once, saying nothing: the log's last line says how, and so does
+    /// the box, in words that point at the runtime rather than the task.
+    #[tokio::test]
+    async fn a_silent_exit_is_said_in_the_log_and_plainly() {
+        let (ended, log) = ran(&["sh", "-c", "exit 3"], "silent").await;
+        assert_eq!(ended.exit, Exit::Code(3));
+        assert!(ended.silent);
+        let last = log.lines().last().unwrap();
+        assert!(last.starts_with("# copland-daemon: exit 3 after 0."), "{log}");
+        assert!(last.ends_with('s'), "{log}");
+        assert_eq!(last, format!("# copland-daemon: {}", ended.reason()));
+        assert_eq!(
+            ended.hint("sh").as_deref(),
+            Some("sh exited at once with no output: check the runtime outside the box")
+        );
+    }
+
+    /// Success has its last line too; a runtime that wrote something gets no plain word.
+    #[tokio::test]
+    async fn every_ending_has_a_last_line() {
+        let (ended, log) = ran(&["sh", "-c", "echo ok"], "ok").await;
+        assert_eq!(ended.exit, Exit::Code(0));
+        assert!(!ended.silent);
+        assert!(log.contains("\nok\n# copland-daemon: exit 0 after "), "{log}");
+        assert_eq!(ended.hint("sh"), None);
+
+        let (ended, _) = ran(&["sh", "-c", "echo boom >&2; exit 1"], "loud").await;
+        assert_eq!(ended.exit, Exit::Code(1));
+        assert!(!ended.silent);
+        assert_eq!(ended.hint("sh"), None);
+    }
+
+    /// A runtime that can't be started: the error is the log's last line and the reason.
+    #[tokio::test]
+    async fn a_spawn_failure_says_why() {
+        let (ended, log) = ran(&["/nonexistent/claude", "-p"], "spawn").await;
+        assert!(matches!(&ended.exit, Exit::SpawnFailed(e) if e.starts_with("/nonexistent/claude: ")));
+        assert!(ended.silent);
+        assert!(
+            ended.reason().starts_with("did not start: /nonexistent/claude: "),
+            "{}",
+            ended.reason()
+        );
+        assert!(!ended.reason().contains(" after "));
+        assert_eq!(
+            log.lines().last().unwrap(),
+            format!("# copland-daemon: {}", ended.reason())
+        );
+    }
+
+    #[test]
+    fn reasons_read_plainly_and_stay_short() {
+        assert_eq!(took(Duration::from_millis(3800)), "3.8s");
+        assert_eq!(took(Duration::from_secs(252)), "4m 12s");
+        assert_eq!(took(Duration::from_secs(4800)), "1h 20m");
+        let ended = |exit| Ended {
+            exit,
+            took: Duration::from_millis(3800),
+            silent: true,
+        };
+        assert_eq!(ended(Exit::Code(1)).reason(), "exit 1 after 3.8s");
+        assert_eq!(ended(Exit::Signal(9)).reason(), "signal 9 after 3.8s");
+        assert_eq!(ended(Exit::TimedOut).reason(), "stopped at the run ceiling after 3.8s");
+        let long = ended(Exit::SpawnFailed(format!("x:\n{}", "y".repeat(400)))).reason();
+        assert_eq!(long.chars().count(), REASON_MAX);
+        assert!(long.starts_with("did not start: x: y") && long.ends_with('…'));
+        /* Stopped or slow is not a runtime that never got going. */
+        assert_eq!(ended(Exit::Cancelled).hint("claude"), None);
+        let slow = Ended {
+            took: FAST,
+            ..ended(Exit::Code(1))
+        };
+        assert_eq!(slow.hint("claude"), None);
+    }
+
+    #[test]
+    fn programs_are_found_on_path_or_by_path() {
+        assert!(found("sh"));
+        assert!(!found("copland-no-such-program"));
+        assert!(!found("/nonexistent/claude"));
+        assert_eq!(
+            program(&["/run/current-system/sw/bin/claude".into(), "-p".into()]),
+            "claude"
+        );
+        assert_eq!(program(&[]), "the runtime");
     }
 }

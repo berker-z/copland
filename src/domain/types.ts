@@ -441,6 +441,8 @@ export interface Run {
   startedAt: string;
   lastSeenAt: string;
   endedAt: string | null;
+  /** How it ended, in a line, when whatever finished it said ("exit 1 after 3.8s"). */
+  reason: string | null;
   /** Keys of the tasks it holds a live claim on. */
   claims: string[];
 }

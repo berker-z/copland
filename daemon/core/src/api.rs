@@ -373,6 +373,16 @@ impl Ending {
     }
 }
 
+/// What `POST /api/runs/:id/finish` is sent: the ending, whether it was the daemon's own, and why
+/// when there is a word for it.
+fn finish_body(ending: Ending, reason: Option<&str>) -> serde_json::Value {
+    let mut body = json!({ "status": ending.as_str(), "interrupted": ending == Ending::Interrupted });
+    if let Some(r) = reason {
+        body["reason"] = json!(r);
+    }
+    body
+}
+
 #[derive(Debug)]
 pub enum ApiError {
     /// The server answered, and said no. `message` is its own words.
@@ -643,12 +653,14 @@ impl Api {
             .await
     }
 
-    /// Finish the run. Works with the agent's token even after the run's secret has died; a run already over is answered as it is.
-    pub async fn finish_run(&self, token: &Secret, id: &str, ending: Ending) -> ApiResult<Run> {
+    /// Finish the run, with how its runtime ended in a line when it was launched ("exit 1 after
+    /// 3.8s", COPL-136; at most `runner::REASON_MAX` characters, never the log). Works with the
+    /// agent's token even after the run's secret has died; a run already over is answered as it is.
+    pub async fn finish_run(&self, token: &Secret, id: &str, ending: Ending, reason: Option<&str>) -> ApiResult<Run> {
         let req = self
             .http
             .post(self.url(&format!("/api/runs/{id}/finish")))
-            .json(&json!({ "status": ending.as_str(), "interrupted": ending == Ending::Interrupted }));
+            .json(&finish_body(ending, reason));
         self.send(req, token).await
     }
 
@@ -703,6 +715,25 @@ impl Api {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_finish_says_how_the_runtime_ended() {
+        assert_eq!(
+            finish_body(Ending::Failed, Some("exit 1 after 3.8s")),
+            json!({ "status": "failed", "interrupted": false, "reason": "exit 1 after 3.8s" })
+        );
+        assert_eq!(
+            finish_body(
+                Ending::Interrupted,
+                Some("did not start: bwrap: No such file or directory (os error 2)")
+            ),
+            json!({ "status": "cancelled", "interrupted": true, "reason": "did not start: bwrap: No such file or directory (os error 2)" })
+        );
+        assert_eq!(
+            finish_body(Ending::Cancelled, None),
+            json!({ "status": "cancelled", "interrupted": false })
+        );
+    }
 
     #[test]
     fn reads_the_device_flow_answers() {
