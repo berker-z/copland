@@ -77,7 +77,7 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   are `contents` and the panes stack in one column with `gap-2` between
   them, edge to edge sideways below `sm`, in reading order: the first
   column top to bottom, then the next. By default there are three columns:
-  wired alone; boards, tasks, inbox; and agenda, calendar, notepad. Wired
+  wired and nudge; boards, tasks, inbox; and agenda, calendar, notepad. Wired
   comes first because with no agents yet it is where making one starts, and
   a phone gets the work before the calendars. Changing the default never
   touches a layout someone has saved. A pane switched on
@@ -125,13 +125,19 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   then the modal. Its header starts with a link icon for everyone that
   copies the task's own link (a green tick and "copied" for a moment), and
   opened over the dashboard its key is that link, `text-faint` going
-  accent on hover. Someone with agents of their own on the board also gets
-  a speech-bubble nudge there (accent while open): a line above the task
-  with the agent (a select when there are several, assignees first) and
-  the one-line message input. That input (`src/features/inbox/MessageInput.tsx`)
-  is the same everywhere: a field and a `send` button that turns green
-  and says "sent" for a moment, a refusal in red under it. A `?task=` key the board doesn't have shows as one
+  accent on hover. A `?task=` key the board doesn't have shows as one
   `text-yellow` line under the filter bar with an × to drop it.
+- The one-line message input (`src/features/inbox/MessageInput.tsx`)
+  is the same everywhere: a field and a `send` button that turns green
+  and says "sent" for a moment, a refusal in red under it.
+- The /nudge pane (`src/features/inbox/NudgePane.tsx`) is a list of
+  agents, one row each (avatar, handle in `text-ink`, `pointer-coarse:py-3`
+  for a finger), with `in a run` in `text-yellow` at the right while one
+  has a run going. A picked row turns `bg-raised` with its handle in
+  accent, and opens the message input under it, after a muted line saying
+  the message waits for the next run when it has one. Picking it again
+  closes it. With nobody to message it says so, `text-muted`, with an
+  accent link to settings › agents, as /wired does.
 - `src/features/shell/StatusLine.tsx` — statusline and phone menu; its
   readouts are in `topbar.tsx`, the inbox bell in
   `src/features/inbox/InboxBadge.tsx` (the same `InboxItems` list as the

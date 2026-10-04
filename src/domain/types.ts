@@ -357,8 +357,19 @@ export interface Comment {
   text: string;
   /** Who it mentions, resolved when it was written: ids, with their handles as they are now. */
   mentions: { id: string; handle: string }[];
+  /** Its images, oldest first (COPL-117). Never in the task's own attachments. */
+  attachments: CommentAttachment[];
   createdAt: string;
   editedAt: string | null;
+}
+
+/** An image on a comment; url is the authenticated /api/attachments/<key>. */
+export interface CommentAttachment {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  url: string;
 }
 
 /** One row of a task's history (GET /api/tasks/:id/events). */
@@ -519,6 +530,15 @@ export interface SentMessage {
   replyTo: string | null;
   trusted: boolean;
   createdAt: string;
+}
+
+/** GET /api/messages/recipients: an agent the viewer may message, for the nudge pane. */
+export interface Recipient {
+  user: User;
+  /** The viewer's own agent; otherwise someone else's, open to its boards' members. */
+  own: boolean;
+  /** It has a run going, which read its inbox when it started: a message waits for the next run. */
+  running: boolean;
 }
 
 /** GET /api/inbox: one page, newest first (by created time, then id). */
