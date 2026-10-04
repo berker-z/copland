@@ -161,7 +161,7 @@ docs/DESIGN.md under Touch.
   MCP guide lists for agents (COPL-27)
 - Images on comments, the server half (COPL-117): `POST /api/tasks/:id/comments`
   takes `attachments: [key]`, the thread carries them, `get_task` shows them.
-  The comment box doesn't upload them yet (COPL-116)
+  The comment box doesn't upload them yet (COPL-118)
 - MCP server with OAuth and personal tokens, its tools, a coverage check
 - Deployed at copland.berkerz.dev with a published Google consent screen,
   privacy and terms pages, the pole mark and favicon
