@@ -174,8 +174,16 @@ docs/DESIGN.md under Touch.
   a release, or marking the message read or dismissing it; a read message
   is refused (409 `read`). Inbox message items carry `claim`. MCP:
   `claim_message`, `release_message`, and `inbox` shows `claimed_by` and
-  `run`. `daemon/core/src/api.rs` has the calls and fields; the daemon
-  doesn't use them yet (checks/messageClaims.check.ts)
+  `run`. `daemon/core/src/api.rs` has the calls and fields
+  (checks/messageClaims.check.ts)
+- Message runs, the daemon half (COPL-127, for COPL-123): every message,
+  about a task or not, goes to a message run, which claims each before it
+  launches and leaves out any another run claimed first; a batch left
+  empty launches nothing. Task runs handle only their own task's comments
+  and mentions, and their prompts say so instead of "check your inbox".
+  The message prompt names the task a message is about and reads "on
+  <name>" as one of the agent's boards. Tested live with two daemons on one
+  agent token and four messages: each was in exactly one run
 - MCP server with OAuth and personal tokens, its tools, a coverage check
 - Deployed at copland.berkerz.dev with a published Google consent screen,
   privacy and terms pages, the pole mark and favicon
@@ -378,9 +386,9 @@ docs/DESIGN.md under Touch.
   and a nullable `task`. MCP: `send_message`, and the guide says how to
   weigh and answer one. The rule is `src/domain/messages.ts`
   (checks/messages.check.ts). Migration 0025 rebuilds inbox_items. The
-  daemon wakes on one (COPL-107): a message about a task joins its wake
-  like a mention, task-less ones get a run of their own in `workdir`, and
-  one that comes during a run waits for the next (daemon/README.md,
+  daemon wakes on one (COPL-107): every message, about a task or not, gets
+  a message run of its own in `workdir` (COPL-127), and one that comes
+  during a run waits for the next (daemon/README.md,
   Messages). Sending from the box is COPL-109, below
 - Housekeeping on the cron (COPL-112, `src/worker/housekeeping.ts`): expired
   sessions and OAuth codes, runs ended over 30 days ago, tokens revoked or

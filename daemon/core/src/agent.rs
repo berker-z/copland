@@ -7,9 +7,11 @@
 //! A task is never in two runs from one loop. The loop hears each run's end
 //! (Done) and remembers it in the wake guard, as before.
 //!
-//! Messages that point at no task (COPL-107) get a run of their own in
-//! `workdir`, without a claim: one at a time, for those no run has had yet.
-//! What arrives while a run is going waits for the next one.
+//! Messages (COPL-107), about a task or not (COPL-127), get a run of their
+//! own in `workdir`, one at a time, for those no run has had yet and no run
+//! holds. It claims each before it launches (COPL-124) and is given only
+//! those it got, so no message is handled twice. A run on a task never sees
+//! a message. What arrives while a run is going waits for the next one.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -306,10 +308,10 @@ impl AgentLoop {
             Ok((id, d)) => {
                 self.spawned.remove(&id);
                 self.inflight.remove(&d.wake.task_id);
-                match d.remember {
-                    Some(_) if d.wake.task_id == MESSAGES => self.guard.remember_messages(&d.wake.messages),
-                    Some((updated, held)) => self.guard.remember(&d.wake, updated, held),
-                    None => {}
+                if d.wake.task_id == MESSAGES {
+                    self.guard.remember_messages(&d.claimed);
+                } else if let Some((updated, held)) = d.remember {
+                    self.guard.remember(&d.wake, updated, held);
                 }
                 if let Some(e) = d.error {
                     tracing::warn!("{e}");
@@ -616,26 +618,22 @@ impl AgentLoop {
         Ok(())
     }
 
-    /// Messages to the agent that no run has had and none is on: they wait for the next run.
+    /// Messages to the agent that no run has had and none holds or is on: they wait for the next run.
     fn queued(&self, plan: &Plan) {
         let running: std::collections::HashSet<&str> = self
             .inflight
             .values()
             .flat_map(|r| r.items.iter().map(String::as_str))
             .collect();
-        let taskless = plan.messages.iter().map(|m| (None, m));
-        let on_tasks = plan
-            .wakes
+        let queued = plan
+            .messages
             .iter()
-            .flat_map(|w| w.messages.iter().map(move |m| (Some(w.task_id.as_str()), m)));
-        let queued = taskless
-            .chain(on_tasks)
-            .filter(|(task, m)| !running.contains(m.item.as_str()) && !self.guard.had(*task, &m.item))
+            .filter(|m| !m.claimed && !running.contains(m.item.as_str()) && !self.guard.had(&m.item))
             .count();
         self.update(|s| s.messages = queued);
     }
 
-    /// One run for the task-less messages no run has had yet, when nothing stands in its way: one
+    /// One run for the messages no run has had yet and none holds, when nothing stands in its way: one
     /// going already, `max_runs`, or another run in the workdir. They wait for the next poll then.
     fn answer(&mut self, me: &Identity, plan: &Plan, runs: &mut JoinSet<Done>) {
         let batch = self.guard.new_messages(plan);
@@ -669,7 +667,7 @@ impl AgentLoop {
         self.spawned.insert(id, MESSAGES.to_string());
     }
 
-    /// Start a run for the task-less messages, then for each task that needs one, as far as
+    /// Start a run for the messages, then for each task that needs one, as far as
     /// `max_runs` and the workdir allow. Messages go first: they are said to the agent directly,
     /// and a run on them is short.
     async fn launch(&mut self, plan: &Plan, runs: &mut JoinSet<Done>) -> Result<()> {
@@ -792,6 +790,8 @@ struct Done {
     /// For the guard: the task as the run left it, and whether another run held it. None when it
     /// went wrong before there was anything to remember (the run couldn't start or claim).
     remember: Option<(Option<String>, bool)>,
+    /// A message run's: the messages it claimed, which the guard remembers whatever the ending.
+    claimed: Vec<Message>,
     /// What went wrong, for the agent's error line.
     error: Option<String>,
 }
@@ -801,9 +801,44 @@ impl Done {
         Self {
             wake,
             remember: None,
+            claimed: Vec::new(),
             error: Some(error),
         }
     }
+
+    fn ran(wake: Wake, updated_at: Option<String>, held: bool) -> Self {
+        Self {
+            wake,
+            remember: Some((updated_at, held)),
+            claimed: Vec::new(),
+            error: None,
+        }
+    }
+}
+
+/// Claim each message of a batch for one run (COPL-124), through `claim` (the run's secret
+/// against `POST /api/messages/:id/claim`). Gives back those the run now holds, in order, and
+/// the others with the server's word on each: another run has it ("claimed"), or it was dealt
+/// with since the inbox was read ("read"). Only those claimed go in the run's prompt, so two
+/// runs that planned from the same inbox never both handle a message. Anything but a refusal
+/// (the server unreachable) is an error, and the run claims nothing more.
+async fn claim_batch<F, Fut>(
+    batch: Vec<Message>,
+    mut claim: F,
+) -> Result<(Vec<Message>, Vec<(Message, String)>), ApiError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), ApiError>>,
+{
+    let (mut held, mut left) = (Vec::new(), Vec::new());
+    for m in batch {
+        match claim(m.id.clone()).await {
+            Ok(()) => held.push(m),
+            Err(e) if e.is_refusal() => left.push((m, e.to_string())),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok((held, left))
 }
 
 /// What one run needs of its loop, cloned, so it can go on while the loop polls and starts others.
@@ -885,11 +920,7 @@ impl RunCtx {
                     }
                     let updated = self.updated_at(&wake.task_id).await;
                     self.summary(&short, &key, format!("skipped ({ending}): {e}"));
-                    return Done {
-                        wake,
-                        remember: Some((updated, held)),
-                        error: None,
-                    };
+                    return Done::ran(wake, updated, held);
                 }
             },
             Err(e) => {
@@ -909,11 +940,7 @@ impl RunCtx {
                     self.update(|s| s.run_ended(&short));
                     let updated = self.updated_at(&wake.task_id).await;
                     self.summary(&short, &key, format!("{ending}: no workspace ({e})"));
-                    return Done {
-                        wake,
-                        remember: Some((updated, false)),
-                        error: None,
-                    };
+                    return Done::ran(wake, updated, false);
                 }
             }
         } else {
@@ -933,7 +960,7 @@ impl RunCtx {
                 task_id: &wake.task_id,
                 task_key: &key,
                 brief,
-                messages: &wake.messages,
+                messages: &[],
                 state_dir: &self.paths.state_dir,
                 runtime_dir: &self.paths.runtime_dir,
                 workspace: workspace.as_ref(),
@@ -971,17 +998,14 @@ impl RunCtx {
         };
         self.summary(&short, &key, outcome);
         self.update(|s| s.run_ended(&short));
-        Done {
-            wake,
-            remember: Some((updated, false)),
-            error: None,
-        }
+        Done::ran(wake, updated, false)
     }
 
-    /// One run on messages that point at no task: start it, launch the runtime in `workdir` with
-    /// the messages in its prompt, finish the run. No claim: there is no task to hold.
+    /// One run on messages, about a task or not (COPL-127): start it, claim each message for it
+    /// (COPL-124), launch the runtime in `workdir` with those it holds in its prompt, finish the run
+    /// (which ends the claims). A message another run claimed first is left to it; a batch left
+    /// empty launches nothing.
     async fn answer(self, me: &str, batch: Vec<Message>) -> Done {
-        let n = batch.len();
         let wake = Wake {
             task_id: MESSAGES.to_string(),
             task_key: MESSAGES.to_string(),
@@ -989,8 +1013,8 @@ impl RunCtx {
             oldest: batch.first().map(|m| m.at.clone()).unwrap_or_default(),
             mentioned: true,
             commented: true,
-            messages: batch,
         };
+        let n = batch.len();
         tracing::info!(messages = n, "waking for {n} message(s)");
         let started = match self.api.start_run(&self.agent.token, &self.agent.client).await {
             Ok(s) => s,
@@ -998,6 +1022,31 @@ impl RunCtx {
         };
         let run_id = started.run.id.clone();
         let short = started.run.short.clone();
+        let claims = claim_batch(batch, |id| {
+            let (api, secret) = (&self.api, &started.secret);
+            async move { api.claim_message(secret, &id).await.map(|_| ()) }
+        })
+        .await;
+        let claimed = match claims {
+            Ok((claimed, left)) => {
+                for (m, why) in &left {
+                    tracing::info!(run = %short, message = %m.id, "message not claimed, leaving it: {why}");
+                }
+                claimed
+            }
+            Err(e) => {
+                self.finish(&run_id, Ending::Interrupted).await;
+                return Done::failed(wake, format!("claiming {n} message(s): {e}"));
+            }
+        };
+        if claimed.is_empty() {
+            let ending = self.finish(&run_id, Ending::Cancelled).await;
+            tracing::info!(run = %short, "every message was claimed by another run or read; nothing to launch");
+            self.summary(&short, MESSAGES, format!("skipped ({ending}): nothing left to claim"));
+            return Done::ran(wake, None, false);
+        }
+        let n = claimed.len();
+        tracing::info!(run = %short, messages = n, "claimed {n} message(s)");
         self.update(|s| s.run_started(&short, MESSAGES));
         let exit = runner::run(
             Launch {
@@ -1009,7 +1058,7 @@ impl RunCtx {
                 task_id: "",
                 task_key: MESSAGES,
                 brief: Brief::Message,
-                messages: &wake.messages,
+                messages: &claimed,
                 state_dir: &self.paths.state_dir,
                 runtime_dir: &self.paths.runtime_dir,
                 workspace: None,
@@ -1021,16 +1070,14 @@ impl RunCtx {
         drop(started);
         let status = self.finish(&run_id, ending_of(&exit)).await;
         tracing::info!(run = %short, messages = n, "runtime {exit}; run {status}");
-        /* Remembered whatever the ending, so a message the run left unread doesn't launch another. */
         self.summary(&short, MESSAGES, status);
         self.update(|s| s.run_ended(&short));
+        /* Remembered whatever the ending, so a message the run left unread doesn't launch another. */
         Done {
-            wake,
-            remember: Some((None, false)),
-            error: None,
+            claimed,
+            ..Done::ran(wake, None, false)
         }
     }
-
     /// What a run on the task would be (COPL-87), with the task and the repo when it was read.
     async fn lookup(&self, task_id: &str, key: &str) -> Result<TaskInfo> {
         if self.agent.code_command.is_none() {
@@ -1097,6 +1144,100 @@ impl RunCtx {
 mod tests {
     use super::*;
 
+    /// Copland's message claims, as far as the race goes: one run per message, refused (409
+    /// "claimed") to any other, and a read message never claimed (409 "read").
+    #[derive(Default)]
+    struct Server {
+        claims: std::sync::Mutex<HashMap<String, String>>,
+        read: std::sync::Mutex<std::collections::HashSet<String>>,
+    }
+
+    impl Server {
+        async fn claim(&self, run: &str, id: String) -> Result<(), ApiError> {
+            /* Let the other run in between every call, as two processes would. */
+            tokio::task::yield_now().await;
+            let refused = |code: &str| ApiError::Status {
+                status: 409,
+                code: Some(code.into()),
+                message: format!("{id}: {code}"),
+            };
+            if self.read.lock().unwrap().contains(&id) {
+                return Err(refused("read"));
+            }
+            let mut claims = self.claims.lock().unwrap();
+            match claims.get(&id) {
+                Some(holder) if holder != run => Err(refused("claimed")),
+                _ => {
+                    claims.insert(id, run.into());
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    fn inbox_message(n: u32) -> InboxItem {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("i{n}"),
+            "kind": "message",
+            "task": if n % 2 == 0 { serde_json::json!({ "id": "t1", "key": "COPL-1", "title": "" }) } else { serde_json::Value::Null },
+            "actor": { "id": "u-owner", "handle": "owner" },
+            "message": { "id": format!("m{n}"), "text": "create a dummy task on copland", "trusted": true },
+            "createdAt": format!("2026-10-04T06:0{n}:00.000Z"),
+            "readAt": null
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn two_runs_on_one_inbox_handle_each_message_exactly_once() {
+        let me = Identity {
+            id: "u-dev".into(),
+            handle: "owner/dev".into(),
+        };
+        /* Two messages, one about a task; two daemons (or two runs) that read the inbox at the same time. */
+        let items = [inbox_message(1), inbox_message(2)];
+        let (a, b) = (WakeGuard::default(), WakeGuard::default());
+        let (pa, pb) = (plan(&me, &items), plan(&me, &items));
+        /* The message about a task wakes no task run. */
+        assert!(pa.wakes.is_empty());
+        let (batch_a, batch_b) = (a.new_messages(&pa), b.new_messages(&pb));
+        assert_eq!(batch_a.len(), 2);
+        assert_eq!(batch_a, batch_b);
+
+        let server = Server::default();
+        let (got_a, got_b) = tokio::join!(
+            claim_batch(batch_a, |id| server.claim("run-a", id)),
+            claim_batch(batch_b, |id| server.claim("run-b", id)),
+        );
+        let ((held_a, left_a), (held_b, left_b)) = (got_a.unwrap(), got_b.unwrap());
+        let mut handled: Vec<_> = held_a.iter().chain(&held_b).map(|m| m.id.clone()).collect();
+        handled.sort();
+        assert_eq!(handled, ["m1", "m2"], "each message is in exactly one run's prompt");
+        assert_eq!(left_a.len() + left_b.len(), 2, "and refused to the other");
+        assert!(left_a.iter().chain(&left_b).all(|(_, why)| why.contains("claimed")));
+
+        /* A third run that read the inbox before the first marked m1 read is refused it too. */
+        server.read.lock().unwrap().insert("m1".into());
+        server.claims.lock().unwrap().clear();
+        let (held, left) = claim_batch(a.new_messages(&pa), |id| server.claim("run-c", id))
+            .await
+            .unwrap();
+        assert_eq!(held.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m2"]);
+        assert!(left[0].1.contains("read"));
+
+        /* Everything refused: an empty batch, and the run launches nothing. */
+        let (held, _) = claim_batch(b.new_messages(&pb), |id| server.claim("run-d", id))
+            .await
+            .unwrap();
+        assert!(held.is_empty());
+
+        /* Anything but a refusal stops the claiming: the run fails and claims nothing more. */
+        let err = claim_batch(a.new_messages(&pa), |_| async {
+            Err::<(), _>(ApiError::Transport("down".into()))
+        })
+        .await;
+        assert!(err.is_err());
+    }
     #[test]
     fn a_leaf_task_is_coded_and_what_holds_work_is_led() {
         /* No coding setup or no repo: the old way, whatever the level. */

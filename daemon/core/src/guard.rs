@@ -6,14 +6,19 @@
 //!
 //! - Items the agent wrote itself never wake it. "Itself" is the actor's id
 //!   against the token's own (the handle only when a server sends no id).
-//! - A message (COPL-106) about a task joins that task's wake like a mention
-//!   does, and the run's prompt quotes it.
-//! - Task-less messages are woken for together: one run, in the shared
-//!   workdir and without a claim, for those no run has had yet, oldest first
-//!   (`MESSAGES_PER_RUN` at most; the rest go to the next). The guard
-//!   remembers each by its item id once a run has had it, so one a run left
-//!   unread never launches another; a new message does. Any other task-less
-//!   item is logged and left alone (none exist).
+//! - Every message (COPL-106) goes to a message run, about a task or not
+//!   (COPL-127): it never joins a task's wake, so no task run handles it.
+//!   One run, in the shared workdir, takes the unread messages no live claim
+//!   holds and no run of this daemon has had, oldest first
+//!   (`MESSAGES_PER_RUN` at most; the rest go to the next), and claims each
+//!   in Copland before it starts (COPL-124). Only those it claimed are in
+//!   its prompt, so two runs, two daemons or a chat session never handle one
+//!   message twice; one another run holds is left to that run.
+//! - A message claim ends with its run, so a message a run finished with but
+//!   left unread is free again at once. The guard remembers each message a
+//!   run claimed, by its item id, so it never launches another here; a new
+//!   message does. Any other task-less item is logged and left alone (none
+//!   exist).
 //! - After a run on a task (or a claim refused), the daemon remembers which
 //!   unread items it had and the task's `updatedAt` as the run left it. While
 //!   the task's unread items are all ones it remembers and the task has not
@@ -23,12 +28,12 @@
 //!   held: that task wakes again once it has no live claim (its run ended or
 //!   went quiet), and not while it still has one, whatever else changes.
 //! - Once a task has no unread items, its memory is dropped; so is that of a
-//!   task-less message once it is read.
+//!   message once it is read.
 //! - Nothing reaches a run once it has started: what arrives while one is
 //!   going waits for the next.
 //!
 //! Memory is in-process: a restarted daemon launches once more for whatever
-//! is still unread.
+//! is still unread (and, for a message, unclaimed).
 
 use std::collections::{HashMap, HashSet};
 
@@ -52,7 +57,7 @@ impl Identity {
     }
 }
 
-/// The most task-less messages one run is given; the rest wait for the next.
+/// The most messages one run is given; the rest wait for the next.
 pub const MESSAGES_PER_RUN: usize = 20;
 
 /// A message sent to the agent (COPL-106), as a run's prompt quotes it.
@@ -68,6 +73,10 @@ pub struct Message {
     pub trusted: bool,
     pub text: String,
     pub at: String,
+    /// The key of the task it is about, when it names one.
+    pub task: Option<String>,
+    /// A run holds a live claim on it (COPL-124): that run handles it.
+    pub claimed: bool,
 }
 
 /// A task with unread items for this agent: one possible wake.
@@ -79,12 +88,10 @@ pub struct Wake {
     pub items: Vec<String>,
     /// The oldest of them, which decides the order tasks are taken in.
     pub oldest: String,
-    /// Someone @mentioned the agent in one of them, or messaged it about the task.
+    /// Someone @mentioned the agent in one of them.
     pub mentioned: bool,
-    /// One of them is a comment (a mention or a message is one too).
+    /// One of them is a comment (a mention is one too).
     pub commented: bool,
-    /// The messages among them, oldest first, for the prompt.
-    pub messages: Vec<Message>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -93,7 +100,7 @@ pub struct Plan {
     pub wakes: Vec<Wake>,
     /// Items the agent wrote itself.
     pub own: Vec<String>,
-    /// Unread messages that point at no task, oldest first.
+    /// Unread messages, about a task or not, claimed or not, oldest first.
     pub messages: Vec<Message>,
     /// Other items with no task, which nothing handles.
     pub taskless: Vec<String>,
@@ -109,6 +116,8 @@ fn message(item: &InboxItem) -> Option<Message> {
         trusted: m.trusted,
         text: m.text.clone(),
         at: item.created_at.clone(),
+        task: item.task.as_ref().map(|t| t.key.clone()),
+        claimed: m.claim.is_some(),
     })
 }
 
@@ -132,7 +141,6 @@ pub fn add_ready(plan: &mut Plan, ready: &[ReadyTask]) {
             oldest: r.updated_at.clone(),
             mentioned: false,
             commented: false,
-            messages: Vec::new(),
         });
     }
     plan.wakes
@@ -147,12 +155,13 @@ pub fn plan(me: &Identity, items: &[InboxItem]) -> Plan {
             plan.own.push(item.id.clone());
             continue;
         }
-        let message = message(item);
+        /* A message goes to a message run, whatever it is about (COPL-127). */
+        if let Some(m) = message(item) {
+            plan.messages.push(m);
+            continue;
+        }
         let Some(task) = &item.task else {
-            match message {
-                Some(m) => plan.messages.push(m),
-                None => plan.taskless.push(item.id.clone()),
-            }
+            plan.taskless.push(item.id.clone());
             continue;
         };
         let wake = by_task.entry(task.id.clone()).or_insert_with(|| Wake {
@@ -162,26 +171,17 @@ pub fn plan(me: &Identity, items: &[InboxItem]) -> Plan {
             oldest: item.created_at.clone(),
             mentioned: false,
             commented: false,
-            messages: Vec::new(),
         });
         wake.items.push(item.id.clone());
         if item.created_at < wake.oldest {
             wake.oldest = item.created_at.clone();
         }
-        /* A message is said to the agent directly, as much as a mention is. */
-        let direct = item.kind == "mentioned" || item.kind == "message";
-        wake.mentioned |= direct;
-        wake.commented |= direct || item.kind == "commented";
-        wake.messages.extend(message);
+        let mentioned = item.kind == "mentioned";
+        wake.mentioned |= mentioned;
+        wake.commented |= mentioned || item.kind == "commented";
     }
     oldest_first(&mut plan.messages);
-    plan.wakes = by_task
-        .into_values()
-        .map(|mut w| {
-            oldest_first(&mut w.messages);
-            w
-        })
-        .collect();
+    plan.wakes = by_task.into_values().collect();
     plan.wakes
         .sort_by(|a, b| a.oldest.cmp(&b.oldest).then_with(|| a.task_id.cmp(&b.task_id)));
     plan
@@ -226,7 +226,7 @@ struct Memory {
 #[derive(Debug, Default)]
 pub struct WakeGuard {
     tasks: HashMap<String, Memory>,
-    /// Task-less messages a run has had, by item id.
+    /// Messages a run claimed, by item id: one it left unread launches no other.
     messages: HashSet<String>,
 }
 
@@ -278,31 +278,29 @@ impl WakeGuard {
         memory.held = held;
     }
 
-    /// The task-less messages no run has had yet, oldest first, at most `MESSAGES_PER_RUN`: the
-    /// next message run's batch. Empty when there is nothing new, whatever is still unread.
+    /// The messages no run here has had and no run holds, oldest first, at most
+    /// `MESSAGES_PER_RUN`: the next message run's batch, for it to claim. Empty when there is
+    /// nothing new, whatever is still unread.
     pub fn new_messages(&self, plan: &Plan) -> Vec<Message> {
         plan.messages
             .iter()
-            .filter(|m| !self.messages.contains(&m.item))
+            .filter(|m| !m.claimed && !self.messages.contains(&m.item))
             .take(MESSAGES_PER_RUN)
             .cloned()
             .collect()
     }
 
-    /// After a run had these task-less messages: they never launch another.
-    pub fn remember_messages(&mut self, batch: &[Message]) {
-        self.messages.extend(batch.iter().map(|m| m.item.clone()));
+    /// After a run claimed these messages: they never launch another.
+    pub fn remember_messages(&mut self, claimed: &[Message]) {
+        self.messages.extend(claimed.iter().map(|m| m.item.clone()));
     }
 
-    /// Whether a run has had this message, task-less or about a task.
-    pub fn had(&self, task_id: Option<&str>, item: &str) -> bool {
-        match task_id {
-            None => self.messages.contains(item),
-            Some(t) => self.tasks.get(t).is_some_and(|m| m.seen.contains(item)),
-        }
+    /// Whether a run here has had this message.
+    pub fn had(&self, item: &str) -> bool {
+        self.messages.contains(item)
     }
 
-    /// Forget tasks that have nothing unread any more, and task-less messages that were read.
+    /// Forget tasks that have nothing unread any more, and messages that were read.
     pub fn retain(&mut self, plan: &Plan) {
         let live: HashSet<&str> = plan.wakes.iter().map(|w| w.task_id.as_str()).collect();
         self.tasks.retain(|id, _| live.contains(id.as_str()));
@@ -539,7 +537,6 @@ mod tests {
             oldest: "2026-10-03T10:00:00Z".into(),
             mentioned: false,
             commented: false,
-            messages: Vec::new(),
         });
         add_ready(
             &mut p,
@@ -602,8 +599,18 @@ mod tests {
         assert_eq!(p.messages[0].text, "text of i1");
     }
 
+    fn claimed(mut i: InboxItem) -> InboxItem {
+        if let Some(m) = i.message.as_mut() {
+            m.claim = Some(crate::api::Claim {
+                run_id: "r-other".into(),
+                run: "0b54".into(),
+            });
+        }
+        i
+    }
+
     #[test]
-    fn a_message_about_a_task_joins_its_wake_as_a_mention() {
+    fn a_message_about_a_task_goes_to_a_message_run_not_the_tasks() {
         let p = plan(
             &me(),
             &[
@@ -611,30 +618,53 @@ mod tests {
                 kind_item("i1", "assigned", Some("a"), "boss", "2026-01-01T00:00:00.000Z"),
             ],
         );
-        assert!(p.messages.is_empty());
+        /* The task wakes for its assignment alone, and nothing there says the agent was spoken to. */
         let w = &p.wakes[0];
-        assert_eq!(w.items, ["i2", "i1"]);
-        assert!(w.mentioned && w.commented);
-        assert_eq!(w.messages.len(), 1);
-        assert_eq!(w.messages[0].id, "m-i2");
-        /* So a task that isn't the agent's, or is closed, is still answered. */
-        assert_eq!(refused(Some("closed"), w), Refused::Answer(Brief::Closed));
-        assert_eq!(
-            refused(Some("assigned_elsewhere"), w),
-            Refused::Answer(Brief::Mentioned)
-        );
+        assert_eq!(w.items, ["i1"]);
+        assert!(!w.mentioned && !w.commented);
+        assert_eq!(refused(Some("closed"), w), Refused::Skip);
+        /* The message is a message run's, with the task's key to quote. */
+        assert_eq!(p.messages.len(), 1);
+        assert_eq!(p.messages[0].id, "m-i2");
+        assert_eq!(p.messages[0].task.as_deref(), Some("A"));
+        assert_eq!(WakeGuard::default().new_messages(&p), p.messages);
+        /* A message alone about a task wakes no task run at all. */
+        let alone = plan(&me(), &[msg("i3", Some("b"), "boss", "2026-01-03T00:00:00.000Z", true)]);
+        assert!(alone.wakes.is_empty());
+        assert_eq!(alone.messages.len(), 1);
     }
 
     #[test]
-    fn a_taskless_message_a_run_had_never_launches_another() {
+    fn a_message_another_run_holds_is_left_to_it() {
+        let p = plan(
+            &me(),
+            &[
+                claimed(msg("i1", None, "boss", "2026-01-01T00:00:00.000Z", true)),
+                msg("i2", Some("a"), "boss", "2026-01-02T00:00:00.000Z", true),
+            ],
+        );
+        assert!(p.messages[0].claimed && !p.messages[1].claimed);
+        let g = WakeGuard::default();
+        let batch = g.new_messages(&p);
+        assert_eq!(batch.iter().map(|m| m.item.as_str()).collect::<Vec<_>>(), ["i2"]);
+        /* Everything claimed: no batch, so no run. */
+        let all = plan(
+            &me(),
+            &[claimed(msg("i1", None, "boss", "2026-01-01T00:00:00.000Z", true))],
+        );
+        assert!(g.new_messages(&all).is_empty());
+    }
+
+    #[test]
+    fn a_message_a_run_claimed_never_launches_another() {
         let mut g = WakeGuard::default();
-        let first = plan(&me(), &[msg("i1", None, "boss", "2026-01-01T00:00:00.000Z", true)]);
+        let first = plan(&me(), &[msg("i1", Some("a"), "boss", "2026-01-01T00:00:00.000Z", true)]);
         let batch = g.new_messages(&first);
         assert_eq!(batch.len(), 1);
-        assert!(!g.had(None, "i1"));
+        assert!(!g.had("i1"));
         g.remember_messages(&batch);
-        assert!(g.had(None, "i1"));
-        /* Left unread by the run: nothing new, no run. */
+        assert!(g.had("i1"));
+        /* Its run ended (so did the claim) and left it unread: nothing new, no run. */
         g.retain(&first);
         assert!(g.new_messages(&first).is_empty());
         /* A new one arrives: a run for it alone. */
@@ -642,7 +672,7 @@ mod tests {
             &me(),
             &[
                 msg("i2", None, "boss", "2026-01-02T00:00:00.000Z", true),
-                msg("i1", None, "boss", "2026-01-01T00:00:00.000Z", true),
+                msg("i1", Some("a"), "boss", "2026-01-01T00:00:00.000Z", true),
             ],
         );
         let batch = g.new_messages(&second);
@@ -676,15 +706,5 @@ mod tests {
             rest.iter().map(|m| m.item.as_str()).collect::<Vec<_>>(),
             ["i20", "i21", "i22"]
         );
-    }
-
-    #[test]
-    fn a_task_message_a_run_had_is_known() {
-        let mut g = WakeGuard::default();
-        let p = plan(&me(), &[msg("i1", Some("a"), "boss", "2026-01-01T00:00:00.000Z", true)]);
-        assert!(!g.had(Some("a"), "i1"));
-        g.remember(&p.wakes[0], None, false);
-        assert!(g.had(Some("a"), "i1"));
-        assert!(!g.had(None, "i1"));
     }
 }
