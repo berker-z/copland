@@ -1,10 +1,9 @@
 //! The window: the scene's raster painted as quads at an integer cell size, the
 //! lists and the status line as text, laid out as the prototype's `.box`.
 //!
-//! It draws only when something changes: every frame while an item travels,
-//! about twenty times a second while a run's current flows, twelve while the wires
-//! only sway, once a second while a run's timer shows, and otherwise when the daemon
-//! or the owner's feed says something new.
+//! It draws only when something changes: 15 frames a second (`scene::FPS`) while an item
+//! travels, a run's current flows or the wires sway, once a second while a run's timer
+//! shows, and otherwise when the daemon or the owner's feed says something new.
 //!
 //! The title bar has the bell (what needs you, COPL-64) and ≡ (the menu, COPL-65).
 //! In compact mode the window is the status line alone, the bell and ≡ at its end.
@@ -21,7 +20,7 @@ use tokio::sync::{mpsc, watch};
 use crate::agents::{Agents, Control};
 use crate::feed::Feed;
 use crate::menu::{Act, Menu, Prefs, Tab};
-use crate::scene::{AgentLabel, Board, DONE_TAIL, Doing, Layout, Line, Role, Scene, Span};
+use crate::scene::{AgentLabel, Board, DONE_TAIL, Doing, FPS, Layout, Line, Role, Scene, Span};
 use crate::theme::{Rgb, Theme};
 use crate::wizard::{Panel, Wizard, hint_key, key};
 
@@ -41,11 +40,8 @@ pub const STATUS_H: f32 = 24.0;
 /// The scene's margin: 2px on top, 10px either side, and the 4px gap above the status line.
 const SIDE: f32 = 10.0;
 
-/// While a run's current flows along its wire (22 logo pixels a second): about 20 frames a second.
-const CURRENT: Duration = Duration::from_millis(50);
-/// While the wires only sway and blocked lamps blink: about 12 frames a second. A swaying wire
-/// moves about a cell a second at most, so this looks the same as 20 and costs less.
-const SWAY: Duration = Duration::from_millis(83);
+/// While anything travels, fades, flows, sways or blinks: the scene's FPS, as on the web.
+const FRAME: Duration = Duration::from_nanos((1e9 / FPS) as u64);
 /// While a run's timer shows and nothing moves.
 const TICK: Duration = Duration::from_secs(1);
 /// Otherwise, now and then, for the done list's slow fade.
@@ -881,10 +877,8 @@ impl Render for BoxView {
             self.scene.sync(&board);
         }
         self.scene.step(now);
-        if self.scene.moving() {
-            window.request_animation_frame();
-        } else if self.scene.ambient() {
-            self.redraw_in(if self.scene.ticking() { CURRENT } else { SWAY }, cx);
+        if self.scene.moving() || self.scene.ambient() {
+            self.redraw_in(FRAME, cx);
         } else if self.scene.ticking() {
             self.redraw_in(TICK, cx);
         } else {

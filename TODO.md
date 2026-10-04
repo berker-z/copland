@@ -441,3 +441,11 @@ docs/DESIGN.md under Touch.
   only ever the MCP tool's: `POST /api/boards/:id/tasks` always names one.
   The guide's Inbox text and INSTRUCTIONS say a supervised run on a task
   handles only that task's items, and messages get a run of their own
+- /wired draws at 15 fps (COPL-128): the scene's loop (`sync()` in
+  src/features/wired/scene.ts) drew on every display frame while the pane
+  was on screen, 60 a second or more, even when nothing moved. It now
+  draws at most `FPS` (15) times a second, sleeping on a timer between
+  frames and taking one animation frame to draw on; `step` still gets the
+  real time, so travel and sway keep their speed. The box redraws at the
+  same rate (`FPS` in daemon/box/src/scene.rs) in place of every frame
+  while something travels and 20 or 12 while the wires flow or sway

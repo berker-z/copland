@@ -25,7 +25,9 @@
    Colours are the theme's role variables, read at runtime (readColors), so
    the scene follows the theme like everything else. Without motion
    (prefers-reduced-motion) it is a still picture: no sway, no current, no
-   travel, and it is drawn only when something changes.
+   travel, and it is drawn only when something changes. With motion it is
+   drawn at most FPS (15) times a second, not on every display frame: the
+   motion is slow enough that more frames look no different and only cost.
    ========================================================================== */
 
 /* ---------------------------------------------------------------- tuning -- */
@@ -45,6 +47,8 @@ const TRAVEL = 22;
 const BLINK = 1.2;
 const DUTY = 0.35;
 const SOFT = 0.3;
+/** Frames a second while it moves: the sway and travel look the same as at 60, for a fraction of the work. */
+const FPS = 15;
 
 /** Beads drawn per pole; the lists say how many more there are. */
 const MAX_BEADS = 4;
@@ -190,6 +194,7 @@ export class WiredScene {
   private clock = 0;
   private last = 0;
   private frame = 0;
+  private wait: ReturnType<typeof setTimeout> | undefined;
   private flashDone = 0;
   private running = false;
   private visible = true;
@@ -230,8 +235,7 @@ export class WiredScene {
   }
 
   destroy() {
-    this.running = false;
-    cancelAnimationFrame(this.frame);
+    this.stop();
   }
 
   /* ---------------------------------------------------------- data ---- */
@@ -378,7 +382,11 @@ export class WiredScene {
 
   /* ---------------------------------------------------------- loop ---- */
 
-  /** Animate while there is motion and the scene is on screen; otherwise draw once. */
+  /**
+   * Animate while there is motion and the scene is on screen, FPS frames a second;
+   * otherwise draw once. Between frames it sleeps on a timer, then takes one animation
+   * frame so the draw still lands on one. step gets the real time since the last frame.
+   */
   private sync() {
     const run = this.motion && this.visible;
     if (run && !this.running) {
@@ -386,17 +394,26 @@ export class WiredScene {
       this.last = performance.now();
       const tick = (now: number) => {
         if (!this.running) return;
-        this.step(Math.min(0.05, (now - this.last) / 1000));
+        this.step(Math.min(2 / FPS, (now - this.last) / 1000));
         this.last = now;
         this.draw();
-        this.frame = requestAnimationFrame(tick);
+        /* Wake a little early, so the animation frame after the timer lands on the interval. */
+        const rest = 1000 / FPS - (performance.now() - now) - 4;
+        this.wait = setTimeout(() => {
+          this.frame = requestAnimationFrame(tick);
+        }, Math.max(0, rest));
       };
       this.frame = requestAnimationFrame(tick);
     } else if (!run && this.running) {
-      this.running = false;
-      cancelAnimationFrame(this.frame);
+      this.stop();
     }
     if (!this.running) this.draw();
+  }
+
+  private stop() {
+    this.running = false;
+    clearTimeout(this.wait);
+    cancelAnimationFrame(this.frame);
   }
 
   private redraw() {
