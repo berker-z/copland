@@ -26,10 +26,16 @@
    remembers its token, and every broadcast first checks the token is still
    good, so revoking it, pausing the agent or disabling the owner closes the
    socket at the next message instead of leaving it listening.
+
+   The same sockets say whether an agent's daemon is connected (COPL-126):
+   listening() returns the tokens of the sockets in this hub that were opened
+   or answered a ping within the daemon's own silence limit. A ping wakes
+   nothing, but the runtime records when it answered one
+   (getWebSocketAutoResponseTimestamp), so this costs one call to the hub.
    ========================================================================== */
 
 import { DurableObject } from "cloudflare:workers";
-import type { LiveEvent, LiveTopic } from "@/domain/live";
+import { listeningTokens, type LiveEvent, type LiveTopic } from "@/domain/live";
 import type { Viewer } from "@/domain/types";
 import type { Env } from "./env";
 import { forbidden } from "./http";
@@ -45,6 +51,8 @@ const CREDENTIAL_GONE = 4001;
 interface Attachment {
   /** The API token the socket was opened with; absent for a browser tab. */
   tokenId?: string;
+  /** When it was opened (ms); absent on a socket opened before COPL-126. */
+  openedAt?: number;
 }
 
 export class LiveHub extends DurableObject<Env> {
@@ -58,7 +66,7 @@ export class LiveHub extends DurableObject<Env> {
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server);
     const tokenId = request.headers.get(TOKEN_HEADER);
-    server.serializeAttachment((tokenId ? { tokenId } : {}) satisfies Attachment);
+    server.serializeAttachment({ ...(tokenId ? { tokenId } : {}), openedAt: Date.now() } satisfies Attachment);
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -78,6 +86,23 @@ export class LiveHub extends DurableObject<Env> {
         /* Closing under us; webSocketClose tidies up. */
       }
     }
+  }
+
+  /**
+   * Called over RPC: the tokens with a socket here heard from lately, so a
+   * daemon that is still connected (listeningTokens). Whether each token
+   * still works is the caller's to check (liveTokenIds), as broadcast does.
+   */
+  async listening(): Promise<string[]> {
+    const sockets = this.ctx.getWebSockets().map((socket) => {
+      const attachment = (socket.deserializeAttachment() as Attachment | null) ?? {};
+      return {
+        ...(attachment.tokenId ? { tokenId: attachment.tokenId } : {}),
+        openedAt: attachment.openedAt ?? 0,
+        pongAt: this.ctx.getWebSocketAutoResponseTimestamp(socket)?.getTime() ?? null,
+      };
+    });
+    return listeningTokens(sockets, Date.now());
   }
 
   /* Tabs only ever send the ping, which the auto-response takes. */
@@ -113,6 +138,34 @@ export async function connectLive(request: Request, env: Env, url: URL, viewer: 
   headers.delete("authorization");
   if (access) headers.set(TOKEN_HEADER, access.tokenId);
   return hub(env, viewer.user.id).fetch(new Request(request, { headers }));
+}
+
+/**
+ * Which of these principals have a daemon connected right now (COPL-126):
+ * a socket in their own hub, opened with one of their tokens, heard from
+ * within the daemon's silence limit (LiveHub.listening), and that token
+ * still good (liveTokenIds: not revoked or expired, the agent not paused,
+ * its owner not disabled). A socket lands in the hub of the token's
+ * principal, so an agent's hub holds only its own tokens: the box listens
+ * for its owner, and the daemon for each agent with that agent's token
+ * (daemon/core/src/agent.rs). One RPC per principal; a hub that fails to
+ * answer counts as not connected.
+ */
+export async function connectedPrincipals(env: Env, userIds: string[]): Promise<Set<string>> {
+  const heard = await Promise.all(
+    userIds.map((id) =>
+      hub(env, id)
+        .listening()
+        .then((tokens) => tokens.map((tokenId) => ({ id, tokenId })))
+        .catch((error: unknown) => {
+          console.warn("live listening failed", error);
+          return [];
+        }),
+    ),
+  );
+  const pairs = heard.flat();
+  const live = await liveTokenIds(env.DB, [...new Set(pairs.map((p) => p.tokenId))]);
+  return new Set(pairs.filter((p) => live.has(p.tokenId)).map((p) => p.id));
 }
 
 /**

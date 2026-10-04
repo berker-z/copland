@@ -10,6 +10,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { LISTENING_SILENCE_MS, listeningTokens } from "../src/domain/live.ts";
 import { mayMessage, recipientsOf, type MessageParty } from "../src/domain/messages.ts";
 
 const cases: Array<[string, boolean]> = [];
@@ -55,6 +56,21 @@ t("the pane offers no people, and never another's owner-only agent", ids(recipie
 t("someone else sees your open agent once they share a board with it", ids(recipientsOf(ada, everyone)) === "adas,aopen" && ids(recipientsOf(ada, [...everyone, c(open, true)])) === "adas,aopen,open");
 t("the pane offers an agent nothing", recipientsOf(dev, everyone).length === 0);
 t("every offer is one a send would allow", recipientsOf(ada, [...everyone, c(open, true)]).every((x) => mayMessage(ada, x.party, { sharesBoard: x.sharesBoard }).ok));
+
+/* The pane says whether an agent's box is connected: a socket with one of its tokens, heard from lately (COPL-126). */
+const now = 1_000_000_000;
+const ago = (s: number) => now - s * 1000;
+const heard = (sockets: Parameters<typeof listeningTokens>[0]) => listeningTokens(sockets, now).sort().join(",");
+t("a socket that just opened is connected", heard([{ tokenId: "k1", openedAt: ago(1), pongAt: null }]) === "k1");
+t("a socket whose last ping was answered lately is connected", heard([{ tokenId: "k1", openedAt: ago(3600), pongAt: ago(30) }]) === "k1");
+t("a socket silent past the limit isn't, however long it has been held", heard([{ tokenId: "k1", openedAt: ago(3600), pongAt: ago(76) }]) === "" && heard([{ tokenId: "k1", openedAt: ago(80), pongAt: null }]) === "");
+t("a socket from before COPL-126 counts on its pings alone", heard([{ tokenId: "k1", openedAt: 0, pongAt: ago(10) }]) === "k1" && heard([{ tokenId: "k1", openedAt: 0, pongAt: null }]) === "");
+t("a browser tab never makes a box connected", heard([{ openedAt: ago(1), pongAt: ago(1) }]) === "");
+t("each token once, however many sockets it has", heard([{ tokenId: "k1", openedAt: ago(1), pongAt: null }, { tokenId: "k1", openedAt: ago(2), pongAt: ago(1) }, { tokenId: "k2", openedAt: ago(5), pongAt: null }]) === "k1,k2");
+t("the hub gives a socket up when the daemon does (SILENCE in daemon/core/src/live.rs)", (() => {
+  const m = /pub const SILENCE: Duration = Duration::from_secs\((\d+)\);/.exec(readFileSync("daemon/core/src/live.rs", "utf8"));
+  return !!m && Number(m[1]) * 1000 === LISTENING_SILENCE_MS;
+})());
 
 /* The table. */
 const db = new DatabaseSync(":memory:");

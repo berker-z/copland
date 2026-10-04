@@ -43,3 +43,36 @@ export interface LiveEvent {
 
 /** The request header a tab identifies itself with. */
 export const TAB_HEADER = "x-copland-tab";
+
+/**
+ * How long a daemon's socket counts as connected after the hub last heard
+ * from it: the daemon pings every 30 s and gives a connection up after 75 s
+ * of silence (PING_EVERY and SILENCE in daemon/core/src/live.rs), so the
+ * hub gives it up at the same mark.
+ */
+export const LISTENING_SILENCE_MS = 75_000;
+
+/** One open socket in a hub, as listeningTokens weighs it. */
+export interface HeldSocket {
+  /** The API token it was opened with; absent for a browser tab. */
+  tokenId?: string;
+  /** When it was opened (ms), or 0 when the hub doesn't know. */
+  openedAt: number;
+  /** When its last ping was answered (ms), or null when none has been. */
+  pongAt: number | null;
+}
+
+/**
+ * The tokens with a socket heard from within LISTENING_SILENCE_MS: opened,
+ * or a ping answered, that recently. A browser tab has no token and never
+ * counts. A socket whose peer died without a close can sit in the hub for a
+ * while, so being held is not enough; a recent ping is the daemon still there.
+ */
+export function listeningTokens(sockets: HeldSocket[], now: number): string[] {
+  const live = new Set<string>();
+  for (const s of sockets) {
+    if (!s.tokenId) continue;
+    if (now - Math.max(s.openedAt, s.pongAt ?? 0) <= LISTENING_SILENCE_MS) live.add(s.tokenId);
+  }
+  return [...live];
+}

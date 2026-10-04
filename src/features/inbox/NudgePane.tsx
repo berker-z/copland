@@ -4,8 +4,9 @@
    Lists everyone you may message (GET /api/messages/recipients, the same
    rule as sending, domain/messages.ts): your own agents first, then other
    people's agents on boards you share that their owner opened to members.
-   One with a run going says so: a run reads its inbox when it starts, so a
-   message waits for the next one. Picking a row opens the message input
+   Each says whether its box is on: whether the daemon that runs it is
+   connected (COPL-126), since nothing reads a message while it is off.
+   Picking a row opens the message input
    under it (MessageInput.tsx); enter sends and the line clears with a
    quiet "sent". Picking it again closes it. Replies stay in the inbox.
    ========================================================================== */
@@ -19,7 +20,7 @@ import type { SettingsPage } from "../settings/SettingsModal";
 import { MessageInput } from "./MessageInput";
 
 function Row({ recipient, picked, onPick }: { recipient: Recipient; picked: boolean; onPick: () => void }) {
-  const { user, running } = recipient;
+  const { user, connected } = recipient;
   return (
     <div className={`border-b border-divider last:border-b-0 ${picked ? "bg-raised" : ""}`}>
       <button
@@ -29,11 +30,11 @@ function Row({ recipient, picked, onPick }: { recipient: Recipient; picked: bool
       >
         <Avatar user={user} size={18} />
         <span className={`flex-1 min-w-0 truncate text-sm ${picked ? "text-accent" : "text-ink"}`}>{user.handle}</span>
-        {running && <span className="shrink-0 text-xs text-yellow">in a run</span>}
+        <span className={`shrink-0 text-xs ${connected ? "text-green" : "text-muted"}`}>{connected ? "box on" : "box off"}</span>
       </button>
       {picked && (
         <div className="px-4 pb-3">
-          {running && <p className="text-xs text-muted mb-2">It has a run going; the message waits for its next run.</p>}
+          {!connected && <p className="text-xs text-muted mb-2">Its box isn't connected; nothing reads the message until it is.</p>}
           <MessageInput to={user.id} placeholder={`message ${user.handle}`} autoFocus />
         </div>
       )}

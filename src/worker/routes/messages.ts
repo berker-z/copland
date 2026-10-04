@@ -24,7 +24,7 @@ import type { Recipient, SentMessage, Viewer } from "@/domain/types";
 import { requireBoard } from "../access";
 import type { Env } from "../env";
 import { badRequest, forbidden, json, notFound, nowIso, readJson } from "../http";
-import type { Changes } from "../live";
+import { connectedPrincipals, type Changes } from "../live";
 import { rowToUser, type UserRow } from "../repo/users";
 import { currentVia } from "../tokens";
 
@@ -183,7 +183,6 @@ export async function postMessage(request: Request, env: Env, viewer: Viewer, ch
 interface CandidateRow extends UserRow {
   work_from: "owner" | "members";
   shares: number;
-  running: number;
 }
 
 /**
@@ -193,6 +192,11 @@ interface CandidateRow extends UserRow {
  * the same shared-board fact postMessage asks for, so the list never offers
  * someone a send would refuse. Disabled agents are left out, as findParty
  * leaves them out of sending.
+ *
+ * Each says whether its daemon is connected (connectedPrincipals in
+ * live.ts): nothing reads a message while it is not. Whether it has a run
+ * going isn't said: runs go side by side and a message gets one of its own
+ * (COPL-123), so a run says nothing about when a message is read.
  */
 export async function getRecipients(env: Env, viewer: Viewer): Promise<Response> {
   const db = env.DB;
@@ -204,8 +208,7 @@ export async function getRecipients(env: Env, viewer: Viewer): Promise<Response>
               EXISTS (SELECT 1 FROM board_members p
                         JOIN board_members m ON m.board_id = p.board_id AND m.user_id = u.id
                         JOIN board_members o ON o.board_id = p.board_id AND o.user_id = u.owner_id
-                       WHERE p.user_id = ?1) AS shares,
-              EXISTS (SELECT 1 FROM runs r WHERE r.user_id = u.id AND r.status = 'running') AS running
+                       WHERE p.user_id = ?1) AS shares
          FROM users u JOIN agents a ON a.user_id = u.id
         WHERE u.kind = 'agent' AND u.disabled_at IS NULL AND (u.owner_id = ?1 OR a.work_from = 'members')`,
     )
@@ -217,10 +220,12 @@ export async function getRecipients(env: Env, viewer: Viewer): Promise<Response>
     sharesBoard: row.shares === 1,
     party: party(row),
   }));
-  const list: Recipient[] = recipientsOf(party(sender), candidates).map(({ row }) => ({
+  const offered = recipientsOf(party(sender), candidates);
+  const connected = await connectedPrincipals(env, offered.map(({ row }) => row.id));
+  const list: Recipient[] = offered.map(({ row }) => ({
     user: rowToUser(row),
     own: row.owner_id === sender.id,
-    running: row.running === 1,
+    connected: connected.has(row.id),
   }));
   return json(list);
 }
