@@ -408,3 +408,10 @@ docs/DESIGN.md under Touch.
   read-only one stays what it reads with. A refused write token is
   forgotten, so the next `m` asks again. Signing out revokes it with the
   rest (`daemon/box/src/write.rs`)
+- Agents name a board (COPL-125, for COPL-123): an agent's `create_task`
+  without `board` is refused, and `board: "inbox"` is its owner's inbox; a
+  person's still defaults to their inbox (`newTaskBoard` in
+  src/domain/tasks.ts, checked in checks/mcp.check.ts). The fallback was
+  only ever the MCP tool's: `POST /api/boards/:id/tasks` always names one.
+  The guide's Inbox text and INSTRUCTIONS say a supervised run on a task
+  handles only that task's items, and messages get a run of their own
