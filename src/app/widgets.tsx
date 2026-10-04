@@ -10,6 +10,7 @@ import { BoardsPane } from "@/features/boards/BoardsPane";
 import { AgendaPane, CalendarPane } from "@/features/calendar/CalendarPanes";
 import { InboxBadge } from "@/features/inbox/InboxBadge";
 import { InboxPane } from "@/features/inbox/InboxPane";
+import { NudgePane } from "@/features/inbox/NudgePane";
 import { MarketsPane } from "@/features/markets/MarketsPane";
 import { NotepadPane } from "@/features/notepad/NotepadPane";
 import type { SettingsPage } from "@/features/settings/SettingsModal";
@@ -31,6 +32,7 @@ export const PANE_COMPONENTS: Record<PaneId, (props: PaneProps) => ReactNode> = 
   inbox: () => <InboxPane />,
   markets: ({ openSettings }) => <MarketsPane onOpenSettings={openSettings} />,
   wired: ({ openSettings }) => <WiredPane onOpenSettings={openSettings} />,
+  nudge: ({ openSettings }) => <NudgePane onOpenSettings={openSettings} />,
 };
 
 export const TOPBAR_COMPONENTS: Record<TopbarId, () => ReactNode> = {

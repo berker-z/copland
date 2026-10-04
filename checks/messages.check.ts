@@ -10,7 +10,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { mayMessage, nudgeTargets, type MessageParty } from "../src/domain/messages.ts";
+import { mayMessage, recipientsOf, type MessageParty } from "../src/domain/messages.ts";
 
 const cases: Array<[string, boolean]> = [];
 const t = (name: string, pass: boolean) => cases.push([name, pass]);
@@ -43,14 +43,18 @@ t("a refusal says why", (() => {
   return !v.ok && /owner/.test(v.reason);
 })());
 
-/* A nudge on a task offers the viewer's own agents on its board, assigned ones first. */
-const u = (id: string, kind: "person" | "agent", ownerId: string | null) => ({ id, kind, ownerId, handle: ownerId ? `${ownerId}/${id}` : id });
-const members = [u("sam", "person", null), u("ada", "person", null), u("zed", "agent", "sam"), u("dev", "agent", "sam"), u("adas", "agent", "ada"), u("open", "agent", "sam")];
-const ids = (list: { id: string }[]) => list.map((x) => x.id).join(",");
-t("a nudge offers only your own agents, by handle", ids(nudgeTargets(members, "sam", [])) === "dev,open,zed");
-t("a nudge puts the task's assignees first", ids(nudgeTargets(members, "sam", ["zed", "ada"])) === "zed,dev,open");
-t("a nudge offers nothing to someone without agents on the board", nudgeTargets(members, "bob", []).length === 0);
-t("a nudge offers an agent nothing", nudgeTargets(members, "dev", ["dev"]).length === 0);
+/* The nudge pane offers the agents the viewer may message: their own first, then by handle. */
+const c = (party: MessageParty, sharesBoard = false) => ({ party, handle: party.ownerId ? `${party.ownerId}/${party.id}` : party.id, sharesBoard });
+const zed: MessageParty = { id: "zed", kind: "agent", ownerId: "sam", workFrom: "owner" };
+const aopen: MessageParty = { id: "aopen", kind: "agent", ownerId: "ada", workFrom: "members" };
+const everyone = [c(ada, true), c(zed), c(adas, true), c(aopen, true), c(open), c(dev)];
+const ids = (list: { party: MessageParty }[]) => list.map((x) => x.party.id).join(",");
+t("the pane offers your own agents first, then others' open ones on a shared board", ids(recipientsOf(sam, everyone)) === "dev,open,zed,aopen");
+t("the pane leaves out an open agent you share no board with", ids(recipientsOf(sam, [c(aopen, false)])) === "");
+t("the pane offers no people, and never another's owner-only agent", ids(recipientsOf(sam, [c(ada, true), c(adas, true)])) === "");
+t("someone else sees your open agent once they share a board with it", ids(recipientsOf(ada, everyone)) === "adas,aopen" && ids(recipientsOf(ada, [...everyone, c(open, true)])) === "adas,aopen,open");
+t("the pane offers an agent nothing", recipientsOf(dev, everyone).length === 0);
+t("every offer is one a send would allow", recipientsOf(ada, [...everyone, c(open, true)]).every((x) => mayMessage(ada, x.party, { sharesBoard: x.sharesBoard }).ok));
 
 /* The table. */
 const db = new DatabaseSync(":memory:");

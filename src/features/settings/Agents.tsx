@@ -6,8 +6,6 @@
    you open it: which boards it is on and at what role (never above yours or
    editor), who may give it work, and which of your own data it may read.
    The Worker enforces all of it; this only shows the choices that make sense.
-   At the top, one line to message it (COPL-108); stopping it is pause, a
-   button, never a message.
    ========================================================================== */
 
 import { useEffect, useState } from "react";
@@ -21,7 +19,6 @@ import { refresh } from "@/lib/live";
 import { KEYS, useBoards } from "@/lib/queries";
 import { Checkbox } from "@/ui/Checkbox";
 import { when } from "@/ui/tone";
-import { MessageInput } from "../inbox/MessageInput";
 import { ConnectSteps, Tokens } from "./Connections";
 import { PictureEditor } from "./Profile";
 import { Group, Section, button, input } from "./Section";
@@ -301,20 +298,6 @@ function RunsGroup({ agent }: { agent: Agent }) {
   );
 }
 
-/** A note to it, which lands in its inbox. A run already going reads its inbox when it starts, so this waits for the next. */
-function MessageGroup({ agent }: { agent: Agent }) {
-  const going = agent.runs.some((r) => r.status === "running" || r.status === "stale");
-  return (
-    <Group title="message">
-      <p className="text-xs text-muted mb-2">
-        A short note in its inbox: what to look at next, what it missed. To stop it, pause it below.
-        {going && <span className="text-yellow"> It has a run going; the message waits for its next run.</span>}
-      </p>
-      <MessageInput to={agent.user.id} placeholder={`message ${agent.user.handle}`} />
-    </Group>
-  );
-}
-
 function DangerGroup({ agent, onDeleted }: { agent: Agent; onDeleted: () => void }) {
   const queryClient = useQueryClient();
   const [armed, setArmed] = useState(false);
@@ -367,7 +350,6 @@ export function AgentSection({ me, agent, onDeleted }: { me: Me; agent: Agent; o
         )
       }
     >
-      <MessageGroup agent={agent} />
       <Group title="picture">
         <PictureEditor
           user={agent.user}
