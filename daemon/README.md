@@ -50,7 +50,7 @@ A message (COPL-106) is a short note from the agent's owner, or from a board mem
 - **Claimed first:** with the run's secret the daemon claims each message, `POST /api/messages/:id/claim` (COPL-124), before it launches anything. One refused, because another run claimed it first (409 `claimed`) or it was read since the inbox was read (409 `read`), is left out of the batch and logged; a batch left empty finishes its run as cancelled and launches nothing. So two runs, two daemons on one agent token, or a chat session never handle the same message: only what the run holds is in its prompt. The claims end with the run, released by its finish.
 - **The prompt** quotes each message, with who sent it, whether it is the owner's request or untrusted, the key of the task it is about when it names one, and its message and inbox item ids. It says to answer each with `send_message { reply_to }`, not a comment, then `mark_read` it; that a message about a task is about that task (read it, comment on it or change it when asked); that "on <name>" names one of the agent's boards, even one called like the app; and to put work that needs more than an answer on the board as a task assigned to the agent, naming its board, which gets a run of its own. It doesn't code. `COPLAND_TASK` is not set, and the run shows in `AgentState::runs` under the task `messages` (`runner::MESSAGES`).
 - **Task runs** handle only their own task's comments and mentions; their prompts say so, and to leave the rest of the inbox, messages above all, unread for the runs they belong to.
-- **Timing:** nothing is put into a runtime that is already going. A message that comes during a run waits for the next message run. `AgentState::messages` counts the messages that are waiting like that (no run has had them, none is on them and no other run holds them), for the box to say so.
+- **Timing:** the daemon puts nothing into a runtime that is already going. A message that comes during a run waits for the next message run. `AgentState::messages` counts the messages that are waiting like that (no run has had them, none is on them and no other run holds them), for the box to say so. Comments and mentions on a task a run is working on are different (COPL-139): Claude Code's heartbeat hook, which the setup's command carries in `--settings` (the examples below have it), brings them into the conversation at the run's next step, through the MCP and with no part for the daemon. Without the hook the run sees them when it reads the task again, which the guide has it do before it integrates.
 
 The claim is what keeps two runs apart; the guard still remembers each message a run of this daemon claimed, by inbox item id and whatever the run's ending, because the claim ends with the run: without it, a message the run finished with but left unread would be free again at once and launch run after run. A new message launches one for itself, and a message's memory goes once it is read. Another daemon on the same token remembers nothing of it, so it may take such a message once, after the run that had it is over.
 
@@ -73,6 +73,7 @@ command = [
   "--tools", "",
   "--permission-mode", "dontAsk",
   "--no-session-persistence",
+  "--settings", '{"hooks":{"PostToolUse":[{"matcher":"^(?!mcp__copland__)","hooks":[{"type":"mcp_tool","server":"copland","tool":"heartbeat","input":{"event":"${hook_event_name}"},"timeout":10}]}],"UserPromptSubmit":[{"hooks":[{"type":"mcp_tool","server":"copland","tool":"heartbeat","input":{"event":"${hook_event_name}"},"timeout":10}]}]}}',
   "--allowedTools",
   "mcp__copland__guide", "mcp__copland__whoami", "mcp__copland__get_task",
   "mcp__copland__list_tasks", "mcp__copland__my_work",
@@ -113,7 +114,7 @@ code_command = [
   "--permission-mode", "bypassPermissions",
   "--no-session-persistence",
   "--setting-sources", "project",
-  "--settings", "{\"sandbox\":{\"enabled\":false}}",
+  "--settings", '{"sandbox":{"enabled":false},"hooks":{"PostToolUse":[{"matcher":"^(?!mcp__copland__)","hooks":[{"type":"mcp_tool","server":"copland","tool":"heartbeat","input":{"event":"${hook_event_name}"},"timeout":10}]}],"UserPromptSubmit":[{"hooks":[{"type":"mcp_tool","server":"copland","tool":"heartbeat","input":{"event":"${hook_event_name}"},"timeout":10}]}]}}',
 ]
 writable = ["~/.claude", "~/.claude.json", "~/.cache", "~/.npm", "~/.cargo/registry", "~/.config/.wrangler"]
 max_runs = 10            # optional; runs going at once, 10 by default

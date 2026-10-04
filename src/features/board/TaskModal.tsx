@@ -203,7 +203,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
         <Attachments items={task.attachments} canEdit={canEdit} {...files} />
       </Row>
 
-      <TaskActivity detail={detail} taskId={task.id} />
+      <TaskActivity detail={detail} task={task} />
     </ModalFrame>
   );
 }

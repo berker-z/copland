@@ -85,7 +85,7 @@ There is one interactive run per credential, not per chat window. Claude Code se
 
 Liveness comes from the token. The token lookup in `src/worker/tokens.ts` brings along its live interactive run, and every request with that token renews the run and its claims (the same once-a-minute touch a run secret gets) and stamps the run on its events. The interactive lease is `INTERACTIVE_LEASE_MS`, fifteen minutes, a little longer than the supervised one because a person reads and types between calls. A stale interactive run is not revived: its claims have lapsed and the next claim ends it (cancelled) and starts a new one. `finish_run` over such a connection ends the interactive run and releases its claims, and the connection keeps working.
 
-Calls to Copland alone would let a claim lapse while the model spends twenty minutes in the editor. For Claude Code a hook fixes that. A hook of type `mcp_tool` calls a tool through Claude Code's own MCP connection, so it carries the connection's credentials without anyone copying a token into a script. The MCP has a `heartbeat` tool for it: no arguments, it reads nothing (`GET /api/runs/current` answers from the resolved credential), returns empty text so the hook adds nothing to the conversation, and works on a read-only connection, where it does nothing. The request's own touch does the renewing. This repo ships the hook in `.claude/settings.json`:
+Calls to Copland alone would let a claim lapse while the model spends twenty minutes in the editor. For Claude Code a hook fixes that. A hook of type `mcp_tool` calls a tool through Claude Code's own MCP connection, so it carries the connection's credentials without anyone copying a token into a script. The MCP has a `heartbeat` tool for it: no arguments, it reads nothing (`GET /api/runs/current` answers from the resolved credential), returns empty text so the hook adds nothing to the conversation (unless a comment came in on the run's task, below), and works on a read-only connection, where it does nothing. The request's own touch does the renewing. This repo ships the hook in `.claude/settings.json`:
 
 ```json
 {
@@ -93,12 +93,12 @@ Calls to Copland alone would let a claim lapse while the model spends twenty min
     "PostToolUse": [
       {
         "matcher": "^(?!mcp__copland__)",
-        "hooks": [{ "type": "mcp_tool", "server": "copland", "tool": "heartbeat", "timeout": 10 }]
+        "hooks": [{ "type": "mcp_tool", "server": "copland", "tool": "heartbeat", "input": { "event": "${hook_event_name}" }, "timeout": 10 }]
       }
     ],
     "UserPromptSubmit": [
       {
-        "hooks": [{ "type": "mcp_tool", "server": "copland", "tool": "heartbeat", "timeout": 10 }]
+        "hooks": [{ "type": "mcp_tool", "server": "copland", "tool": "heartbeat", "input": { "event": "${hook_event_name}" }, "timeout": 10 }]
       }
     ]
   }
@@ -110,7 +110,8 @@ Copy it into `~/.claude/settings.json` to have it everywhere. `server` is whatev
 - There is no periodic hook event, so "on every tool use" is the heartbeat. `PostToolUse` fires for subagents' tool calls too.
 - `async` is only for `command` hooks, so an `mcp_tool` hook is synchronous: each tool use waits for one round trip to the Worker. The `timeout` caps that at ten seconds; a failure is a non-blocking error and the tool use goes on.
 - The matcher is a JavaScript regex that skips Copland's own tools: they renew the run anyway, and it rules out a hook calling a Copland tool from firing itself.
-- `UserPromptSubmit` renews the run when the person comes back with a prompt, inside the lease. Whatever text a hook's tool returns there would be added to the model's context, which is why `heartbeat` returns nothing.
+- `UserPromptSubmit` renews the run when the person comes back with a prompt, inside the lease.
+- `input` passes the hook's event to `heartbeat` (COPL-139). With it, `heartbeat` asks `POST /api/runs/current/news` for the comments and mentions that came in, still unread, on the tasks the run has claimed since it was last told, and returns them as `{ hookSpecificOutput: { hookEventName, additionalContext } }`, which Claude Code adds to the conversation after the tool use or with the prompt. Each is told once (`runs.heard_until`, migration 0031), so nearly every call returns empty text and adds nothing. That is how a comment from the owner reaches a run while it works, instead of after it has merged what the comment questioned. The cost is the round trip the heartbeat already made plus one indexed read: the route writes only when it has something to tell, and once to mark that the run asks, which is how the task modal knows to say a new comment reaches the run "at its next step" rather than "when it next reads the task". Without `input` (an older copy of the hook) `heartbeat` stays the empty call it was. The daemon's runs get the same hook: the box's setup puts it in the Claude Code command's `--settings`, and in Copland's own repo the project settings above carry it too (Claude Code runs an identical hook once).
 - The hook never starts an OAuth flow. If the server isn't connected, the hook errors without blocking.
 - Claude Code picks up edits to settings files while it runs. The tool has to exist on the server, though: until the Worker with `heartbeat` is deployed, every tool use shows a hook error.
 
