@@ -21,6 +21,7 @@
 import type { CalendarEvents, CalendarSetup } from "@/domain/calendar";
 import type { CodeLink } from "@/domain/github";
 import { NOTE_CONTENT_MAX, NOTE_NAME_MAX, type Note } from "@/domain/panes";
+import { COMMENT_IMAGES_MAX, parseToolImages, TOOL_IMAGE_BYTES_MAX } from "@/domain/commentImages";
 import { MESSAGE_MAX } from "@/domain/messages";
 import { INTERACTIVE_LEASE_MS, RUN_ENDINGS, RUN_LEASE_MS, shortRunId, type ClaimRefusal } from "@/domain/runs";
 import { addDays, descendantIds, isDate, progress, taskPath } from "@/domain/tasks";
@@ -49,6 +50,7 @@ import {
   type StageCategory,
   type Task,
   type TaskWrite,
+  type UploadedFile,
   type Viewer,
 } from "@/domain/types";
 import { CORS_HEADERS } from "./oauth";
@@ -56,15 +58,48 @@ import { CORS_HEADERS } from "./oauth";
 /** The app's API, as the connected user. Resolves to the parsed JSON; throws on an error status. */
 export type ApiCall = <T>(method: string, path: string, body?: unknown) => Promise<T>;
 
+/**
+ * A body an ApiCall sends as it is, with its own content-type and file name
+ * (x-file-name), instead of as JSON: a file for POST /api/uploads.
+ */
+export class RawBody {
+  readonly bytes: Uint8Array;
+  readonly type: string;
+  readonly name: string;
+  constructor(bytes: Uint8Array, type: string, name: string) {
+    this.bytes = bytes;
+    this.type = type;
+    this.name = name;
+  }
+}
+
+/** The request an ApiCall makes: JSON, or a RawBody as it is. */
+export function apiRequest(target: URL, method: string, body?: unknown): Request {
+  if (body instanceof RawBody) {
+    return new Request(target, {
+      method,
+      headers: { "content-type": body.type, "x-file-name": encodeURIComponent(body.name) },
+      body: body.bytes,
+    });
+  }
+  return new Request(target, {
+    method,
+    headers: { "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
+
+/* Fields spelled out, not constructor parameters, so node's type stripping
+   loads this file in checks/comments.check.ts. */
 /** What an ApiCall throws on an error status: the route's message, and its `code` when it gave one. */
 export class CallError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly code: string | null,
-  ) {
+  readonly status: number;
+  readonly code: string | null;
+  constructor(message: string, status: number, code: string | null) {
     super(message);
     this.name = "CallError";
+    this.status = status;
+    this.code = code;
   }
 }
 
@@ -79,7 +114,7 @@ const CLAIM_REFUSED: Record<ClaimRefusal, string> = {
 
 const SUPPORTED_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 /** The tool interface's version, for serverInfo. Bump when tools change shape. */
-const SERVER_VERSION = "1.11.0";
+const SERVER_VERSION = "1.12.0";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -1228,20 +1263,53 @@ const TOOLS: Tool[] = [
     name: "comment_on_task",
     title: "Comment on a task",
     description:
-      "Write in a task's comment thread, as the connected principal. Markdown. This is where questions, decisions and status updates go: the comment reaches the inbox of everyone else taking part in the task (its creator, assignees, commenters and anyone mentioned on it), and @mentioning someone hands it to them directly. Anyone on the board may comment, viewers included. @handle (or @owner/agent) mentions a member of the task's board and puts the comment in their inbox; a name that is not on the board mentions nobody, and neither does one inside `code`, a ``` block or a > quoted line, so quote or code-format a handle to talk about someone without notifying them. Returns the thread's length and who was mentioned.",
+      "Write in a task's comment thread, as the connected principal. Markdown. This is where questions, decisions and status updates go: the comment reaches the inbox of everyone else taking part in the task (its creator, assignees, commenters and anyone mentioned on it), and @mentioning someone hands it to them directly. Anyone on the board may comment, viewers included. @handle (or @owner/agent) mentions a member of the task's board and puts the comment in their inbox; a name that is not on the board mentions nobody, and neither does one inside `code`, a ``` block or a > quoted line, so quote or code-format a handle to talk about someone without notifying them. " +
+      `images attaches pictures to the comment, a screenshot for instance: each { name, data } with data the file as base64 (a data: URL prefix is fine), PNG or JPEG only, read from the bytes whatever the name says, at most ${TOOL_IMAGE_BYTES_MAX / 1024 / 1024} MB each decoded and ${COMMENT_IMAGES_MAX} per comment. Anything else (another format, data that isn't base64, too big, too many) refuses the whole comment, saying which image and which limit; nothing is posted then. Whoever can read the board can see the images. ` +
+      "Returns the thread's length, how many images went on and who was mentioned.",
     inputSchema: {
       type: "object",
-      properties: { task: TASK, text: { type: "string", description: "Markdown" } },
+      properties: {
+        task: TASK,
+        text: { type: "string", description: "Markdown" },
+        images: {
+          type: "array",
+          maxItems: COMMENT_IMAGES_MAX,
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "File name, e.g. screenshot.png" },
+              data: { type: "string", description: "The PNG or JPEG file as base64" },
+            },
+            required: ["name", "data"],
+            additionalProperties: false,
+          },
+          description: `Images to attach (optional): PNG or JPEG, base64, at most ${TOOL_IMAGE_BYTES_MAX / 1024 / 1024} MB each and ${COMMENT_IMAGES_MAX} in all`,
+        },
+      },
       required: ["task", "text"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
     async run(args, ctx) {
+      const parsed = parseToolImages(args.images);
+      if (!parsed.ok) throw new Error(`Not commented: ${parsed.reason}.`);
       const { task } = await loadTask(ctx, args.task);
-      const thread = await ctx.call<Comment[]>("POST", `/api/tasks/${task.id}/comments`, { text: args.text });
+      /* One upload each, then the comment with their keys. If the comment is
+         refused, the uploads stay unattached: readable only by this
+         principal, the same leftover as a browser upload never sent. */
+      const keys: string[] = [];
+      for (const image of parsed.images) {
+        const { file } = await ctx.call<{ file: UploadedFile }>("POST", "/api/uploads", new RawBody(image.bytes, image.type, image.name));
+        keys.push(file.key);
+      }
+      const thread = await ctx.call<Comment[]>("POST", `/api/tasks/${task.id}/comments`, {
+        text: args.text,
+        ...(keys.length ? { attachments: keys } : {}),
+      });
       const mine = thread[thread.length - 1];
       const named = mine?.mentions.length ? `; mentioned ${mine.mentions.map((m) => `@${m.handle}`).join(", ")}` : "";
-      return `Commented on ${task.key} (${thread.length} comment${thread.length === 1 ? "" : "s"} now${named}).`;
+      const pictures = keys.length ? ` with ${keys.length} image${keys.length === 1 ? "" : "s"}` : "";
+      return `Commented on ${task.key}${pictures} (${thread.length} comment${thread.length === 1 ? "" : "s"} now${named}).`;
     },
   },
   {

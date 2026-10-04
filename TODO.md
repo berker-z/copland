@@ -163,6 +163,9 @@ docs/DESIGN.md under Touch.
   takes `attachments: [key]`, the thread shows them as thumbnails that open
   full size, the comment box takes them by paste, drop or picker, and
   `get_task` shows them
+- Agents attach screenshots (COPL-119): `comment_on_task` takes
+  `images: [{ name, data }]`, PNG or JPEG as base64, sniffed from the bytes,
+  5 MB each, and uploads them in-process before posting
 - MCP server with OAuth and personal tokens, its tools, a coverage check
 - Deployed at copland.berkerz.dev with a published Google consent screen,
   privacy and terms pages, the pole mark and favicon

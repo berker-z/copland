@@ -68,10 +68,19 @@ export function d1(db: DatabaseSync): D1Database {
   } as unknown as D1Database;
 }
 
-/** Just enough of R2 for uploads: head, delete, and objects put by the check. */
+/** Just enough of R2 for uploads: put, head, delete, and objects put by the check. */
 export function r2() {
-  const objects = new Map<string, { size: number; type: string; name: string; uploadedBy: string }>();
+  const objects = new Map<string, { size: number; type: string; name: string; uploadedBy: string; bytes?: Uint8Array }>();
   const bucket = {
+    put: async (
+      key: string,
+      body: ReadableStream<Uint8Array>,
+      options: { httpMetadata: { contentType: string }; customMetadata: { name: string; uploadedBy: string } },
+    ) => {
+      const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+      objects.set(key, { size: bytes.length, type: options.httpMetadata.contentType, ...options.customMetadata, bytes });
+      return { size: bytes.length };
+    },
     head: async (key: string) => {
       const o = objects.get(key);
       return o ? { size: o.size, httpMetadata: { contentType: o.type }, customMetadata: { name: o.name, uploadedBy: o.uploadedBy } } : null;
