@@ -3,7 +3,7 @@
    starts from.
    ========================================================================== */
 
-import type { BoardMember, BoardRole, BoardSummary, StageCategory } from "@/domain/types";
+import type { BoardAccess, BoardMember, BoardRole, BoardSummary, StageCategory } from "@/domain/types";
 import { rowToUser, type UserRow } from "./users";
 
 type StageSeed = { name: string; category: StageCategory; tone: number };
@@ -27,28 +27,35 @@ const INBOX_STAGES: StageSeed[] = [
   { name: "done", category: "done", tone: 3 },
 ];
 
-interface BoardRow {
+interface AccessRow {
   id: string;
   key: string;
   name: string;
   is_inbox: number;
   role: BoardRole;
+}
+
+interface SummaryRow extends AccessRow {
   member_count: number;
   open_task_count: number;
 }
 
-function rowToSummary(row: BoardRow): BoardSummary {
-  return {
-    id: row.id,
-    key: row.key,
-    name: row.name,
-    isInbox: row.is_inbox === 1,
-    role: row.role,
-    memberCount: row.member_count,
-    openTaskCount: row.open_task_count,
-  };
+function rowToAccess(row: AccessRow): BoardAccess {
+  return { id: row.id, key: row.key, name: row.name, isInbox: row.is_inbox === 1, role: row.role };
 }
 
+function rowToSummary(row: SummaryRow): BoardSummary {
+  return { ...rowToAccess(row), memberCount: row.member_count, openTaskCount: row.open_task_count };
+}
+
+/* Membership only: one board_members row and its board per board. Every
+   access check runs this, so it counts nothing (COPL-133). */
+const ACCESS_SELECT = `
+  SELECT b.id, b.key, b.name, b.is_inbox, bm.role
+    FROM boards b
+    JOIN board_members bm ON bm.board_id = b.id AND bm.user_id = ?1`;
+
+/* The open count reads the tasks_open index (0029), not the board's tasks. */
 const SUMMARY_SELECT = `
   SELECT b.id, b.key, b.name, b.is_inbox, bm.role,
          (SELECT count(*) FROM board_members x WHERE x.board_id = b.id) AS member_count,
@@ -57,22 +64,27 @@ const SUMMARY_SELECT = `
     FROM boards b
     JOIN board_members bm ON bm.board_id = b.id AND bm.user_id = ?1`;
 
-/** Every board the user is on, inbox first, then by name. */
-export async function listBoardsFor(db: D1Database, userId: string): Promise<BoardSummary[]> {
-  const { results } = await db
-    .prepare(`${SUMMARY_SELECT} WHERE b.archived_at IS NULL ORDER BY b.is_inbox DESC, lower(b.name)`)
-    .bind(userId)
-    .all<BoardRow>();
+const LISTED = `WHERE b.archived_at IS NULL ORDER BY b.is_inbox DESC, lower(b.name)`;
+
+/** Every board the user is on and their role there, inbox first, then by name. */
+export async function listBoardsFor(db: D1Database, userId: string): Promise<BoardAccess[]> {
+  const { results } = await db.prepare(`${ACCESS_SELECT} ${LISTED}`).bind(userId).all<AccessRow>();
+  return results.map(rowToAccess);
+}
+
+/** The same boards with their member and open task counts, for GET /api/boards. */
+export async function listBoardSummariesFor(db: D1Database, userId: string): Promise<BoardSummary[]> {
+  const { results } = await db.prepare(`${SUMMARY_SELECT} ${LISTED}`).bind(userId).all<SummaryRow>();
   return results.map(rowToSummary);
 }
 
-/** One board as this user sees it, or null when they are not a member. */
-export async function boardFor(db: D1Database, userId: string, boardId: string): Promise<BoardSummary | null> {
+/** One board and this user's role on it, or null when they are not a member. */
+export async function boardFor(db: D1Database, userId: string, boardId: string): Promise<BoardAccess | null> {
   const row = await db
-    .prepare(`${SUMMARY_SELECT} WHERE b.id = ?2 AND b.archived_at IS NULL`)
+    .prepare(`${ACCESS_SELECT} WHERE b.id = ?2 AND b.archived_at IS NULL`)
     .bind(userId, boardId)
-    .first<BoardRow>();
-  return row ? rowToSummary(row) : null;
+    .first<AccessRow>();
+  return row ? rowToAccess(row) : null;
 }
 
 /** This user's role on each of these boards they are on. */

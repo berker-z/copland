@@ -17,7 +17,7 @@
    ========================================================================== */
 
 import { BOARD_ROLES, type BoardDetail, type BoardRole, type Person, type Viewer } from "@/domain/types";
-import { boardsFor, requireBoard, requirePerson } from "../access";
+import { boardSummariesFor, requireBoard, requirePerson } from "../access";
 import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
@@ -47,7 +47,7 @@ function boardName(raw: unknown): string {
 }
 
 export async function getBoards(env: Env, viewer: Viewer): Promise<Response> {
-  return json(await boardsFor(env.DB, viewer));
+  return json(await boardSummariesFor(env.DB, viewer));
 }
 
 export async function getBoard(env: Env, viewer: Viewer, id: string): Promise<Response> {
