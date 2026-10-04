@@ -95,7 +95,7 @@ async function listComments(db: D1Database, taskId: string): Promise<Comment[]> 
   const imagesOf = new Map<string, CommentAttachment[]>();
   for (const r of images.results) {
     const list = imagesOf.get(r.comment_id) ?? [];
-    list.push({ id: r.id, name: r.name, type: r.mime, size: r.size, url: `/api/${r.key}` });
+    list.push({ id: r.id, name: r.name, type: r.mime, size: r.size, url: `/api/attachments/${r.key}` });
     imagesOf.set(r.comment_id, list);
   }
   return comments.results.map((r) => ({
