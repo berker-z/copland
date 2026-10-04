@@ -598,7 +598,14 @@ impl AgentLoop {
         if missing != self.missing {
             match missing.message() {
                 Some(m) => tracing::warn!("{m}"),
-                None => tracing::info!("every program its runs need is found"),
+                /* Where bwrap is, so a Nix build shows it uses its own (COPL-137). */
+                None => match runner::locate(BWRAP).filter(|_| missing.coding) {
+                    Some(bwrap) => tracing::info!(
+                        "every program its runs need is found, bwrap at {}",
+                        bwrap.display()
+                    ),
+                    None => tracing::info!("every program its runs need is found"),
+                },
             }
             self.missing = missing;
         }
