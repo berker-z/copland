@@ -537,8 +537,12 @@ export interface Recipient {
   user: User;
   /** The viewer's own agent; otherwise someone else's, open to its boards' members. */
   own: boolean;
-  /** It has a run going, which read its inbox when it started: a message waits for the next run. */
-  running: boolean;
+  /**
+   * Its daemon (or the box running it) is connected: a socket opened with
+   * one of its tokens, heard from within the last 75 s. While it is not,
+   * nothing reads a message sent to it.
+   */
+  connected: boolean;
 }
 
 /** GET /api/inbox: one page, newest first (by created time, then id). */

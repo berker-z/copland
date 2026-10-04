@@ -397,6 +397,14 @@ docs/DESIGN.md under Touch.
   under it. `nudgeTargets` is gone. Messages no longer carry a task from the
   browser, only from the MCP and replies. Looked at in headless Chrome at
   desktop width and 390px
+- The /nudge pane says whether an agent's box is on (COPL-126, for
+  COPL-123), not that it has a run going: `Recipient.connected` is a socket
+  in the agent's live hub opened with one of its still-good tokens and heard
+  from (opened, or a ping answered) within the daemon's 75 s silence limit
+  (`LiveHub.listening`, `connectedPrincipals`, `listeningTokens` checked in
+  checks/messages.check.ts). Off, the picked row says nothing reads the
+  message until it is. No queue note at the run cap: `max_runs` is the
+  daemon's config and the server doesn't know it
 - Messages in the box (COPL-109, for COPL-44): `m` on an agent in the
   agents screen opens one line and sends it as you (`POST /api/messages`),
   saying it waits for the next run while one is going here; the bell lists

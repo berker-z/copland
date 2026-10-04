@@ -132,10 +132,11 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   and says "sent" for a moment, a refusal in red under it.
 - The /nudge pane (`src/features/inbox/NudgePane.tsx`) is a list of
   agents, one row each (avatar, handle in `text-ink`, `pointer-coarse:py-3`
-  for a finger), with `in a run` in `text-yellow` at the right while one
-  has a run going. A picked row turns `bg-raised` with its handle in
-  accent, and opens the message input under it, after a muted line saying
-  the message waits for the next run when it has one. Picking it again
+  for a finger), with `box on` in `text-green` at the right while the
+  daemon running it is connected, `box off` in `text-muted` while not. A
+  picked row turns `bg-raised` with its handle in accent, and opens the
+  message input under it, after a muted line saying nothing reads the
+  message until its box is connected when it is off. Picking it again
   closes it. With nobody to message it says so, `text-muted`, with an
   accent link to settings › agents, as /wired does.
 - `src/features/shell/StatusLine.tsx` — statusline and phone menu; its
