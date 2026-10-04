@@ -111,6 +111,24 @@ t(`coverage credits every route a tool calls${uncredited.length ? `: ${uncredite
 t(`coverage credits no tool with a route it does not call${overcredited.length ? `: ${overcredited.join(", ")}` : ""}`, overcredited.length === 0);
 t(`every skip says which kind of no${vagueSkips.length ? `: ${vagueSkips.map(([r]) => r).join(", ")}` : ""}`, vagueSkips.length === 0);
 
+/* The guide's finishing rules for work people see (COPL-121), read as text
+   from its Code and Leading paragraphs. */
+const para = (title: string) => mcp.match(new RegExp(`^- \\*\\*${title}\\.\\*\\*.*$`, "m"))?.[0] ?? "";
+const code = para("Code");
+const leading = para("Leading");
+t(
+  "the guide's Code section makes work people see review_first, with screenshots at desktop and 390px on comment_on_task",
+  /changes what people see[^.]*is review_first/.test(code) &&
+    /desktop width and at 390px/.test(code) &&
+    code.includes("comment_on_task's images") &&
+    /If you can't take them, say so/.test(code) &&
+    code.includes("daemon/README.md"),
+);
+t(
+  "the guide's Leading section marks children people see review_first",
+  /changes what people see is review_first/.test(leading) && leading.includes("create_task review_first"),
+);
+
 let failed = 0;
 for (const [name, pass] of cases) {
   if (!pass) failed++;
