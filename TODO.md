@@ -457,3 +457,12 @@ docs/DESIGN.md under Touch.
   flows at the same 15 (`FPS` in daemon/box/src/scene.rs, in place of
   20), its sway stays at 12, and travel is capped at 30 with a timer
   rather than drawn on every display frame
+- Opening a task reads its inbox items (COPL-138): the task modal marks
+  your unread items on that task read (given, mentioned, commented; never
+  a message), one write per opening and none when nothing is unread, from
+  the inbox pages already loaded (`readOnOpen` in src/domain/inbox.ts,
+  checked in checks/inbox.check.ts; `useReadOnOpen` in
+  src/features/inbox/inboxWrite.ts). Before, only clicking the item in the
+  inbox did, so a mention read on the task, or opened from the box's bell,
+  stayed unread for good and the bell never cleared. Nothing server-side
+  changed: agents still mark their own items read through the MCP
