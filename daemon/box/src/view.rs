@@ -1,9 +1,10 @@
 //! The window: the scene's raster painted as quads at an integer cell size, the
 //! lists and the status line as text, laid out as the prototype's `.box`.
 //!
-//! It draws only when something changes: 15 frames a second (`scene::FPS`) while an item
-//! travels, a run's current flows or the wires sway, once a second while a run's timer
-//! shows, and otherwise when the daemon or the owner's feed says something new.
+//! It draws only when something changes: 30 frames a second while an item travels,
+//! 15 (the web scene's cap, `scene::FPS`) while a run's current flows, twelve while the
+//! wires only sway, once a second while a run's timer shows, and otherwise when the
+//! daemon or the owner's feed says something new.
 //!
 //! The title bar has the bell (what needs you, COPL-64) and ≡ (the menu, COPL-65).
 //! In compact mode the window is the status line alone, the bell and ≡ at its end.
@@ -40,8 +41,14 @@ pub const STATUS_H: f32 = 24.0;
 /// The scene's margin: 2px on top, 10px either side, and the 4px gap above the status line.
 const SIDE: f32 = 10.0;
 
-/// While anything travels, fades, flows, sways or blinks: the scene's FPS, as on the web.
-const FRAME: Duration = Duration::from_nanos((1e9 / FPS) as u64);
+/// While an item travels, fades or settles: 30 frames a second, so a high-refresh screen
+/// doesn't mean 144 renders a second.
+const TRAVEL: Duration = Duration::from_nanos((1e9 / 30.0) as u64);
+/// While a run's current flows along its wire: the web scene's cap, 15 frames a second.
+const CURRENT: Duration = Duration::from_nanos((1e9 / FPS) as u64);
+/// While the wires only sway and blocked lamps blink: about 12 frames a second. A swaying wire
+/// moves about a cell a second at most, so this looks the same as 15 and costs less.
+const SWAY: Duration = Duration::from_millis(83);
 /// While a run's timer shows and nothing moves.
 const TICK: Duration = Duration::from_secs(1);
 /// Otherwise, now and then, for the done list's slow fade.
@@ -877,8 +884,10 @@ impl Render for BoxView {
             self.scene.sync(&board);
         }
         self.scene.step(now);
-        if self.scene.moving() || self.scene.ambient() {
-            self.redraw_in(FRAME, cx);
+        if self.scene.moving() {
+            self.redraw_in(TRAVEL, cx);
+        } else if self.scene.ambient() {
+            self.redraw_in(if self.scene.ticking() { CURRENT } else { SWAY }, cx);
         } else if self.scene.ticking() {
             self.redraw_in(TICK, cx);
         } else {

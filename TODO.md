@@ -446,6 +446,7 @@ docs/DESIGN.md under Touch.
   was on screen, 60 a second or more, even when nothing moved. It now
   draws at most `FPS` (15) times a second, sleeping on a timer between
   frames and taking one animation frame to draw on; `step` still gets the
-  real time, so travel and sway keep their speed. The box redraws at the
-  same rate (`FPS` in daemon/box/src/scene.rs) in place of every frame
-  while something travels and 20 or 12 while the wires flow or sway
+  real time, so travel and sway keep their speed. The box's current
+  flows at the same 15 (`FPS` in daemon/box/src/scene.rs, in place of
+  20), its sway stays at 12, and travel is capped at 30 with a timer
+  rather than drawn on every display frame

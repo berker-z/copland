@@ -518,8 +518,8 @@ const DEMO_POOL: [&str; 10] = [
 pub const MAX_BEADS: usize = 4;
 /// The done list's header stays lit this long after the newest, in seconds (live).
 pub const DONE_LIT: f64 = 15.0 * 60.0;
-/// Frames a second while anything moves, sways or pulses, as on the web: more look no
-/// different and only cost.
+/// The web scene's frame cap (`FPS` in scene.ts); the window draws a run's current at it
+/// (`view.rs`).
 pub const FPS: f64 = 15.0;
 
 /// Where the i-th resting item of todo sits on the wire into doing.
@@ -1092,7 +1092,7 @@ impl Scene {
         self.flash_done = (self.flash_done - sdt * 0.8).max(0.0);
     }
 
-    /// Something is travelling, fading or settling: the window should keep drawing, FPS a second.
+    /// Something is travelling, fading or settling: the window should keep drawing, 30 frames a second.
     pub fn moving(&self) -> bool {
         self.flash_done > 0.0
             || self.items.iter().any(|i| match i.state {
@@ -1104,7 +1104,7 @@ impl Scene {
             })
     }
 
-    /// Something only sways, pulses or blinks: worth drawing, FPS a second like the rest.
+    /// Something only sways, pulses or blinks: worth drawing, but not as often.
     pub fn ambient(&self) -> bool {
         self.motion
     }
