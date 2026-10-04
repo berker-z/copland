@@ -130,6 +130,18 @@ t(
   /changes what people see is review_first/.test(leading) && leading.includes("create_task review_first"),
 );
 
+/* Comments that come in while a run works (COPL-139): read the thread again before integrating, and the hook brings them. */
+t(
+  "the guide's Code section re-reads the task before integrating and before done, and stops for a question from the owner",
+  /re-checked\. Then read the task again \(get_task\)[^(]*before you move a task to done/.test(code) &&
+    /Never integrate work the thread has just questioned\. \(4\) Integrate/.test(code) &&
+    code.indexOf("read the task again") < code.indexOf("(4) Integrate"),
+);
+t(
+  "the guide's runs text says the heartbeat hook brings new comments on the run's claimed tasks",
+  /Given its event, that hook also brings you, at your next step, the comments and mentions that came in on the tasks your run has claimed/.test(para("Runs and claims")),
+);
+
 /* create_task's board (COPL-125): a person may leave it out, an agent names it. */
 const refused = (f: () => unknown) => {
   try {

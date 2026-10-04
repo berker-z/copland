@@ -192,6 +192,16 @@ docs/DESIGN.md under Touch.
   reads a partial index of open tasks (`tasks_open`, migration 0029). Rows
   read locally: `/api/inbox` 770 to 19, `/api/wired` 771 to 20, a board
   route's access check about 125 to 1 (checks/access.check.ts)
+- Comments reach the run working on the task (COPL-139, for COPL-130):
+  `POST /api/runs/current/news` tells a run, once each, the unread comments
+  and mentions on the tasks it has claimed since it started
+  (`runs.heard_until`, migration 0031). The MCP's `heartbeat`, given the
+  Claude Code hook's event, returns them as the hook's
+  `additionalContext`, so they arrive at the run's next step; the box's
+  setup puts that hook in the Claude Code command. The guide has every run
+  read the task again before it integrates or moves it to done, and the
+  task modal tells a commenter when the run will see the comment
+  (checks/runNews.check.ts)
 - MCP server with OAuth and personal tokens, its tools, a coverage check
 - Deployed at copland.berkerz.dev with a published Google consent screen,
   privacy and terms pages, the pole mark and favicon

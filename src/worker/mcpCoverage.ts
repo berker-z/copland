@@ -117,11 +117,13 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
      a run, it does not mint one (a session cannot switch its own credential
      anyway). A chat session's interactive run is made by its first
      claim_task instead. whoami reads the current run; finish_run ends it;
-     heartbeat is the Claude Code hook's call that keeps it alive. */
+     heartbeat is the Claude Code hook's call that keeps it alive and, given
+     the hook's event, brings the run what came in on its tasks (COPL-139). */
   "POST /api/runs": {
     skip: "private: starting a run mints a credential; whoever launches the runtime (a daemon, a script) calls it with the principal's token and hands the runtime the secret, so no model holds a token that makes more",
   },
   "GET /api/runs/current": { tools: ["heartbeat"] },
+  "POST /api/runs/current/news": { tools: ["heartbeat"] },
   "GET /api/runs/:id": { tools: ["whoami"] },
   "POST /api/runs/:id/finish": { tools: ["finish_run"] },
   "POST /api/tasks/:id/claim": { tools: ["claim_task"] },

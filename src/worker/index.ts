@@ -86,6 +86,7 @@ import {
   postMessageClaim,
   postRun,
   postRunFinish,
+  postRunNews,
 } from "./routes/runs";
 import { getInbox, postInboxDismiss, postInboxRead } from "./routes/inbox";
 import { getRecipients, postMessage } from "./routes/messages";
@@ -325,6 +326,7 @@ const api = new Router<Ctx>()
   .on("POST", "/api/runs", ({ request, env, viewer, changes }) => postRun(request, env, viewer, changes))
   /* Before /:id, which would take "current". */
   .on("GET", "/api/runs/current", ({ viewer }) => getCurrentRun(viewer))
+  .on("POST", "/api/runs/current/news", ({ env, viewer }) => postRunNews(env, viewer))
   .on("GET", "/api/runs/:id", ({ env, viewer }, { id }) => getRun(env, viewer, id))
   .on("POST", "/api/runs/:id/finish", ({ request, env, viewer, changes }, { id }) =>
     postRunFinish(request, env, viewer, id, changes),

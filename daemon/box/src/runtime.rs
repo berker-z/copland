@@ -36,6 +36,17 @@ const COPLAND_TOOLS: [&str; 14] = [
     "create_task",
 ];
 
+/// Claude Code's settings for a run (COPL-139): the heartbeat hook, so the run stays alive between
+/// Copland calls and, given the hook's event, hears comments on its task at its next step. The same
+/// hooks as Copland's own `.claude/settings.json`, which a test holds it to, so a run in that repo
+/// gets them once.
+const CLAUDE_SETTINGS: &str = concat!(
+    r#"{"hooks":{"PostToolUse":[{"matcher":"^(?!mcp__copland__)","hooks":[{"type":"mcp_tool","server":"copland","#,
+    r#""tool":"heartbeat","input":{"event":"${hook_event_name}"},"timeout":10}]}],"#,
+    r#""UserPromptSubmit":[{"hooks":[{"type":"mcp_tool","server":"copland","tool":"heartbeat","#,
+    r#""input":{"event":"${hook_event_name}"},"timeout":10}]}]}}"#,
+);
+
 /// Codex can't read the MCP JSON file, so a shell takes the run's secret out of it into an
 /// environment variable Codex reads as the bearer token, kept from Codex's own shell commands;
 /// the URL is the daemon's `COPLAND_URL`. `$1` is the prompt, `$2` the MCP config file.
@@ -101,6 +112,8 @@ impl Runtime {
                     "--permission-mode",
                     "dontAsk",
                     "--no-session-persistence",
+                    "--settings",
+                    CLAUDE_SETTINGS,
                     "--allowedTools",
                 ]
                 .map(s)
@@ -232,6 +245,20 @@ mod tests {
         );
         let at = claude.iter().position(|a| a == "--allowedTools").unwrap();
         assert!(claude[at + 1..].iter().all(|a| a.starts_with("mcp__copland__")));
+    }
+
+    /// The run's hooks are Copland's own `.claude/settings.json`, byte for byte but for spacing, so a
+    /// run in that repo runs the heartbeat once, and a change to one is a change to both (COPL-139).
+    #[test]
+    fn claude_runs_get_the_repos_heartbeat_hook() {
+        let claude = Runtime::ClaudeCode.command();
+        let at = claude.iter().position(|a| a == "--settings").unwrap();
+        assert_eq!(claude[at + 1], CLAUDE_SETTINGS);
+        let repo =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.claude/settings.json")).unwrap();
+        let bare = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        assert_eq!(bare(&repo), CLAUDE_SETTINGS);
+        assert!(CLAUDE_SETTINGS.contains(r#""input":{"event":"${hook_event_name}"}"#));
     }
 
     #[test]

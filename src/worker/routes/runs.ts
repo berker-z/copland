@@ -4,6 +4,7 @@
    ----------------------------------------------------------------------------
      POST   /api/runs               { client? } → { run, secret }
      GET    /api/runs/current       { run: { id, short, kind } | null }: this credential's run
+     POST   /api/runs/current/news  { run, items }: what came in on its claimed tasks since it was last told
      GET    /api/runs/:id           the run, with what it has claimed
      POST   /api/runs/:id/finish    { status: completed | failed | cancelled, interrupted?, reason? }| failed | cancelled }
      POST   /api/tasks/:id/claim    this run takes the task
@@ -78,7 +79,7 @@ import {
   type RunEnding,
   type RunKind,
 } from "@/domain/runs";
-import type { MessageClaimed, StartedRun, TaskClaim, Viewer } from "@/domain/types";
+import type { MessageClaimed, RunNews, RunNewsItem, StartedRun, TaskClaim, Viewer } from "@/domain/types";
 import { personOf } from "../access";
 import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } from "../http";
@@ -104,6 +105,57 @@ export async function getCurrentRun(viewer: Viewer): Promise<Response> {
   const id = a?.runId ?? a?.interactiveRunId ?? null;
   const kind: RunKind = a?.runId ? "supervised" : "interactive";
   return json({ run: id ? { id, short: shortRunId(id), kind } : null });
+}
+
+/**
+ * POST /api/runs/current/news (COPL-139): the comments and mentions that
+ * reached this principal's inbox, still unread, on the tasks this
+ * credential's run holds a live claim on, since the run started or since it
+ * was last told, whichever is later. Each is told once: heard_until moves
+ * to the newest one. Only the run's own principal's inbox and only its own
+ * claimed tasks, never another task's, an owner's or a message. The MCP's
+ * heartbeat calls it from the Claude Code hook with the hook's event, so a
+ * comment on a task reaches the run working on it at its next step; any
+ * other runtime can call it the same way. The first call marks the run as
+ * one that hears (heard_until set), which the task modal says to whoever
+ * comments. A write only then, and when there is something to tell, so the
+ * call per tool use is one indexed read. No run: { run: null, items: [] }.
+ */
+export async function postRunNews(env: Env, viewer: Viewer): Promise<Response> {
+  const a = viewer.access;
+  const id = a?.runId ?? a?.interactiveRunId ?? null;
+  if (!id) return json({ run: null, items: [] } satisfies RunNews);
+  const db = env.DB;
+  const run = await db
+    .prepare(`SELECT kind, started_at, heard_until FROM runs WHERE id = ?1 AND user_id = ?2 AND status = 'running'`)
+    .bind(id, viewer.user.id)
+    .first<{ kind: RunKind; started_at: string; heard_until: string | null }>();
+  if (!run) return json({ run: null, items: [] } satisfies RunNews);
+  const since = run.heard_until ?? run.started_at;
+  const { results } = await db
+    .prepare(
+      `SELECT i.id, i.kind, b.key || '-' || t.number AS task, u.handle AS by, i.via, cm.text, i.created_at AS at
+         FROM inbox_items i
+         JOIN task_claims c ON c.task_id = i.task_id AND c.run_id = ?2
+         JOIN runs r ON r.id = c.run_id
+         JOIN tasks t ON t.id = i.task_id JOIN boards b ON b.id = t.board_id
+         JOIN users u ON u.id = i.actor_id
+         JOIN comments cm ON cm.id = i.comment_id
+        WHERE i.user_id = ?1 AND i.read_at IS NULL AND i.kind IN ('mentioned', 'commented')
+          AND i.created_at > ?3 AND ${LIVE_CLAIM}
+        ORDER BY i.created_at, i.id`,
+    )
+    .bind(viewer.user.id, id, since)
+    .all<RunNewsItem>();
+  const until = results.length ? results[results.length - 1].at : since;
+  if (run.heard_until === null || until !== run.heard_until) {
+    /* Never backwards: two steps asking at once both move it forward or leave it. */
+    await db
+      .prepare(`UPDATE runs SET heard_until = ?2 WHERE id = ?1 AND (heard_until IS NULL OR heard_until < ?2)`)
+      .bind(id, until)
+      .run();
+  }
+  return json({ run: { id, short: shortRunId(id), kind: run.kind }, items: results } satisfies RunNews);
 }
 
 /** POST /api/runs { client? }: a new run of the token's principal, and its secret, once. */
