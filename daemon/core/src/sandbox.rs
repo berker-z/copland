@@ -15,12 +15,19 @@
 //! the runtime outside the process group the daemon signals, so without that
 //! a dev server it backgrounded would outlive the run and keep its port.
 //!
-//! It needs `bwrap` on PATH and unprivileged user namespaces. Without them a
-//! coding run doesn't start, rather than starting unsandboxed.
+//! It needs bubblewrap and unprivileged user namespaces. Without them a
+//! coding run doesn't start, rather than starting unsandboxed. The Nix
+//! package builds in bubblewrap's store path (COPL-137), so it doesn't depend
+//! on the PATH it was started with; any other build looks for `bwrap` on PATH.
 
 use std::path::{Path, PathBuf};
 
-pub const BWRAP: &str = "bwrap";
+/// The bubblewrap runs start: `COPLAND_BWRAP` at build time when it was set (the Nix package sets
+/// it to bubblewrap's store path), else `bwrap` on PATH.
+pub const BWRAP: &str = match option_env!("COPLAND_BWRAP") {
+    Some(path) => path,
+    None => "bwrap",
+};
 
 /// What a sandboxed run may write, and where it starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +85,7 @@ mod tests {
             chdir: "/c/work/COPL-1".into(),
         };
         let argv = wrap(&["claude".into(), "-p".into(), "hi".into()], &w);
-        assert_eq!(argv[0], "bwrap");
+        assert_eq!(argv[0], BWRAP);
         let s = argv.join(" ");
         assert!(s.contains("--ro-bind / /"));
         assert!(s.contains("--unshare-pid"));
