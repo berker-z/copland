@@ -258,6 +258,15 @@ impl Drop for TempFile {
     }
 }
 
+/// A directory deleted, with what is in it, when this is dropped: a run's own temp dir.
+struct TempDir(PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 /// The MCP config Claude Code (and others) read: Copland over HTTP, authorised by the run's secret.
 pub fn mcp_config_json(url: &str, secret: &Secret) -> String {
     serde_json::json!({
@@ -411,7 +420,7 @@ async fn supervise(
 
     let text = prompt(handle, task_key, brief, workspace, messages);
     /* A coding task: its own command, in its worktree, inside the sandbox. */
-    let (argv, cwd) = match (workspace, &agent.code_command) {
+    let (argv, cwd, sandboxed) = match (workspace, &agent.code_command) {
         (Some(ws), Some(code)) => {
             /* A lead reads the repo; a worker writes its worktree, and its commits land in the clone's .git. */
             let dirs = if ws.read_only {
@@ -419,17 +428,32 @@ async fn supervise(
             } else {
                 vec![ws.clone.join(".git"), ws.dir.clone()]
             };
+            /* macOS: a temp dir of the run's own, its TMPDIR, gone with the run (Linux's is a tmpfs). */
+            let tmp = sandbox::NEEDS_TMP.then(|| std::env::temp_dir().join(format!("copland-run-{run_id}")));
+            let guard = match &tmp {
+                Some(dir) => match private_dir(dir) {
+                    Ok(()) => Some(TempDir(dir.clone())),
+                    Err(e) => return Exit::SpawnFailed(format!("{e:#}")),
+                },
+                None => None,
+            };
             let writable = Writable {
                 dirs,
                 extra: agent.writable.clone(),
                 chdir: ws.dir.clone(),
+                tmp,
             };
             (
                 sandbox::wrap(&fill_command(code, &text, &mcp_path), &writable),
                 ws.dir.clone(),
+                Some(guard),
             )
         }
-        _ => (fill_command(&agent.command, &text, &mcp_path), agent.workdir.clone()),
+        _ => (
+            fill_command(&agent.command, &text, &mcp_path),
+            agent.workdir.clone(),
+            None,
+        ),
     };
     let _ = writeln!(
         log_file,
@@ -540,6 +564,12 @@ async fn supervise(
             }
         }
     };
+    /* No process namespace on macOS: what the runtime left in its process group goes now, the way
+    Linux's goes with the namespace. What left the group (setsid) stays; its temp dir doesn't. */
+    if let (Some(_), Some(pid), false) = (&sandboxed, pid, sandbox::ENDS_ITS_CHILDREN) {
+        // SAFETY: as in `stop`. The group's id can't be reused while anything is still in it.
+        unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+    }
     /* The runtime is done, the run not yet finished: the last word on what the work changed. */
     if let Some(ws) = reported.filter(|_| alive) {
         reporter.report(api, secret, task_id, ws).await;
