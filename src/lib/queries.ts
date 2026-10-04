@@ -8,7 +8,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import type { TaskOverlapRead } from "@/domain/overlap";
 import type { MarketExtras, Note } from "@/domain/panes";
 import type { Settings, VaultEntry } from "@/domain/settings";
-import type { Agent, ApiToken, BoardDetail, BoardSummary, Inbox, Invite, Me, MyWork, Person, User, Wired } from "@/domain/types";
+import type { Agent, ApiToken, BoardDetail, BoardSummary, Inbox, Invite, Me, MyWork, Person, Recipient, User, Wired } from "@/domain/types";
 import { api } from "./api";
 import { isLive } from "./liveState";
 
@@ -25,6 +25,8 @@ export const KEYS = {
   myWork: ["board", "~mine"],
   /* The same, for the /wired pane: task moves, claims and run endings all arrive as "board". */
   wired: ["board", "~wired"],
+  /* The nudge pane's list: board membership and runs arrive as "board", your agents' settings as "agents". */
+  recipients: ["board", "~recipients"],
   admin: ["admin"],
   adminUsers: ["admin", "users"],
   adminInvites: ["admin", "invites"],
@@ -66,6 +68,13 @@ export const useMyWork = () =>
  */
 export const useWired = () =>
   useQuery({ queryKey: KEYS.wired, queryFn: () => api<Wired>("/wired"), refetchInterval: 60_000 });
+
+/**
+ * Whom the nudge pane offers. Polled every minute too: a run starting, or
+ * someone else's agent opening to its boards, tells only its owner.
+ */
+export const useRecipients = () =>
+  useQuery({ queryKey: KEYS.recipients, queryFn: () => api<Recipient[]>("/messages/recipients"), refetchInterval: 60_000 });
 
 /** One board's query, for useBoard and for the panes that read several boards at once. */
 export const boardQuery = (id: string) => ({

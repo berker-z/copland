@@ -34,8 +34,8 @@ const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
   admin: [KEYS.admin, KEYS.me],
   tokens: [KEYS.tokens],
   inbox: [KEYS.inbox],
-  /* The wired pane lists your agents too. */
-  agents: [KEYS.agents, KEYS.wired],
+  /* The wired and nudge panes list your agents too. */
+  agents: [KEYS.agents, KEYS.wired, KEYS.recipients],
   /* Handles and pictures show in boards, comments, history, the people page and the share search. */
   people: [KEYS.me, KEYS.boardAll, ["comments"], ["events"], KEYS.adminUsers, ["people"]],
 };

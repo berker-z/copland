@@ -98,6 +98,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /api/inbox/read": { tools: ["mark_read"] },
   "POST /api/inbox/dismiss": { tools: ["mark_read"] },
   "POST /api/messages": { tools: ["send_message"] },
+  "GET /api/messages/recipients": { skip: "browser: the nudge pane's list; an agent messages only its owner, and send_message names whom" },
   "GET /api/tasks/:id": {
     tools: ["get_task", "update_task", "move_task", "claim_task", "release_task", "comment_on_task", "delete_task", "drift", "overlap", "revalidate"],
   },
