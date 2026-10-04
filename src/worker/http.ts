@@ -16,15 +16,18 @@ export function json(data: unknown, init: ResponseInit = {}): Response {
   });
 }
 
+/* Fields declared rather than parameter properties, so node's type stripping
+   can load this for the checks (checks/worker.ts). */
 export class HttpError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-    /** Why, for a program to act on ("claimed"); the message is for people. Sent as `code`. */
-    readonly code?: string,
-  ) {
+  readonly status: number;
+  /** Why, for a program to act on ("claimed"); the message is for people. Sent as `code`. */
+  readonly code?: string;
+
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.name = "HttpError";
+    this.status = status;
+    this.code = code;
   }
 }
 

@@ -22,8 +22,9 @@
    unreachable except by its uploader, and sweepable by prefix and age.
 
    Board docs (routes/docs.ts) are the same primitive: the same upload, the
-   same key space, the same GET below. A key belongs to a task attachment or
-   to a board doc, never both (claimUpload).
+   same key space, the same GET below. So are a comment's images
+   (routes/comments.ts): rows here with a comment_id, kept out of the task's
+   own list. A key belongs to one of these, never two (claimUpload).
    ========================================================================== */
 
 import type { Attachment, UploadedFile, Viewer } from "@/domain/types";

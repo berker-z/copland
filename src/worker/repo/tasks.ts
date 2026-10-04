@@ -202,13 +202,16 @@ interface AttachmentRow {
   created_at: string;
 }
 
-/** Attachments grouped by task, for one board or one task (`where` over a and t). */
+/**
+ * Attachments grouped by task, for one board or one task (`where` over a and
+ * t). A comment's images are the comment's (routes/comments.ts), not here.
+ */
 async function attachmentsFor(db: D1Database, where: string, value: string): Promise<Map<string, Attachment[]>> {
   const { results } = await db
     .prepare(
       `SELECT a.id, a.task_id, a.name, a.mime, a.size, a.kind, a.key, a.url, a.created_at
          FROM attachments a JOIN tasks t ON t.id = a.task_id
-        WHERE ${where} ORDER BY a.created_at`,
+        WHERE ${where} AND a.comment_id IS NULL ORDER BY a.created_at`,
     )
     .bind(value)
     .all<AttachmentRow>();
