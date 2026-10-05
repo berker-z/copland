@@ -214,6 +214,12 @@ docs/DESIGN.md under Touch.
   main's numbers: `/api/boards/:id` (12174 rows), `/api/wired` (1051) and
   `/api/tasks/mine` (5731) still read whole histories; the rest of
   COPL-131 lowers them and marks them flat (checks/reads.check.ts)
+- `/api/wired` reads open work only (COPL-152, for COPL-131): it gathers
+  the open tasks on your boards (`tasks_open`) and those finished inside
+  its 24-hour window (`tasks_completed`, migration 0033) first, then joins
+  their assignees, so it no longer reads your agents' whole history. Rows
+  read on the reads check's seeds: 551 and 1051 to 139 on both; its budget
+  is 139 and flat
 - Comments reach the run working on the task (COPL-139, for COPL-130):
   `POST /api/runs/current/news` tells a run, once each, the unread comments
   and mentions on the tasks it has claimed since it started

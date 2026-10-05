@@ -23,7 +23,7 @@ export const BUDGETS: Record<string, Budget> = {
   "GET /api/boards/:id": { rows: 12174, flat: false },
   "GET /api/tasks/:id": { rows: 28, flat: true },
   "GET /api/inbox": { rows: 253, flat: true },
-  "GET /api/wired": { rows: 1051, flat: false },
+  "GET /api/wired": { rows: 139, flat: true },
   "GET /api/tasks/ready": { rows: 43, flat: true },
   "GET /api/tasks/mine": { rows: 5731, flat: false },
   "GET /api/messages/recipients": { rows: 15, flat: true },
