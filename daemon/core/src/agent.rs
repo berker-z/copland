@@ -19,12 +19,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Notify, watch};
 use tokio::task::{Id, JoinError, JoinHandle, JoinSet};
 use tracing::Instrument;
 
-use crate::api::{Api, ApiError, Ending, InboxItem, Me};
+use crate::api::{Api, ApiError, Backoff, Ending, InboxItem, Me};
 use crate::config::AgentConfig;
 use crate::guard::{Check, Identity, Message, Plan, Refused, Wake, WakeGuard, add_ready, plan, refused};
 use crate::live::{self, FALLBACK_POLL, Heard, Link};
@@ -58,10 +58,7 @@ impl std::error::Error for Unusable {}
 /// token can't start runs or claim anything, and a run's secret can't start another run.
 /// What `--check` and each agent's loop ask first.
 pub async fn whoami(api: &Api, agent: &AgentConfig) -> Result<Me> {
-    let me = api
-        .me(&agent.token)
-        .await
-        .map_err(|e| anyhow!("asking who the token is: {e}"))?;
+    let me = api.me(&agent.token).await.context("asking who the token is")?;
     if let Some(access) = &me.access {
         if access.scope == "read" {
             return Err(Unusable(format!(
@@ -144,6 +141,8 @@ pub struct AgentLoop {
     inflight: HashMap<String, Inflight>,
     /// When the last sweep for closed tasks' worktrees was, if there has been one.
     swept: Option<tokio::time::Instant>,
+    /// Since when Copland has been unavailable to its polls (COPL-148), while it is.
+    down: Option<SystemTime>,
     /// Which task each spawned run is for, by its join id, for a run that panics.
     spawned: HashMap<Id, String>,
     /// What this machine lacks to start the agent's runs, as of the last poll.
@@ -151,6 +150,14 @@ pub struct AgentLoop {
     /// Which backend's program was found where, and what its `probe` said there: run once per
     /// backend and place, not every poll.
     probed: Option<(&'static str, PathBuf, Option<String>)>,
+    /// How its runs ask again for their last word while Copland is down.
+    last_word: Backoff,
+}
+
+/// Whether an error is Copland being down (`ApiError::is_unavailable`), whatever was being done.
+fn unavailable(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|c| c.downcast_ref::<ApiError>().is_some_and(ApiError::is_unavailable))
 }
 
 /// A run going on a task.
@@ -280,9 +287,11 @@ impl AgentLoop {
             noted: Default::default(),
             inflight: HashMap::new(),
             swept: None,
+            down: None,
             spawned: HashMap::new(),
             missing: Missing::default(),
             probed: None,
+            last_word: Backoff::LAST_WORD,
         })
     }
 
@@ -307,6 +316,7 @@ impl AgentLoop {
             state: self.state.clone(),
             shutdown: self.shutdown.clone(),
             stop_run: self.stop_run.clone(),
+            last_word: self.last_word,
         }
     }
 
@@ -357,6 +367,13 @@ impl AgentLoop {
                     if last_error.take().is_some() {
                         tracing::info!("working again");
                     }
+                    if let Some(since) = self.down.take() {
+                        tracing::info!(
+                            "Copland answers again, unavailable since {}",
+                            crate::state::clock(since)
+                        );
+                        self.update(|s| s.unavailable = None);
+                    }
                     /* A good poll clears what went wrong, but not what the machine lacks. */
                     let lacking = self.missing.message();
                     self.update(|s| s.last_error = lacking);
@@ -375,13 +392,41 @@ impl AgentLoop {
                         self.update(|s| s.last_error = Some(message));
                         break;
                     }
-                    if last_error.as_deref() == Some(message.as_str()) {
-                        tracing::debug!("{message}");
+                    /* Copland is down (COPL-148): the poll found nothing to start, so nothing is started
+                    or claimed until it answers again. Said once, with since when; runs going are left alone. */
+                    if unavailable(&e) {
+                        let since = match self.down {
+                            Some(since) => {
+                                tracing::debug!("{message}");
+                                since
+                            }
+                            None => {
+                                let since = SystemTime::now();
+                                self.down = Some(since);
+                                tracing::warn!(
+                                    "Copland unavailable since {} ({message}); starting nothing until it answers",
+                                    crate::state::clock(since)
+                                );
+                                since
+                            }
+                        };
+                        self.update(|s| {
+                            s.unavailable = Some(since);
+                            s.last_error = s.unavailable_line();
+                        });
                     } else {
-                        tracing::warn!("{message}");
+                        /* It answered, even if to say no: it is up. */
+                        if self.down.take().is_some() {
+                            self.update(|s| s.unavailable = None);
+                        }
+                        if last_error.as_deref() == Some(message.as_str()) {
+                            tracing::debug!("{message}");
+                        } else {
+                            tracing::warn!("{message}");
+                        }
+                        self.update(|s| s.last_error = Some(message.clone()));
+                        last_error = Some(message);
                     }
-                    self.update(|s| s.last_error = Some(message.clone()));
-                    last_error = Some(message);
                 }
             }
             if self.stopping() {
@@ -584,7 +629,7 @@ impl AgentLoop {
                 .api
                 .inbox_unread(&self.agent.token, PAGE, cursor.as_deref())
                 .await
-                .map_err(|e| anyhow!("reading the inbox: {e}"))?;
+                .context("reading the inbox")?;
             total = page.unread;
             items.extend(page.items);
             match page.next {
@@ -647,7 +692,7 @@ impl AgentLoop {
             .api
             .ready(&self.agent.token)
             .await
-            .map_err(|e| anyhow!("reading what is ready: {e}"))?;
+            .context("reading what is ready")?;
         add_ready(&mut plan, &ready);
         let waiting: Vec<String> = plan.wakes.iter().map(|w| w.task_key.clone()).collect();
         self.update(|s| {
@@ -747,7 +792,7 @@ impl AgentLoop {
                 let current = match self.api.task(&self.agent.token, &wake.task_id).await {
                     Ok(t) => Some((t.updated_at, t.claim.is_some())),
                     Err(e) if e.is_refusal() => None,
-                    Err(e) => return Err(anyhow!("reading {}: {e}", wake.task_key)),
+                    Err(e) => return Err(anyhow::Error::new(e).context(format!("reading {}", wake.task_key))),
                 };
                 let now = current.as_ref().map(|(at, claimed)| (at.as_str(), *claimed));
                 if !WakeGuard::again(&updated_at, held, now) {
@@ -1009,6 +1054,7 @@ struct RunCtx {
     state: watch::Sender<DaemonState>,
     shutdown: watch::Receiver<bool>,
     stop_run: watch::Receiver<StopRequest>,
+    last_word: Backoff,
 }
 
 impl RunCtx {
@@ -1033,8 +1079,18 @@ impl RunCtx {
             .map(|t| t.updated_at)
     }
 
+    /// Finish the run, asking again while Copland is down (COPL-148): a finish that never lands
+    /// leaves the run for the cron to end as stale, a strike on its task, and one that lands late
+    /// still sets its ending right.
     async fn finish(&self, run_id: &str, ending: Ending, reason: Option<&str>) -> String {
-        match self.api.finish_run(&self.agent.token, run_id, ending, reason).await {
+        let what = format!("finishing run {} as {}", runner::short(run_id), ending.as_str());
+        let sent = self
+            .last_word
+            .retry(&what, self.shutdown.clone(), || {
+                self.api.finish_run(&self.agent.token, run_id, ending, reason)
+            })
+            .await;
+        match sent {
             Ok(r) => r.status,
             Err(e) => {
                 tracing::warn!(run = %runner::short(run_id), "finishing the run as {} failed: {e}", ending.as_str());
@@ -1128,6 +1184,7 @@ impl RunCtx {
                 state_dir: &self.paths.state_dir,
                 runtime_dir: &self.paths.runtime_dir,
                 workspace: workspace.as_ref(),
+                last_word: self.last_word,
             },
             self.shutdown.clone(),
             stop_requested(self.stop_run.clone(), self.slot, short.clone()),
@@ -1268,6 +1325,7 @@ impl RunCtx {
                 state_dir: &self.paths.state_dir,
                 runtime_dir: &self.paths.runtime_dir,
                 workspace: None,
+                last_word: self.last_word,
             },
             self.shutdown.clone(),
             stop_requested(self.stop_run.clone(), self.slot, short.clone()),
@@ -1306,12 +1364,12 @@ impl RunCtx {
             .api
             .task(&self.agent.token, task_id)
             .await
-            .map_err(|e| anyhow!("reading {key}: {e}"))?;
+            .with_context(|| format!("reading {key}"))?;
         let board = self
             .api
             .board_repos(&self.agent.token, &task.board_id)
             .await
-            .map_err(|e| anyhow!("reading {key}'s board: {e}"))?;
+            .with_context(|| format!("reading {key}'s board"))?;
         if board.repos.len() > 1 {
             tracing::debug!(task = %key, "its board has {} repos; working in the first", board.repos.len());
         }
@@ -1574,6 +1632,258 @@ mod tests {
         assert_eq!(
             Missing::of(&plain, |_| false).message().as_deref(),
             Some("claude not found on PATH: runs can't start")
+        );
+    }
+
+    /// A fake Copland on a socket of its own, for one agent with one task assigned (COPL-148): it
+    /// answers every call with a 503 `storage_unavailable` while `down`, and the run's finish with
+    /// one for its first `finish_down` tries, the way D1 running out of quota did.
+    #[derive(Default)]
+    struct Fake {
+        down: AtomicBool,
+        finish_down: std::sync::atomic::AtomicU32,
+        /// "POST /api/runs", in the order they came.
+        calls: std::sync::Mutex<Vec<String>>,
+        /// What the finish that landed said.
+        finished: std::sync::Mutex<Option<serde_json::Value>>,
+    }
+
+    impl Fake {
+        fn start(self: &Arc<Self>) -> String {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let fake = self.clone();
+            std::thread::spawn(move || {
+                for conn in listener.incoming().flatten() {
+                    let fake = fake.clone();
+                    std::thread::spawn(move || fake.serve(conn));
+                }
+            });
+            url
+        }
+
+        fn serve(&self, mut conn: std::net::TcpStream) {
+            use std::io::{BufRead, BufReader, Read, Write};
+            let mut reader = BufReader::new(conn.try_clone().unwrap());
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
+                return;
+            }
+            let (method, path) = {
+                let mut parts = line.split_whitespace();
+                (
+                    parts.next().unwrap_or("").to_string(),
+                    parts.next().unwrap_or("").to_string(),
+                )
+            };
+            let mut length = 0;
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = h.split_once(':') {
+                    if k.eq_ignore_ascii_case("content-length") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            let mut body = vec![0; length];
+            let _ = reader.read_exact(&mut body);
+            let path = path.split('?').next().unwrap_or("").to_string();
+            let call = format!("{method} {path}");
+            self.calls.lock().unwrap().push(call.clone());
+            let (status, answer) = self.answer(&call, &body);
+            let _ = write!(
+                conn,
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
+                answer.len()
+            );
+        }
+
+        fn answer(&self, call: &str, body: &[u8]) -> (u16, String) {
+            let unavailable = (
+                503,
+                r#"{"error":"unavailable","code":"storage_unavailable","message":"Copland's storage is unavailable right now"}"#.to_string(),
+            );
+            if self.down.load(Ordering::SeqCst) {
+                return unavailable;
+            }
+            let task = r#"{"id":"t1","key":"COPL-1","boardId":"b1","title":"one","updatedAt":"2026-10-04T23:00:00Z","completedAt":null}"#;
+            let run = |status: &str| format!(r#"{{"id":"run-1","short":"run1","status":"{status}","claims":[]}}"#);
+            match call {
+                "GET /api/me" => (200, r#"{"user":{"id":"u-dev","kind":"agent","handle":"me/dev"},"access":{"scope":"write","via":"test","runId":null}}"#.into()),
+                "GET /api/inbox" => (200, r#"{"unread":1,"items":[{"id":"i1","kind":"assigned","task":{"id":"t1","key":"COPL-1","title":"one"},"actor":{"id":"u-me","handle":"me"},"via":null,"createdAt":"2026-10-04T23:00:00Z","readAt":null}],"next":null}"#.into()),
+                "GET /api/tasks/ready" => (200, r#"{"tasks":[]}"#.into()),
+                "GET /api/tasks/t1" | "POST /api/tasks/t1/claim" => (200, task.into()),
+                "POST /api/runs" => (200, format!(r#"{{"run":{},"secret":"cplr_run"}}"#, run("running"))),
+                "GET /api/runs/run-1" => (200, run("running")),
+                "POST /api/runs/run-1/finish" => {
+                    if self.finish_down.load(Ordering::SeqCst) > 0 {
+                        self.finish_down.fetch_sub(1, Ordering::SeqCst);
+                        return unavailable;
+                    }
+                    let said: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    let status = said["status"].as_str().unwrap_or("").to_string();
+                    *self.finished.lock().unwrap() = Some(said);
+                    (200, run(&status))
+                }
+                _ => (404, r#"{"error":"not_found","message":"Not found"}"#.into()),
+            }
+        }
+
+        fn count(&self, call: &str) -> usize {
+            self.calls.lock().unwrap().iter().filter(|c| *c == call).count()
+        }
+    }
+
+    /// Copland down (COPL-148): the loop starts and claims nothing, says so once with since when,
+    /// and once it is back the run goes ahead, and its finish, refused with 503s for a while, lands.
+    #[tokio::test]
+    async fn while_copland_is_down_nothing_starts_and_the_finish_lands_after() {
+        let fake = Arc::new(Fake::default());
+        fake.down.store(true, Ordering::SeqCst);
+        let url = fake.start();
+        let dir = std::env::temp_dir().join(format!("copland-outage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut a = agent(&["true"], None);
+        a.url = url.clone();
+        a.workdir = dir.clone();
+
+        let mut st = AgentState::new("me/dev", &url);
+        st.slot = 1;
+        let (state, mut watch_state) = watch::channel(DaemonState {
+            agents: vec![st],
+            stopping: false,
+        });
+        let (stop_tx, shutdown) = watch::channel(false);
+        let (_wanted_tx, wanted) = watch::channel(Wanted {
+            generation: 0,
+            agent: Some(a.clone()),
+            poll: Duration::from_millis(50),
+        });
+        let (_stop_run_tx, stop_run) = watch::channel(None);
+        let mut l = AgentLoop::new(
+            1,
+            a,
+            Duration::from_millis(50),
+            Arc::new(Paths {
+                state_dir: dir.clone(),
+                runtime_dir: dir.clone(),
+            }),
+            state,
+            shutdown,
+            Retire {
+                rx: wanted,
+                generation: 0,
+            },
+            stop_run,
+            WakeGuard::default(),
+        )
+        .unwrap();
+        l.last_word = Backoff {
+            first: Duration::from_millis(20),
+            most: Duration::from_millis(50),
+            give_up: Duration::from_secs(30),
+        };
+        let looping = tokio::spawn(l.run());
+        let wait = |st: &mut watch::Receiver<DaemonState>, f: fn(&AgentState) -> bool| {
+            let mut st = st.clone();
+            async move {
+                tokio::time::timeout(Duration::from_secs(10), st.wait_for(|s| f(&s.agents[0])))
+                    .await
+                    .expect("in time")
+                    .map(|_| ())
+                    .unwrap();
+            }
+        };
+
+        /* Down: said on the agent's line, and several polls later nothing has started or been claimed. */
+        wait(&mut watch_state, |a| a.unavailable.is_some()).await;
+        let line = watch_state.borrow().agents[0].last_error.clone().unwrap_or_default();
+        assert!(
+            line.starts_with("Copland unavailable since ") && line.ends_with(" UTC"),
+            "{line}"
+        );
+        while fake.count("GET /api/me") < 5 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(fake.count("POST /api/runs"), 0, "no run started while down");
+        assert_eq!(fake.count("POST /api/tasks/t1/claim"), 0, "nothing claimed while down");
+
+        /* Back, but its finish still meets three 503s: the run goes ahead, and its finish lands after. */
+        fake.finish_down.store(3, Ordering::SeqCst);
+        fake.down.store(false, Ordering::SeqCst);
+        wait(&mut watch_state, |a| a.unavailable.is_none()).await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fake.finished.lock().unwrap().is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the finish landed");
+        let finished = fake.finished.lock().unwrap().clone().unwrap();
+        assert_eq!(finished["status"], "completed", "{finished}");
+        assert_eq!(
+            fake.count("POST /api/runs/run-1/finish"),
+            4,
+            "three 503s, then it landed"
+        );
+        assert_eq!(fake.count("POST /api/runs"), 1);
+        assert_eq!(watch_state.borrow().agents[0].last_error, None);
+
+        stop_tx.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(10), looping)
+            .await
+            .expect("stopped")
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_last_word_is_asked_again_only_while_copland_is_down() {
+        let quick = Backoff {
+            first: Duration::from_millis(1),
+            most: Duration::from_millis(2),
+            give_up: Duration::from_secs(5),
+        };
+        let (_tx, shutdown) = watch::channel(false);
+        let tries = std::sync::atomic::AtomicU32::new(0);
+        let call = |status: u16, ok_after: u32| {
+            let tries = &tries;
+            move || async move {
+                let n = tries.fetch_add(1, Ordering::SeqCst) + 1;
+                if n > ok_after {
+                    Ok(n)
+                } else {
+                    Err(ApiError::Status {
+                        status,
+                        code: None,
+                        message: "x".into(),
+                    })
+                }
+            }
+        };
+        assert_eq!(quick.retry("x", shutdown.clone(), call(503, 2)).await.unwrap(), 3);
+        tries.store(0, Ordering::SeqCst);
+        /* A refusal is final at once. */
+        assert!(quick.retry("x", shutdown.clone(), call(409, 2)).await.is_err());
+        assert_eq!(tries.load(Ordering::SeqCst), 1);
+        /* Shutting down: no more waiting. */
+        tries.store(0, Ordering::SeqCst);
+        let (_tx, stopping) = watch::channel(true);
+        assert!(quick.retry("x", stopping, call(503, 2)).await.is_err());
+        assert_eq!(tries.load(Ordering::SeqCst), 1);
+        /* No answer at all is Copland down too; an unreadable answer is not. */
+        assert!(ApiError::Unreachable("connection refused".into()).is_unavailable());
+        assert!(!ApiError::Transport("unexpected answer".into()).is_retryable());
+        assert!(
+            ApiError::Status {
+                status: 503,
+                code: Some("storage_unavailable".into()),
+                message: String::new()
+            }
+            .is_unavailable()
         );
     }
 

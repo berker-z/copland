@@ -12,6 +12,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use tokio::sync::watch;
 
 use crate::config::Secret;
 
@@ -457,7 +458,9 @@ pub enum ApiError {
         code: Option<String>,
         message: String,
     },
-    /// No usable answer: the network, a timeout, or a body that was not what we expected.
+    /// No answer at all: the network, a timeout, a connection refused.
+    Unreachable(String),
+    /// An answer that was not what we expected (a body that doesn't parse).
     Transport(String),
 }
 
@@ -465,13 +468,30 @@ impl ApiError {
     pub fn status(&self) -> Option<u16> {
         match self {
             ApiError::Status { status, .. } => Some(*status),
-            ApiError::Transport(_) => None,
+            ApiError::Unreachable(_) | ApiError::Transport(_) => None,
         }
     }
     pub fn code(&self) -> Option<&str> {
         match self {
             ApiError::Status { code, .. } => code.as_deref(),
-            ApiError::Transport(_) => None,
+            ApiError::Unreachable(_) | ApiError::Transport(_) => None,
+        }
+    }
+    /// Copland itself is down (COPL-148): no answer, or a 502, 503 or 504 (a storage failure is a 503
+    /// `storage_unavailable`). Nothing the caller did; the same call works once it is back.
+    pub fn is_unavailable(&self) -> bool {
+        match self {
+            ApiError::Unreachable(_) => true,
+            ApiError::Status { status, .. } => matches!(status, 502..=504),
+            ApiError::Transport(_) => false,
+        }
+    }
+    /// Worth asking again later: no answer, a 5xx or a 429, never a refusal or an answer we can't read.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            ApiError::Unreachable(_) => true,
+            ApiError::Status { status, .. } => *status >= 500 || *status == 429,
+            ApiError::Transport(_) => false,
         }
     }
     /// A refusal that asking again will not change (4xx, except rate limiting).
@@ -484,7 +504,7 @@ impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ApiError::Status { status, message, .. } => write!(f, "{status}: {message}"),
-            ApiError::Transport(e) => write!(f, "{e}"),
+            ApiError::Unreachable(e) | ApiError::Transport(e) => write!(f, "{e}"),
         }
     }
 }
@@ -492,6 +512,68 @@ impl fmt::Display for ApiError {
 impl std::error::Error for ApiError {}
 
 pub type ApiResult<T> = Result<T, ApiError>;
+
+/// How a run's last word to Copland (its finish, its final files report) is asked again while
+/// Copland is down (COPL-148): nothing comes after it, so dropping it would leave the run for the
+/// cron to end as stale, a strike on its task. A refusal is never asked again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Backoff {
+    /// The wait before the second try, doubled after each one.
+    pub first: Duration,
+    /// The longest wait between tries.
+    pub most: Duration,
+    /// When it gives up, counted from the first try.
+    pub give_up: Duration,
+}
+
+impl Backoff {
+    /// From 5 seconds, doubling to 5 minutes between tries, for up to a day: D1's free quota, whose
+    /// running out took Copland down on 2026-10-04, resets once a day. Copland takes a finish
+    /// whenever it lands, even after the cron has ended the run as stale (`POST /api/runs/:id/finish`).
+    pub const LAST_WORD: Backoff = Backoff {
+        first: Duration::from_secs(5),
+        most: Duration::from_secs(5 * 60),
+        give_up: Duration::from_secs(24 * 60 * 60),
+    };
+
+    /// `call` until it lands, it is refused (or answered with something unreadable), the time is
+    /// up, or the daemon is shutting down (one last try then). Said once in the log when it first
+    /// fails, and again when it lands.
+    pub async fn retry<T, F, Fut>(self, what: &str, mut shutdown: watch::Receiver<bool>, mut call: F) -> ApiResult<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = ApiResult<T>>,
+    {
+        let start = tokio::time::Instant::now();
+        let mut wait = self.first;
+        let mut tries = 0u32;
+        loop {
+            tries += 1;
+            let e = match call().await {
+                Ok(v) => {
+                    if tries > 1 {
+                        tracing::info!("{what}: done, on try {tries}");
+                    }
+                    return Ok(v);
+                }
+                Err(e) => e,
+            };
+            if !e.is_retryable() || *shutdown.borrow() || start.elapsed() + wait > self.give_up {
+                return Err(e);
+            }
+            if tries == 1 {
+                tracing::warn!("{what} failed ({e}); trying again until Copland answers");
+            } else {
+                tracing::debug!("{what} failed again ({e})");
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                _ = async { if shutdown.wait_for(|s| *s).await.is_err() { std::future::pending::<()>().await } } => {}
+            }
+            wait = (wait * 2).min(self.most);
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct ErrorBody {
@@ -558,7 +640,7 @@ impl Api {
             .send()
             .await
             /* reqwest's errors carry the URL, never headers, so they are safe to show. */
-            .map_err(|e| ApiError::Transport(chain(&e.without_url())))?;
+            .map_err(|e| ApiError::Unreachable(chain(&e.without_url())))?;
         let status = res.status();
         if status.is_success() {
             return res

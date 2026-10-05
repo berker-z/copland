@@ -48,6 +48,10 @@ pub struct AgentState {
     /// The agent's live socket (COPL-62): connected, it wakes on new work at once and polls only
     /// as a fallback; reconnecting, it polls at `poll_interval` until the socket is back.
     pub live: Link,
+    /// Since when Copland has answered the agent's polls with no answer or a 502-504 (COPL-148):
+    /// while set, the loop starts no run and claims nothing, and the box says so. Runs going are
+    /// left alone. Cleared by the next good poll.
+    pub unavailable: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +126,12 @@ impl AgentState {
         }
     }
 
+    /// What the agent's line says while Copland is down: "Copland unavailable since 23:20 UTC".
+    pub fn unavailable_line(&self) -> Option<String> {
+        self.unavailable
+            .map(|t| format!("Copland unavailable since {}", clock(t)))
+    }
+
     pub fn new(handle: &str, url: &str) -> Self {
         Self {
             slot: 0,
@@ -139,13 +149,32 @@ impl AgentState {
             messages: 0,
             retiring: false,
             live: Link::Connecting,
+            unavailable: None,
         }
     }
+}
+
+/// The time of day in UTC, "23:20 UTC": what Copland's own times are in.
+pub fn clock(t: SystemTime) -> String {
+    let secs = t.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs()) % 86_400;
+    format!("{:02}:{:02} UTC", secs / 3600, secs / 60 % 60)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_since_when_copland_is_unavailable() {
+        let mut a = AgentState::new("me/dev", "http://x");
+        assert_eq!(a.unavailable_line(), None);
+        /* 2026-10-04 23:20:41 UTC. */
+        a.unavailable = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_791_156_041));
+        assert_eq!(
+            a.unavailable_line().as_deref(),
+            Some("Copland unavailable since 23:20 UTC")
+        );
+    }
 
     #[test]
     fn the_phase_follows_the_oldest_run_going() {

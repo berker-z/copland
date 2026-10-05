@@ -141,6 +141,19 @@ export function finishRunStatements(db: D1Database, runId: string, status: RunEn
 }
 
 /**
+ * A finish that lands after the cron's sweep ended the run as stale
+ * (COPL-148, deadRuns.ts): its launcher's ending replaces the sweep's
+ * "failed", once. Matches nothing for a run that is still running or that
+ * was finished by its launcher, so it can go in the same batch as
+ * finishRunStatements.
+ */
+export function correctSweptStatement(db: D1Database, runId: string, status: RunEnding, reason: string | null): D1PreparedStatement {
+  return db
+    .prepare(`UPDATE runs SET status = ?2, reason = ?3, swept_at = NULL WHERE id = ?1 AND swept_at IS NOT NULL AND status != 'running'`)
+    .bind(runId, status, reason);
+}
+
+/**
  * Claims on this board that no longer stand: their task closed or was
  * deleted, it went to a blocked stage (it waits on a person now, and
  * whoever picks it up after the answer claims it again), or their principal

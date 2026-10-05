@@ -21,6 +21,17 @@
    the Worker's cron, ends runs past their lease as failed. The worktree a
    dead run leaves is the daemon's, and the next run on the task resumes it.
 
+   Silence isn't always the run's (COPL-148). When Copland itself is down
+   (D1 out of its daily quota, say), no run can be heard from, and the first
+   sweep after it comes back ends every run that was going. The server can't
+   tell those from runs whose machine died: it could write nothing while it
+   was down, so all it has is the same quiet. The launcher can, so it keeps
+   trying to finish a run until Copland answers, and a finish that lands on
+   a run the sweep ended (runs.swept_at) replaces the sweep's "failed" with
+   the launcher's ending. strikesOf reads stored endings, so a run that
+   really completed stops counting as a strike from then on. The tasks the
+   sweep put back stay where it put them: a run may have taken them since.
+
    Only a task still as the run left it moves: open, in an active stage,
    still assigned to the run's principal, with no live claim by another run.
    Anything else means someone has moved on, and their word stands. The move
@@ -179,7 +190,7 @@ export async function sweepStaleRuns(env: Env, ctx: ExecutionContext): Promise<v
     /* Still quiet as it ends, so a keepalive that just landed keeps it running. */
     const [ended] = await db.batch([
       db
-        .prepare(`UPDATE runs SET status = 'failed', ended_at = ?2 WHERE id = ?1 AND status = 'running' AND last_seen_at <= ?3`)
+        .prepare(`UPDATE runs SET status = 'failed', ended_at = ?2, swept_at = ?2 WHERE id = ?1 AND status = 'running' AND last_seen_at <= ?3`)
         .bind(r.id, new Date().toISOString(), lapsed),
       db
         .prepare(`DELETE FROM task_claims WHERE run_id = ?1 AND EXISTS (SELECT 1 FROM runs WHERE id = ?1 AND status != 'running')`)
