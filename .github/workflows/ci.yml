@@ -39,6 +39,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run check
+      # Rows read per route against checks/reads.budgets.ts, on a local D1 (COPL-149).
+      - run: npm run check:reads
       - run: npm run build
 
       - name: Does it touch daemon/?

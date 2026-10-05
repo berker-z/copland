@@ -207,6 +207,13 @@ docs/DESIGN.md under Touch.
   reads a partial index of open tasks (`tasks_open`, migration 0029). Rows
   read locally: `/api/inbox` 770 to 19, `/api/wired` 771 to 20, a board
   route's access check about 125 to 1 (checks/access.check.ts)
+- Rows-read budgets (COPL-149, for COPL-131): `npm run check:reads`, in CI,
+  runs the routes clients refetch on a local D1 with a long-history seed
+  and one with twice the history, and fails a route over its budget in
+  `checks/reads.budgets.ts`, or a flat one that grows with history. Set at
+  main's numbers: `/api/boards/:id` (12174 rows), `/api/wired` (1051) and
+  `/api/tasks/mine` (5731) still read whole histories; the rest of
+  COPL-131 lowers them and marks them flat (checks/reads.check.ts)
 - Comments reach the run working on the task (COPL-139, for COPL-130):
   `POST /api/runs/current/news` tells a run, once each, the unread comments
   and mentions on the tasks it has claimed since it started
