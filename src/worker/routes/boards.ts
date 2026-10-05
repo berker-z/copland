@@ -16,7 +16,7 @@
    editor, below everything here that needs an owner.
    ========================================================================== */
 
-import { BOARD_ROLES, type BoardDetail, type BoardRole, type Person, type Viewer } from "@/domain/types";
+import { BOARD_ROLES, type BoardDetail, type BoardRole, type BoardShell, type Person, type Viewer } from "@/domain/types";
 import { boardSummariesFor, requireBoard, requirePerson } from "../access";
 import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } from "../http";
@@ -70,6 +70,19 @@ export async function getBoard(env: Env, viewer: Viewer, id: string): Promise<Re
   ]);
   const detail: BoardDetail = { board, members, stages, labels, tasks, progress, olderClosed, notes, docs, repos, version };
   return json(detail);
+}
+
+/** GET /api/boards/:id/shell: the board without its tasks (BoardShell), for a task modal opened from outside it. */
+export async function getBoardShell(env: Env, viewer: Viewer, id: string): Promise<Response> {
+  const { version, ...board } = await requireBoard(env.DB, viewer, id);
+  const [members, stages, labels, repos] = await Promise.all([
+    listMembers(env.DB, id),
+    listStages(env.DB, id),
+    listLabels(env.DB, id),
+    listRepos(env.DB, id),
+  ]);
+  const shell: BoardShell = { board, members, stages, labels, repos, version };
+  return json(shell);
 }
 
 /**

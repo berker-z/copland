@@ -24,6 +24,7 @@ export interface Budget {
 export const BUDGETS: Record<string, Budget> = {
   "GET /api/boards": { rows: 39, flat: true },
   "GET /api/boards/:id": { rows: 739, flat: true },
+  "GET /api/boards/:id/shell": { rows: 29, flat: true },
   "GET /api/boards/:id/closed": { rows: 2914, flat: true },
   "GET /api/tasks/:id": { rows: 26, flat: true },
   "GET /api/inbox": { rows: 241, flat: true },
@@ -35,4 +36,8 @@ export const BUDGETS: Record<string, Budget> = {
      GET /api/boards/:id and GET /api/boards, 778 rows on the larger seed
      (12213 before COPL-150). */
   "live: one task edit, heard": { rows: 24, flat: true },
+  /* What a tab reads to open a task from the inbox or /wired without holding
+     its board (COPL-153): its shell, the task and its parent. Until then,
+     GET /api/boards/:id, 739 rows. */
+  "inbox: one task opened": { rows: 107, flat: true },
 };

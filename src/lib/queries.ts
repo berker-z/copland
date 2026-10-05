@@ -4,8 +4,8 @@
    is spelled once and lib/live.ts can refetch by it.
    ========================================================================== */
 
-import { useMemo } from "react";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TaskOverlapRead } from "@/domain/overlap";
 import type { MarketExtras, Note } from "@/domain/panes";
 import type { Settings, VaultEntry } from "@/domain/settings";
@@ -13,6 +13,7 @@ import type {
   Agent,
   ApiToken,
   BoardDetail,
+  BoardShell,
   BoardSummary,
   ClosedPage,
   Inbox,
@@ -22,10 +23,11 @@ import type {
   Person,
   Recipient,
   Task,
+  TaskRead,
   User,
   Wired,
 } from "@/domain/types";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { isLive } from "./liveState";
 
 export const KEYS = {
@@ -38,6 +40,7 @@ export const KEYS = {
   taskOverlap: (boardId: string, taskId: string) => ["board", boardId, "overlap", taskId],
   /* Also under its board's key, so whatever refetches the board refetches these with it. */
   boardClosed: (id: string) => ["board", id, "closed"],
+  boardShell: (id: string) => ["board", id, "shell"],
   boardTask: (id: string, ref: string) => ["board", id, "task", ref],
   boardAll: ["board"],
   /* Under "board" on purpose: whatever changes a board can change whose work is whose. */
@@ -104,6 +107,20 @@ export const boardQuery = (id: string) => ({
 
 export const useBoard = (id: string | null) => useQuery({ ...boardQuery(id ?? ""), enabled: id !== null });
 
+/** One task's read (GET /api/tasks/:id), or null when it is gone (404). */
+export const fetchTask = (ref: string): Promise<TaskRead | null> =>
+  api<TaskRead>(`/tasks/${encodeURIComponent(ref)}`).catch((error: unknown) => {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  });
+
+/** A task by key or id, under its board's key: whatever refetches the board refetches it too. */
+const taskQuery = (boardId: string, ref: string) => ({
+  queryKey: KEYS.boardTask(boardId, ref),
+  queryFn: () => fetchTask(ref),
+  retry: false,
+});
+
 /** Whether a task is the one `ref` names: its id, or its key in any case. */
 const names = (ref: string) => (t: Task) => t.id === ref || t.key.toUpperCase() === ref.toUpperCase();
 
@@ -127,12 +144,7 @@ export function useBoardView(id: string | null, { older = false, task = null }: 
   });
   const pages = older && board.data?.olderClosed ? (closed.data?.pages ?? []) : [];
   const missing = !!task && !!board.data && !board.data.tasks.some(names(task)) && !pages.some((p) => p.tasks.some(names(task)));
-  const stray = useQuery({
-    queryKey: KEYS.boardTask(id ?? "", task ?? ""),
-    queryFn: () => api<Task>(`/tasks/${encodeURIComponent(task ?? "")}`),
-    enabled: id !== null && missing,
-    retry: false,
-  });
+  const stray = useQuery({ ...taskQuery(id ?? "", task ?? ""), enabled: id !== null && missing });
   const found = missing && stray.data?.boardId === id ? stray.data : null;
   const detail = useMemo(() => {
     if (!board.data || (pages.length === 0 && !found)) return board.data;
@@ -152,6 +164,41 @@ export function useBoardView(id: string | null, { older = false, task = null }: 
     closed: older && board.data?.olderClosed ? closed : null,
     finding: missing && stray.isPending,
   };
+}
+
+/**
+ * A task opened from outside its board (the inbox, /wired), as TaskModal
+ * draws it (COPL-153). A board the tab already holds is used as it is
+ * (useBoardView). Otherwise the task comes from its own read, with what
+ * the modal needs of the board (GET /api/boards/:id/shell) and the few
+ * tasks it names (its parent, what it waits on), not every task on the
+ * board. `whole` reads the board too, for the modal's form, whose pickers
+ * list the board's tasks; the board's copy takes over once it lands. It
+ * all sits under the board's key, so a write that settles the board
+ * refetches it, and a live event naming one of these tasks refetches that
+ * one (lib/boardPatch.ts). Undefined while loading; a task that is gone
+ * (or on another board) is not in what it returns, which closes the modal.
+ */
+export function useTaskView(boardId: string, taskId: string, whole: boolean): BoardDetail | undefined {
+  const queryClient = useQueryClient();
+  const [held] = useState(() => queryClient.getQueryData(KEYS.board(boardId)) !== undefined);
+  const full = useBoardView(held || whole ? boardId : null, { task: taskId });
+  const shell = useQuery({
+    queryKey: KEYS.boardShell(boardId),
+    queryFn: () => api<BoardShell>(`/boards/${boardId}/shell`),
+    enabled: !held,
+    refetchInterval: fallbackPoll(60_000),
+  });
+  const own = useQuery({ ...taskQuery(boardId, taskId), enabled: !held, refetchInterval: fallbackPoll(60_000) });
+  const task = own.data?.boardId === boardId ? own.data : null;
+  const named = task ? [...new Set([task.parentId, ...task.dependsOn])].filter((id): id is string => id !== null) : [];
+  const around = useQueries({ queries: named.map((id) => ({ ...taskQuery(boardId, id), enabled: !held })) });
+
+  if (full.detail && !full.finding) return full.detail;
+  if (held || !shell.data || own.isPending || around.some((q) => q.isPending)) return undefined;
+  const tasks = task ? [task, ...around.flatMap((q) => (q.data?.boardId === boardId ? [q.data] : []))] : [];
+  const progress = task?.progress ? { [task.id]: task.progress } : {};
+  return { ...shell.data, tasks, progress, olderClosed: false, notes: "", docs: [] };
 }
 
 /** A task's own changed files and the open tasks sharing them (routes/files.ts), for the task modal on a board with code. */

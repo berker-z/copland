@@ -21,7 +21,7 @@
 import { useState } from "react";
 import { Check, CornerDownRight, X } from "lucide-react";
 import type { InboxItem } from "@/domain/types";
-import { useBoardView, useInbox } from "@/lib/queries";
+import { useInbox, useTaskView } from "@/lib/queries";
 import { Avatar } from "@/ui/Avatar";
 import { when } from "@/ui/tone";
 import { WidgetFrame } from "@/ui/WidgetFrame";
@@ -111,11 +111,16 @@ export interface InboxTarget {
   taskId: string;
 }
 
-/** An item's task, over whatever is on screen, once its board has loaded (and it, when closed too long ago to be in the board's read). */
+/**
+ * An item's task, over whatever is on screen: from its board when the tab
+ * holds it, otherwise from the task's own read and the board's shell, with
+ * the board read only once the modal goes into its form (useTaskView).
+ */
 export function OpenTask({ boardId, taskId, onClose }: InboxTarget & { onClose: () => void }) {
-  const { detail, finding } = useBoardView(boardId, { task: taskId });
+  const [editing, setEditing] = useState(false);
+  const detail = useTaskView(boardId, taskId, editing);
   /* Not found at all (deleted since), the modal closes itself. */
-  return detail && !finding ? <TaskModal detail={detail} taskId={taskId} onClose={onClose} /> : null;
+  return detail ? <TaskModal detail={detail} taskId={taskId} onClose={onClose} onEdit={() => setEditing(true)} /> : null;
 }
 
 /** "Mark all read", shown only while something is unread. */
