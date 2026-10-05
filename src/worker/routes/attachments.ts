@@ -32,7 +32,7 @@ import { requireBoard } from "../access";
 import type { Env } from "../env";
 import { badRequest, HttpError, json, notFound, readJson } from "../http";
 import type { Changes } from "../live";
-import { boardAudience } from "../repo/boards";
+import { boardAudience, bumped, taskChange } from "../repo/boards";
 import { eventStatement, findTask } from "../repo/tasks";
 
 /** Just under the 100 MB Free-plan request body cap. */
@@ -249,7 +249,7 @@ export async function postTaskAttachment(request: Request, env: Env, viewer: Vie
   const body = await readJson(request);
   const file = body.url !== undefined ? parseLink(body) : await parseUpload(env, viewer, body);
 
-  await env.DB.batch([
+  const version = await bumped(env.DB, board.id, [
     env.DB.prepare(
       `INSERT INTO attachments (id, task_id, name, mime, size, kind, key, url, added_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
     ).bind(file.id, taskId, file.name, file.type, file.size, file.kind, file.key, file.url, viewer.user.id),
@@ -261,7 +261,7 @@ export async function postTaskAttachment(request: Request, env: Env, viewer: Vie
       after: { kind: file.kind, name: file.name },
     }),
   ]);
-  changes.notify(await boardAudience(env.DB, board.id), "board");
+  changes.board(await boardAudience(env.DB, board.id), await taskChange(env.DB, board.id, version, [taskId]));
   const updated = await findTask(env.DB, taskId);
   return json({ attachment: updated?.attachments.find((a) => a.id === file.id) }, { status: 201 });
 }
@@ -274,7 +274,7 @@ export async function deleteTaskAttachment(env: Env, viewer: Viewer, taskId: str
   const { task, board } = await editableTask(env, viewer, taskId);
   const attachment = task.attachments.find((a) => a.id === attachmentId);
   if (!attachment) throw notFound("No such attachment on this task");
-  await env.DB.batch([
+  const version = await bumped(env.DB, board.id, [
     env.DB.prepare(`DELETE FROM attachments WHERE id = ?1`).bind(attachmentId),
     eventStatement(env.DB, {
       boardId: board.id,
@@ -285,6 +285,6 @@ export async function deleteTaskAttachment(env: Env, viewer: Viewer, taskId: str
     }),
   ]);
   if (attachment.key) await env.FILES.delete(attachment.key);
-  changes.notify(await boardAudience(env.DB, board.id), "board");
+  changes.board(await boardAudience(env.DB, board.id), await taskChange(env.DB, board.id, version, [taskId]));
   return json({ ok: true, id: attachmentId });
 }

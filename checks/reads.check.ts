@@ -27,7 +27,8 @@ import { sqlite } from "./worker.ts";
 import type { Viewer } from "../src/domain/types.ts";
 
 const { getBoard, getBoards, getClosed } = await import("../src/worker/routes/boards.ts");
-const { getTask } = await import("../src/worker/routes/tasks.ts");
+const { getTask, patchTask } = await import("../src/worker/routes/tasks.ts");
+const { Changes } = await import("../src/worker/live.ts");
 const { getInbox } = await import("../src/worker/routes/inbox.ts");
 const { getWired } = await import("../src/worker/routes/wired.ts");
 const { getMyWork, getReady } = await import("../src/worker/routes/work.ts");
@@ -319,8 +320,26 @@ const sam: Viewer = { user: user("sam") };
 const dev: Viewer = { user: user("dev", "sam"), agent: { owner: user("sam"), grants: [], workFrom: "owner", description: "" } };
 
 type Env = Parameters<typeof getBoards>[0];
+/**
+ * What a listening tab reads when someone edits one task (COPL-151): the
+ * tasks the write's live event names, one GET /api/tasks/:id each, as
+ * lib/boardPatch.ts does. Before COPL-151 it was the whole board and the
+ * boards list. The write itself is not counted (`skip`), and it comes last
+ * in ROUTES so it changes nothing the others read.
+ */
+async function taskEditHeard(env: Env, live: string, skip: () => void): Promise<Response> {
+  const { id } = (await (await getTask(env, sam, live)).json()) as { id: string };
+  const changes = new Changes();
+  await patchTask(new Request("http://x/", { method: "PATCH", body: JSON.stringify({ title: "edited" }) }), env, sam, id, changes);
+  skip();
+  const [event] = changes.events(null).get("sam") ?? [];
+  if (!event?.tasks?.length || event.version === undefined) return new Response("the edit named no tasks", { status: 500 });
+  for (const id of event.tasks) await getTask(env, sam, id);
+  return new Response("{}");
+}
+
 /** What each route is asked, and by whom: the browser's person, the daemon's agent for ready. */
-const ROUTES: Record<string, (env: Env, live: string) => Promise<Response>> = {
+const ROUTES: Record<string, (env: Env, live: string, skip: () => void) => Promise<Response>> = {
   "GET /api/boards": (env) => getBoards(env, sam),
   "GET /api/boards/:id": (env) => getBoard(env, sam, "big"),
   "GET /api/boards/:id/closed": (env) => getClosed(env, sam, "big", new URL("http://x/api/boards/big/closed")),
@@ -330,6 +349,7 @@ const ROUTES: Record<string, (env: Env, live: string) => Promise<Response>> = {
   "GET /api/tasks/ready": (env) => getReady(env, dev),
   "GET /api/tasks/mine": (env) => getMyWork(env, sam),
   "GET /api/messages/recipients": (env) => getRecipients(env, sam),
+  "live: one task edit, heard": taskEditHeard,
 };
 
 /** Nobody is connected: the Durable Object that would say so isn't here. */
@@ -352,7 +372,7 @@ async function measure(scale: number): Promise<Record<string, number>> {
     const out: Record<string, number> = {};
     for (const [route, call] of Object.entries(ROUTES)) {
       take();
-      const response = await call(env, live);
+      const response = await call(env, live, take);
       if (!response.ok) throw new Error(`${route} answered ${response.status} on seed ×${scale}`);
       out[route] = take();
     }

@@ -85,7 +85,7 @@ import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } from "../http";
 import { claimedBy, deathOf, putBack } from "../deadRuns";
 import type { Changes } from "../live";
-import { boardAudience } from "../repo/boards";
+import { boardAudience, bumped, bumpStatement, taskChange, versionOf } from "../repo/boards";
 import { claimUntil, correctSweptStatement, finishRunStatements, findRun, interactiveRun, LIVE_CLAIM } from "../repo/runs";
 import { bottomRank, eventStatement, findTask, listStages } from "../repo/tasks";
 import { enterRun, mint, RUN_PREFIX } from "../tokens";
@@ -219,16 +219,18 @@ export async function postRunFinish(request: Request, env: Env, viewer: Viewer, 
   if (reason === undefined) throw badRequest(`\`reason\` must be a string of at most ${RUN_REASON_MAX} characters`);
   const started = await ownRun(db, viewer, id);
   const held = await claimedBy(db, id);
-  const { results: boards } = await db
+  const { results: claimed } = await db
     .prepare(
-      `SELECT DISTINCT t.board_id FROM task_claims c JOIN runs r ON r.id = c.run_id JOIN tasks t ON t.id = c.task_id
+      `SELECT t.board_id, t.id FROM task_claims c JOIN runs r ON r.id = c.run_id JOIN tasks t ON t.id = c.task_id
         WHERE c.run_id = ?1 AND ${LIVE_CLAIM}`,
     )
     .bind(id)
-    .all<{ board_id: string }>();
-  const [ended, , , corrected] = await db.batch([
+    .all<{ board_id: string; id: string }>();
+  const boards = [...new Set(claimed.map((c) => c.board_id))];
+  const [ended, , , corrected, ...versions] = await db.batch([
     ...finishRunStatements(db, id, body.status as RunEnding, reason),
     correctSweptStatement(db, id, body.status as RunEnding, reason),
+    ...boards.map((b) => bumpStatement(db, b)),
   ]);
   if (corrected.meta.changes) {
     console.log(`run ${shortRunId(id)}: its launcher's ${body.status} replaces the sweep's failed`);
@@ -237,7 +239,11 @@ export async function postRunFinish(request: Request, env: Env, viewer: Viewer, 
   if (ended.meta.changes && started.kind === "supervised" && death) {
     await putBack(env, { id, userId: started.userId }, death, held, changes, reason);
   }
-  for (const b of boards) changes.notify(await boardAudience(db, b.board_id), "board");
+  /* The tasks it held lose their claim. */
+  for (const [i, b] of boards.entries()) {
+    const tasks = claimed.filter((c) => c.board_id === b).map((c) => c.id);
+    changes.board(await boardAudience(db, b), await taskChange(db, b, versionOf(versions[i]), tasks));
+  }
   if (viewer.agent) changes.notify([personOf(viewer)], "agents");
   const { userId: _userId, ...run } = await ownRun(db, viewer, id);
   return json(run);
@@ -340,8 +346,9 @@ export async function postClaim(env: Env, viewer: Viewer, id: string, changes: C
     after.assigneeIds = [me];
   }
 
+  let version: number | undefined;
   try {
-    await db.batch([
+    version = await bumped(db, board.id, [
       /* Take it: new, or replacing a claim that lapsed or whose run ended, or renewing our own. */
       db
         .prepare(
@@ -382,7 +389,8 @@ export async function postClaim(env: Env, viewer: Viewer, id: string, changes: C
     throw error;
   }
 
-  changes.notify(await boardAudience(db, board.id), "board");
+  const news = await taskChange(db, board.id, version, [task.id, task.parentId, ...follow.moved.map((m) => m.id)]);
+  changes.board(await boardAudience(db, board.id), news);
   return json(written(await findTask(db, task.id), follow.moved));
 }
 
@@ -394,12 +402,18 @@ export async function postClaim(env: Env, viewer: Viewer, id: string, changes: C
 export async function deleteClaim(env: Env, viewer: Viewer, id: string, changes: Changes): Promise<Response> {
   const db = env.DB;
   const { task, board } = await taskFor(env, viewer, id, "editor");
-  const result = await db
-    .prepare(`DELETE FROM task_claims WHERE task_id = ?1 AND user_id = ?2`)
-    .bind(task.id, viewer.user.id)
-    .run();
+  const [bump, result] = await db.batch([
+    /* Bumped only when there is a claim to let go, so a refusal leaves no gap in the board's versions. */
+    db
+      .prepare(
+        `UPDATE boards SET version = version + 1
+          WHERE id = ?1 AND EXISTS (SELECT 1 FROM task_claims WHERE task_id = ?2 AND user_id = ?3) RETURNING version`,
+      )
+      .bind(board.id, task.id, viewer.user.id),
+    db.prepare(`DELETE FROM task_claims WHERE task_id = ?1 AND user_id = ?2`).bind(task.id, viewer.user.id),
+  ]);
   if (result.meta.changes === 0) throw notFound(`You hold no claim on ${task.key}`);
-  changes.notify(await boardAudience(db, board.id), "board");
+  changes.board(await boardAudience(db, board.id), await taskChange(db, board.id, versionOf(bump), [task.id]));
   return json(await findTask(db, task.id));
 }
 

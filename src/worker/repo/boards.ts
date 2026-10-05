@@ -3,6 +3,7 @@
    starts from.
    ========================================================================== */
 
+import type { BoardChange } from "@/domain/live";
 import type { BoardAccess, BoardMember, BoardRole, BoardSummary, StageCategory } from "@/domain/types";
 import { rowToUser, type UserRow } from "./users";
 
@@ -49,9 +50,10 @@ function rowToSummary(row: SummaryRow): BoardSummary {
 }
 
 /* Membership only: one board_members row and its board per board. Every
-   access check runs this, so it counts nothing (COPL-133). */
+   access check runs this, so it counts nothing (COPL-133). The version
+   (COPL-151) is on the board's row, so it costs nothing either. */
 const ACCESS_SELECT = `
-  SELECT b.id, b.key, b.name, b.is_inbox, bm.role
+  SELECT b.id, b.key, b.name, b.is_inbox, b.version, bm.role
     FROM boards b
     JOIN board_members bm ON bm.board_id = b.id AND bm.user_id = ?1`;
 
@@ -78,14 +80,17 @@ export async function listBoardSummariesFor(db: D1Database, userId: string): Pro
   return results.map(rowToSummary);
 }
 
-/** One board and this user's role on it, or null when they are not a member. */
-export async function boardFor(db: D1Database, userId: string, boardId: string): Promise<BoardAccess | null> {
+/** One board and this user's role on it, with its version as it was read, or null when they are not a member. */
+export async function boardFor(db: D1Database, userId: string, boardId: string): Promise<VersionedAccess | null> {
   const row = await db
     .prepare(`${ACCESS_SELECT} WHERE b.id = ?2 AND b.archived_at IS NULL`)
     .bind(userId, boardId)
-    .first<AccessRow>();
-  return row ? rowToAccess(row) : null;
+    .first<AccessRow & { version: number }>();
+  return row ? { ...rowToAccess(row), version: row.version } : null;
 }
+
+/** A board's access with its version (boards.version, COPL-151), as requireBoard read it. */
+export type VersionedAccess = BoardAccess & { version: number };
 
 /** This user's role on each of these boards they are on. */
 export async function rolesOn(db: D1Database, userId: string, boardIds: string[]): Promise<Map<string, BoardRole>> {
@@ -170,4 +175,68 @@ export function createBoardStatements(
       ? [db.prepare(`INSERT INTO inboxes (user_id, board_id) VALUES (?1, ?2)`).bind(board.ownerId, board.id)]
       : []),
   ];
+}
+
+/* ------------------------------------------------- live board changes -- */
+
+/**
+ * The statement that bumps a board's version (COPL-151), for the batch of a
+ * write whose live event names its tasks. It answers the new version, which
+ * versionOf reads from the batch's results.
+ */
+export const bumpStatement = (db: D1Database, boardId: string): D1PreparedStatement =>
+  db.prepare(`UPDATE boards SET version = version + 1 WHERE id = ?1 RETURNING version`).bind(boardId);
+
+/** The version a bumpStatement answered, from its place in the batch's results. */
+export const versionOf = (result: D1Result | undefined): number | undefined =>
+  (result?.results?.[0] as { version?: number } | undefined)?.version;
+
+/**
+ * A write to these tasks as a live event (domain/live.ts BoardChange): the
+ * board, its version after the write, the tasks and everyone assigned to
+ * them, now and (`before`) as the write found them. `above` are tasks
+ * whose progress the write moved (a parent, old or new): they and every
+ * task above them are named too, one walk up tasks_parent's parents.
+ * Then one read of task_assignees by its primary key.
+ */
+export async function taskChange(
+  db: D1Database,
+  boardId: string,
+  version: number | undefined,
+  taskIds: Iterable<string | null | undefined>,
+  before: string[] = [],
+  above: Array<string | null | undefined> = [],
+): Promise<BoardChange> {
+  const starts = [...new Set(above.filter((id): id is string => !!id))];
+  const ancestors: string[] = [];
+  if (starts.length) {
+    const { results } = await db
+      .prepare(
+        `WITH RECURSIVE up(id) AS (
+           SELECT value FROM json_each(?1)
+           UNION
+           SELECT t.parent_id FROM up JOIN tasks t ON t.id = up.id WHERE t.parent_id IS NOT NULL
+         )
+         SELECT id FROM up`,
+      )
+      .bind(JSON.stringify(starts))
+      .all<{ id: string }>();
+    ancestors.push(...results.map((r) => r.id));
+  }
+  const tasks = [...new Set([...[...taskIds].filter((id): id is string => !!id), ...ancestors])];
+  const assignees = new Set(before);
+  if (tasks.length) {
+    const { results } = await db
+      .prepare(`SELECT user_id FROM task_assignees WHERE task_id IN (${tasks.map((_, i) => `?${i + 1}`).join(",")})`)
+      .bind(...tasks)
+      .all<{ user_id: string }>();
+    for (const r of results) assignees.add(r.user_id);
+  }
+  return { board: boardId, ...(version === undefined ? {} : { version }), tasks, assignees: [...assignees] };
+}
+
+/** A write's statements in one batch with its board's version bump first; answers the new version. */
+export async function bumped(db: D1Database, boardId: string, statements: D1PreparedStatement[]): Promise<number | undefined> {
+  const results = await db.batch([bumpStatement(db, boardId), ...statements]);
+  return versionOf(results[0]);
 }

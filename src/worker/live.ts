@@ -2,9 +2,10 @@
    Live updates: one Durable Object per user, holding that user's open tabs.
    ----------------------------------------------------------------------------
    A route that changes something says who should hear about it and which
-   topics changed (Changes, below). After the response succeeds, each of
-   those users' hubs sends the topics to every tab it holds, and the tabs
-   refetch. A personal write reaches its author's other tabs; a board write
+   topics changed (Changes, below), and for a board write which board and
+   tasks (COPL-151, domain/live.ts BoardChange). After the response
+   succeeds, each of those users' hubs sends that to every tab it holds,
+   and the tabs refetch. A personal write reaches its author's other tabs; a board write
    reaches every member of the board.
 
    Per user rather than one hub for the instance: nobody's socket carries
@@ -35,7 +36,7 @@
    ========================================================================== */
 
 import { DurableObject } from "cloudflare:workers";
-import { listeningTokens, type LiveEvent, type LiveTopic } from "@/domain/live";
+import { listeningTokens, type BoardChange, type LiveEvent, type LiveTopic } from "@/domain/live";
 import type { Viewer } from "@/domain/types";
 import type { Env } from "./env";
 import { forbidden } from "./http";
@@ -168,30 +169,71 @@ export async function connectedPrincipals(env: Env, userIds: string[]): Promise<
   return new Set(pairs.filter((p) => live.has(p.tokenId)).map((p) => p.id));
 }
 
+/** Two notes about the same board in one request, as one: tasks and assignees joined, a version only when both agree. */
+function merge(a: BoardChange, b: BoardChange): BoardChange {
+  const out: BoardChange = { board: a.board };
+  if (a.version !== undefined && a.version === b.version) out.version = a.version;
+  if (a.tasks && b.tasks) out.tasks = [...new Set([...a.tasks, ...b.tasks])];
+  if (a.assignees || b.assignees) out.assignees = [...new Set([...(a.assignees ?? []), ...(b.assignees ?? [])])];
+  return out;
+}
+
 /**
  * What a request changed, collected by its route and sent once the response
  * is known to be a success. A failed write sends nothing, whatever the route
  * noted before it failed.
+ *
+ * A user hears one event per request, or, when the request changed boards
+ * they are on, one per board (the first carrying every topic), so each
+ * says which board it is about (domain/live.ts BoardChange).
  */
 export class Changes {
-  private readonly byUser = new Map<string, Set<LiveTopic>>();
+  private readonly byUser = new Map<string, { topics: Set<LiveTopic>; boards: Map<string, BoardChange> }>();
+
+  private of(id: string) {
+    let entry = this.byUser.get(id);
+    if (!entry) this.byUser.set(id, (entry = { topics: new Set(), boards: new Map() }));
+    return entry;
+  }
 
   /** These users should refetch these topics. */
   notify(userIds: Iterable<string>, ...topics: LiveTopic[]): void {
     for (const id of userIds) {
-      let set = this.byUser.get(id);
-      if (!set) this.byUser.set(id, (set = new Set()));
-      for (const t of topics) set.add(t);
+      const entry = this.of(id);
+      for (const t of topics) entry.topics.add(t);
     }
+  }
+
+  /** These users (the board's audience) should hear what changed on one board, and these other topics. */
+  board(userIds: Iterable<string>, change: BoardChange, ...topics: LiveTopic[]): void {
+    for (const id of userIds) {
+      const entry = this.of(id);
+      entry.topics.add("board");
+      for (const t of topics) entry.topics.add(t);
+      const held = entry.boards.get(change.board);
+      entry.boards.set(change.board, held ? merge(held, change) : change);
+    }
+  }
+
+  /** The events each user hears, in the order they are sent. */
+  events(tab: string | null): Map<string, LiveEvent[]> {
+    const out = new Map<string, LiveEvent[]>();
+    for (const [userId, { topics, boards }] of this.byUser) {
+      const all = [...topics];
+      if (boards.size === 0) out.set(userId, [{ topics: all, tab }]);
+      else out.set(userId, [...boards.values()].map((change, i) => ({ topics: i === 0 ? all : ["board"], tab, ...change })));
+    }
+    return out;
   }
 
   /** Run under waitUntil so it never slows or fails the write. */
   publish(env: Env, ctx: ExecutionContext, tab: string | null): void {
-    for (const [userId, topics] of this.byUser) {
+    for (const [userId, events] of this.events(tab)) {
+      const target = hub(env, userId);
       ctx.waitUntil(
-        hub(env, userId)
-          .broadcast({ topics: [...topics], tab })
-          .catch((error: unknown) => console.warn("live broadcast failed", error)),
+        (async () => {
+          for (const event of events) await target.broadcast(event);
+        })().catch((error: unknown) => console.warn("live broadcast failed", error)),
       );
     }
   }

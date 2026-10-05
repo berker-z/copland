@@ -242,6 +242,20 @@ docs/DESIGN.md under Touch.
   flat; a page of older tasks 2914. The seed's `×2` now means twice as
   long a history at the same pace, not twice the pace. The /tasks pane's
   done fold is the last 14 days
+- Live events say which board and tasks changed (COPL-151, for COPL-131):
+  a board event carries the board, its version after the write
+  (`boards.version`, migration 0034, bumped in the write's batch), the
+  tasks whose rows changed and who is on them. A tab one version behind
+  refetches just those tasks and patches them in (`src/lib/boardPatch.ts`);
+  anything else reads that one board whole. The boards list refetches only
+  on `boards`, which the Worker sends on writes that can change its counts.
+  The box skips `/api/wired` for a change to tasks none of its agents is
+  on. A GitHub delivery that touches no task sends nothing. A parent's
+  progress comes with its read (`GET /api/tasks/:id`), and a write that can
+  move it names every task above. One task edit costs a listening tab 24
+  rows, where it read the board and the boards list (778 on the reads
+  check's seed, 12213 before COPL-150); pinned by
+  checks/boardEvents.check.ts and the reads check's `live:` row
 - Comments reach the run working on the task (COPL-139, for COPL-130):
   `POST /api/runs/current/news` tells a run, once each, the unread comments
   and mentions on the tasks it has claimed since it started

@@ -79,12 +79,11 @@ export const useTaskEvents = (taskId: string, enabled: boolean) =>
 
 export function useCommentEdits(boardId: string, taskId: string) {
   const queryClient = useQueryClient();
-  const refresh = useRefreshBoard(boardId);
   const done = (comments: Comment[]) => {
     queryClient.setQueryData(COMMENTS_KEY(taskId), comments);
     void queryClient.invalidateQueries({ queryKey: EVENTS_KEY(taskId) });
-    /* The comment count on the card. */
-    refresh();
+    /* The comment count on the card; the boards list counts no comments. */
+    void queryClient.invalidateQueries({ queryKey: KEYS.board(boardId) });
   };
   return {
     add: useMutation({

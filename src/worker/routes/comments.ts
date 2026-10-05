@@ -28,7 +28,7 @@ import { requireBoard } from "../access";
 import type { Env } from "../env";
 import { badRequest, forbidden, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
-import { boardAudience, listMembers } from "../repo/boards";
+import { boardAudience, bumped, taskChange, listMembers } from "../repo/boards";
 import { claimUpload, PREFIX } from "./attachments";
 import { inboxAudience, inboxStatements, mentionedIn, participantsOf, type NewInboxItem } from "../repo/inbox";
 import { eventStatement } from "../repo/tasks";
@@ -166,7 +166,7 @@ export async function postComment(request: Request, env: Env, viewer: Viewer, ta
   const commented: NewInboxItem[] = (await participantsOf(db, taskId))
     .filter((uid) => !named.includes(uid))
     .map((userId) => ({ userId, kind: "commented", boardId: board.id, taskId, commentId: id, actorId: viewer.user.id }));
-  await db.batch([
+  const version = await bumped(db, board.id, [
     db.prepare(`INSERT INTO comments (id, task_id, author_id, text) VALUES (?1, ?2, ?3, ?4)`).bind(id, taskId, viewer.user.id, text),
     /* A key claimed twice at once loses here, on attachments.key UNIQUE, and takes its comment with it. */
     ...images.map((f) =>
@@ -180,7 +180,8 @@ export async function postComment(request: Request, env: Env, viewer: Viewer, ta
     ...inboxStatements(db, commented),
     eventStatement(db, { boardId: board.id, taskId, actorId: viewer.user.id, kind: "comment.added" }),
   ]);
-  changes.notify(await boardAudience(db, board.id), "board");
+  /* The task's comment count changed, and whoever has it open reads its thread. */
+  changes.board(await boardAudience(db, board.id), await taskChange(db, board.id, version, [taskId]));
   changes.notify([...mentions.audience, ...inboxAudience(commented)], "inbox");
   return json(await listComments(db, taskId), { status: 201 });
 }
@@ -213,12 +214,12 @@ export async function patchComment(request: Request, env: Env, viewer: Viewer, i
   const kept = new Set(before.map((b) => b.user_id));
   const mentions = mentionStatements(db, viewer, board.id, row.task_id, id, now.filter((uid) => !kept.has(uid)));
   const dropped = [...kept].filter((uid) => !now.includes(uid));
-  await db.batch([
+  const version = await bumped(db, board.id, [
     db.prepare(`UPDATE comments SET text = ?2, edited_at = ?3 WHERE id = ?1`).bind(id, text, nowIso()),
     ...dropped.map((uid) => db.prepare(`DELETE FROM comment_mentions WHERE comment_id = ?1 AND user_id = ?2`).bind(id, uid)),
     ...mentions.statements,
   ]);
-  changes.notify(await boardAudience(db, board.id), "board");
+  changes.board(await boardAudience(db, board.id), await taskChange(db, board.id, version, [row.task_id]));
   changes.notify(mentions.audience, "inbox");
   return json(await listComments(db, row.task_id));
 }
@@ -233,13 +234,13 @@ export async function deleteComment(env: Env, viewer: Viewer, id: string, change
     .prepare(`SELECT key FROM attachments WHERE comment_id = ?1 AND key IS NOT NULL`)
     .bind(id)
     .all<{ key: string }>();
-  await db.batch([
+  const version = await bumped(db, board.id, [
     db.prepare(`DELETE FROM attachments WHERE comment_id = ?1`).bind(id),
     db.prepare(`DELETE FROM comments WHERE id = ?1`).bind(id),
   ]);
   /* After the rows: an object without a row is unreachable, a row without its object is a broken image. */
   if (images.length) await env.FILES.delete(images.map((i) => i.key).filter((k) => k.startsWith(PREFIX)));
-  changes.notify(await boardAudience(db, board.id), "board");
+  changes.board(await boardAudience(db, board.id), await taskChange(db, board.id, version, [row.task_id]));
   return json(await listComments(db, row.task_id));
 }
 

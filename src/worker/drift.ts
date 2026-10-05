@@ -32,7 +32,7 @@ import type { Env } from "./env";
 import { badRequest, conflict, HttpError, json, readJson } from "./http";
 import { branchHead, compare, postStatus, pullBase, repoDefaultBranch, repoToken } from "./githubApp";
 import { Changes } from "./live";
-import { boardAudience } from "./repo/boards";
+import { boardAudience, bumped, taskChange } from "./repo/boards";
 import { findUserById, rowToUser } from "./repo/users";
 import { asVia } from "./tokens";
 import { postComment } from "./routes/comments";
@@ -116,7 +116,11 @@ export async function measureDrift(env: Env, ctx: ExecutionContext, pr: PullRef,
 
   const changes = new Changes();
   if (drift.overlap.length >= DRIFT_REVIEW) await escalate(env, rows, changes);
-  for (const board of new Set(rows.map((r) => r.board_id))) changes.notify(await boardAudience(env.DB, board), "board");
+  /* The PR's tasks show its drift; bumped after the write, which a board read between only reads twice. */
+  for (const board of new Set(rows.map((r) => r.board_id))) {
+    const tasks = rows.filter((r) => r.board_id === board).map((r) => r.task_id);
+    changes.board(await boardAudience(env.DB, board), await taskChange(env.DB, board, await bumped(env.DB, board, []), tasks));
+  }
   changes.publish(env, ctx, null);
   return drift;
 }
@@ -238,6 +242,6 @@ export async function postRevalidate(
   }
   const text = `Re-checked against main at \`${main.slice(0, 7)}\` (drift):\n\n${note}`;
   await postComment(new Request("https://copland.invalid/", { method: "POST", body: JSON.stringify({ text }) }), env, viewer, task.id, changes);
-  changes.notify(await boardAudience(env.DB, task.boardId), "board");
+  /* measureDrift and the comment have each said what they changed. */
   return json({ pulls: out });
 }

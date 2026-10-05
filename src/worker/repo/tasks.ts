@@ -173,7 +173,7 @@ async function hydrate(db: D1Database, rows: TaskRow[], overlap: boolean): Promi
  * closed tasks of any age included. A looped parent chain is walked once
  * (UNION), and a task is never counted under itself.
  */
-async function progressFor(db: D1Database, ids: string[]): Promise<Record<string, ParentProgress>> {
+export async function progressFor(db: D1Database, ids: string[]): Promise<Record<string, ParentProgress>> {
   if (ids.length === 0) return {};
   const { results } = await db
     .prepare(

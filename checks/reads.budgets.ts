@@ -10,7 +10,8 @@
    routes not yet flat read their board's whole history, which the rest of
    COPL-131 takes away. The board read went flat with COPL-150 (open tasks
    and the last two weeks' closed ones); its paged older history is a page
-   of 100.
+   of 100. Besides the routes, one row is a live event's cost: what a tab
+   reads when it hears a task edit (COPL-151).
    ========================================================================== */
 
 export interface Budget {
@@ -30,4 +31,8 @@ export const BUDGETS: Record<string, Budget> = {
   "GET /api/tasks/ready": { rows: 43, flat: true },
   "GET /api/tasks/mine": { rows: 5731, flat: false },
   "GET /api/messages/recipients": { rows: 15, flat: true },
+  /* What a listening tab reads after one task edit (COPL-151): until then,
+     GET /api/boards/:id and GET /api/boards, 778 rows on the larger seed
+     (12213 before COPL-150). */
+  "live: one task edit, heard": { rows: 24, flat: true },
 };

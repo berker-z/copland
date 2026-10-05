@@ -4,7 +4,8 @@
 //! refused; that is said once and polling stops.
 //!
 //! It reads again when the owner's live socket (COPL-62) says a board, the
-//! person's boards or their agents changed, soon after any of this daemon's
+//! person's boards or their agents changed (a board only when the change could
+//! show here: COPL-151, `Due::of`), soon after any of this daemon's
 //! runs starts or ends, and on a clock: every fifteen seconds while the
 //! socket is down, every two minutes while it is up (a claim that lapses
 //! sends nothing, and the hub keeps nothing for a socket that was away).
@@ -24,7 +25,7 @@ use copland_daemon_core::DaemonState;
 use copland_daemon_core::Phase;
 use copland_daemon_core::api::{Api, BoardRef, InboxItem, Wired};
 use copland_daemon_core::config::Owner;
-use copland_daemon_core::live::{self, Heard, Link};
+use copland_daemon_core::live::{self, Burst, Heard, Link};
 use tokio::sync::{Notify, watch};
 
 use crate::notify::{Desktop, Notifier};
@@ -64,11 +65,25 @@ impl Due {
         settings: true,
     };
 
-    /// What a set of live topics asks to read.
-    pub fn of(topics: &std::collections::BTreeSet<String>) -> Due {
-        let has = |t: &str| topics.contains(t);
+    /// What a burst of live messages asks to read, given the last `/api/wired` read (none yet:
+    /// read it). A board change is skipped when the burst says which tasks it touched (COPL-151)
+    /// and none is one /wired shows or one of the agents is, or was, assigned to: every task it
+    /// can show is assigned to one of them, so a change to anything else can't show here.
+    pub fn of(burst: &Burst, wired: Option<&Wired>) -> Due {
+        let has = |t: &str| burst.contains(t);
+        let board = has("board")
+            && match (&burst.touched, wired) {
+                (Some(touched), Some(w)) => {
+                    let shown = [&w.todo, &w.doing, &w.blocked, &w.done]
+                        .into_iter()
+                        .flatten()
+                        .any(|t| touched.tasks.contains(&t.id));
+                    shown || w.agents.iter().any(|a| touched.assignees.contains(&a.id))
+                }
+                _ => true,
+            };
         Due {
-            wired: has("board") || has("boards") || has("agents") || has("people"),
+            wired: board || has("boards") || has("agents") || has("people"),
             inbox: has("inbox"),
             boards: has("boards"),
             settings: has("settings"),
@@ -169,6 +184,8 @@ fn listen(
     wake: Arc<Notify>,
 ) -> tokio::task::JoinHandle<()> {
     let (base, token) = (owner.url.clone(), owner.token.clone());
+    /* What /wired last showed, for whether a board change could show there. */
+    let shown = tx.subscribe();
     tokio::spawn(async move {
         live::listen(
             &base,
@@ -183,9 +200,10 @@ fn listen(
             },
             move |h| {
                 let d = match &h {
-                    Heard::Topics(t) => {
-                        tracing::debug!(?t, "live: reading your agents' work");
-                        Due::of(t)
+                    Heard::Topics(b) => {
+                        let d = Due::of(b, shown.borrow().wired.as_ref().map(|(w, _)| w));
+                        tracing::debug!(?b, ?d, "live: what to read again");
+                        d
                     }
                     Heard::Resync => Due::ALL,
                 };
@@ -388,7 +406,13 @@ mod tests {
 
     #[test]
     fn each_topic_reads_only_what_it_changed() {
-        let of = |t: &[&str]| Due::of(&t.iter().map(|s| s.to_string()).collect());
+        let of = |t: &[&str]| {
+            let burst = Burst {
+                topics: t.iter().map(|s| s.to_string()).collect(),
+                touched: None,
+            };
+            Due::of(&burst, None)
+        };
         assert_eq!(
             of(&["board"]),
             Due {
@@ -416,6 +440,69 @@ mod tests {
         d.add(of(&["inbox"]));
         d.add(of(&["agents"]));
         assert!(d.inbox && d.wired && !d.boards);
+    }
+
+    #[test]
+    fn a_board_change_reads_wired_only_when_it_could_show_there() {
+        use copland_daemon_core::api::{WiredAgent, WiredTask};
+        use copland_daemon_core::live::Touched;
+        let task = |id: &str| WiredTask {
+            id: id.into(),
+            board_id: "b".into(),
+            key: "B-1".into(),
+            title: "t".into(),
+            agent_id: "dev".into(),
+            since: None,
+            live: false,
+        };
+        let wired = Wired {
+            agents: vec![WiredAgent {
+                id: "dev".into(),
+                handle: "me/dev".into(),
+                name: "dev".into(),
+                paused: false,
+            }],
+            todo: vec![task("t-todo")],
+            doing: vec![],
+            blocked: vec![],
+            done: vec![task("t-done")],
+            done_count: 1,
+            done_window_hours: 24,
+        };
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect();
+        let board = |tasks: &[&str], assignees: &[&str]| Burst {
+            topics: set(&["board"]),
+            touched: Some(Touched {
+                tasks: set(tasks),
+                assignees: set(assignees),
+            }),
+        };
+        let reads = |b: &Burst, w: Option<&Wired>| Due::of(b, w).wired;
+        /* Someone else's task, with nobody of yours on it: nothing to read. */
+        assert!(!reads(&board(&["other"], &["kim"]), Some(&wired)));
+        assert!(!reads(&board(&[], &[]), Some(&wired)));
+        /* A task it shows, done ones too. */
+        assert!(reads(&board(&["t-todo"], &[]), Some(&wired)));
+        assert!(reads(&board(&["t-done"], &["kim"]), Some(&wired)));
+        /* One of your agents on it, before or after: newly assigned, or out of backlog. */
+        assert!(reads(&board(&["new"], &["kim", "dev"]), Some(&wired)));
+        /* Nothing read yet, or a burst that didn't say what it touched: read. */
+        assert!(reads(&board(&["other"], &[]), None));
+        let unsaid = Burst {
+            topics: set(&["board"]),
+            touched: None,
+        };
+        assert!(reads(&unsaid, Some(&wired)));
+        /* Other topics still read it, whatever the board part says. */
+        let mut agents = board(&["other"], &[]);
+        agents.topics.insert("agents".into());
+        assert!(reads(&agents, Some(&wired)));
+        /* And a burst with no board in it reads nothing for the board's sake. */
+        let inbox = Burst {
+            topics: set(&["inbox"]),
+            touched: Some(Touched::default()),
+        };
+        assert!(!reads(&inbox, Some(&wired)));
     }
 
     #[test]

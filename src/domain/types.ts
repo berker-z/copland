@@ -247,6 +247,9 @@ export interface Wired {
 }
 
 /** A parent's children and how far its work has got, counted over its whole subtree, closed tasks of any age included. */
+/** GET /api/tasks/:id: the task, and its progress when it has children (COPL-151: what a tab patching it needs). */
+export type TaskRead = Task & { progress?: ParentProgress };
+
 export interface ParentProgress {
   /** Its direct children. */
   children: number;
@@ -279,6 +282,8 @@ export interface BoardDetail {
   docs: BoardDoc[];
   /** GitHub repos connected to it (domain/github.ts). */
   repos: BoardRepo[];
+  /** boards.version when this was read, which live events count on from (domain/live.ts planBoard). */
+  version: number;
 }
 
 /** GET /api/boards/:id/closed: a board's tasks closed longer ago than RECENT_CLOSED_DAYS, newest first, a page at a time. */

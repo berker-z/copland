@@ -86,10 +86,10 @@ async function editBoard(
   return previous;
 }
 
-function settle(queryClient: QueryClient, boardId: string) {
+function settle(queryClient: QueryClient, boardId: string, counts = true) {
   void queryClient.invalidateQueries({ queryKey: KEYS.board(boardId) });
-  /* Open-task counts in the boards list. */
-  void queryClient.invalidateQueries({ queryKey: KEYS.boards });
+  /* Open-task counts in the boards list: a task made or deleted, or one that changed stage (closed, reopened, or a parent with it). */
+  if (counts) void queryClient.invalidateQueries({ queryKey: KEYS.boards });
   /* An assignee changed, or a task came or went: whose work is whose may have too. */
   void queryClient.invalidateQueries({ queryKey: KEYS.myWork });
 }
@@ -177,7 +177,7 @@ export function useUpdateTask(boardId?: string) {
     onError: (_error, _vars, context) => {
       if (context?.previous) queryClient.setQueryData(KEYS.board(context.board), context.previous);
     },
-    onSettled: (_data, _error, vars) => settle(queryClient, vars.boardId ?? boardId ?? ""),
+    onSettled: (_data, _error, vars) => settle(queryClient, vars.boardId ?? boardId ?? "", vars.patch.stageId !== undefined),
   });
 }
 
