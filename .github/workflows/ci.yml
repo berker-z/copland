@@ -5,9 +5,11 @@
 # require; the daemon part is skipped, not left pending, on PRs that don't
 # touch it. The box (daemon/box) needs GPUI's native libraries and is checked
 # by box-release.yml under Nix instead. `macos` runs the daemon's tests on a
-# Mac too, for its sandbox (COPL-140). Both install Factory's droid, pinned by
-# version and checksum, for the test of droid's own sandbox (COPL-146), which
-# fails rather than skips here (COPLAND_REQUIRE_DROID).
+# Mac too, for its sandbox (COPL-140). Both install Codex, pinned, and require
+# its sandbox tests (COPL-143), which run `codex sandbox` with the policy the
+# daemon gives Codex's runs: no model, no account. Both install Factory's droid
+# too, pinned by version and checksum, for the test of droid's own sandbox
+# (COPL-146), which fails rather than skips here (COPLAND_REQUIRE_DROID).
 
 name: ci
 
@@ -62,13 +64,19 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: daemon
+      # Codex's Linux sandbox is bubblewrap, which needs unprivileged user
+      # namespaces; Ubuntu 24.04's AppArmor keeps them from it otherwise.
       - if: steps.daemon.outputs.changed == 'true'
-        name: bubblewrap, socat and droid, for the sandbox tests
         run: |
-          sudo apt-get update && sudo apt-get install -y bubblewrap socat
-          # Ubuntu 24.04 keeps unprivileged user namespaces from any bwrap
-          # but its own; the runner is thrown away after the job.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          npm i -g @openai/codex@0.159.2
+      # droid's sandbox is bubblewrap too, and needs socat besides.
+      - if: steps.daemon.outputs.changed == 'true'
+        name: socat and droid, for droid's sandbox test
+        run: |
+          sudo apt-get install -y --no-install-recommends socat
           mkdir -p "$RUNNER_TEMP/bin"
           curl -fsSL -o "$RUNNER_TEMP/bin/droid" "https://downloads.factory.ai/factory-cli/releases/$DROID_VERSION/linux/x64/droid"
           echo "744a5c500a9422b18a7355cf8b824d5d21d4b65d2e48d74f0f1ee4b6d92f7ab8  $RUNNER_TEMP/bin/droid" | sha256sum -c
@@ -77,7 +85,8 @@ jobs:
       - if: steps.daemon.outputs.changed == 'true'
         working-directory: daemon
         env:
-          COPLAND_REQUIRE_DROID: 1
+          COPLAND_TEST_CODEX: "1"
+          COPLAND_REQUIRE_DROID: "1"
         run: cargo test && cargo clippy --all-targets -- -D warnings
 
   # The daemon on a Mac (COPL-140): its tests there run a command inside the
@@ -108,6 +117,12 @@ jobs:
         with:
           workspaces: daemon
       - if: steps.daemon.outputs.changed == 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - if: steps.daemon.outputs.changed == 'true'
+        run: npm i -g @openai/codex@0.159.2
+      - if: steps.daemon.outputs.changed == 'true'
         name: droid, for its sandbox test
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
@@ -118,5 +133,6 @@ jobs:
       - if: steps.daemon.outputs.changed == 'true'
         working-directory: daemon
         env:
-          COPLAND_REQUIRE_DROID: 1
+          COPLAND_TEST_CODEX: "1"
+          COPLAND_REQUIRE_DROID: "1"
         run: cargo test && cargo clippy --all-targets -- -D warnings

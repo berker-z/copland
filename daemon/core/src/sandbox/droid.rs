@@ -35,6 +35,12 @@ pub fn backend(_platform: Platform) -> Option<&'static dyn Backend> {
     Some(&Droid)
 }
 
+/// Where `argv` says `droid exec` (the index of `droid`), which the settings go after.
+pub fn exec_at(argv: &[String]) -> Option<usize> {
+    argv.windows(2)
+        .position(|pair| Path::new(&pair[0]).file_name().is_some_and(|n| n == "droid") && pair[1] == "exec")
+}
+
 /// The settings file in the run's temp dir. The run can read it but not write it.
 fn settings_path(tmp: &Path) -> PathBuf {
     tmp.join("settings.json")
@@ -90,10 +96,7 @@ impl Backend for Droid {
     fn wrap(&self, argv: &[String], w: &Writable) -> Vec<String> {
         let tmp = w.tmp.as_deref().expect("droid's runs get a temp dir");
         let p = |path: &Path| path.to_string_lossy().to_string();
-        let at = argv
-            .windows(2)
-            .position(|pair| Path::new(&pair[0]).file_name().is_some_and(|n| n == "droid") && pair[1] == "exec");
-        let Some(at) = at else {
+        let Some(at) = exec_at(argv) else {
             return [
                 "/bin/sh",
                 "-c",
@@ -324,17 +327,38 @@ mod tests {
             .join("target")
             .join(format!("copland-droid-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let (worktree, git_dir, extra, outside, shim, tmp) = (
+        let (repo, worktree, extra, outside, shim, tmp) = (
+            root.join("repo"),
             root.join("work"),
-            root.join("git"),
             root.join("state"),
             root.join("outside"),
             root.join("shim"),
             root.join("tmp"),
         );
-        for d in [&worktree, &git_dir, &extra, &outside, &shim, &tmp] {
+        for d in [&repo, &extra, &outside, &shim, &tmp] {
             std::fs::create_dir_all(d).unwrap();
         }
+        /* A clone and a task's worktree of it, as the daemon makes them: the commit goes to the clone's .git. */
+        let git = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        git(
+            &repo,
+            &["worktree", "add", "-q", "-b", "task", &worktree.to_string_lossy()],
+        );
+        let git_dir = repo.join(".git");
         let real_bash = crate::runner::locate("bash").expect("bash is on PATH");
         /* The innermost bash droid starts runs the probe; any other is the real one. */
         let stand_in = format!(
@@ -388,6 +412,7 @@ mod tests {
         for d in [&worktree, &git_dir, &extra, &home] {
             probe += &format!("touch {}/sh\n{}\n", d.display(), tool(&d.join("tool")));
         }
+        probe += "git add sh tool && git -c user.name=t -c user.email=t@t commit -q -m probe\n";
         probe += &format!(
             "denied touch {o}/sh\ndenied {t}\ndenied touch \"$HOME/copland-droid-{pid}\"\n\
              denied touch {tmp}/settings.json\necho probed\n",
@@ -405,6 +430,15 @@ mod tests {
             );
         }
         assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
+        let log = std::process::Command::new("git")
+            .args(["-C", &worktree.to_string_lossy(), "log", "-1", "--format=%s"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout).trim(),
+            "probe",
+            "the commit didn't land"
+        );
 
         /* Reading only (a lead): nothing in the worktree may be written, the extras still may. */
         let read = Writable {
