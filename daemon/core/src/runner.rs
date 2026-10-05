@@ -422,14 +422,17 @@ async fn supervise(
     /* A coding task: its own command, in its worktree, inside the sandbox. */
     let (argv, cwd, sandboxed) = match (workspace, &agent.code_command) {
         (Some(ws), Some(code)) => {
+            let backend = sandbox::of(agent);
             /* A lead reads the repo; a worker writes its worktree, and its commits land in the clone's .git. */
             let dirs = if ws.read_only {
                 Vec::new()
             } else {
                 vec![ws.clone.join(".git"), ws.dir.clone()]
             };
-            /* macOS: a temp dir of the run's own, its TMPDIR, gone with the run (Linux's is a tmpfs). */
-            let tmp = sandbox::NEEDS_TMP.then(|| std::env::temp_dir().join(format!("copland-run-{run_id}")));
+            /* Seatbelt: a temp dir of the run's own, its TMPDIR, gone with the run (bubblewrap's is a tmpfs). */
+            let tmp = backend
+                .needs_tmp()
+                .then(|| std::env::temp_dir().join(format!("copland-run-{run_id}")));
             let guard = match &tmp {
                 Some(dir) => match private_dir(dir) {
                     Ok(()) => Some(TempDir(dir.clone())),
@@ -444,9 +447,9 @@ async fn supervise(
                 tmp,
             };
             (
-                sandbox::wrap(&fill_command(code, &text, &mcp_path), &writable),
+                backend.wrap(&fill_command(code, &text, &mcp_path), &writable),
                 ws.dir.clone(),
-                Some(guard),
+                Some((guard, backend)),
             )
         }
         _ => (
@@ -564,11 +567,14 @@ async fn supervise(
             }
         }
     };
-    /* No process namespace on macOS: what the runtime left in its process group goes now, the way
-    Linux's goes with the namespace. What left the group (setsid) stays; its temp dir doesn't. */
-    if let (Some(_), Some(pid), false) = (&sandboxed, pid, sandbox::ENDS_ITS_CHILDREN) {
-        // SAFETY: as in `stop`. The group's id can't be reused while anything is still in it.
-        unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+    /* A backend without a process namespace (Seatbelt): what the runtime left in its process group
+    goes now, the way bubblewrap's goes with the namespace. What left the group (setsid) stays; its
+    temp dir doesn't. */
+    if let (Some((_, backend)), Some(pid)) = (&sandboxed, pid) {
+        if !backend.ends_its_children() {
+            // SAFETY: as in `stop`. The group's id can't be reused while anything is still in it.
+            unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+        }
     }
     /* The runtime is done, the run not yet finished: the last word on what the work changed. */
     if let Some(ws) = reported.filter(|_| alive) {
@@ -895,6 +901,7 @@ mod tests {
             client: "test".into(),
             code_command: None,
             writable: Vec::new(),
+            runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
         };
@@ -941,6 +948,7 @@ mod tests {
             client: "test".into(),
             code_command: None,
             writable: Vec::new(),
+            runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
         };
@@ -984,6 +992,7 @@ mod tests {
             client: "test".into(),
             code_command: None,
             writable: Vec::new(),
+            runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
         };
