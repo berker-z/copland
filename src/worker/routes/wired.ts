@@ -67,24 +67,32 @@ export async function getWired(env: Env, viewer: Viewer): Promise<Response> {
 
   const since = new Date(Date.now() - DONE_WINDOW_HOURS * 3600_000).toISOString();
   const ids = boards.map((b) => b.id);
-  /* One row per task and assigned agent of mine; the claim only when it is
-     live and that agent's. A task with two of my agents on it comes twice,
-     and the claimer's row wins below. */
+  /* The tasks it can draw first, open or finished inside the window, each
+     half through its own index (tasks_open, tasks_completed) so nothing
+     reads a board's history. Then one row per task and assigned agent of
+     mine; the claim only when it is live and that agent's. A task with two
+     of my agents on it comes twice, and the claimer's row wins below. The
+     CROSS JOINs keep that order: left to itself, SQLite starts from my
+     agents' assignments, which is every task they ever had. */
+  const onBoards = `board_id IN (${ids.map((_, i) => `?${i + 3}`).join(",")}) AND deleted_at IS NULL`;
   const { results } = await db
     .prepare(
-      `SELECT t.id, t.board_id, b.key || '-' || t.number AS key, t.title, s.category, t.completed_at, t.updated_at,
+      `WITH w(id) AS MATERIALIZED (
+         SELECT id FROM tasks WHERE ${onBoards} AND completed_at IS NULL
+         UNION ALL
+         SELECT id FROM tasks WHERE ${onBoards} AND completed_at >= ?2)
+       SELECT t.id, t.board_id, b.key || '-' || t.number AS key, t.title, s.category, t.completed_at, t.updated_at,
               s.position AS stage_position, t.rank, u.id AS agent_id,
               CASE WHEN c.user_id = u.id AND ${LIVE_CLAIM} THEN c.claimed_at END AS claimed_at
-         FROM tasks t
-         JOIN boards b ON b.id = t.board_id
-         JOIN stages s ON s.id = t.stage_id
-         JOIN task_assignees ta ON ta.task_id = t.id
+         FROM w
+         CROSS JOIN tasks t ON t.id = w.id
+         CROSS JOIN task_assignees ta ON ta.task_id = t.id
          JOIN users u ON u.id = ta.user_id AND u.owner_id = ?1 AND u.kind = 'agent' AND u.disabled_at IS NULL
+         JOIN stages s ON s.id = t.stage_id
+         JOIN boards b ON b.id = t.board_id
          LEFT JOIN task_claims c ON c.task_id = t.id
          LEFT JOIN runs r ON r.id = c.run_id
-        WHERE t.deleted_at IS NULL
-          AND t.board_id IN (${ids.map((_, i) => `?${i + 3}`).join(",")})
-          AND (s.category IN ('todo', 'active', 'blocked') OR (s.category = 'done' AND t.completed_at >= ?2))
+        WHERE s.category IN ('todo', 'active', 'blocked') OR (s.category = 'done' AND t.completed_at >= ?2)
         ORDER BY t.board_id, s.position, t.rank, t.number`,
     )
     .bind(me, since, ...ids)

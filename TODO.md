@@ -29,6 +29,9 @@ docs/DESIGN.md under Touch.
       real Google calendar (the flow works locally and accounts connect).
 - [ ] Connect Claude over MCP (settings › access, or as an agent) and try
       "what's on my plate?" and "what's on my calendar this week?".
+- [ ] A background tab is quiet (COPL-132): `wrangler tail` with a tab in
+      the background for five minutes shows nothing from it but its socket
+      closing once, and bringing it back one round of refetches.
 
 ### Small things noticed
 
@@ -214,6 +217,19 @@ docs/DESIGN.md under Touch.
   that lands after the cron ended the run as stale replaces the sweep's
   failed (`runs.swept_at`, migration 0032), so a run cut off by the outage
   costs its task no strike (checks/outage.check.ts)
+- Rows-read budgets (COPL-149, for COPL-131): `npm run check:reads`, in CI,
+  runs the routes clients refetch on a local D1 with a long-history seed
+  and one with twice the history, and fails a route over its budget in
+  `checks/reads.budgets.ts`, or a flat one that grows with history. Set at
+  main's numbers: `/api/boards/:id` (12174 rows), `/api/wired` (1051) and
+  `/api/tasks/mine` (5731) still read whole histories; the rest of
+  COPL-131 lowers them and marks them flat (checks/reads.check.ts)
+- `/api/wired` reads open work only (COPL-152, for COPL-131): it gathers
+  the open tasks on your boards (`tasks_open`) and those finished inside
+  its 24-hour window (`tasks_completed`, migration 0033) first, then joins
+  their assignees, so it no longer reads your agents' whole history. Rows
+  read on the reads check's seeds: 551 and 1051 to 139 on both; its budget
+  is 139 and flat
 - Comments reach the run working on the task (COPL-139, for COPL-130):
   `POST /api/runs/current/news` tells a run, once each, the unread comments
   and mentions on the tasks it has claimed since it started
@@ -499,3 +515,13 @@ docs/DESIGN.md under Touch.
   inbox did, so a mention read on the task, or opened from the box's bell,
   stayed unread for good and the bell never cleared. Nothing server-side
   changed: agents still mark their own items read through the MCP
+- A hidden tab lets go of its socket (COPL-132). Chromium woke a background
+  tab once a minute and its socket died with 1001 each time, and every drop
+  refetched everything twice (on close and again on open). Now a hidden tab
+  closes its socket itself, marks what it has stale and fetches nothing
+  (no reconnects, no polls); shown again, it reconnects and refetches once
+  the socket is open. A visible tab's drop puts the polls back without
+  fetching and refetches once on reconnect. React Query's own refetch on
+  focus and on reconnect stand down while the live socket does the
+  catching up (`liveCatchesUp`). The socket's life moved to
+  `src/lib/liveSocket.ts`, pinned by `checks/live.check.ts`.
