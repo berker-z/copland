@@ -11,7 +11,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
-    "check": "node checks/mcp.check.ts && node checks/follow.check.ts && node checks/progress.check.ts && node checks/runs.check.ts && node checks/device.check.ts && node checks/github.check.ts && node checks/overlap.check.ts && node checks/messages.check.ts && node checks/housekeeping.check.ts && node checks/comments.check.ts && node checks/messageClaims.check.ts && node checks/access.check.ts && node checks/inbox.check.ts && node checks/runNews.check.ts && node checks/wired.check.ts && node checks/live.check.ts",
+    "check": "node checks/mcp.check.ts && node checks/follow.check.ts && node checks/progress.check.ts && node checks/runs.check.ts && node checks/device.check.ts && node checks/github.check.ts && node checks/overlap.check.ts && node checks/messages.check.ts && node checks/housekeeping.check.ts && node checks/comments.check.ts && node checks/messageClaims.check.ts && node checks/access.check.ts && node checks/inbox.check.ts && node checks/runNews.check.ts && node checks/wired.check.ts && node checks/live.check.ts && node checks/outage.check.ts",
     "check:reads": "node checks/reads.check.ts",
     "admin": "node scripts/admin.ts",
     "cf-typegen": "wrangler types",

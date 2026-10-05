@@ -86,7 +86,7 @@ import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } fro
 import { claimedBy, deathOf, putBack } from "../deadRuns";
 import type { Changes } from "../live";
 import { boardAudience } from "../repo/boards";
-import { claimUntil, finishRunStatements, findRun, interactiveRun, LIVE_CLAIM } from "../repo/runs";
+import { claimUntil, correctSweptStatement, finishRunStatements, findRun, interactiveRun, LIVE_CLAIM } from "../repo/runs";
 import { bottomRank, eventStatement, findTask, listStages } from "../repo/tasks";
 import { enterRun, mint, RUN_PREFIX } from "../tokens";
 import { followStatements, requireAssignable, taskFor, written } from "./tasks";
@@ -203,7 +203,10 @@ export async function getRun(env: Env, viewer: Viewer, id: string): Promise<Resp
  * `reason` is how it ended in one short line (COPL-136: "exit 1 after
  * 3.8s"), kept on the run and said in the history of a task it puts back;
  * never a log's contents. Finishing one already over changes nothing and
- * answers with it as it is, so a retry is harmless.
+ * answers with it as it is, so a retry is harmless, with one exception: a
+ * run the cron's sweep ended as stale takes the first finish that lands
+ * after, its launcher's word on how it really ended (COPL-148: Copland was
+ * down, not the run). That finish puts nothing back; the sweep already did.
  */
 export async function postRunFinish(request: Request, env: Env, viewer: Viewer, id: string, changes: Changes) {
   const db = env.DB;
@@ -223,7 +226,13 @@ export async function postRunFinish(request: Request, env: Env, viewer: Viewer, 
     )
     .bind(id)
     .all<{ board_id: string }>();
-  const [ended] = await db.batch(finishRunStatements(db, id, body.status as RunEnding, reason));
+  const [ended, , , corrected] = await db.batch([
+    ...finishRunStatements(db, id, body.status as RunEnding, reason),
+    correctSweptStatement(db, id, body.status as RunEnding, reason),
+  ]);
+  if (corrected.meta.changes) {
+    console.log(`run ${shortRunId(id)}: its launcher's ${body.status} replaces the sweep's failed`);
+  }
   const death = deathOf(body.status as RunEnding, body.interrupted === true);
   if (ended.meta.changes && started.kind === "supervised" && death) {
     await putBack(env, { id, userId: started.userId }, death, held, changes, reason);

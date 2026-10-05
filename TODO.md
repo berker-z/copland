@@ -207,6 +207,16 @@ docs/DESIGN.md under Touch.
   reads a partial index of open tasks (`tasks_open`, migration 0029). Rows
   read locally: `/api/inbox` 770 to 19, `/api/wired` 771 to 20, a board
   route's access check about 125 to 1 (checks/access.check.ts)
+- When Copland is down (COPL-148, for COPL-130): a D1 failure (its free
+  quota running out, as on 2026-10-04) answers 503 `storage_unavailable`
+  instead of a bare 500 (`storageFailure` in `src/worker/http.ts`). The
+  daemon starts and claims nothing while polls get no answer or a 502-504,
+  says "Copland unavailable since 23:20 UTC" once in the log and on the
+  box's agent line, and leaves running runtimes alone. A run's finish and
+  its last files report are retried with backoff for up to a day. A finish
+  that lands after the cron ended the run as stale replaces the sweep's
+  failed (`runs.swept_at`, migration 0032), so a run cut off by the outage
+  costs its task no strike (checks/outage.check.ts)
 - Rows-read budgets (COPL-149, for COPL-131): `npm run check:reads`, in CI,
   runs the routes clients refetch on a local D1 with a long-history seed
   and one with twice the history, and fails a route over its budget in
