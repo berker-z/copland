@@ -11,18 +11,20 @@
      who=me | none | handle  assignee: you, nobody, or a member (agents too)
      label=bug&label=ui      labels by name, any of
      q=text                  in the key, title or brief, any case
-     done=all                closed tasks of every age, not only the last 14 days
+     done=all                closed tasks of every age, not only the last 14 days;
+                             the board's read leaves the older ones out, and
+                             this pages them in (useBoardView)
 
    The scoped task itself always shows, whatever the other filters say, so
    you can see which stage the thing you are looking inside is in. The other
    filters apply to everything under it.
    ========================================================================== */
 
-import { descendantIds, isClosing } from "@/domain/tasks";
+import { descendantIds, isClosing, RECENT_CLOSED_DAYS } from "@/domain/tasks";
 import { LEVELS, type BoardDetail, type Task } from "@/domain/types";
 
-/** Closed tasks older than this are hidden unless done=all. */
-export const RECENT_DONE_DAYS = 14;
+/** Closed tasks older than this are hidden unless done=all: the board read's own window. */
+export const RECENT_DONE_DAYS = RECENT_CLOSED_DAYS;
 
 export const LEVEL_FILTERS = LEVELS;
 export type LevelFilter = (typeof LEVEL_FILTERS)[number];

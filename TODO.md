@@ -211,6 +211,18 @@ docs/DESIGN.md under Touch.
   main's numbers: `/api/boards/:id` (12174 rows), `/api/wired` (1051) and
   `/api/tasks/mine` (5731) still read whole histories; the rest of
   COPL-131 lowers them and marks them flat (checks/reads.check.ts)
+- The board read is bounded (COPL-150, for COPL-131): `GET /api/boards/:id`
+  has the open tasks, those closed in the last 14 days (the window the
+  board already showed) and the tasks those name as parent or depend on;
+  `GET /api/boards/:id/closed` pages back through the rest, newest first,
+  100 at a time, behind the filter bar's `show older` (and the MCP's
+  `include_closed`, closed `list_tasks`, and any old task by key). What
+  hangs off the tasks is one grouped query each over their ids, and a
+  parent's progress (and child count, which the daemon reads) is counted in
+  SQL over its whole subtree. Rows read on the check's seed: 12174 to 739,
+  flat; a page of older tasks 2914. The seed's `×2` now means twice as
+  long a history at the same pace, not twice the pace. The /tasks pane's
+  done fold is the last 14 days
 - Comments reach the run working on the task (COPL-139, for COPL-130):
   `POST /api/runs/current/news` tells a run, once each, the unread comments
   and mentions on the tasks it has claimed since it started

@@ -4,6 +4,7 @@
 //! box's setup uses to get those tokens in the first place (`device_start`,
 //! `device_poll`). Shapes follow `src/domain/types.ts`.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Once;
 use std::time::Duration;
@@ -166,15 +167,27 @@ struct Ready {
 pub struct BoardRepos {
     #[serde(default)]
     pub repos: Vec<BoardRepo>,
-    /// Its tasks, for which have children.
+    /// Its tasks, for which have children: the open ones, the recently
+    /// closed ones and those they name, not the whole history (COPL-150).
     #[serde(default)]
     pub tasks: Vec<BoardTask>,
+    /// Every task in `tasks` with children, by id, counted over all of
+    /// them, closed long ago too. An older server sends none.
+    #[serde(default)]
+    pub progress: HashMap<String, ParentProgress>,
     /// Its stages, for what a task's stage means.
     #[serde(default)]
     pub stages: Vec<Stage>,
 }
 
 impl BoardRepos {
+    /// Whether a task has children: by the server's count, or, from an
+    /// older server without one, by the tasks it sent.
+    pub fn has_children(&self, task_id: &str) -> bool {
+        self.progress.get(task_id).is_some_and(|p| p.children > 0)
+            || self.tasks.iter().any(|t| t.parent_id.as_deref() == Some(task_id))
+    }
+
     /// The category of one of its stages: backlog, todo, active, blocked, done or cancelled.
     pub fn category(&self, stage_id: &str) -> Option<&str> {
         self.stages
@@ -182,6 +195,12 @@ impl BoardRepos {
             .find(|s| s.id == stage_id)
             .map(|s| s.category.as_str())
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ParentProgress {
+    /// Its direct children, closed ones of any age included.
+    pub children: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -779,6 +798,22 @@ mod tests {
             finish_body(Ending::Cancelled, None),
             json!({ "status": "cancelled", "interrupted": false })
         );
+    }
+
+    #[test]
+    fn a_board_says_which_tasks_have_children() {
+        /* Children closed long ago aren't in tasks (COPL-150): the server's count says so. */
+        let b: BoardRepos = serde_json::from_str(
+            r#"{"repos":[],"stages":[],"tasks":[{"id":"e"},{"id":"s","parentId":"e"},{"id":"old"}],
+                "progress":{"e":{"children":1,"done":0,"total":1},"old":{"children":4,"done":4,"total":4}}}"#,
+        )
+        .unwrap();
+        assert!(b.has_children("e"));
+        assert!(b.has_children("old"));
+        assert!(!b.has_children("s"));
+        /* An older server sends no progress: the tasks it sent decide. */
+        let b: BoardRepos = serde_json::from_str(r#"{"tasks":[{"id":"e"},{"id":"s","parentId":"e"}]}"#).unwrap();
+        assert!(b.has_children("e") && !b.has_children("s"));
     }
 
     #[test]

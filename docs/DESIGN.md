@@ -166,7 +166,9 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   tone when on, `text-faint` off), an assignee select, `under…` (a
   search-and-pick dropdown of tasks, those with children first) which
   becomes an `under KEY ×` chip in `text-accent` (`text-red` when the key is
-  not on the board), and `+n closed before 14d`. When anything is hidden,
+  not on the board), and `show older` (`older shown` when on, with a
+  `more` chip after it while another page of older closed tasks is there to
+  fetch, pulsing while it loads). When anything is hidden,
   `n of m shown` and `clear` sit at the right in `text-xs`. On a phone the
   search and a `filters n` toggle stay; the rest folds under them. A card's
   or list row's parent is a `↑ KEY` in `text-muted` (accent on hover) that

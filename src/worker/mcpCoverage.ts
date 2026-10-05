@@ -89,6 +89,22 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
       "delete_doc",
     ],
   },
+  "GET /api/boards/:id/closed": {
+    tools: [
+      "get_board",
+      "list_tasks",
+      "get_task",
+      "update_task",
+      "move_task",
+      "claim_task",
+      "release_task",
+      "comment_on_task",
+      "delete_task",
+      "drift",
+      "overlap",
+      "revalidate",
+    ],
+  },
   "GET /api/tasks/:id/drift": { tools: ["drift"] },
   "GET /api/tasks/:id/overlap": { tools: ["overlap"] },
   "POST /api/tasks/:id/revalidate": { tools: ["revalidate"] },
@@ -100,7 +116,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /api/messages": { tools: ["send_message"] },
   "GET /api/messages/recipients": { skip: "browser: the nudge pane's list; an agent messages only its owner, and send_message names whom" },
   "GET /api/tasks/:id": {
-    tools: ["get_task", "update_task", "move_task", "claim_task", "release_task", "comment_on_task", "delete_task", "drift", "overlap", "revalidate"],
+    tools: ["get_task", "create_task", "update_task", "move_task", "claim_task", "release_task", "comment_on_task", "delete_task", "drift", "overlap", "revalidate"],
   },
   "POST /api/boards/:id/tasks": { tools: ["create_task"] },
   /* create_task sets dependencies with a second write: creation takes none. */

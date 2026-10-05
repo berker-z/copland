@@ -1198,7 +1198,7 @@ impl RunCtx {
             }
         };
         let category = task.stage_id.as_deref().and_then(|s| board.category(s));
-        let has_children = board.tasks.iter().any(|t| t.parent_id.as_deref() == Some(task_id));
+        let has_children = board.has_children(task_id);
         unfinished(&task, category, has_children, run_id, pull_requests).then_some(task)
     }
 
@@ -1315,7 +1315,7 @@ impl RunCtx {
         if board.repos.len() > 1 {
             tracing::debug!(task = %key, "its board has {} repos; working in the first", board.repos.len());
         }
-        let has_children = board.tasks.iter().any(|t| t.parent_id.as_deref() == Some(task_id));
+        let has_children = board.has_children(task_id);
         let role = role_of(true, !board.repos.is_empty(), task.level.as_deref(), has_children);
         let source = board.repos.first().map(|r| r.source());
         Ok(TaskInfo {

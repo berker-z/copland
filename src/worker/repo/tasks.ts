@@ -1,11 +1,23 @@
 /* ============================================================================
    Tasks, stages and labels: the reads a board screen needs, and the row
    lookups the task routes start from.
+   ----------------------------------------------------------------------------
+   A board's everyday read (boardTasks) is bounded by what the board shows,
+   not by its history (COPL-150): its open tasks, those closed in the last
+   RECENT_CLOSED_DAYS, and the tasks those name as parent (up the tree) or
+   depend on, so every key on screen resolves. Older closed tasks come a page
+   at a time (closedTasks), only when someone asks for them. Whatever the
+   tasks, what hangs off them (assignees, labels, dependencies, comment
+   counts, claims, attachments, code, changed files) is one grouped query
+   each over their ids, never a subquery per task, and a parent's progress is
+   counted in SQL over its whole subtree, so it still counts the children
+   the read left out.
    ========================================================================== */
 
 import { clientLabel } from "@/domain/clients";
 import { shortRunId } from "@/domain/runs";
-import type { Attachment, Label, Level, Priority, Stage, StageCategory, Task } from "@/domain/types";
+import { RECENT_CLOSED_DAYS } from "@/domain/tasks";
+import type { Attachment, ClosedPage, Label, Level, ParentProgress, Priority, Stage, StageCategory, Task } from "@/domain/types";
 import { currentRun, currentVia } from "../tokens";
 import { overlaps } from "@/domain/overlap";
 import { codeFor } from "./github";
@@ -27,31 +39,9 @@ interface TaskRow {
   parent_id: string | null;
   level: Level | null;
   review_first: number;
-  assignee_ids: string | null;
-  label_ids: string | null;
-  depends_on: string | null;
-  comment_count: number;
-  /** "user_id run_id claimed_until kind hears client" of a live claim, or null (client may be empty or hold spaces). */
-  claim: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
-}
-
-const ids = (csv: string | null) => (csv ? csv.split(",") : []);
-
-function toClaim(packed: string | null): Task["claim"] {
-  if (!packed) return null;
-  const [userId, runId, until, kind, hears, ...client] = packed.split(" ");
-  return {
-    userId,
-    runId,
-    run: shortRunId(runId),
-    kind: kind === "interactive" ? "interactive" : "supervised",
-    client: client.join(" ") ? clientLabel(client.join(" ")) : null,
-    until,
-    hears: hears === "1",
-  };
 }
 
 function rowToTask(row: TaskRow): Task {
@@ -71,12 +61,12 @@ function rowToTask(row: TaskRow): Task {
     parentId: row.parent_id,
     /* Backfilled by migration 0021 and refused by the routes; the column itself still allows null. */
     level: row.level ?? "task",
-    assigneeIds: ids(row.assignee_ids),
-    labelIds: ids(row.label_ids),
-    dependsOn: ids(row.depends_on),
-    commentCount: row.comment_count,
+    assigneeIds: [],
+    labelIds: [],
+    dependsOn: [],
+    commentCount: 0,
     attachments: [],
-    claim: toClaim(row.claim),
+    claim: null,
     reviewFirst: row.review_first === 1,
     code: [],
     overlap: [],
@@ -86,36 +76,213 @@ function rowToTask(row: TaskRow): Task {
   };
 }
 
-const TASK_SELECT = `
-  SELECT t.*, b.key AS board_key,
-         (SELECT group_concat(user_id) FROM task_assignees WHERE task_id = t.id) AS assignee_ids,
-         (SELECT group_concat(label_id) FROM task_labels WHERE task_id = t.id) AS label_ids,
-         (SELECT group_concat(depends_on_id) FROM task_dependencies WHERE task_id = t.id) AS depends_on,
-         (SELECT count(*) FROM comments WHERE task_id = t.id) AS comment_count,
-         (SELECT c.user_id || ' ' || c.run_id || ' ' || c.claimed_until || ' ' || r.kind || ' ' || (r.heard_until IS NOT NULL) || ' ' || coalesce(r.client, '')
-            FROM task_claims c JOIN runs r ON r.id = c.run_id
-           WHERE c.task_id = t.id AND ${LIVE_CLAIM}) AS claim
-    FROM tasks t JOIN boards b ON b.id = t.board_id`;
+const TASK_SELECT = `SELECT t.*, b.key AS board_key FROM tasks t JOIN boards b ON b.id = t.board_id`;
 
-export async function listTasks(db: D1Database, boardId: string): Promise<Task[]> {
-  const { results } = await db
-    .prepare(`${TASK_SELECT} WHERE t.board_id = ?1 AND t.deleted_at IS NULL ORDER BY t.rank, t.number`)
-    .bind(boardId)
-    .all<TaskRow>();
-  const tasks = results.map(rowToTask);
-  const [byTask, code, files] = await Promise.all([
-    attachmentsFor(db, `t.board_id = ?1`, boardId),
-    codeFor(db, `t.board_id = ?1`, boardId),
-    openTaskFiles(db, boardId),
+/** A set of task ids, bound as one JSON array (?1): `task_id ${IN_IDS}`. */
+const IN_IDS = `IN (SELECT value FROM json_each(?1))`;
+
+interface ClaimRow {
+  task_id: string;
+  user_id: string;
+  run_id: string;
+  claimed_until: string;
+  kind: string;
+  hears: number;
+  client: string | null;
+}
+
+const toClaim = (r: ClaimRow): Task["claim"] => ({
+  userId: r.user_id,
+  runId: r.run_id,
+  run: shortRunId(r.run_id),
+  kind: r.kind === "interactive" ? "interactive" : "supervised",
+  client: r.client ? clientLabel(r.client) : null,
+  until: r.claimed_until,
+  hears: r.hears === 1,
+});
+
+/**
+ * Tasks from their rows, with everything that hangs off them: one grouped
+ * query each over all of their ids. `overlap` also works out which open
+ * ones among them change the same files (domain/overlap.ts), which only
+ * means something over a board's open tasks all together.
+ */
+async function hydrate(db: D1Database, rows: TaskRow[], overlap: boolean): Promise<Task[]> {
+  const tasks = rows.map(rowToTask);
+  if (tasks.length === 0) return tasks;
+  /* One task (findTask) is bound as itself: json_each costs rows read too. */
+  const one = tasks.length === 1;
+  const IN = one ? "= ?1" : IN_IDS;
+  const ids = one ? tasks[0].id : JSON.stringify(tasks.map((t) => t.id));
+  /* Claims and changed files are only ever an open task's: closing one ends its claim, and housekeeping drops its files. */
+  const openIds = tasks.filter((t) => t.completedAt === null).map((t) => t.id);
+  const open = one ? ids : JSON.stringify(openIds);
+  const pairs = (sql: string) => db.prepare(sql).bind(ids).all<{ task_id: string; value: string }>();
+  const [assignees, labels, dependsOn, comments, claims, attachments, code, files] = await Promise.all([
+    pairs(`SELECT task_id, user_id AS value FROM task_assignees WHERE task_id ${IN} ORDER BY task_id, user_id`),
+    pairs(`SELECT task_id, label_id AS value FROM task_labels WHERE task_id ${IN} ORDER BY task_id, label_id`),
+    pairs(`SELECT task_id, depends_on_id AS value FROM task_dependencies WHERE task_id ${IN} ORDER BY task_id, depends_on_id`),
+    db.prepare(`SELECT task_id, count(*) AS n FROM comments WHERE task_id ${IN} GROUP BY task_id`).bind(ids).all<{ task_id: string; n: number }>(),
+    openIds.length
+      ? db
+          .prepare(
+            `SELECT c.task_id, c.user_id, c.run_id, c.claimed_until, r.kind, r.heard_until IS NOT NULL AS hears, r.client
+               FROM task_claims c JOIN runs r ON r.id = c.run_id
+              WHERE c.task_id ${IN} AND ${LIVE_CLAIM}`,
+          )
+          .bind(open)
+          .all<ClaimRow>()
+      : null,
+    attachmentsFor(db, `a.task_id ${IN}`, ids),
+    codeFor(db, `c.task_id ${IN}`, ids),
+    overlap && openIds.length
+      ? db.prepare(`SELECT task_id, files FROM task_files WHERE task_id ${IN}`).bind(open).all<{ task_id: string; files: string }>()
+      : null,
   ]);
-  const shared = overlaps(files);
-  const keyOf = new Map(files.map((f) => [f.id, f.key]));
+  const byTask = new Map(tasks.map((t) => [t.id, t]));
+  for (const r of assignees.results) byTask.get(r.task_id)?.assigneeIds.push(r.value);
+  for (const r of labels.results) byTask.get(r.task_id)?.labelIds.push(r.value);
+  for (const r of dependsOn.results) byTask.get(r.task_id)?.dependsOn.push(r.value);
+  for (const r of comments.results) {
+    const task = byTask.get(r.task_id);
+    if (task) task.commentCount = r.n;
+  }
+  for (const r of claims?.results ?? []) {
+    const task = byTask.get(r.task_id);
+    if (task) task.claim = toClaim(r);
+  }
   for (const task of tasks) {
-    task.attachments = byTask.get(task.id) ?? [];
+    task.attachments = attachments.get(task.id) ?? [];
     task.code = code.get(task.id) ?? [];
-    task.overlap = (shared.get(task.id) ?? []).map((o) => ({ key: keyOf.get(o.taskId)!, files: o.shared.length }));
+  }
+  if (files) {
+    /* In board order, as overlaps() reports them. */
+    const changed = new Map(files.results.map((r) => [r.task_id, JSON.parse(r.files) as string[]]));
+    const shared = overlaps(tasks.filter((t) => changed.has(t.id)).map((t) => ({ id: t.id, files: changed.get(t.id)! })));
+    for (const task of tasks) {
+      task.overlap = (shared.get(task.id) ?? []).map((o) => ({ key: byTask.get(o.taskId)!.key, files: o.shared.length }));
+    }
   }
   return tasks;
+}
+
+/**
+ * Each of these tasks that has children: how many, and its leaf tasks at any
+ * depth done out of those not cancelled, the way progress() in
+ * domain/tasks.ts counts them, but over the whole subtree in the database,
+ * closed tasks of any age included. A looped parent chain is walked once
+ * (UNION), and a task is never counted under itself.
+ */
+async function progressFor(db: D1Database, ids: string[]): Promise<Record<string, ParentProgress>> {
+  if (ids.length === 0) return {};
+  const { results } = await db
+    .prepare(
+      `WITH RECURSIVE below(root, id) AS (
+         SELECT parent_id, id FROM tasks WHERE parent_id ${IN_IDS} AND deleted_at IS NULL
+         UNION
+         SELECT b.root, t.id FROM below b JOIN tasks t ON t.parent_id = b.id AND t.deleted_at IS NULL
+       )
+       SELECT root, sum(parent_id = root) AS children,
+              sum(leaf AND category = 'done') AS done, sum(leaf AND category != 'cancelled') AS total
+         FROM (SELECT b.root, t.parent_id, s.category,
+                      t.level IS NOT 'milestone'
+                        AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id AND c.deleted_at IS NULL) AS leaf
+                 FROM below b JOIN tasks t ON t.id = b.id JOIN stages s ON s.id = t.stage_id
+                WHERE b.id != b.root)
+        GROUP BY root`,
+    )
+    .bind(JSON.stringify(ids))
+    .all<{ root: string; children: number; done: number; total: number }>();
+  return Object.fromEntries(results.map((r) => [r.root, { children: r.children, done: r.done, total: r.total }]));
+}
+
+const recentCutoff = (now: number) => new Date(now - RECENT_CLOSED_DAYS * 86_400_000).toISOString();
+
+/**
+ * A board's everyday read (GET /api/boards/:id): its open tasks, those
+ * closed since RECENT_CLOSED_DAYS ago, and the tasks those name as parent
+ * (up the tree) or depend on, in board order; their parents' progress; and
+ * whether older closed tasks were left out. Reads the same however long
+ * the board's history is.
+ */
+export async function boardTasks(
+  db: D1Database,
+  boardId: string,
+  now = Date.now(),
+): Promise<{ tasks: Task[]; progress: Record<string, ParentProgress>; olderClosed: boolean }> {
+  const cutoff = recentCutoff(now);
+  const { results } = await db
+    .prepare(
+      `WITH RECURSIVE
+         own(id) AS (
+           SELECT id FROM tasks WHERE board_id = ?1 AND deleted_at IS NULL AND completed_at IS NULL
+           UNION ALL
+           SELECT id FROM tasks WHERE board_id = ?1 AND deleted_at IS NULL AND completed_at IS NOT NULL AND completed_at >= ?2),
+         named(id) AS (
+           SELECT id FROM own
+           UNION
+           SELECT d.depends_on_id FROM own o JOIN task_dependencies d ON d.task_id = o.id),
+         shown(id) AS (
+           SELECT id FROM named
+           UNION
+           SELECT t.parent_id FROM shown s JOIN tasks t ON t.id = s.id WHERE t.parent_id IS NOT NULL)
+       SELECT t.*, b.key AS board_key FROM shown CROSS JOIN tasks t ON t.id = shown.id JOIN boards b ON b.id = t.board_id
+        WHERE t.board_id = ?1 AND t.deleted_at IS NULL
+        ORDER BY t.rank, t.number`,
+    )
+    .bind(boardId, cutoff)
+    .all<TaskRow>();
+  const ids = results.map((r) => r.id);
+  const [tasks, progress, older] = await Promise.all([
+    hydrate(db, results, true),
+    progressFor(db, ids),
+    /* Older ones it names are already here: the question is whether any were left out. */
+    db
+      .prepare(
+        `SELECT 1 FROM tasks
+          WHERE board_id = ?1 AND deleted_at IS NULL AND completed_at IS NOT NULL AND completed_at < ?2 AND id NOT IN (SELECT value FROM json_each(?3))
+          LIMIT 1`,
+      )
+      .bind(boardId, cutoff, JSON.stringify(ids))
+      .first(),
+  ]);
+  return { tasks, progress, olderClosed: older !== null };
+}
+
+/** The most a page of closedTasks holds. */
+export const CLOSED_PAGE = 100;
+
+/** A page cursor: the last task's completed_at and id. */
+const cursor = (t: Task) => `${t.completedAt}~${t.id}`;
+
+/**
+ * GET /api/boards/:id/closed: a board's tasks closed before
+ * RECENT_CLOSED_DAYS ago, newest first, `limit` at a time. `before` is the
+ * `next` of the page before; without it, the first page. Tasks the board's
+ * everyday read also has (it names old ones) can come again here; callers
+ * merge by id.
+ */
+export async function closedTasks(
+  db: D1Database,
+  boardId: string,
+  before: string | null,
+  limit = CLOSED_PAGE,
+  now = Date.now(),
+): Promise<ClosedPage> {
+  const [at, id] = before?.includes("~") ? before.split("~", 2) : [recentCutoff(now), ""];
+  const { results } = await db
+    .prepare(
+      `${TASK_SELECT}
+        WHERE t.board_id = ?1 AND t.deleted_at IS NULL AND t.completed_at IS NOT NULL
+          AND (t.completed_at < ?2 OR (t.completed_at = ?2 AND t.id < ?3))
+        ORDER BY t.completed_at DESC, t.id DESC
+        LIMIT ?4`,
+    )
+    .bind(boardId, at, id, limit + 1)
+    .all<TaskRow>();
+  const rows = results.slice(0, limit);
+  const [tasks, progress] = await Promise.all([hydrate(db, rows, false), progressFor(db, rows.map((r) => r.id))]);
+  return { tasks, progress, next: results.length > limit ? cursor(tasks[tasks.length - 1]) : null };
 }
 
 /** An open task's latest changed files (migrations/0024_task_files.sql), with who is on it. */
@@ -179,16 +346,8 @@ export async function openTaskFiles(db: D1Database, boardId: string): Promise<Op
 
 /** A live (not deleted) task, or null. Access is the caller's job. */
 export async function findTask(db: D1Database, id: string): Promise<Task | null> {
-  const row = await db
-    .prepare(`${TASK_SELECT} WHERE t.id = ?1 AND t.deleted_at IS NULL`)
-    .bind(id)
-    .first<TaskRow>();
-  if (!row) return null;
-  const task = rowToTask(row);
-  const [attachments, code] = await Promise.all([attachmentsFor(db, `a.task_id = ?1`, id), codeFor(db, `c.task_id = ?1`, id)]);
-  task.attachments = attachments.get(id) ?? [];
-  task.code = code.get(id) ?? [];
-  return task;
+  const row = await db.prepare(`${TASK_SELECT} WHERE t.id = ?1 AND t.deleted_at IS NULL`).bind(id).first<TaskRow>();
+  return row ? (await hydrate(db, [row], false))[0] : null;
 }
 
 interface AttachmentRow {
@@ -204,14 +363,14 @@ interface AttachmentRow {
 }
 
 /**
- * Attachments grouped by task, for one board or one task (`where` over a and
- * t). A comment's images are the comment's (routes/comments.ts), not here.
+ * Attachments grouped by task (`where` over a, its one parameter ?1). A
+ * comment's images are the comment's (routes/comments.ts), not here.
  */
 async function attachmentsFor(db: D1Database, where: string, value: string): Promise<Map<string, Attachment[]>> {
   const { results } = await db
     .prepare(
       `SELECT a.id, a.task_id, a.name, a.mime, a.size, a.kind, a.key, a.url, a.created_at
-         FROM attachments a JOIN tasks t ON t.id = a.task_id
+         FROM attachments a
         WHERE ${where} AND a.comment_id IS NULL ORDER BY a.created_at`,
     )
     .bind(value)

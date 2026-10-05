@@ -246,19 +246,48 @@ export interface Wired {
   doneWindowHours: number;
 }
 
-/** GET /api/boards/:id — everything a board screen draws. */
+/** A parent's children and how far its work has got, counted over its whole subtree, closed tasks of any age included. */
+export interface ParentProgress {
+  /** Its direct children. */
+  children: number;
+  /** Leaf tasks under it at any depth in a done stage (progress() in domain/tasks.ts). */
+  done: number;
+  /** Leaf tasks under it at any depth, the cancelled ones left out. */
+  total: number;
+}
+
+/**
+ * GET /api/boards/:id — everything a board screen draws. `tasks` is the
+ * open tasks, those closed in the last RECENT_CLOSED_DAYS (domain/tasks.ts),
+ * and the tasks those name as parent (up the tree) or depend on, whatever
+ * their age. Older closed tasks come a page at a time from
+ * GET /api/boards/:id/closed (ClosedPage).
+ */
 export interface BoardDetail {
   board: BoardAccess;
   members: BoardMember[];
   stages: Stage[];
   labels: Label[];
   tasks: Task[];
+  /** Every task in `tasks` with children, by id. */
+  progress: Record<string, ParentProgress>;
+  /** Whether the board has tasks closed longer ago than RECENT_CLOSED_DAYS. */
+  olderClosed: boolean;
   /** The board's rules for working on it: markdown, '' when there are none. */
   notes: string;
   /** Its docs, metadata only; the bytes are fetched one at a time. */
   docs: BoardDoc[];
   /** GitHub repos connected to it (domain/github.ts). */
   repos: BoardRepo[];
+}
+
+/** GET /api/boards/:id/closed: a board's tasks closed longer ago than RECENT_CLOSED_DAYS, newest first, a page at a time. */
+export interface ClosedPage {
+  tasks: Task[];
+  /** Every task in `tasks` with children, by id. */
+  progress: Record<string, ParentProgress>;
+  /** The `before` that asks for the next page, or null after the last. */
+  next: string | null;
 }
 
 /**

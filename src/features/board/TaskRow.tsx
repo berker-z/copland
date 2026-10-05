@@ -39,7 +39,7 @@ export function ParentLink({ parentKey, onClick }: { parentKey: string; onClick:
   );
 }
 
-/** A parent's leaf tasks done out of those not cancelled: progress() in domain/tasks.ts. */
+/** A parent's leaf tasks done out of those not cancelled, counted by the server (BoardDetail.progress) the way progress() in domain/tasks.ts does. */
 export type Progress = { done: number; total: number };
 
 /**

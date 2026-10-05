@@ -11,6 +11,7 @@
 
 import { useState } from "react";
 import { ArrowLeft, ArrowRight, Trash2 } from "lucide-react";
+import { isClosing, RECENT_CLOSED_DAYS } from "@/domain/tasks";
 import { STAGE_CATEGORIES, type BoardDetail, type Label, type Stage, type StageCategory } from "@/domain/types";
 import { useLabelEdits, useStageEdits } from "@/lib/boardEdits";
 import { toneBg, toneText } from "@/ui/tone";
@@ -63,6 +64,8 @@ function StageRow({ detail, stage, index }: { detail: BoardDetail; stage: Stage;
   const others = detail.stages.filter((s) => s.id !== stage.id);
   const [moveTo, setMoveTo] = useState(others[0]?.id ?? "");
   const count = detail.tasks.filter((t) => t.stageId === stage.id).length;
+  /* A closing stage's count is the board read's, which leaves out tasks closed long ago. */
+  const more = isClosing(stage.category) && detail.olderClosed;
 
   const move = (delta: number) => {
     const ids = detail.stages.map((s) => s.id);
@@ -87,7 +90,10 @@ function StageRow({ detail, stage, index }: { detail: BoardDetail; stage: Stage;
         ))}
       </select>
       <TonePicker tone={stage.tone} onPick={(tone) => edits.patch.mutate({ id: stage.id, tone })} />
-      <span className="text-xs text-faint w-10 text-right">{count}</span>
+      <span className="text-xs text-faint w-10 text-right" title={more ? `${count} closed in the last ${RECENT_CLOSED_DAYS} days, and older ones` : undefined}>
+        {count}
+        {more && "+"}
+      </span>
       <span className="flex-1" />
       <button disabled={index === 0} onClick={() => move(-1)} className="tap p-1 text-muted hover:text-accent disabled:opacity-30" aria-label="Move left">
         <ArrowLeft size={13} />
@@ -105,9 +111,9 @@ function StageRow({ detail, stage, index }: { detail: BoardDetail; stage: Stage;
       </button>
       {deleting && (
         <div className="basis-full flex flex-wrap items-center gap-2 pl-1 text-sm">
-          {count > 0 ? (
+          {count > 0 || more ? (
             <>
-              <span className="text-muted">move its {count} tasks to</span>
+              <span className="text-muted">{more ? "move its tasks, older ones too, to" : `move its ${count} tasks to`}</span>
               <select className={input} value={moveTo} onChange={(e) => setMoveTo(e.target.value)}>
                 {others.map((s) => (
                   <option key={s.id} value={s.id}>
