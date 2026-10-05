@@ -1,6 +1,7 @@
 //! The sandbox a coding run works in (COPL-79), around the runtime the agent's `code_command`
 //! starts. Which one is a backend picked from the agent's runtime and the platform (COPL-141): the
-//! runtime's own, when it has one we've checked (`claude_code`, `codex`; none yet), else the
+//! runtime's own, when it has one we've checked (`droid`, COPL-146; `claude_code` and `codex` not
+//! yet), else the
 //! platform's fallback, bubblewrap on Linux (`bubblewrap`) and Seatbelt on macOS (`seatbelt`,
 //! COPL-140). Every backend is given the same `Writable` and holds to it, which `conformance`
 //! tests.
@@ -8,11 +9,11 @@
 //! The whole filesystem is visible but read-only. Writable: the task's
 //! worktree, the clone's `.git` (where the worktree's commits land), a temp
 //! dir of the run's own (a fresh empty /tmp under bubblewrap, `TMPDIR` under
-//! Seatbelt), and the paths the agent's config lists under `writable` (a
-//! runtime's own state, like `~/.claude`, and caches). Anything it edits, with
-//! a shell or its own tools, lands in one of those or fails. The network is
-//! the machine's: neither fallback limits hosts, so a run can reach what the
-//! machine can.
+//! Seatbelt and droid), and the paths the agent's config lists under `writable`
+//! (a runtime's own state, like `~/.claude`, and caches). Anything it edits,
+//! with a shell or its own tools, lands in one of those or fails. The network is
+//! the machine's: no backend limits hosts, so a run can reach what the machine
+//! can (under droid, through its proxy, and not the machine's loopback).
 //!
 //! When the runtime exits, or is stopped, what it started goes with it: by
 //! itself under a backend with a process namespace (bubblewrap, COPL-120),
@@ -31,6 +32,7 @@ use crate::config::{AgentConfig, Runtime};
 mod bubblewrap;
 mod claude_code;
 mod codex;
+mod droid;
 mod seatbelt;
 
 pub use bubblewrap::{BWRAP, Bubblewrap};
@@ -59,6 +61,12 @@ pub trait Backend: Sync + std::fmt::Debug {
     fn program(&self) -> &'static str;
     /// `argv`, run inside the sandbox in `w.chdir`. The runner starts it there too.
     fn wrap(&self, argv: &[String], w: &Writable) -> Vec<String>;
+    /// Writes what `wrap`'s command needs into the run's temp dir before it starts: a runtime's
+    /// sandbox settings, or the run's MCP config (`mcp_config`, the file `{mcp_config}` names)
+    /// where that runtime looks for it. Nothing, for most.
+    fn prepare(&self, _w: &Writable, _mcp_config: &std::path::Path) -> std::io::Result<()> {
+        Ok(())
+    }
     /// Whether it works on this machine, or what it said when it doesn't. Run once `program` is
     /// found, so a machine that has it but can't use it says so before a run fails on it.
     fn probe(&self) -> Result<(), String>;
@@ -92,6 +100,7 @@ pub fn backend(runtime: &Runtime, platform: Platform) -> &'static dyn Backend {
     let own = match runtime {
         Runtime::ClaudeCode => claude_code::backend(platform),
         Runtime::Codex => codex::backend(platform),
+        Runtime::Droid => droid::backend(platform),
         Runtime::Unknown(_) => None,
     };
     own.unwrap_or_else(|| fallback(platform))
@@ -127,8 +136,8 @@ fn run_probe(mut command: std::process::Command) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// No runtime has a backend of its own yet: every one gets the platform's fallback, the
-    /// unknown ones included.
+    /// Every runtime but droid (droid.rs) has no backend of its own yet and gets the platform's
+    /// fallback, the unknown ones included.
     #[test]
     fn every_runtime_gets_the_platforms_fallback() {
         for runtime in [Runtime::ClaudeCode, Runtime::Codex, Runtime::Unknown("hermes".into())] {
