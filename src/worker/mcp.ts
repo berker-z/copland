@@ -32,7 +32,7 @@ import {
   type ClaimRefusal,
   type MessageClaimRefusal,
 } from "@/domain/runs";
-import { addDays, descendantIds, isDate, newTaskBoard, progress, taskPath } from "@/domain/tasks";
+import { addDays, descendantIds, isClosing, isDate, newTaskBoard, RECENT_CLOSED_DAYS, taskPath } from "@/domain/tasks";
 import {
   LEVELS,
   MAX_BOARD_NOTES,
@@ -41,6 +41,7 @@ import {
   type AgentGrant,
   type AlsoMoved,
   type BoardDetail,
+  type ClosedPage,
   type BoardDoc,
   type BoardDocContent,
   type BoardMember,
@@ -366,11 +367,31 @@ interface Ctx {
   origin: string;
 }
 
-/** Boards (all, or the one asked for) in full. One call per board. */
+/**
+ * Boards (all, or the one asked for) as they show: open tasks, those closed
+ * in the last RECENT_CLOSED_DAYS, and the tasks those name. One call per
+ * board; withClosed adds the rest of their history.
+ */
 async function load(ctx: Ctx, boardRef?: unknown): Promise<BoardDetail[]> {
   const boards = await ctx.call<BoardSummary[]>("GET", "/api/boards");
   const wanted = boardRef === undefined || boardRef === "" ? boards : [resolveBoard(boards, boardRef)];
   return Promise.all(wanted.map((b) => ctx.call<BoardDetail>("GET", `/api/boards/${b.id}`)));
+}
+
+/** A board with every closed task of any age too, paged in from GET /api/boards/:id/closed. Only when the question needs them. */
+async function withClosed(ctx: Ctx, detail: BoardDetail): Promise<BoardDetail> {
+  if (!detail.olderClosed) return detail;
+  const tasks = [...detail.tasks];
+  const seen = new Set(tasks.map((t) => t.id));
+  const progress = { ...detail.progress };
+  let before: string | null = null;
+  do {
+    const page: ClosedPage = await ctx.call<ClosedPage>("GET", `/api/boards/${detail.board.id}/closed?before=${encodeURIComponent(before ?? "")}`);
+    for (const t of page.tasks) if (!seen.has(t.id)) (seen.add(t.id), tasks.push(t));
+    Object.assign(progress, page.progress, detail.progress);
+    before = page.next;
+  } while (before !== null);
+  return { ...detail, tasks, progress, olderClosed: false };
 }
 
 /** One task by key or id, with its board in full (names for its ids). */
@@ -384,7 +405,9 @@ async function loadTask(ctx: Ctx, ref: unknown): Promise<{ detail: BoardDetail; 
   } catch {
     throw new Error(`No task ${ref} on any board you are on. Keys look like CPL-12; list_tasks finds them.`);
   }
-  const detail = await ctx.call<BoardDetail>("GET", `/api/boards/${found.boardId}`);
+  let detail = await ctx.call<BoardDetail>("GET", `/api/boards/${found.boardId}`);
+  /* A task closed long ago isn't in the board's everyday read: its children and progress are with the rest of the history. */
+  if (!detail.tasks.some((t) => t.id === found.id)) detail = await withClosed(ctx, detail);
   return { detail, task: detail.tasks.find((t) => t.id === found.id) ?? found };
 }
 
@@ -456,13 +479,22 @@ function resolveLabels(labels: Label[], refs: unknown): string[] {
   return list(refs).map((r) => pick(labels, r, (l) => [l.id, l.name], "label", (l) => l.name).id);
 }
 
-/** A task key on this board, or null for "none". */
-function resolveSameBoardTask(detail: BoardDetail, ref: unknown, what: string): Task | null {
+/**
+ * A task key on this board, or null for "none". One closed too long ago to
+ * be in the board's everyday read is looked up on its own, and added to
+ * `detail` so summaries name it by key.
+ */
+async function resolveSameBoardTask(ctx: Ctx, detail: BoardDetail, ref: unknown, what: string): Promise<Task | null> {
   if (ref === undefined || ref === null || ref === "" || (typeof ref === "string" && fold(ref) === "none")) return null;
   const q = String(ref).trim().toUpperCase();
+  const missing = new Error(`${what} must be a task on ${detail.board.name} (keys ${detail.board.key}-N); no ${ref} there.`);
   const task = detail.tasks.find((t) => t.key === q || t.id === String(ref).trim());
-  if (!task) throw new Error(`${what} must be a task on ${detail.board.name} (keys ${detail.board.key}-N); no ${ref} there.`);
-  return task;
+  if (task) return task;
+  if (!/^[A-Za-z0-9_-]+$/.test(String(ref).trim())) throw missing;
+  const found = await ctx.call<Task>("GET", `/api/tasks/${String(ref).trim()}`).catch(() => null);
+  if (!found || found.boardId !== detail.board.id) throw missing;
+  detail.tasks.push(found);
+  return found;
 }
 
 function resolvePriority(ref: unknown): Priority {
@@ -534,9 +566,10 @@ function summarize(detail: BoardDetail, task: Task, origin: string) {
     return user ? `@${user.handle}` : id;
   };
   const keyOf = (id: string) => detail.tasks.find((t) => t.id === id)?.key ?? id;
-  const children = detail.tasks.filter((t) => t.parentId === task.id).length;
-  /* Counted the board's way, over the whole board (detail.tasks has closed tasks too). */
-  const counted = children ? progress(detail.tasks, detail.stages, task.id) : undefined;
+  /* Counted by the server over the whole subtree, closed tasks of any age too (domain/tasks.ts progress). */
+  const parent = detail.progress[task.id];
+  const children = parent?.children ?? 0;
+  const counted = parent ? { done: parent.done, total: parent.total } : undefined;
   const stage = detail.stages.find((s) => s.id === task.stageId);
   return {
     key: task.key,
@@ -673,6 +706,8 @@ function boardOverview(detail: BoardDetail) {
       name: s.name,
       category: s.category,
       tasks: detail.tasks.filter((t) => t.stageId === s.id).length,
+      /* Closing stages count only what the read has: the last RECENT_CLOSED_DAYS, unless include_closed paged in the rest. */
+      ...(isClosing(s.category) && detail.olderClosed ? { counted: `closed in the last ${RECENT_CLOSED_DAYS} days` } : {}),
     })),
     labels: detail.labels.map((l) => l.name),
     members: detail.members.map((m) => ({
@@ -919,16 +954,17 @@ const TOOLS: Tool[] = [
     name: "get_board",
     title: "Get a board",
     description:
-      "One board in full: its stages in order (position, name, category, task count), labels, members with their roles, your role, its notes (the board's conventions for how work is done there, when it has any), its docs (metadata only: name, type, size, updated, added_by, about; read_doc reads one), its code, if any (kind github, name and remote; or kind git, a plain remote), and its tasks as summaries (open ones unless include_closed), soonest due first.",
+      `One board in full: its stages in order (position, name, category, task count; without include_closed, a done or cancelled stage counts only tasks closed in the last ${RECENT_CLOSED_DAYS} days and says so in counted), labels, members with their roles, your role, its notes (the board's conventions for how work is done there, when it has any), its docs (metadata only: name, type, size, updated, added_by, about; read_doc reads one), its code, if any (kind github, name and remote; or kind git, a plain remote), and its tasks as summaries (open ones unless include_closed), soonest due first.`,
     inputSchema: {
       type: "object",
-      properties: { board: BOARD, include_closed: { type: "boolean", description: "Also list done and cancelled tasks" } },
+      properties: { board: BOARD, include_closed: { type: "boolean", description: "Also list done and cancelled tasks, of any age (slower on a board with a long history)" } },
       required: ["board"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: true },
     async run(args, ctx) {
-      const [detail] = await load(ctx, args.board);
+      const [loaded] = await load(ctx, args.board);
+      const detail = args.include_closed === true ? await withClosed(ctx, loaded) : loaded;
       const tasks = detail.tasks
         .filter((t) => args.include_closed === true || statusOf(detail, t) === "open")
         .sort(byDue)
@@ -963,11 +999,18 @@ const TOOLS: Tool[] = [
     },
     annotations: { readOnlyHint: true },
     async run(args, ctx) {
-      const details = await load(ctx, args.board);
+      const status = fold(str(args.status) ?? "open");
+      const parentKey = args.parent !== undefined ? String(args.parent).trim().toUpperCase() : null;
+      const underKey = args.under !== undefined ? String(args.under).trim().toUpperCase() : null;
+      let details = await load(ctx, args.board);
+      /* Closed work, or a parent closed too long ago to be in the everyday read: page in the history. */
+      const named = (key: string | null, id: unknown) => !key || details.some((d) => d.tasks.some((t) => t.key === key || t.id === id));
+      if (status !== "open" || !named(parentKey, args.parent) || !named(underKey, args.under)) {
+        details = await Promise.all(details.map((d) => withClosed(ctx, d)));
+      }
       if (args.stage !== undefined && args.board === undefined) throw new Error("stage needs board: stage names are per board.");
       const single = args.board !== undefined ? details[0] : null;
       const stage = single && args.stage !== undefined ? resolveStage(single.stages, args.stage) : null;
-      const status = fold(str(args.status) ?? "open");
       const before = args.due_before !== undefined ? date(args.due_before, "due_before") : null;
       const after = args.due_after !== undefined ? date(args.due_after, "due_after") : null;
       const priority = args.priority !== undefined ? resolvePriority(args.priority) : null;
@@ -976,8 +1019,6 @@ const TOOLS: Tool[] = [
       const label = str(args.label) ? fold(str(args.label) as string) : null;
       const day = today();
       const assignee = args.assignee;
-      const parentKey = args.parent !== undefined ? String(args.parent).trim().toUpperCase() : null;
-      const underKey = args.under !== undefined ? String(args.under).trim().toUpperCase() : null;
 
       const rows = details.flatMap((d) => {
         /* A person is resolved per board, since members differ; a board they are not on has none of their tasks. */
@@ -1039,7 +1080,10 @@ const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: { task: TASK }, required: ["task"], additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(args, ctx) {
-      const { detail, task } = await loadTask(ctx, args.task);
+      const { detail: loaded, task } = await loadTask(ctx, args.task);
+      /* Children closed long ago are with the rest of the history. */
+      const listed = loaded.tasks.filter((t) => t.parentId === task.id).length;
+      const detail = (loaded.progress[task.id]?.children ?? 0) > listed ? await withClosed(ctx, loaded) : loaded;
       const comments = await ctx.call<Comment[]>("GET", `/api/tasks/${task.id}/comments`);
       const children = detail.tasks.filter((t) => t.parentId === task.id);
       return {
@@ -1102,11 +1146,11 @@ const TOOLS: Tool[] = [
       }
       if (args.labels !== undefined) body.labelIds = resolveLabels(detail.labels, args.labels);
       if (args.level !== undefined) body.level = resolveLevel(args.level);
-      if (args.parent !== undefined) body.parentId = resolveSameBoardTask(detail, args.parent, "parent")?.id ?? null;
+      if (args.parent !== undefined) body.parentId = (await resolveSameBoardTask(ctx, detail, args.parent, "parent"))?.id ?? null;
       if (args.review_first !== undefined) body.reviewFirst = args.review_first;
       const dependsOn =
         args.depends_on !== undefined
-          ? list(args.depends_on).map((k) => (resolveSameBoardTask(detail, k, "depends_on") as Task).id)
+          ? (await Promise.all(list(args.depends_on).map((k) => resolveSameBoardTask(ctx, detail, k, "depends_on")))).map((t) => (t as Task).id)
           : [];
 
       const { alsoMoved: moved, ...created } = await ctx.call<TaskWrite>("POST", `/api/boards/${detail.board.id}/tasks`, body);
@@ -1168,10 +1212,10 @@ const TOOLS: Tool[] = [
       }
       if (args.labels !== undefined) fields.labelIds = resolveLabels(detail.labels, args.labels);
       if (args.level !== undefined) fields.level = resolveLevel(args.level);
-      if (args.parent !== undefined) fields.parentId = resolveSameBoardTask(detail, args.parent, "parent")?.id ?? null;
+      if (args.parent !== undefined) fields.parentId = (await resolveSameBoardTask(ctx, detail, args.parent, "parent"))?.id ?? null;
       if (args.review_first !== undefined) fields.reviewFirst = args.review_first;
       if (args.depends_on !== undefined) {
-        fields.dependsOn = list(args.depends_on).map((k) => (resolveSameBoardTask(detail, k, "depends_on") as Task).id);
+        fields.dependsOn = (await Promise.all(list(args.depends_on).map((k) => resolveSameBoardTask(ctx, detail, k, "depends_on")))).map((t) => (t as Task).id);
       }
       if (!Object.keys(fields).length) return "Nothing to change.";
       const updated = await ctx.call<TaskWrite>("PATCH", `/api/tasks/${task.id}`, fields);

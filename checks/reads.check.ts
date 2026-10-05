@@ -26,7 +26,7 @@ import { BUDGETS } from "./reads.budgets.ts";
 import { sqlite } from "./worker.ts";
 import type { Viewer } from "../src/domain/types.ts";
 
-const { getBoard, getBoards } = await import("../src/worker/routes/boards.ts");
+const { getBoard, getBoards, getClosed } = await import("../src/worker/routes/boards.ts");
 const { getTask, patchTask } = await import("../src/worker/routes/tasks.ts");
 const { Changes } = await import("../src/worker/live.ts");
 const { getInbox } = await import("../src/worker/routes/inbox.ts");
@@ -126,20 +126,26 @@ function seed(db: DatabaseSync, scale: number) {
     return rid;
   };
 
-  /* History: closed tasks, each with its trail. */
+  /* History: closed tasks, each with its trail, oldest first. `i` is a
+     task's age in tasks (0 the newest), and everything about it follows from
+     that, so a larger `scale` adds older history at the same pace rather
+     than more of it each day: the last weeks look the same on both seeds.
+     The epics are the oldest tasks, and their children all closed weeks ago. */
   const history = (board: string, count: number, people: string[], perTask: number, code: boolean) => {
     const epics: string[] = [];
     let previous: string | null = null;
-    for (let i = 0; i < count; i++) {
-      const completed = ago((2 + (i % 360)) * DAY + i * 60_000);
+    const perDay = count / scale / 360;
+    for (let k = 0; k < count; k++) {
+      const i = count - 1 - k;
+      const completed = ago((2 + i / perDay) * DAY + i * 60_000);
       const assignee = people[i % people.length];
-      const epic = code && i < 5 * scale;
+      const epic = code && k < 5 * scale;
       const tid = task(board, {
         category: i % 10 === 0 ? "cancelled" : "done",
         completed,
         assignees: [assignee],
         level: epic ? "epic" : "task",
-        parent: code && !epic && epics.length ? epics[i % epics.length] : null,
+        parent: code && !epic && epics.length && i >= 30 * perDay ? epics[i % epics.length] : null,
         by: people[(i + 1) % people.length],
       });
       if (epic) epics.push(tid);
@@ -336,6 +342,7 @@ async function taskEditHeard(env: Env, live: string, skip: () => void): Promise<
 const ROUTES: Record<string, (env: Env, live: string, skip: () => void) => Promise<Response>> = {
   "GET /api/boards": (env) => getBoards(env, sam),
   "GET /api/boards/:id": (env) => getBoard(env, sam, "big"),
+  "GET /api/boards/:id/closed": (env) => getClosed(env, sam, "big", new URL("http://x/api/boards/big/closed")),
   "GET /api/tasks/:id": (env, live) => getTask(env, sam, live),
   "GET /api/inbox": (env) => getInbox(env, sam, new URL("http://x/api/inbox")),
   "GET /api/wired": (env) => getWired(env, sam),

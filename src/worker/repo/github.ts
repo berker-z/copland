@@ -60,12 +60,12 @@ interface CodeRow {
 /** Open first (PRs before branches), then the most recently changed. */
 const ORDER = `CASE WHEN c.state IN ('open', 'draft') THEN 0 ELSE 1 END, CASE c.kind WHEN 'pull' THEN 0 ELSE 1 END, c.updated_at DESC`;
 
-/** Code grouped by task, for one board or one task (`where` over c and t), like attachments. */
+/** Code grouped by task (`where` over c, its one parameter ?1), like attachments. */
 export async function codeFor(db: D1Database, where: string, value: string): Promise<Map<string, CodeLink[]>> {
   const { results } = await db
     .prepare(
       `SELECT c.task_id, c.kind, r.repo, c.name, c.title, c.url, c.state, c.ci, c.drift, c.updated_at
-         FROM task_code c JOIN board_repos r ON r.id = c.repo_id JOIN tasks t ON t.id = c.task_id
+         FROM task_code c JOIN board_repos r ON r.id = c.repo_id
         WHERE ${where} ORDER BY ${ORDER}`,
     )
     .bind(value)

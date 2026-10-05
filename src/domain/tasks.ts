@@ -14,6 +14,12 @@ export function isClosing(category: StageCategory): boolean {
 }
 
 /**
+ * How long a closed task stays in its board's everyday read (GET
+ * /api/boards/:id) and on screen; older ones come only when asked for.
+ */
+export const RECENT_CLOSED_DAYS = 14;
+
+/**
  * Where a new task lands when nobody picks a stage, and where a reopened one
  * goes back to: the first todo stage; on a board without one, the first open
  * stage that is not backlog, then backlog itself. Something just written down

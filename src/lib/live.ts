@@ -26,7 +26,7 @@
 import { useEffect } from "react";
 import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import type { BoardChange, LiveEvent, LiveTopic } from "@/domain/live";
-import type { Task } from "@/domain/types";
+import type { TaskRead } from "@/domain/types";
 import { api, ApiError } from "./api";
 import { applyBoardEvents, type FetchTask } from "./boardPatch";
 import { KEYS } from "./queries";
@@ -68,7 +68,7 @@ export function refresh(queryClient: QueryClient, topics: Iterable<LiveTopic>): 
 const ACROSS_BOARDS = [KEYS.myWork, KEYS.wired, KEYS.recipients];
 
 const fetchTask: FetchTask = (id) =>
-  api<Task>(`/tasks/${encodeURIComponent(id)}`).catch((error: unknown) => {
+  api<TaskRead>(`/tasks/${encodeURIComponent(id)}`).catch((error: unknown) => {
     if (error instanceof ApiError && error.status === 404) return null;
     throw error;
   });

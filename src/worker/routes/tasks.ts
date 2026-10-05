@@ -41,6 +41,7 @@ import {
   type Priority,
   type Stage,
   type Task,
+  type TaskRead,
   type TaskWrite,
   type Viewer,
 } from "@/domain/types";
@@ -52,7 +53,7 @@ import { agentsAmong } from "../repo/agents";
 import { inboxAudience, inboxStatements, type NewInboxItem } from "../repo/inbox";
 import { boardAudience, bumpStatement, taskChange, versionOf } from "../repo/boards";
 import { releaseClaimsStatement } from "../repo/runs";
-import { bottomRank, eventStatement, findTask, listStages } from "../repo/tasks";
+import { bottomRank, eventStatement, findTask, listStages, progressFor } from "../repo/tasks";
 
 /* ------------------------------------------------------------ parsing ---- */
 
@@ -392,7 +393,8 @@ export async function postTask(
   ]);
 
   /* A new open task: the boards list's counts change too. */
-  const news = await taskChange(db, board.id, versionOf(done[0]), [id, parentId, ...follow.moved.map((m) => m.id)]);
+  /* Under a parent, every task above it counts one more. */
+  const news = await taskChange(db, board.id, versionOf(done[0]), [id, ...follow.moved.map((m) => m.id)], [], [parentId]);
   changes.board(await boardAudience(db, board.id), news, "boards");
   changes.notify(inboxAudience(assigned), "inbox");
   return json(written(await findTask(db, id), follow.moved), { status: 201 });
@@ -432,7 +434,12 @@ export async function getTask(env: Env, viewer: Viewer, ref: string): Promise<Re
     id = row.id;
   }
   const { task } = await taskFor(env, viewer, id, "viewer");
-  return json(task);
+  /* A parent's progress, counted as the board read counts it, so a tab
+     patching it in from a live event has it too. Most tasks have no
+     children, which one probe of tasks_parent says before counting. */
+  const parent = await env.DB.prepare(`SELECT 1 FROM tasks WHERE parent_id = ?1 AND deleted_at IS NULL LIMIT 1`).bind(task.id).first();
+  const progress = parent ? (await progressFor(env.DB, [task.id]))[task.id] : undefined;
+  return json((progress ? { ...task, progress } : task) satisfies TaskRead);
 }
 
 /** PATCH /api/tasks/:id: any subset of the fields POST takes. */
@@ -565,16 +572,16 @@ export async function patchTask(
     releaseClaimsStatement(db, board.id),
   ]);
 
-  /* A new stage or parent names its parents, old and new, too: their
-     children's progress changed. Whoever was on it before hears it as well as
-     whoever is now. A new stage can close or reopen it or a parent, which
+  /* A new stage or parent names everything above it too, old parent and
+     new: their progress can move. Whoever was on it before hears it as well
+     as whoever is now. A new stage can close or reopen it or a parent, which
      changes the boards list's counts: sent on the write that can, never on
      comparing counts. */
   const parents =
     "stageId" in after || "parentId" in after
       ? [task.parentId, "parentId" in after ? (after.parentId as string | null) : null]
       : [];
-  const news = await taskChange(db, board.id, versionOf(done[0]), [id, ...parents, ...follow.moved.map((m) => m.id)], task.assigneeIds);
+  const news = await taskChange(db, board.id, versionOf(done[0]), [id, ...follow.moved.map((m) => m.id)], task.assigneeIds, parents);
   const topics = "stageId" in after ? (["boards"] as const) : [];
   changes.board(await boardAudience(db, board.id), news, ...topics);
   changes.notify(inboxAudience(assigned), "inbox");

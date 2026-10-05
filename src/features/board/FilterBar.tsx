@@ -2,7 +2,9 @@
    The board's filter bar, under the header, over every view.
    ----------------------------------------------------------------------------
    Search, level chips, assignee, labels, "under" (scope to a task's
-   subtree), and whether closed tasks older than two weeks show. The state is
+   subtree), and whether closed tasks older than two weeks show: the board's
+   read leaves them out, and "show older" pages them in, a hundred at a
+   time, with "more" for the next page while there is one. The state is
    the URL (filters.ts); every change replaces the history entry rather than
    pushing one, so back still leaves the board.
 
@@ -24,6 +26,8 @@ interface FilterBarProps {
   filters: BoardFilters;
   result: Filtered;
   onChange: (next: BoardFilters) => void;
+  /** Paging in older closed tasks, while they are shown and there are any. */
+  older?: { more: boolean; loading: boolean; onMore: () => void } | null;
 }
 
 const chip = (on: boolean) => `tap px-1.5 py-0.5 transition-colors ${on ? "text-accent bg-raised" : "text-muted hover:text-ink"}`;
@@ -97,7 +101,7 @@ function ScopePicker({ detail, onPick }: { detail: BoardDetail; onPick: (key: st
   );
 }
 
-export function FilterBar({ detail, filters, result, onChange }: FilterBarProps) {
+export function FilterBar({ detail, filters, result, onChange, older }: FilterBarProps) {
   const search = useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
   /* What is typed is the input's own state, written through to the URL: the
@@ -132,7 +136,7 @@ export function FilterBar({ detail, filters, result, onChange }: FilterBarProps)
   const agents = detail.members.filter((m) => m.user.kind === "agent");
   /* A ?who= handle that is not a member any more still shows, so the select says what is filtering. */
   const strayWho = filters.who && !["me", "none"].includes(filters.who) && !detail.members.some((m) => m.user.handle.toLowerCase() === filters.who);
-  const hasClosed = filters.allDone || result.olderDone > 0;
+  const hasClosed = filters.allDone || detail.olderClosed || result.olderDone > 0;
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 md:px-8 py-1.5 bg-surface border-b border-divider text-sm">
@@ -239,7 +243,17 @@ export function FilterBar({ detail, filters, result, onChange }: FilterBarProps)
             className={chip(filters.allDone)}
             title={filters.allDone ? `Hide tasks closed more than ${RECENT_DONE_DAYS} days ago` : `Show tasks closed more than ${RECENT_DONE_DAYS} days ago`}
           >
-            {filters.allDone ? "all closed" : `+${result.olderDone} closed before ${RECENT_DONE_DAYS}d`}
+            {filters.allDone ? "older shown" : "show older"}
+          </button>
+        )}
+        {older && (older.loading || older.more) && (
+          <button
+            onClick={older.onMore}
+            disabled={older.loading}
+            className={`${chip(false)} disabled:animate-pulse`}
+            title="The next page of tasks closed longer ago"
+          >
+            {older.loading ? "loading…" : "more"}
           </button>
         )}
       </div>

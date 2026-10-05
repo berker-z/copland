@@ -230,6 +230,18 @@ docs/DESIGN.md under Touch.
   their assignees, so it no longer reads your agents' whole history. Rows
   read on the reads check's seeds: 551 and 1051 to 139 on both; its budget
   is 139 and flat
+- The board read is bounded (COPL-150, for COPL-131): `GET /api/boards/:id`
+  has the open tasks, those closed in the last 14 days (the window the
+  board already showed) and the tasks those name as parent or depend on;
+  `GET /api/boards/:id/closed` pages back through the rest, newest first,
+  100 at a time, behind the filter bar's `show older` (and the MCP's
+  `include_closed`, closed `list_tasks`, and any old task by key). What
+  hangs off the tasks is one grouped query each over their ids, and a
+  parent's progress (and child count, which the daemon reads) is counted in
+  SQL over its whole subtree. Rows read on the check's seed: 12174 to 739,
+  flat; a page of older tasks 2914. The seed's `×2` now means twice as
+  long a history at the same pace, not twice the pace. The /tasks pane's
+  done fold is the last 14 days
 - Live events say which board and tasks changed (COPL-151, for COPL-131):
   a board event carries the board, its version after the write
   (`boards.version`, migration 0034, bumped in the write's batch), the
@@ -238,9 +250,11 @@ docs/DESIGN.md under Touch.
   anything else reads that one board whole. The boards list refetches only
   on `boards`, which the Worker sends on writes that can change its counts.
   The box skips `/api/wired` for a change to tasks none of its agents is
-  on. A GitHub delivery that touches no task sends nothing. One task edit
-  costs a listening tab 26 rows, where it read the board and the boards
-  list (12213 on the reads check's larger seed); pinned by
+  on. A GitHub delivery that touches no task sends nothing. A parent's
+  progress comes with its read (`GET /api/tasks/:id`), and a write that can
+  move it names every task above. One task edit costs a listening tab 24
+  rows, where it read the board and the boards list (778 on the reads
+  check's seed, 12213 before COPL-150); pinned by
   checks/boardEvents.check.ts and the reads check's `live:` row
 - Comments reach the run working on the task (COPL-139, for COPL-130):
   `POST /api/runs/current/news` tells a run, once each, the unread comments

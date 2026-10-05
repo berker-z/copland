@@ -129,8 +129,9 @@ tab.invalidateQueries = ((filters?: { queryKey?: unknown[] }) => {
   return realInvalidate(filters);
 }) as typeof tab.invalidateQueries;
 /* A whole read is the route again, as the refetch would be. */
-const readWhole = async () => {
+const settle = async () => {
   if (whole.length) tab.setQueryData(key, await boardRead());
+  whole.length = 0;
 };
 const reads: string[] = [];
 const fetchTask = async (id: string): Promise<Task | null> => {
@@ -151,32 +152,40 @@ const apply = (events: LiveEvent[], hidden = false) =>
     events.filter((e) => e.board === "b1").map(({ topics: _t, tab: _b, ...change }) => change as BoardChange),
     hidden,
   );
+const sameProgress = (a: BoardDetail, b: BoardDetail) =>
+  JSON.stringify(Object.entries(a.progress).sort()) === JSON.stringify(Object.entries(b.progress).sort());
 const same = (a: BoardDetail, b: BoardDetail) =>
   JSON.stringify(a.tasks.map((x) => [x.id, x.stageId, x.title, x.assigneeIds, x.commentCount]).sort()) ===
   JSON.stringify(b.tasks.map((x) => [x.id, x.stageId, x.title, x.assigneeIds, x.commentCount]).sort());
 
 t("the tab holds version 1", held().version === 1);
 
-/* A child under the epic: the parent's progress follows without a whole read. */
+/* A child under the epic: its parent's progress (counted by the server, COPL-150) comes with the parent's read. */
 const child = await heard((c) => postTask(req("POST", { title: "child", parentId: epicId, stageId: "doing" }), env, kim, "b1", c));
 const childId = child.body.id as string;
-t("a child names itself and its parent (which moved with it)", ["b1"].includes(child.events[0].board ?? "") && child.events[0].tasks?.includes(childId) === true && child.events[0].tasks?.includes(epicId) === true);
+t("a child names itself and its parent (which moved with it)", child.events[0].board === "b1" && child.events[0].tasks?.includes(childId) === true && child.events[0].tasks?.includes(epicId) === true);
+/* The same event from a Worker that named only the child: the parent it holds isn't named, so its progress can't be patched. */
+await apply(child.events.map((e) => ({ ...e, tasks: [childId] })));
+t("a task new under a parent whose parent isn't named reads the board whole", whole.length === 1);
+tab.setQueryData(key, { ...held(), version: (child.events[0].version ?? 0) - 1 });
+whole.length = 0;
+reads.length = 0;
 await apply(child.events);
-t("the tab patched them in without reading the board", whole.length === 0 && reads.includes(childId));
-t("the child is in the cached board", held().tasks.some((x) => x.id === childId));
-t("the parent's progress counts it", progress(held().tasks, held().stages, epicId)?.total === 1);
-t("the parent moved to doing with its child, on the tab too", held().tasks.find((x) => x.id === epicId)?.stageId === "doing");
-t("the tab holds the version the event said", held().version === version());
-t("and matches the server", same(held(), await boardRead()));
+t("named with its parent, a new child is patched in without reading the board", whole.length === 0 && reads.includes(childId) && reads.includes(epicId));
+t("the parent's progress counts it", held().progress[epicId]?.total === 1 && held().progress[epicId]?.done === 0 && held().progress[epicId]?.children === 1);
+t("the parent moved to doing with its child", held().tasks.find((x) => x.id === epicId)?.stageId === "doing");
+t("and the tab is the server's board, progress and all, at its version", same(held(), await boardRead()) && sameProgress(held(), await boardRead()) && held().version === version());
 
-/* Edits: an assignee, a comment, a release with nothing to let go. */
+/* Edits that move no count: an assignee, a comment, a move between open stages, a release with nothing to let go. */
 const assigned = await heard((c) => patchTask(req("PATCH", { assigneeIds: ["dev"] }), env, sam, childId, c));
 t("an assignee change names who is on it now", assigned.events[0].assignees?.includes("dev") === true);
 t("an edit that moves no stage leaves the boards list alone", !assigned.events[0].topics.includes("boards"));
+t("and names no parent", assigned.events[0].tasks?.join() === childId);
 const unassigned = await heard((c) => patchTask(req("PATCH", { assigneeIds: [] }), env, sam, childId, c));
 t("and who was on it before", unassigned.events[0].assignees?.includes("dev") === true);
 const said = await heard((c) => postComment(req("POST", { text: "hi" }), env, sam, childId, c));
 t("a comment names its task, at the next version", said.events[0].tasks?.join() === childId && said.events[0].version === version());
+const back = await heard((c) => patchTask(req("PATCH", { stageId: "todo" }), env, sam, childId, c));
 const before = version();
 let refused = false;
 try {
@@ -186,21 +195,38 @@ try {
 }
 t("releasing a claim nobody holds is refused and leaves no gap in the versions", refused && version() === before);
 reads.length = 0;
-await apply([...assigned.events, ...unassigned.events, ...said.events]);
-t("three writes in one burst: one patch, one read of the task", whole.length === 0 && reads.join() === childId);
+await apply([...assigned.events, ...unassigned.events, ...said.events, ...back.events]);
+t("four writes in one burst: one patch, reading the task and its parent once each", whole.length === 0 && reads.sort().join() === [childId, epicId].sort().join());
 t("the comment count shows", held().tasks.find((x) => x.id === childId)?.commentCount === 1);
-t("still the server's board", same(held(), await boardRead()) && held().version === version());
+t("the move between open stages too", held().tasks.find((x) => x.id === childId)?.stageId === "todo");
+t("still the server's board, progress and all", same(held(), await boardRead()) && held().version === version() && sameProgress(held(), await boardRead()));
 
-/* Closing it: the boards list hears. */
+/* Closing it moves its parent's progress, which comes with the parent. */
 const closed = await heard((c) => patchTask(req("PATCH", { stageId: "done" }), env, kim, childId, c));
 t("a new stage tells the boards list", closed.events[0].topics.includes("boards"));
 await apply(closed.events);
-t("closing patches too (no code on this board)", whole.length === 0 && held().tasks.find((x) => x.id === childId)?.stageId === "done");
-t("and its parent followed it to done", held().tasks.find((x) => x.id === epicId)?.stageId === "done" && same(held(), await boardRead()));
+t("closing a task under a parent patches it and its parent", whole.length === 0);
+t("its parent followed it to done, with its progress", held().tasks.find((x) => x.id === epicId)?.stageId === "done" && held().progress[epicId]?.done === 1);
+t("the server's board again", same(held(), await boardRead()) && sameProgress(held(), await boardRead()));
+
+/* A grandchild: everything above it is named. */
+const grand = await heard((c) => postTask(req("POST", { title: "grandchild", parentId: childId, stageId: "todo" }), env, sam, "b1", c));
+t("a grandchild names its parent and grandparent", [childId, epicId].every((id) => grand.events[0].tasks?.includes(id)));
+await apply(grand.events);
+t("and patches them all, the grandparent's progress too", whole.length === 0 && sameProgress(held(), await boardRead()) && same(held(), await boardRead()));
+
+/* A task with no parent closes by patch. */
+const loose = await heard((c) => postTask(req("POST", { title: "loose" }), env, sam, "b1", c));
+await apply(loose.events);
+const looseId = loose.body.id as string;
+const shut = await heard((c) => patchTask(req("PATCH", { stageId: "done" }), env, sam, looseId, c));
+await apply(shut.events);
+t("a task with no parent is added and closed by patches (no code on this board)", whole.length === 0 && held().tasks.find((x) => x.id === looseId)?.stageId === "done");
+t("still the server's board", same(held(), await boardRead()) && held().version === version());
 
 /* An event the tab already has: nothing. */
 reads.length = 0;
-await apply(closed.events);
+await apply(shut.events);
 t("an event heard twice is nothing", whole.length === 0 && reads.length === 0);
 
 /* Delete one and create another in the same burst: the count doesn't change, the content does. */
@@ -212,8 +238,7 @@ const born = await heard((c) => postTask(req("POST", { title: "born" }), env, sa
 t("a delete names no tasks and tells the boards list", gone.events[0].tasks === undefined && gone.events[0].topics.includes("boards"));
 await apply([...gone.events, ...born.events]);
 t("a delete in the burst reads the board whole", whole.length === 1);
-await readWhole();
-whole.length = 0;
+await settle();
 t("after which the tab has the new task and not the deleted one", held().tasks.some((x) => x.title === "born") && !held().tasks.some((x) => x.id === doomedId));
 t("and is the server's board again, at its version", same(held(), await boardRead()) && held().version === version());
 
@@ -238,8 +263,7 @@ t("and is the server's board again, at its version", same(held(), await boardRea
   reads.length = 0;
   await apply(next.events);
   t("an event after a missed one reads the board whole, and no task", whole.length === 1 && reads.length === 0);
-  await readWhole();
-  whole.length = 0;
+  await settle();
   t("which puts it right", held().tasks.find((x) => x.id === childId)?.title === "next" && held().version === version());
 }
 

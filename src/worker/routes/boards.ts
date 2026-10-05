@@ -29,7 +29,7 @@ import {
 } from "../repo/boards";
 import { boardNotes, listDocs } from "../repo/docs";
 import { listRepos } from "../repo/github";
-import { listLabels, listStages, listTasks } from "../repo/tasks";
+import { boardTasks, CLOSED_PAGE, closedTasks, listLabels, listStages } from "../repo/tasks";
 import { avatarUrl, findUserByEmail, findUserById, type UserRow } from "../repo/users";
 import { createInvite } from "./admin";
 import { ownerOf } from "./agents";
@@ -50,20 +50,39 @@ export async function getBoards(env: Env, viewer: Viewer): Promise<Response> {
   return json(await boardSummariesFor(env.DB, viewer));
 }
 
+/**
+ * GET /api/boards/:id: the board as it shows, bounded by that and not by
+ * its history: open tasks, those closed in the last RECENT_CLOSED_DAYS, and
+ * the tasks they name (repo/tasks.ts boardTasks). getClosed pages back
+ * through the rest.
+ */
 export async function getBoard(env: Env, viewer: Viewer, id: string): Promise<Response> {
   /* The version comes with the access check, before the tasks: a write landing between is then read twice, never missed. */
   const { version, ...board } = await requireBoard(env.DB, viewer, id);
-  const [members, stages, labels, tasks, notes, docs, repos] = await Promise.all([
+  const [members, stages, labels, { tasks, progress, olderClosed }, notes, docs, repos] = await Promise.all([
     listMembers(env.DB, id),
     listStages(env.DB, id),
     listLabels(env.DB, id),
-    listTasks(env.DB, id),
+    boardTasks(env.DB, id),
     boardNotes(env.DB, id),
     listDocs(env.DB, id),
     listRepos(env.DB, id),
   ]);
-  const detail: BoardDetail = { board, members, stages, labels, tasks, notes, docs, repos, version };
+  const detail: BoardDetail = { board, members, stages, labels, tasks, progress, olderClosed, notes, docs, repos, version };
   return json(detail);
+}
+
+/**
+ * GET /api/boards/:id/closed?before=&limit=: tasks closed before
+ * RECENT_CLOSED_DAYS ago, newest first, a page (ClosedPage) at a time:
+ * `before` is the previous page's `next`, `limit` at most CLOSED_PAGE.
+ */
+export async function getClosed(env: Env, viewer: Viewer, id: string, url: URL): Promise<Response> {
+  await requireBoard(env.DB, viewer, id);
+  const raw = url.searchParams.get("limit");
+  const limit = raw === null ? CLOSED_PAGE : Number(raw);
+  if (!Number.isInteger(limit) || limit < 1 || limit > CLOSED_PAGE) throw badRequest(`\`limit\` must be a whole number from 1 to ${CLOSED_PAGE}`);
+  return json(await closedTasks(env.DB, id, url.searchParams.get("before"), limit));
 }
 
 /** POST /api/boards { name, key? } */

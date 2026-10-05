@@ -194,8 +194,10 @@ export const versionOf = (result: D1Result | undefined): number | undefined =>
 /**
  * A write to these tasks as a live event (domain/live.ts BoardChange): the
  * board, its version after the write, the tasks and everyone assigned to
- * them, now and (`before`) as the write found them. One read of
- * task_assignees by its primary key.
+ * them, now and (`before`) as the write found them. `above` are tasks
+ * whose progress the write moved (a parent, old or new): they and every
+ * task above them are named too, one walk up tasks_parent's parents.
+ * Then one read of task_assignees by its primary key.
  */
 export async function taskChange(
   db: D1Database,
@@ -203,8 +205,25 @@ export async function taskChange(
   version: number | undefined,
   taskIds: Iterable<string | null | undefined>,
   before: string[] = [],
+  above: Array<string | null | undefined> = [],
 ): Promise<BoardChange> {
-  const tasks = [...new Set([...taskIds].filter((id): id is string => !!id))];
+  const starts = [...new Set(above.filter((id): id is string => !!id))];
+  const ancestors: string[] = [];
+  if (starts.length) {
+    const { results } = await db
+      .prepare(
+        `WITH RECURSIVE up(id) AS (
+           SELECT value FROM json_each(?1)
+           UNION
+           SELECT t.parent_id FROM up JOIN tasks t ON t.id = up.id WHERE t.parent_id IS NOT NULL
+         )
+         SELECT id FROM up`,
+      )
+      .bind(JSON.stringify(starts))
+      .all<{ id: string }>();
+    ancestors.push(...results.map((r) => r.id));
+  }
+  const tasks = [...new Set([...[...taskIds].filter((id): id is string => !!id), ...ancestors])];
   const assignees = new Set(before);
   if (tasks.length) {
     const { results } = await db
