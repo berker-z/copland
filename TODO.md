@@ -119,7 +119,10 @@ docs/DESIGN.md under Touch.
       package pushed to Cachix. Not yet run on GitHub; the cache, its
       secret and its key in `flake.nix` are still to set up, and the Mac
       build has never run on a Mac (its coding sandbox, Seatbelt, is
-      checked by CI on macos-14 only, COPL-140). Codex is the second runtime and has a sandbox of its own (COPL-143). Still to do:
+      checked by CI on macos-14 only, COPL-140). Codex is the second runtime and has a sandbox of its own (COPL-143). Factory droid runs in its own
+      whole-process sandbox (COPL-146), checked by CI against droid without a
+      model; a real droid run with a Factory key (an Edit, git push and the
+      MCP through its proxy) hasn't been tried. Still to do:
       backoff for a runtime that keeps failing. Known gaps are in
       daemon/README.md.
 - [ ] Data export: everything a person has, as one download from settings.

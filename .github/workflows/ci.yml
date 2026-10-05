@@ -7,7 +7,9 @@
 # by box-release.yml under Nix instead. `macos` runs the daemon's tests on a
 # Mac too, for its sandbox (COPL-140). Both install Codex, pinned, and require
 # its sandbox tests (COPL-143), which run `codex sandbox` with the policy the
-# daemon gives Codex's runs: no model, no account.
+# daemon gives Codex's runs: no model, no account. Both install Factory's droid
+# too, pinned by version and checksum, for the test of droid's own sandbox
+# (COPL-146), which fails rather than skips here (COPLAND_REQUIRE_DROID).
 
 name: ci
 
@@ -22,6 +24,10 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  # Moved by hand, with the checksums below, when droid's sandbox test needs a newer one.
+  DROID_VERSION: 0.233.0
 
 jobs:
   ci:
@@ -66,10 +72,21 @@ jobs:
           sudo apt-get install -y --no-install-recommends bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           npm i -g @openai/codex@0.159.2
+      # droid's sandbox is bubblewrap too, and needs socat besides.
+      - if: steps.daemon.outputs.changed == 'true'
+        name: socat and droid, for droid's sandbox test
+        run: |
+          sudo apt-get install -y --no-install-recommends socat
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/droid" "https://downloads.factory.ai/factory-cli/releases/$DROID_VERSION/linux/x64/droid"
+          echo "744a5c500a9422b18a7355cf8b824d5d21d4b65d2e48d74f0f1ee4b6d92f7ab8  $RUNNER_TEMP/bin/droid" | sha256sum -c
+          chmod +x "$RUNNER_TEMP/bin/droid"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - if: steps.daemon.outputs.changed == 'true'
         working-directory: daemon
         env:
           COPLAND_TEST_CODEX: "1"
+          COPLAND_REQUIRE_DROID: "1"
         run: cargo test && cargo clippy --all-targets -- -D warnings
 
   # The daemon on a Mac (COPL-140): its tests there run a command inside the
@@ -106,7 +123,16 @@ jobs:
       - if: steps.daemon.outputs.changed == 'true'
         run: npm i -g @openai/codex@0.159.2
       - if: steps.daemon.outputs.changed == 'true'
+        name: droid, for its sandbox test
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/droid" "https://downloads.factory.ai/factory-cli/releases/$DROID_VERSION/darwin/arm64/droid"
+          echo "0e0bf625f7c45ade78fb5e11efcccaf4bcd00d53414e8e82b76c62969d0c1e34  $RUNNER_TEMP/bin/droid" | shasum -a 256 -c
+          chmod +x "$RUNNER_TEMP/bin/droid"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - if: steps.daemon.outputs.changed == 'true'
         working-directory: daemon
         env:
           COPLAND_TEST_CODEX: "1"
+          COPLAND_REQUIRE_DROID: "1"
         run: cargo test && cargo clippy --all-targets -- -D warnings

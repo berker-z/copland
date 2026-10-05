@@ -1,18 +1,20 @@
 //! The sandbox a coding run works in (COPL-79), around the runtime the agent's `code_command`
 //! starts. Which one is a backend picked from the agent's runtime and the platform (COPL-141): the
-//! runtime's own, when it has one we've checked (`codex`, COPL-143; `claude_code` not yet), else
-//! the platform's fallback, bubblewrap on Linux (`bubblewrap`) and Seatbelt on macOS (`seatbelt`,
-//! COPL-140). Every backend is given the same `Writable` and holds to it, which `conformance`
-//! tests.
+//! runtime's own, when it has one we've checked (`codex`, COPL-143; `droid`, COPL-146;
+//! `claude_code` not yet), else the platform's fallback, bubblewrap on Linux (`bubblewrap`) and
+//! Seatbelt on macOS (`seatbelt`, COPL-140). Every backend is given the same `Writable` and holds
+//! to it, which `conformance` tests.
 //!
 //! The whole filesystem is visible but read-only. Writable: the task's
 //! worktree, the clone's `.git` (where the worktree's commits land), a temp
 //! dir of the run's own (a fresh empty /tmp under bubblewrap, `TMPDIR` under
-//! Seatbelt), and the paths the agent's config lists under `writable` (a
-//! runtime's own state, like `~/.claude`, and caches). Anything it edits, with
-//! a shell or its own tools, lands in one of those or fails. The network is
-//! the machine's under the fallbacks, which don't limit hosts, so a run can
-//! reach what the machine can; Codex's holds its commands to a few hosts.
+//! Seatbelt, Codex and droid), and the paths the agent's config lists under
+//! `writable` (a runtime's own state, like `~/.claude`, and caches). Anything it
+//! edits, with a shell or its own tools, lands in one of those or fails. The
+//! network is the machine's under the fallbacks, which don't limit hosts, so a
+//! run can reach what the machine can; Codex's holds its commands to a few
+//! hosts, and droid's goes through droid's proxy, with every host allowed but
+//! not the machine's loopback.
 //!
 //! When the runtime exits, or is stopped, what it started goes with it: by
 //! itself under a backend with a process namespace (bubblewrap, COPL-120),
@@ -31,10 +33,12 @@ use crate::config::{AgentConfig, Runtime};
 mod bubblewrap;
 mod claude_code;
 mod codex;
+mod droid;
 mod seatbelt;
 
 pub use bubblewrap::{BWRAP, Bubblewrap};
 pub use codex::{Codex, forbidden as codex_forbidden};
+pub use droid::exec_at as droid_exec_at;
 pub use seatbelt::{SANDBOX_EXEC, Seatbelt, profile};
 
 /// What a sandboxed run may write, and where it starts. The one description every backend gets.
@@ -60,6 +64,12 @@ pub trait Backend: Sync + std::fmt::Debug {
     fn program(&self) -> &'static str;
     /// `argv`, run inside the sandbox in `w.chdir`. The runner starts it there too.
     fn wrap(&self, argv: &[String], w: &Writable) -> Vec<String>;
+    /// Writes what `wrap`'s command needs into the run's temp dir before it starts: a runtime's
+    /// sandbox settings, or the run's MCP config (`mcp_config`, the file `{mcp_config}` names)
+    /// where that runtime looks for it. Nothing, for most.
+    fn prepare(&self, _w: &Writable, _mcp_config: &std::path::Path) -> std::io::Result<()> {
+        Ok(())
+    }
     /// Whether it works on this machine, or what it said when it doesn't. Run once `program` is
     /// found, so a machine that has it but can't use it says so before a run fails on it.
     fn probe(&self) -> Result<(), String>;
@@ -93,6 +103,7 @@ pub fn backend(runtime: &Runtime, platform: Platform) -> &'static dyn Backend {
     let own = match runtime {
         Runtime::ClaudeCode => claude_code::backend(platform),
         Runtime::Codex => codex::backend(platform),
+        Runtime::Droid => droid::backend(platform),
         Runtime::Unknown(_) => None,
     };
     own.unwrap_or_else(|| fallback(platform))
@@ -128,8 +139,8 @@ fn run_probe(mut command: std::process::Command) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// Codex has a backend of its own on both platforms (COPL-143); every other runtime gets the
-    /// platform's fallback, the unknown ones included.
+    /// Codex and droid have backends of their own on both platforms (COPL-143, COPL-146); every
+    /// other runtime gets the platform's fallback, the unknown ones included.
     #[test]
     fn each_runtime_gets_its_own_backend_or_the_platforms_fallback() {
         for runtime in [Runtime::ClaudeCode, Runtime::Unknown("hermes".into())] {
@@ -140,6 +151,8 @@ mod tests {
             let codex = backend(&Runtime::Codex, platform);
             assert_eq!((codex.name(), codex.program()), ("codex", "codex"));
             assert!(!codex.ends_its_children() && codex.needs_tmp());
+            let droid = backend(&Runtime::Droid, platform);
+            assert_eq!((droid.name(), droid.program()), ("droid", "droid"));
         }
         let linux = fallback(Platform::Linux);
         assert_eq!(linux.program(), BWRAP);

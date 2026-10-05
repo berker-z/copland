@@ -429,7 +429,7 @@ async fn supervise(
             } else {
                 vec![ws.clone.join(".git"), ws.dir.clone()]
             };
-            /* Seatbelt: a temp dir of the run's own, its TMPDIR, gone with the run (bubblewrap's is a tmpfs). */
+            /* Seatbelt and droid: a temp dir of the run's own, gone with the run (bubblewrap's is a tmpfs). */
             let tmp = backend
                 .needs_tmp()
                 .then(|| std::env::temp_dir().join(format!("copland-run-{run_id}")));
@@ -446,6 +446,9 @@ async fn supervise(
                 chdir: ws.dir.clone(),
                 tmp,
             };
+            if let Err(e) = backend.prepare(&writable, &mcp_path) {
+                return Exit::SpawnFailed(format!("preparing the sandbox: {e}"));
+            }
             (
                 backend.wrap(&fill_command(code, &text, &mcp_path), &writable),
                 ws.dir.clone(),

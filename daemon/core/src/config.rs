@@ -22,7 +22,7 @@
 //! code_command = ["claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config"]
 //! writable = ["~/.claude", "~/.claude.json", "~/.cache"]
 //! # Optional: which runtime code_command starts, for its sandbox (sandbox/): "claude-code",
-//! # "codex", or any other name. Left out, it's read off code_command's program.
+//! # "codex", "droid", or any other name. Left out, it's read off code_command's program.
 //! runtime = "claude-code"
 //! max_runs = 10                 # optional; runs going at once (coding tasks side by side)
 //! ```
@@ -169,6 +169,8 @@ struct RawAgent {
 pub enum Runtime {
     ClaudeCode,
     Codex,
+    /// Factory's droid, which sandboxes its own runs (sandbox/droid.rs).
+    Droid,
     /// Any other, by the name given or the program's: not an error, it gets the fallback.
     Unknown(String),
 }
@@ -179,11 +181,12 @@ impl Runtime {
         match name {
             "claude-code" => Runtime::ClaudeCode,
             "codex" => Runtime::Codex,
+            "droid" => Runtime::Droid,
             other => Runtime::Unknown(other.to_string()),
         }
     }
 
-    /// Read off an argv: the file name of its program, `claude` or `codex`. A shell running a
+    /// Read off an argv: the file name of its program, `claude`, `codex` or `droid`. A shell running a
     /// script (`sh -c '…' copland-codex …`, as the box writes Codex's command) goes by the name the
     /// script is given, without its `copland-`.
     pub fn detect(argv: &[String]) -> Self {
@@ -205,6 +208,7 @@ impl Runtime {
         match program.as_str() {
             "claude" => Runtime::ClaudeCode,
             "codex" => Runtime::Codex,
+            "droid" => Runtime::Droid,
             _ => Runtime::Unknown(program),
         }
     }
@@ -214,6 +218,7 @@ impl Runtime {
         match self {
             Runtime::ClaudeCode => "claude-code",
             Runtime::Codex => "codex",
+            Runtime::Droid => "droid",
             Runtime::Unknown(name) => name,
         }
     }
@@ -343,6 +348,14 @@ impl Config {
                     bail!(
                         "{at}: code_command says `{word}`, which would set Codex's sandbox in place of the one the \
                          daemon gives coding runs; leave it out"
+                    );
+                }
+            }
+            /* Droid's are sandboxed by droid, with settings the daemon adds after `droid exec` (COPL-146). */
+            if let (Runtime::Droid, Some(code)) = (&runtime, &a.code_command) {
+                if crate::sandbox::droid_exec_at(code).is_none() {
+                    bail!(
+                        "{at}: code_command runs droid without `droid exec` in it, where the daemon puts the                          settings of droid's sandbox; start it with droid exec"
                     );
                 }
             }
@@ -600,8 +613,26 @@ mod tests {
             Runtime::detect(&argv(&["sh", "-c", "codex"])),
             Runtime::Unknown("sh".into())
         );
+        assert_eq!(
+            Runtime::detect(&argv(&[
+                "/usr/local/bin/droid",
+                "exec",
+                "--skip-permissions-unsafe",
+                "{prompt}"
+            ])),
+            Runtime::Droid
+        );
         assert_eq!(Runtime::detect(&[]), Runtime::Unknown(String::new()));
         assert_eq!(Runtime::named("codex").name(), "codex");
+        assert_eq!(Runtime::named("droid"), Runtime::Droid);
+        assert!(parse(&format!("{claude}code_command=[\"droid\",\"exec\",\"{{prompt}}\"]\n")).is_ok());
+        assert!(
+            parse(&format!(
+                "{claude}code_command=[\"sh\",\"-c\",\"droid exec x\"]\nruntime=\"droid\"\n"
+            ))
+            .is_err()
+        );
+        assert_eq!(Runtime::Droid.name(), "droid");
     }
 
     #[test]
