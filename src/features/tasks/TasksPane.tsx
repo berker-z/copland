@@ -4,7 +4,9 @@
    What shows is GET /api/tasks/mine, the same answer the MCP's my_work
    gives (routes/work.ts): tasks assigned to you on any board, and the tasks
    in your inbox assigned to nobody. What you handed to your agents folds
-   away under "delegated", what is finished under "done".
+   away under "delegated", what is finished under "done": what was finished
+   in the last RECENT_CLOSED_DAYS, since a board's read leaves older closed
+   tasks out.
 
    The tasks themselves come from their boards' caches, so ticking one is the
    same optimistic stage change the board screen makes: into its board's
@@ -16,7 +18,7 @@ import { useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { ArrowUpRight, Plus } from "lucide-react";
-import { defaultStage } from "@/domain/tasks";
+import { defaultStage, RECENT_CLOSED_DAYS } from "@/domain/tasks";
 import type { BoardDetail, MyWork, Task } from "@/domain/types";
 import { boardQuery, useMe, useMyWork } from "@/lib/queries";
 import { useCreateTask, useUpdateTask } from "@/lib/tasks";
@@ -85,7 +87,8 @@ export function TasksPane() {
   const mine = [...unassigned, ...items(work.data?.mine ?? []).filter((i) => !unassigned.some((u) => u.task.id === i.task.id))];
   const open = mine.filter((i) => i.task.completedAt === null).sort(order);
   const done = mine
-    .filter((i) => i.task.completedAt !== null)
+    /* A board's read can hold an older one it names (a parent, a dependency): the fold says the last two weeks. */
+    .filter((i) => i.task.completedAt !== null && Date.parse(i.task.completedAt) >= Date.now() - RECENT_CLOSED_DAYS * 86_400_000)
     .sort((a, b) => (b.task.completedAt ?? "").localeCompare(a.task.completedAt ?? ""));
   const delegated = items(work.data?.delegated ?? [])
     .filter((i) => i.task.completedAt === null)
@@ -172,7 +175,7 @@ export function TasksPane() {
       {fold("delegated", delegated.length, showDelegated, () => setShowDelegated((s) => !s))}
       {showDelegated && delegated.map((item) => row(item, false))}
 
-      {fold("done", done.length, showDone, () => setShowDone((s) => !s))}
+      {fold(`done in the last ${RECENT_CLOSED_DAYS} days`, done.length, showDone, () => setShowDone((s) => !s))}
       {showDone && done.map((item) => row(item, true))}
 
       {(create.error ?? update.error) && (

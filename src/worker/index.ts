@@ -41,6 +41,7 @@ import {
   deleteBoard,
   deleteMember,
   getBoard,
+  getClosed,
   getBoards,
   getPeople,
   patchBoard,
@@ -244,6 +245,7 @@ const api = new Router<Ctx>()
   .on("GET", "/api/boards", ({ env, viewer }) => getBoards(env, viewer))
   .on("POST", "/api/boards", ({ request, env, viewer, changes }) => postBoard(request, env, viewer, changes))
   .on("GET", "/api/boards/:id", ({ env, viewer }, { id }) => getBoard(env, viewer, id))
+  .on("GET", "/api/boards/:id/closed", ({ env, viewer, url }, { id }) => getClosed(env, viewer, id, url))
   .on("PATCH", "/api/boards/:id", ({ request, env, viewer, changes }, { id }) =>
     patchBoard(request, env, viewer, id, changes),
   )

@@ -15,11 +15,19 @@
    epic: LanesView from sm up, sections inside each column on a phone
    (lanes.ts has the rules).
 
+   The board's read has its open tasks and those closed in the last two
+   weeks (GET /api/boards/:id); done=all (the filter bar's "show older")
+   pages in the older ones, and a link to one of those fetches it alone
+   (useBoardView in lib/queries.ts). A parent's `3/7` is the server's count
+   over its whole subtree, so it counts children closed long ago without
+   loading them.
+
    ?task=KEY is the open task (taskPath in domain/tasks.ts), so a task is a
    link: /b/CPL?task=CPL-12 opens the board with that task's modal over it,
    cold, on reload, or from someone else's chat. The key is matched without
-   regard to case against the whole board, filters or not; a key the board
-   does not have leaves the board showing with a one-line notice. Opening a
+   regard to case against the whole board, filters or not, and one closed
+   too long ago to be in the board's read is fetched by its key; a key the
+   board does not have leaves the board showing with a one-line notice. Opening a
    task from the board pushes one history entry, so Back (a phone's above all)
    closes the modal; closing it from the modal goes back over that entry,
    and opening another task while one is open replaces it, so a session of
@@ -39,9 +47,9 @@
 import { useRef, useState, type DragEvent } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ArrowLeft, BookOpen, Plus, Settings2, UserPlus, Users, X } from "lucide-react";
-import { progress, rankBetween } from "@/domain/tasks";
+import { rankBetween } from "@/domain/tasks";
 import type { BoardDetail, Stage, Task } from "@/domain/types";
-import { useBoard, useBoards, useMe } from "@/lib/queries";
+import { useBoardView, useBoards, useMe } from "@/lib/queries";
 import { tasksIn, useCreateTask, useUpdateTask } from "@/lib/tasks";
 import { LevelPill } from "@/ui/LevelPill";
 import { todayLocal, toneText } from "@/ui/tone";
@@ -67,7 +75,7 @@ function hasTask(event: DragEvent): boolean {
 /** A task's parent, by key, and scoping the board to it: what `↑ KEY` needs. */
 export interface Hierarchy {
   parentKey: (task: Task) => string | null;
-  /** A parent's done/total over the whole board (closed tasks too, filters ignored); undefined without children. */
+  /** A parent's done/total over its whole subtree (closed tasks of any age too, filters ignored); undefined without children. */
   progress: (taskId: string) => Progress | undefined;
   onScope: (parentKey: string) => void;
 }
@@ -290,17 +298,17 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   const location = useLocation();
   const boards = useBoards();
   const summary = boards.data?.find((b) => b.key === boardKey.toUpperCase());
-  const board = useBoard(summary?.id ?? null);
+  const [params, setParams] = useSearchParams();
+  const filters = readFilters(params);
+  const taskKey = params.get("task")?.trim().toUpperCase() || null;
+  const { board, detail: viewed, closed, finding } = useBoardView(summary?.id ?? null, { older: filters.allDone, task: taskKey });
   const [moving, setMoving] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [docsOpen, setDocsOpen] = useState(false);
   const [newTask, setNewTask] = useState<{ stageId?: string } | null>(null);
-  const [params, setParams] = useSearchParams();
   const view = VIEWS.includes(params.get("view") as View) ? (params.get("view") as View) : "kanban";
-  const filters = readFilters(params);
   const byEpic = params.get("group") === "epic";
-  const taskKey = params.get("task")?.trim().toUpperCase() || null;
   /** The task last shown open, so one deleted while open closes rather than turning into the notice. */
   const shownTask = useRef<{ key: string; id: string } | null>(null);
   const me = useMe();
@@ -320,7 +328,7 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
     );
   }
   if (board.error) return <p className="p-8 text-red">{board.error.message}</p>;
-  const detail = board.data;
+  const detail = viewed;
   if (!detail) return null;
 
   /* Every view draws the filtered board; modals and the move sheet get the whole one. */
@@ -328,13 +336,9 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
   const shown: BoardDetail = { ...detail, tasks: result.tasks };
   const setFilters = (next: typeof filters) => setParams((prev) => writeFilters(prev, next), { replace: true, state: location.state });
   const byId = new Map(detail.tasks.map((t) => [t.id, t]));
-  const counted = new Map<string, Progress | undefined>();
   const hierarchy: Hierarchy = {
     parentKey: (task) => (task.parentId ? (byId.get(task.parentId)?.key ?? null) : null),
-    progress: (taskId) => {
-      if (!counted.has(taskId)) counted.set(taskId, progress(detail.tasks, detail.stages, taskId));
-      return counted.get(taskId);
-    },
+    progress: (taskId): Progress | undefined => detail.progress[taskId],
     onScope: (key) => setFilters({ ...filters, under: key }),
   };
   /* The open task lives in ?task=KEY; ids stay inside the screen. */
@@ -451,8 +455,14 @@ export function BoardScreen({ boardKey }: { boardKey: string }) {
         {detail.board.role === "viewer" && <span className="text-xs text-yellow">view only</span>}
       </div>
 
-      <FilterBar detail={detail} filters={filters} result={result} onChange={setFilters} />
-      {taskKey && !modalTaskId && (
+      <FilterBar
+        detail={detail}
+        filters={filters}
+        result={result}
+        onChange={setFilters}
+        older={closed && { more: closed.hasNextPage, loading: closed.isFetching, onMore: () => void closed.fetchNextPage() }}
+      />
+      {taskKey && !modalTaskId && !finding && (
         <p className="flex items-center gap-2 px-4 md:px-8 py-1.5 bg-surface border-b border-divider text-sm text-yellow">
           No task {taskKey} on this board.
           <button onClick={() => setTaskKey(null)} className="tap text-muted hover:text-accent" title="Dismiss" aria-label="Dismiss">

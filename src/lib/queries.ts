@@ -4,11 +4,27 @@
    is spelled once and lib/live.ts can refetch by it.
    ========================================================================== */
 
+import { useMemo } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import type { TaskOverlapRead } from "@/domain/overlap";
 import type { MarketExtras, Note } from "@/domain/panes";
 import type { Settings, VaultEntry } from "@/domain/settings";
-import type { Agent, ApiToken, BoardDetail, BoardSummary, Inbox, Invite, Me, MyWork, Person, Recipient, User, Wired } from "@/domain/types";
+import type {
+  Agent,
+  ApiToken,
+  BoardDetail,
+  BoardSummary,
+  ClosedPage,
+  Inbox,
+  Invite,
+  Me,
+  MyWork,
+  Person,
+  Recipient,
+  Task,
+  User,
+  Wired,
+} from "@/domain/types";
 import { api } from "./api";
 import { isLive } from "./liveState";
 
@@ -20,6 +36,9 @@ export const KEYS = {
   board: (id: string) => ["board", id],
   /* Under its board's key: the report route notifies the board, and a task closing changes who overlaps. */
   taskOverlap: (boardId: string, taskId: string) => ["board", boardId, "overlap", taskId],
+  /* Also under its board's key, so whatever refetches the board refetches these with it. */
+  boardClosed: (id: string) => ["board", id, "closed"],
+  boardTask: (id: string, ref: string) => ["board", id, "task", ref],
   boardAll: ["board"],
   /* Under "board" on purpose: whatever changes a board can change whose work is whose. */
   myWork: ["board", "~mine"],
@@ -84,6 +103,56 @@ export const boardQuery = (id: string) => ({
 });
 
 export const useBoard = (id: string | null) => useQuery({ ...boardQuery(id ?? ""), enabled: id !== null });
+
+/** Whether a task is the one `ref` names: its id, or its key in any case. */
+const names = (ref: string) => (t: Task) => t.id === ref || t.key.toUpperCase() === ref.toUpperCase();
+
+/**
+ * A board as a screen draws it: its read (useBoard: open tasks, the last
+ * RECENT_CLOSED_DAYS' closed ones, and the tasks those name), plus what
+ * that leaves out once someone asks for it. With `older`, the tasks closed
+ * before that, a page at a time (`closed` fetches the next); with `task`
+ * (a key or id, from a link or an inbox item), that one task when it is in
+ * neither. The board read's own copy of a task wins, so optimistic edits
+ * show. `finding` is true while the named task is still being looked for.
+ */
+export function useBoardView(id: string | null, { older = false, task = null }: { older?: boolean; task?: string | null } = {}) {
+  const board = useBoard(id);
+  const closed = useInfiniteQuery({
+    queryKey: KEYS.boardClosed(id ?? ""),
+    queryFn: ({ pageParam }) => api<ClosedPage>(`/boards/${id}/closed${pageParam ? `?before=${encodeURIComponent(pageParam)}` : ""}`),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next,
+    enabled: id !== null && older && board.data?.olderClosed === true,
+  });
+  const pages = older && board.data?.olderClosed ? (closed.data?.pages ?? []) : [];
+  const missing = !!task && !!board.data && !board.data.tasks.some(names(task)) && !pages.some((p) => p.tasks.some(names(task)));
+  const stray = useQuery({
+    queryKey: KEYS.boardTask(id ?? "", task ?? ""),
+    queryFn: () => api<Task>(`/tasks/${encodeURIComponent(task ?? "")}`),
+    enabled: id !== null && missing,
+    retry: false,
+  });
+  const found = missing && stray.data?.boardId === id ? stray.data : null;
+  const detail = useMemo(() => {
+    if (!board.data || (pages.length === 0 && !found)) return board.data;
+    const seen = new Set(board.data.tasks.map((t) => t.id));
+    const tasks = [...board.data.tasks];
+    for (const t of [...pages.flatMap((p) => p.tasks), ...(found ? [found] : [])]) {
+      if (!seen.has(t.id)) (seen.add(t.id), tasks.push(t));
+    }
+    const progress = Object.assign({}, ...pages.map((p) => p.progress), board.data.progress);
+    return { ...board.data, tasks, progress };
+  }, [board.data, closed.data, older, found]); // pages follows from closed.data and older
+
+  return {
+    board,
+    detail,
+    /* Paging back, while older closed tasks are asked for and there are any. */
+    closed: older && board.data?.olderClosed ? closed : null,
+    finding: missing && stray.isPending,
+  };
+}
 
 /** A task's own changed files and the open tasks sharing them (routes/files.ts), for the task modal on a board with code. */
 export const useTaskOverlap = (boardId: string, taskId: string, enabled: boolean) =>

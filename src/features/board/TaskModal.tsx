@@ -22,7 +22,7 @@ import { Link, useMatch } from "react-router";
 import { Check, Link2, Pencil } from "lucide-react";
 import { Avatar, peopleFirst } from "@/ui/Avatar";
 import { LEVELS, PRIORITIES, type BoardDetail, type Task } from "@/domain/types";
-import { progress, taskPath } from "@/domain/tasks";
+import { taskPath } from "@/domain/tasks";
 import { useTaskOverlap } from "@/lib/queries";
 import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
 import { Checkbox } from "@/ui/Checkbox";
@@ -214,7 +214,8 @@ function TaskView({ detail, task }: { detail: BoardDetail; task: Task }) {
   const labels = detail.labels.filter((l) => task.labelIds.includes(l.id));
   const assignees = peopleFirst(detail.members.filter((m) => task.assigneeIds.includes(m.user.id)));
   const parent = task.parentId ? detail.tasks.find((t) => t.id === task.parentId) : undefined;
-  const count = progress(detail.tasks, detail.stages, task.id);
+  /* The server's count over the whole subtree: children closed long ago aren't in detail.tasks. */
+  const count = detail.progress[task.id];
 
   return (
     <>
