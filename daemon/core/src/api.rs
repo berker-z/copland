@@ -118,6 +118,33 @@ pub struct Task {
     /// A run on it right now; only live claims are sent.
     #[serde(default)]
     pub claim: Option<Claim>,
+    /// Its stage, whose category is on its board's stages (`BoardRepos::stages`).
+    #[serde(default)]
+    pub stage_id: Option<String>,
+    /// A person merges its PR, not the agent (COPL-77).
+    #[serde(default)]
+    pub review_first: bool,
+    /// Branches and PRs naming it, from a connected GitHub repo.
+    #[serde(default)]
+    pub code: Vec<CodeLink>,
+}
+
+impl Task {
+    /// Whether an open PR (a draft too) names it.
+    pub fn open_pr(&self) -> bool {
+        self.code
+            .iter()
+            .any(|c| c.kind == "pull" && matches!(c.state.as_str(), "open" | "draft"))
+    }
+}
+
+/// A branch or PR naming a task, as far as the daemon looks (`CodeLink` in `src/domain/github.ts`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CodeLink {
+    /// branch or pull.
+    pub kind: String,
+    /// open, draft, merged or closed.
+    pub state: String,
 }
 
 /// GET /api/tasks/ready: one task the agent can start now (COPL-86).
@@ -143,6 +170,25 @@ pub struct BoardRepos {
     /// Its tasks, for which have children.
     #[serde(default)]
     pub tasks: Vec<BoardTask>,
+    /// Its stages, for what a task's stage means.
+    #[serde(default)]
+    pub stages: Vec<Stage>,
+}
+
+impl BoardRepos {
+    /// The category of one of its stages: backlog, todo, active, blocked, done or cancelled.
+    pub fn category(&self, stage_id: &str) -> Option<&str> {
+        self.stages
+            .iter()
+            .find(|s| s.id == stage_id)
+            .map(|s| s.category.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Stage {
+    pub id: String,
+    pub category: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
