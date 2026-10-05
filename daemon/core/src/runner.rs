@@ -13,7 +13,7 @@ use tokio::process::Command;
 use tokio::sync::watch;
 use tokio::time::{Instant, interval_at, timeout};
 
-use crate::api::Api;
+use crate::api::{Api, Backoff};
 use crate::config::{AgentConfig, Secret, fill_command};
 use crate::guard::Message;
 use crate::sandbox::{self, Writable};
@@ -319,6 +319,8 @@ pub struct Launch<'a> {
     pub runtime_dir: &'a Path,
     /// A coding task's workspace: the run uses `code_command`, sandboxed, in the worktree.
     pub workspace: Option<&'a Workspace>,
+    /// How its last files report is asked again while Copland is down (COPL-148).
+    pub last_word: Backoff,
 }
 
 /// Where a run's output goes.
@@ -399,6 +401,7 @@ async fn supervise(
         state_dir,
         runtime_dir,
         workspace,
+        last_word,
     } = launch;
 
     let mcp_dir = runtime_dir.join("copland");
@@ -578,7 +581,9 @@ async fn supervise(
     }
     /* The runtime is done, the run not yet finished: the last word on what the work changed. */
     if let Some(ws) = reported.filter(|_| alive) {
-        reporter.report(api, secret, task_id, ws).await;
+        reporter
+            .report_last(api, secret, task_id, ws, last_word, &shutdown)
+            .await;
     }
     exit
 }
@@ -619,6 +624,31 @@ impl Reporter {
 
     /// List the workspace's changes and send them when they are new.
     pub async fn report(&mut self, api: &Api, secret: &Secret, task_id: &str, ws: &Workspace) {
+        self.send(api, secret, task_id, ws, None).await
+    }
+
+    /// The last report, once the runtime is done: asked again while Copland is down (COPL-148),
+    /// since nothing reports after it.
+    pub async fn report_last(
+        &mut self,
+        api: &Api,
+        secret: &Secret,
+        task_id: &str,
+        ws: &Workspace,
+        backoff: Backoff,
+        shutdown: &watch::Receiver<bool>,
+    ) {
+        self.send(api, secret, task_id, ws, Some((backoff, shutdown))).await
+    }
+
+    async fn send(
+        &mut self,
+        api: &Api,
+        secret: &Secret,
+        task_id: &str,
+        ws: &Workspace,
+        retry: Option<(Backoff, &watch::Receiver<bool>)>,
+    ) {
         if self.stopped || ws.read_only {
             return;
         }
@@ -632,7 +662,18 @@ impl Reporter {
         let Some(changes) = self.due(changes) else {
             return;
         };
-        match api.report_files(secret, task_id, &changes).await {
+        let sent = match retry {
+            Some((backoff, shutdown)) => {
+                let c = &changes;
+                backoff
+                    .retry("reporting changed files", shutdown.clone(), || {
+                        api.report_files(secret, task_id, c)
+                    })
+                    .await
+            }
+            None => api.report_files(secret, task_id, &changes).await,
+        };
+        match sent {
             Ok(r) => {
                 tracing::debug!(task = %ws.key, files = r.count, truncated = r.truncated, "changed files reported");
                 self.last = Some(changes);
@@ -922,6 +963,7 @@ mod tests {
                 state_dir: &scratch,
                 runtime_dir: &scratch,
                 workspace: None,
+                last_word: Backoff::LAST_WORD,
             },
             shutdown,
             std::future::pending(),
@@ -969,6 +1011,7 @@ mod tests {
                 state_dir: &scratch,
                 runtime_dir: &scratch,
                 workspace: None,
+                last_word: Backoff::LAST_WORD,
             },
             shutdown,
             tokio::time::sleep(Duration::from_millis(300)),
@@ -1013,6 +1056,7 @@ mod tests {
                 state_dir: &scratch,
                 runtime_dir: &scratch,
                 workspace: None,
+                last_word: Backoff::LAST_WORD,
             },
             shutdown,
             std::future::pending(),

@@ -205,6 +205,10 @@ pub fn rows(configured: &[AgentConfig], st: &DaemonState, wired: Option<&[WiredA
         let doing = match live {
             None => Doing::Starting,
             Some(s) => match (&s.phase, s.retiring) {
+                /* Copland down (COPL-148): said over a run going too, which waits on it for its finish. */
+                (Phase::Running { .. } | Phase::Idle, _) if s.unavailable.is_some() => {
+                    Doing::Error(s.unavailable_line().unwrap_or_default())
+                }
                 (Phase::Running { .. }, true) => Doing::AfterRun,
                 (Phase::Running { .. }, false) => {
                     Doing::Running(s.runs.iter().map(|r| r.task.as_str()).collect::<Vec<_>>().join(", "))
@@ -1418,6 +1422,18 @@ mod tests {
                 doing: Doing::Error(_),
                 ..
             }
+        ));
+        /* Copland down (COPL-148) says more than a run going, which waits on it to finish. */
+        st.agents[0].last_error = None;
+        st.agents[0].run_started("8f32", "COPL-133");
+        st.agents[0].unavailable =
+            Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_791_156_041));
+        assert!(matches!(
+            &rows(&configured, &st, None)[0],
+            Row::Here {
+                doing: Doing::Error(e),
+                ..
+            } if e == "Copland unavailable since 23:20 UTC"
         ));
     }
 

@@ -75,8 +75,32 @@ export function errorResponse(error: unknown): Response {
       { status: error.status },
     );
   }
+  if (storageFailure(error)) {
+    console.error("Storage unavailable:", error);
+    return json(
+      { error: "unavailable", code: "storage_unavailable", message: "Copland's storage is unavailable right now; try again later" },
+      { status: 503, headers: { "retry-after": "60" } },
+    );
+  }
   console.error("Unhandled worker error:", error);
   return json({ error: "internal", message: "Something went wrong" }, { status: 500 });
+}
+
+/**
+ * Whether an error is D1 failing rather than our query (COPL-148): its free
+ * plan's daily quota running out ("Your account has exceeded D1's free tier
+ * daily row read limit"), an overloaded or reset database, a lost
+ * connection. Those answer 503 `storage_unavailable`, so a client can tell
+ * "Copland is down" from "you did something wrong" and wait instead of
+ * giving up. What SQLite says of the query itself (a constraint, a missing
+ * column, a bad bind) is our bug, and stays a 500.
+ */
+export function storageFailure(error: unknown): boolean {
+  const text: string[] = [];
+  for (let e: unknown = error, depth = 0; e instanceof Error && depth < 5; e = e.cause, depth++) text.push(e.message);
+  const said = text.join(": ");
+  if (!/\bD1\b|D1_/.test(said)) return false;
+  return !/SQLITE_|constraint failed|no such (table|column)|syntax error|D1_TYPE_ERROR|D1_COLUMN_NOTFOUND|has no column/i.test(said);
 }
 
 /* ------------------------------------------------------------ crypto --- */
