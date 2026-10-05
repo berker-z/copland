@@ -13,9 +13,9 @@
    personalViewer, with a grant the owner gave it.
    ========================================================================== */
 
-import type { AgentGrant, BoardRole, BoardSummary, Viewer } from "@/domain/types";
+import type { AgentGrant, BoardAccess, BoardRole, BoardSummary, Viewer } from "@/domain/types";
 import { forbidden, notFound } from "./http";
-import { boardFor, listBoardsFor, rolesOn } from "./repo/boards";
+import { boardFor, listBoardSummariesFor, listBoardsFor, rolesOn } from "./repo/boards";
 
 const RANK: Record<BoardRole, number> = { viewer: 0, editor: 1, owner: 2 };
 
@@ -29,7 +29,7 @@ export function roleAtLeast(role: BoardRole, needed: BoardRole): boolean {
 const lower = (a: BoardRole, b: BoardRole): BoardRole => (RANK[a] <= RANK[b] ? a : b);
 
 /** For an agent: its boards that its owner is also on, at the capped role. Anyone else's pass through. */
-async function capped(db: D1Database, viewer: Viewer, boards: BoardSummary[]): Promise<BoardSummary[]> {
+async function capped<B extends BoardAccess>(db: D1Database, viewer: Viewer, boards: B[]): Promise<B[]> {
   if (!viewer.agent) return boards;
   const owner = await rolesOn(db, viewer.agent.owner.id, boards.map((b) => b.id));
   return boards.flatMap((b) => {
@@ -39,8 +39,13 @@ async function capped(db: D1Database, viewer: Viewer, boards: BoardSummary[]): P
 }
 
 /** Every board this viewer can see, at the role they have there. */
-export async function boardsFor(db: D1Database, viewer: Viewer): Promise<BoardSummary[]> {
+export async function boardsFor(db: D1Database, viewer: Viewer): Promise<BoardAccess[]> {
   return capped(db, viewer, await listBoardsFor(db, viewer.user.id));
+}
+
+/** The same boards with their counts: only for GET /api/boards, which shows them. */
+export async function boardSummariesFor(db: D1Database, viewer: Viewer): Promise<BoardSummary[]> {
+  return capped(db, viewer, await listBoardSummariesFor(db, viewer.user.id));
 }
 
 export async function requireBoard(
@@ -48,7 +53,7 @@ export async function requireBoard(
   viewer: Viewer,
   boardId: string,
   needed: BoardRole = "viewer",
-): Promise<BoardSummary> {
+): Promise<BoardAccess> {
   const found = await boardFor(db, viewer.user.id, boardId);
   const [board] = found ? await capped(db, viewer, [found]) : [];
   if (!board) throw notFound("No such board");

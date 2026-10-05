@@ -4,7 +4,10 @@
 # touches daemon/. One job, `ci`, so branch protection has one name to
 # require; the daemon part is skipped, not left pending, on PRs that don't
 # touch it. The box (daemon/box) needs GPUI's native libraries and is checked
-# by box-release.yml under Nix instead.
+# by box-release.yml under Nix instead. `macos` runs the daemon's tests on a
+# Mac too, for its sandbox (COPL-140). Both install Codex, pinned, and require
+# its sandbox tests (COPL-143), which run `codex sandbox` with the policy the
+# daemon gives Codex's runs: no model, no account.
 
 name: ci
 
@@ -55,6 +58,55 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: daemon
+      # Codex's Linux sandbox is bubblewrap, which needs unprivileged user
+      # namespaces; Ubuntu 24.04's AppArmor keeps them from it otherwise.
+      - if: steps.daemon.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          npm i -g @openai/codex@0.159.2
       - if: steps.daemon.outputs.changed == 'true'
         working-directory: daemon
+        env:
+          COPLAND_TEST_CODEX: "1"
+        run: cargo test && cargo clippy --all-targets -- -D warnings
+
+  # The daemon on a Mac (COPL-140): its tests there run a command inside the
+  # Seatbelt sandbox that writes inside the worktree and fails outside it,
+  # which nobody can try on a real Mac. Only on PRs that touch daemon/.
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Does it touch daemon/?
+        id: daemon
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ] || git diff --name-only "$base" HEAD -- daemon/ | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.daemon.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - if: steps.daemon.outputs.changed == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+      - if: steps.daemon.outputs.changed == 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - if: steps.daemon.outputs.changed == 'true'
+        run: npm i -g @openai/codex@0.159.2
+      - if: steps.daemon.outputs.changed == 'true'
+        working-directory: daemon
+        env:
+          COPLAND_TEST_CODEX: "1"
         run: cargo test && cargo clippy --all-targets -- -D warnings

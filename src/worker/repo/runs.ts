@@ -129,12 +129,12 @@ export function endRunsStatements(db: D1Database, userId: string): D1PreparedSta
   ];
 }
 
-/** Ending one run: its claims go with it. Guarded on running, so a second finish changes nothing. */
-export function finishRunStatements(db: D1Database, runId: string, status: RunEnding): D1PreparedStatement[] {
+/** Ending one run, with why when it was said: its claims go with it. Guarded on running, so a second finish changes nothing (its reason included). */
+export function finishRunStatements(db: D1Database, runId: string, status: RunEnding, reason: string | null): D1PreparedStatement[] {
   return [
     db
-      .prepare(`UPDATE runs SET status = ?2, ended_at = ?3 WHERE id = ?1 AND status = 'running'`)
-      .bind(runId, status, new Date().toISOString()),
+      .prepare(`UPDATE runs SET status = ?2, ended_at = ?3, reason = ?4 WHERE id = ?1 AND status = 'running'`)
+      .bind(runId, status, new Date().toISOString(), reason),
     db.prepare(`DELETE FROM task_claims WHERE run_id = ?1`).bind(runId),
     db.prepare(`DELETE FROM message_claims WHERE run_id = ?1`).bind(runId),
   ];
@@ -185,11 +185,12 @@ interface RunRow {
   started_at: string;
   last_seen_at: string;
   ended_at: string | null;
+  reason: string | null;
   claims: string | null;
 }
 
 const RUN_SELECT = `
-  SELECT r.id, r.user_id, r.client, r.kind, r.status, r.started_at, r.last_seen_at, r.ended_at,
+  SELECT r.id, r.user_id, r.client, r.kind, r.status, r.started_at, r.last_seen_at, r.ended_at, r.reason,
          (SELECT group_concat(b.key || '-' || t.number)
             FROM task_claims c JOIN tasks t ON t.id = c.task_id JOIN boards b ON b.id = t.board_id
            WHERE c.run_id = r.id AND c.claimed_until > ${NOW_SQL} AND r.status = 'running') AS claims
@@ -205,6 +206,7 @@ function toRun(row: RunRow): Run {
     startedAt: row.started_at,
     lastSeenAt: row.last_seen_at,
     endedAt: row.ended_at,
+    reason: row.reason,
     claims: row.claims ? row.claims.split(",") : [],
   };
 }

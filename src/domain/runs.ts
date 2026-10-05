@@ -35,6 +35,22 @@ export const leaseFor = (kind: RunKind) => (kind === "interactive" ? INTERACTIVE
 export const RUN_ENDINGS = ["completed", "failed", "cancelled"] as const;
 export type RunEnding = (typeof RUN_ENDINGS)[number];
 
+/** How long the reason a finish gives may be (COPL-136): a line like "exit 1 after 3.8s", never a log. */
+export const RUN_REASON_MAX = 160;
+
+/**
+ * A finish's reason as it is stored: on one line, trimmed, null when there
+ * is none. Undefined when it can't be one: not a string, or longer than
+ * RUN_REASON_MAX once on one line.
+ */
+export function runReason(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const line = value.replace(/\s+/g, " ").trim();
+  if (line.length > RUN_REASON_MAX) return undefined;
+  return line || null;
+}
+
 /** "stale" is never stored: it is a running run past its lease. */
 export type RunStatus = "running" | "stale" | RunEnding;
 

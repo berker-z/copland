@@ -342,13 +342,9 @@ pub fn render_config(saved: &Saved, choices: &[Choice]) -> String {
     out
 }
 
-/// The lines saying which runtime an agent uses: `client`, a warning when the template is
-/// untested, and `command`, one argument a line.
+/// The lines saying which runtime an agent uses: `client` and `command`, one argument a line.
 pub fn render_binding(runtime: Runtime) -> String {
     let mut out = format!("client = {}\n", q(runtime.name()));
-    if !runtime.tested() {
-        out.push_str(&untested_note(runtime));
-    }
     out.push_str("command = [\n");
     for arg in runtime.command() {
         out.push_str(&format!("  {},\n", q(&arg)));
@@ -357,14 +353,8 @@ pub fn render_binding(runtime: Runtime) -> String {
     out
 }
 
-fn untested_note(runtime: Runtime) -> String {
-    format!(
-        "{UNTESTED_START}{} template hasn't been run against Copland yet: check it before relying on it.\n",
-        runtime.name()
-    )
-}
-
-/// How the untested-template note starts, so a rebind can take it out again.
+/// How the note setup wrote above an untested template starts (Codex's, until COPL-143 ran it), so
+/// a rebind takes it out of an older config.
 pub(crate) const UNTESTED_START: &str = "# The ";
 
 /// One `[[agent]]` table as setup writes it.

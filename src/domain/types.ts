@@ -81,13 +81,17 @@ export type Priority = (typeof PRIORITIES)[number];
 export const LEVELS = ["epic", "story", "task", "milestone"] as const;
 export type Level = (typeof LEVELS)[number];
 
-/** A board in the list: what the sidebar and the picker need. */
-export interface BoardSummary {
+/** A board and the viewer's role on it: what an access check learns, no counts. */
+export interface BoardAccess {
   id: string;
   key: string;
   name: string;
   isInbox: boolean;
   role: BoardRole;
+}
+
+/** GET /api/boards: a board in the list, with what the boards pane counts. */
+export interface BoardSummary extends BoardAccess {
   memberCount: number;
   openTaskCount: number;
 }
@@ -175,6 +179,12 @@ export interface TaskClaim {
   /** The program, as people say it ("Claude Code"), when known. */
   client: string | null;
   until: string;
+  /**
+   * On a task's claim only: the run asks for news at every step (COPL-139,
+   * routes/runs.ts postRunNews), so a new comment reaches it then; otherwise
+   * it sees one when it next reads the task.
+   */
+  hears?: boolean;
 }
 
 /**
@@ -238,7 +248,7 @@ export interface Wired {
 
 /** GET /api/boards/:id — everything a board screen draws. */
 export interface BoardDetail {
-  board: BoardSummary;
+  board: BoardAccess;
   members: BoardMember[];
   stages: Stage[];
   labels: Label[];
@@ -437,8 +447,34 @@ export interface Run {
   startedAt: string;
   lastSeenAt: string;
   endedAt: string | null;
+  /** How it ended, in a line, when whatever finished it said ("exit 1 after 3.8s"). */
+  reason: string | null;
   /** Keys of the tasks it holds a live claim on. */
   claims: string[];
+}
+
+/**
+ * POST /api/runs/current/news (COPL-139): what has come in on the tasks this
+ * credential's run has claimed that it has not been told about yet.
+ */
+export interface RunNews {
+  run: { id: string; short: string; kind: RunKind } | null;
+  items: RunNewsItem[];
+}
+
+/** One comment that reached the run's principal's inbox on a task the run holds. */
+export interface RunNewsItem {
+  /** The inbox item's id, for mark_read. */
+  id: string;
+  kind: "mentioned" | "commented";
+  /** The task's key. */
+  task: string;
+  /** The comment's author's handle. */
+  by: string;
+  via: string | null;
+  /** The comment as it is now. */
+  text: string;
+  at: string;
 }
 
 /** POST /api/runs answers with the run's secret once; only its hash is kept. */

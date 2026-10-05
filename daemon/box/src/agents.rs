@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use copland_daemon_core::api::{Api, DeviceIdentity, DevicePoll, DeviceStart, WiredAgent};
 use copland_daemon_core::config::AgentConfig;
-use copland_daemon_core::{Config, DaemonState, Phase, Reloaded};
+use copland_daemon_core::{AgentState, Config, DaemonState, Phase, Reloaded};
 use gpui::{Context, KeyDownEvent, Task};
 use tokio::sync::{mpsc, oneshot};
 
@@ -110,7 +110,34 @@ pub enum Doing {
     /// A reload changed it during a run: the change applies when the run ends.
     AfterRun,
     Error(String),
+    /// Watching, after a run that went wrong (COPL-136): said until the next run.
+    Failed(Failed),
     Stopped,
+}
+
+/// How the agent's last run went wrong, from the daemon's summary of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failed {
+    pub run: String,
+    pub task: String,
+    /// "exit 1 after 3.8s", or the run's own outcome when its runtime never launched.
+    pub how: String,
+    /// The plain word for a runtime that died at once with nothing to say.
+    pub hint: Option<String>,
+    pub log: Option<PathBuf>,
+}
+
+impl Failed {
+    fn of(s: &AgentState) -> Option<Self> {
+        let r = s.last_run.as_ref().filter(|r| r.failed)?;
+        Some(Self {
+            run: r.run.clone(),
+            task: r.task.clone(),
+            how: r.how.clone().unwrap_or_else(|| r.outcome.clone()),
+            hint: r.hint.clone(),
+            log: r.log.clone(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,7 +216,7 @@ pub fn rows(configured: &[AgentConfig], st: &DaemonState, wired: Option<&[WiredA
                 },
                 (_, _) if s.last_error.is_some() => Doing::Error(s.last_error.clone().unwrap_or_default()),
                 (Phase::Starting, _) => Doing::Starting,
-                (Phase::Idle, _) => Doing::Watching,
+                (Phase::Idle, _) => Failed::of(s).map_or(Doing::Watching, Doing::Failed),
             },
         };
         out.push(Row::Here {
@@ -216,6 +243,16 @@ pub fn rows(configured: &[AgentConfig], st: &DaemonState, wired: Option<&[WiredA
         });
     }
     out
+}
+
+/// The line under a failed run's agent: the plain word when its runtime died at once, else which
+/// run it was.
+fn failed_detail(f: &Failed) -> (String, Role) {
+    let log = if f.log.is_some() { " · o opens its log" } else { "" };
+    match &f.hint {
+        Some(h) => (format!("{h}{log}"), Role::Red),
+        None => (format!("run {} on {} {}{log}", f.run, f.task, f.how), Role::Muted),
+    }
 }
 
 /// What the screen is doing.
@@ -820,6 +857,13 @@ impl Agents {
                     }
                 }
             }
+            (
+                "o",
+                Some(Row::Here {
+                    doing: Doing::Failed(Failed { log: Some(log), .. }),
+                    ..
+                }),
+            ) => cx.open_url(&format!("file://{}", log.display())),
             ("r", _) => {
                 self.found = None;
                 self.detect(cx);
@@ -990,6 +1034,7 @@ impl Agents {
                         Doing::Running(k) => (format!("● {k}"), Role::Yellow),
                         Doing::AfterRun => ("● changes after this run".to_string(), Role::Yellow),
                         Doing::Error(e) => (format!("× {e}"), Role::Red),
+                        Doing::Failed(f) => (format!("× {} {}", f.task, f.how), Role::Red),
                         Doing::Stopped => ("stopped".to_string(), Role::Faint),
                     };
                     spans.push(Span::new(what, role));
@@ -1044,6 +1089,10 @@ impl Agents {
                     Role::Faint,
                 )),
                 Some(Row::Here {
+                    doing: Doing::Failed(f),
+                    ..
+                }) => Some(failed_detail(f)),
+                Some(Row::Here {
                     bound: Bound::Own(_), ..
                 }) => Some((
                     "its command is your own: space replaces it with a template".into(),
@@ -1052,9 +1101,17 @@ impl Agents {
                 _ => None,
             }
         };
+        /* A failed run's line opens its log when clicked, as o does. */
+        let log = match row {
+            Some(Row::Here {
+                doing: Doing::Failed(Failed { log: Some(_), .. }),
+                ..
+            }) => Some("o".to_string()),
+            _ => None,
+        };
         if let Some((text, role)) = detail {
             lines.push(Line::one(text, role));
-            clicks.push(None);
+            clicks.push(log.clone());
         }
 
         let mut keys = Vec::new();
@@ -1069,6 +1126,9 @@ impl Agents {
                 }
                 keys.push(key("space", "runtime"));
                 keys.push(key("x", "stop here"));
+                if log.is_some() {
+                    keys.push(key("o", "its log"));
+                }
             }
             (_, Some(Row::Away { leaving: false, .. })) if feed.is_some() => keys.push(key("enter", "run it here")),
             _ => {}
@@ -1209,7 +1269,6 @@ async fn poll(api: Api, code: String, interval: u64, expires_in: u64) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use copland_daemon_core::AgentState;
     use copland_daemon_core::config::Secret;
 
     fn agent(handle: &str, runtime: Option<Runtime>) -> AgentConfig {
@@ -1222,6 +1281,7 @@ mod tests {
             client: "Claude Code".into(),
             code_command: None,
             writable: Vec::new(),
+            runtime: copland_daemon_core::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
         }
@@ -1285,6 +1345,80 @@ mod tests {
         /* Without the owner's feed: what runs here, and nothing else. */
         let r = rows(&configured, &st, None);
         assert_eq!(r.len(), 2);
+    }
+
+    /// A run that went wrong is said on its agent's line, how it ended and where its log is,
+    /// until the next run; one that ended well isn't.
+    #[test]
+    fn a_failed_run_says_how_it_ended_until_the_next() {
+        let configured = [agent("me/dev", Some(Runtime::ClaudeCode))];
+        let mut dev = AgentState::new("me/dev", "http://x");
+        dev.phase = Phase::Idle;
+        dev.last_run = Some(copland_daemon_core::state::RunSummary {
+            run: "dab0".into(),
+            task: "COPL-132".into(),
+            outcome: "failed".into(),
+            failed: true,
+            how: Some("exit 1 after 3.8s".into()),
+            hint: Some("claude exited at once with no output: check the runtime outside the box".into()),
+            log: Some("/s/runs/dab0.log".into()),
+            ended: std::time::SystemTime::now(),
+        });
+        let mut st = DaemonState {
+            agents: vec![dev],
+            stopping: false,
+        };
+        let Row::Here {
+            doing: Doing::Failed(f),
+            ..
+        } = &rows(&configured, &st, None)[0]
+        else {
+            panic!("not failed");
+        };
+        assert_eq!((f.task.as_str(), f.how.as_str()), ("COPL-132", "exit 1 after 3.8s"));
+        assert_eq!(
+            failed_detail(f),
+            (
+                "claude exited at once with no output: check the runtime outside the box · o opens its log".into(),
+                Role::Red
+            )
+        );
+        let quiet = Failed {
+            hint: None,
+            log: None,
+            ..f.clone()
+        };
+        assert_eq!(failed_detail(&quiet).0, "run dab0 on COPL-132 exit 1 after 3.8s");
+
+        /* The next run is what the line says while it goes, and once it ends well, watching. */
+        st.agents[0].run_started("8f31", "COPL-132");
+        assert!(matches!(
+            &rows(&configured, &st, None)[0],
+            Row::Here {
+                doing: Doing::Running(_),
+                ..
+            }
+        ));
+        st.agents[0].run_ended("8f31");
+        if let Some(r) = &mut st.agents[0].last_run {
+            r.failed = false;
+        }
+        assert!(matches!(
+            &rows(&configured, &st, None)[0],
+            Row::Here {
+                doing: Doing::Watching,
+                ..
+            }
+        ));
+        /* What the machine lacks says more than a run that went wrong. */
+        st.agents[0].last_error = Some("bwrap not found on PATH: coding runs can't start".into());
+        assert!(matches!(
+            &rows(&configured, &st, None)[0],
+            Row::Here {
+                doing: Doing::Error(_),
+                ..
+            }
+        ));
     }
 
     #[test]

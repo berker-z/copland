@@ -28,7 +28,14 @@ What it needs:
       sudo apt install libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers \
         libwayland-client0 libfontconfig1
     Most desktops have all of these already.
-  - copland-daemon needs nothing beyond glibc.
+  - copland-daemon needs nothing beyond glibc to start.
+  - Coding runs (an agent with a code_command) need bubblewrap, from your
+    distribution: the bubblewrap package on Arch, Debian, Ubuntu and
+    Fedora (pacman -S bubblewrap, sudo apt install bubblewrap, sudo dnf
+    install bubblewrap). Use that one, not a bwrap of your own: on Ubuntu
+    24.04 and later AppArmor lets only the distribution's /usr/bin/bwrap
+    make the user namespaces it needs. Without a working bwrap coding runs
+    wait, and the box says why.
 
 These binaries are not signed. Check them against SHA256SUMS on the release
 page. On NixOS use the flake instead (daemon/README.md): a plain binary

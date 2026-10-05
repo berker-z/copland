@@ -28,7 +28,8 @@ use crate::api::{Api, ApiError, Ending, InboxItem, Me};
 use crate::config::AgentConfig;
 use crate::guard::{Check, Identity, Message, Plan, Refused, Wake, WakeGuard, add_ready, plan, refused};
 use crate::live::{self, FALLBACK_POLL, Heard, Link};
-use crate::runner::{self, Brief, Exit, Launch, MESSAGES};
+use crate::runner::{self, Brief, Ended, Exit, Launch, MESSAGES};
+use crate::sandbox;
 use crate::state::{AgentState, DaemonState, Phase, RunSummary};
 use crate::workspace::{self, Workspace};
 
@@ -145,6 +146,11 @@ pub struct AgentLoop {
     swept: Option<tokio::time::Instant>,
     /// Which task each spawned run is for, by its join id, for a run that panics.
     spawned: HashMap<Id, String>,
+    /// What this machine lacks to start the agent's runs, as of the last poll.
+    missing: Missing,
+    /// Which backend's program was found where, and what its `probe` said there: run once per
+    /// backend and place, not every poll.
+    probed: Option<(&'static str, PathBuf, Option<String>)>,
 }
 
 /// A run going on a task.
@@ -275,6 +281,8 @@ impl AgentLoop {
             inflight: HashMap::new(),
             swept: None,
             spawned: HashMap::new(),
+            missing: Missing::default(),
+            probed: None,
         })
     }
 
@@ -349,7 +357,9 @@ impl AgentLoop {
                     if last_error.take().is_some() {
                         tracing::info!("working again");
                     }
-                    self.update(|s| s.last_error = None);
+                    /* A good poll clears what went wrong, but not what the machine lacks. */
+                    let lacking = self.missing.message();
+                    self.update(|s| s.last_error = lacking);
                     if self.agent.code_command.is_some() && self.swept.is_none_or(|t| t.elapsed() >= SWEEP_EVERY) {
                         self.swept = Some(tokio::time::Instant::now());
                         if let Err(e) = self.sweep().await {
@@ -585,9 +595,50 @@ impl AgentLoop {
         Ok((total, items))
     }
 
+    /// Whether the sandbox works where it is found (COPL-140): what the agent's line says when it
+    /// doesn't, None when it does or isn't found (which `Missing` says). Tried once per place it
+    /// is found, which in effect is once at startup: after fixing what it said, restart.
+    fn probe(&mut self) -> Option<String> {
+        let backend = sandbox::of(&self.agent);
+        let at = runner::locate(backend.program())?;
+        if self
+            .probed
+            .as_ref()
+            .is_none_or(|(name, p, _)| *name != backend.name() || *p != at)
+        {
+            let said = backend.probe().err().map(|e| backend.broken(&e));
+            self.probed = Some((backend.name(), at, said));
+        }
+        self.probed.as_ref().and_then(|(_, _, said)| said.clone())
+    }
+
     /// One poll. True when a run was launched (or tried), so the caller looks again at once.
     /// One poll: start a run for each task that needs one, as far as `max_runs` and the workdir allow.
     async fn tick(&mut self, runs: &mut JoinSet<Done>) -> Result<()> {
+        let mut missing = Missing::of(&self.agent, runner::found);
+        if missing.coding {
+            missing.broken = self.probe();
+        }
+        if missing != self.missing {
+            match missing.message() {
+                Some(m) => tracing::warn!("{m}"),
+                /* Where the sandbox is, so a Nix build shows it uses its own bwrap (COPL-137). */
+                None => {
+                    let backend = sandbox::of(&self.agent);
+                    match runner::locate(backend.program()).filter(|_| missing.coding) {
+                        Some(at) => tracing::info!(
+                            "every program its runs need is found, {} at {} (the {} sandbox, for runtime {})",
+                            runner::program(&[backend.program().to_string()]),
+                            at.display(),
+                            backend.name(),
+                            self.agent.runtime.name()
+                        ),
+                        None => tracing::info!("every program its runs need is found"),
+                    }
+                }
+            }
+            self.missing = missing;
+        }
         let me = self.identity().await?;
         let (unread, items) = self.unread().await?;
         let mut plan: Plan = plan(&me, &items);
@@ -638,6 +689,10 @@ impl AgentLoop {
     fn answer(&mut self, me: &Identity, plan: &Plan, runs: &mut JoinSet<Done>) {
         let batch = self.guard.new_messages(plan);
         if batch.is_empty() || self.inflight.contains_key(MESSAGES) {
+            return;
+        }
+        if self.missing.stops(Role::Workdir) {
+            tracing::debug!("{} message(s), but its program is missing; not starting", batch.len());
             return;
         }
         if self.inflight.len() >= self.agent.max_runs {
@@ -717,6 +772,10 @@ impl AgentLoop {
                 self.guard.remember(wake, lookup.task.map(|t| t.updated_at), false);
                 continue;
             }
+            if self.missing.stops(lookup.role) {
+                tracing::debug!(task = %wake.task_key, "a program its run needs is missing; not starting");
+                continue;
+            }
             let workdir = lookup.role == Role::Workdir;
             if workdir && self.inflight.values().any(|r| r.workdir) {
                 tracing::debug!(task = %wake.task_key, "another run has the workdir; next time");
@@ -767,6 +826,79 @@ pub fn role_of(code_command: bool, repo: bool, level: Option<&str>, has_children
     }
 }
 
+/// What this machine lacks to start an agent's runs (COPL-136): its command's program, and for
+/// coding work the sandbox's (`bwrap`, or `sandbox-exec` on macOS) and its `code_command`'s, or a
+/// sandbox that is there but doesn't work (COPL-140). Looked at every poll, before a run is
+/// started or a task claimed, so a missing program fails nothing and costs no task a strike: the
+/// runs it would stop wait, and the agent's line says why.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Missing {
+    /// The program runs in `workdir` (and message runs) start, when it can't be found.
+    pub workdir: Option<String>,
+    /// The first of the sandbox and the coding runtime that can't be found.
+    pub code: Option<String>,
+    /// The sandbox is there and `sandbox::probe` failed: what the agent's line says of it.
+    pub broken: Option<String>,
+    /// The agent has a `code_command`, so coding runs are its own.
+    pub coding: bool,
+}
+
+impl Missing {
+    pub fn of(agent: &AgentConfig, found: impl Fn(&str) -> bool) -> Self {
+        let absent =
+            |program: &String| (!found(program)).then(|| runner::program(std::slice::from_ref(program)).to_string());
+        let workdir = agent.command.first().and_then(absent);
+        let code = agent
+            .code_command
+            .as_ref()
+            .and_then(|c| absent(&sandbox::of(agent).program().to_string()).or_else(|| c.first().and_then(absent)));
+        Self {
+            workdir,
+            code,
+            broken: None,
+            coding: agent.code_command.is_some(),
+        }
+    }
+
+    /// What the agent's line says ("bwrap not found on PATH: coding runs can't start; install
+    /// …"), or None when nothing is missing.
+    pub fn message(&self) -> Option<String> {
+        let not_found = |p: &str, what: &str| format!("{p} not found on PATH: {what}");
+        /* Linux distributions all package it under one name; say it. */
+        let coding = |c: &str| match c {
+            "bwrap" => format!(
+                "{}; install the bubblewrap package (Arch, Debian, Ubuntu and Fedora all call it that)",
+                not_found(c, "coding runs can't start")
+            ),
+            _ => not_found(c, "coding runs can't start"),
+        };
+        let mut said = match (&self.workdir, &self.code) {
+            (None, None) => None,
+            (Some(w), Some(c)) if w == c => Some(not_found(w, "runs can't start")),
+            (Some(w), Some(c)) => Some(format!("{}; {}", not_found(w, "runs can't start"), coding(c))),
+            (Some(w), None) if self.coding => Some(not_found(w, "only coding runs can start")),
+            (Some(w), None) => Some(not_found(w, "runs can't start")),
+            (None, Some(c)) => Some(coding(c)),
+        };
+        if let Some(b) = self.broken.as_ref().filter(|_| self.coding) {
+            said = Some(match said {
+                Some(s) => format!("{s}; {b}"),
+                None => b.clone(),
+            });
+        }
+        said
+    }
+
+    /// Whether a run of this role can't start: workdir runs need the command, coding runs the rest.
+    fn stops(&self, role: Role) -> bool {
+        match role {
+            Role::Workdir => self.workdir.is_some(),
+            Role::Worker | Role::Lead => self.code.is_some() || self.broken.is_some(),
+            Role::Skip => false,
+        }
+    }
+}
+
 /// A task as a run would need it.
 struct TaskInfo {
     role: Role,
@@ -774,11 +906,12 @@ struct TaskInfo {
     source: Option<crate::api::CodeSource>,
 }
 
-/// How a run ends, by how its runtime did.
+/// How a run ends, by how its runtime did. A runtime that never started is this machine's
+/// trouble, not the task's: interrupted, so it costs the task no strike toward blocked.
 fn ending_of(exit: &Exit) -> Ending {
     match exit {
         Exit::Code(0) => Ending::Completed,
-        Exit::Stopped => Ending::Interrupted,
+        Exit::Stopped | Exit::SpawnFailed(_) => Ending::Interrupted,
         Exit::Cancelled => Ending::Cancelled,
         _ => Ending::Failed,
     }
@@ -875,8 +1008,8 @@ impl RunCtx {
             .map(|t| t.updated_at)
     }
 
-    async fn finish(&self, run_id: &str, ending: Ending) -> String {
-        match self.api.finish_run(&self.agent.token, run_id, ending).await {
+    async fn finish(&self, run_id: &str, ending: Ending, reason: Option<&str>) -> String {
+        match self.api.finish_run(&self.agent.token, run_id, ending, reason).await {
             Ok(r) => r.status,
             Err(e) => {
                 tracing::warn!(run = %runner::short(run_id), "finishing the run as {} failed: {e}", ending.as_str());
@@ -910,7 +1043,7 @@ impl RunCtx {
                     brief
                 }
                 why => {
-                    let ending = self.finish(&run_id, Ending::Cancelled).await;
+                    let ending = self.finish(&run_id, Ending::Cancelled, None).await;
                     self.update(|s| s.run_ended(&short));
                     let held = why == Refused::Hold;
                     if held {
@@ -919,12 +1052,12 @@ impl RunCtx {
                         tracing::info!(run = %short, task = %key, "claim refused, skipping: {e}");
                     }
                     let updated = self.updated_at(&wake.task_id).await;
-                    self.summary(&short, &key, format!("skipped ({ending}): {e}"));
+                    self.summary(&short, &key, format!("skipped ({ending}): {e}"), false);
                     return Done::ran(wake, updated, held);
                 }
             },
             Err(e) => {
-                self.finish(&run_id, Ending::Interrupted).await;
+                self.finish(&run_id, Ending::Interrupted, None).await;
                 self.update(|s| s.run_ended(&short));
                 return Done::failed(wake, format!("claiming {key}: {e}"));
             }
@@ -936,10 +1069,10 @@ impl RunCtx {
                 Ok(ws) => ws,
                 Err(e) => {
                     tracing::warn!(run = %short, task = %key, "its workspace could not be made: {e:#}");
-                    let ending = self.finish(&run_id, Ending::Failed).await;
+                    let ending = self.finish(&run_id, Ending::Failed, None).await;
                     self.update(|s| s.run_ended(&short));
                     let updated = self.updated_at(&wake.task_id).await;
-                    self.summary(&short, &key, format!("{ending}: no workspace ({e})"));
+                    self.summary(&short, &key, format!("{ending}: no workspace ({e})"), true);
                     return Done::ran(wake, updated, false);
                 }
             }
@@ -950,7 +1083,13 @@ impl RunCtx {
             tracing::info!(run = %short, task = %key, dir = %ws.dir.display(), branch = %ws.branch, fresh = ws.fresh, "workspace ready");
         }
 
-        let exit = runner::run(
+        /* The program the run starts, for the plain word on one that dies at once. */
+        let runtime = runner::program(match (&workspace, &self.agent.code_command) {
+            (Some(_), Some(code)) => code,
+            _ => &self.agent.command,
+        })
+        .to_string();
+        let ended = runner::run(
             Launch {
                 api: &self.api,
                 agent: &self.agent,
@@ -970,13 +1109,13 @@ impl RunCtx {
         )
         .await;
         drop(started);
-        let ending = ending_of(&exit);
-        let status = self.finish(&run_id, ending).await;
+        let (ending, how) = (ending_of(&ended.exit), ended.reason());
+        let status = self.finish(&run_id, ending, Some(&how)).await;
         if status == ending.as_str() {
-            tracing::info!(run = %short, task = %key, "runtime {exit}; run {status}");
+            tracing::info!(run = %short, task = %key, "runtime {how}; run {status}");
         } else {
             /* The runtime finished it first (finish_run), and its word stands. */
-            tracing::info!(run = %short, task = %key, "runtime {exit}; run {status} (finished by the runtime)");
+            tracing::info!(run = %short, task = %key, "runtime {how}; run {status} (finished by the runtime)");
         }
         /* A closed task's worktree has nothing left to do; its branch lives on in the remote. */
         if let Some(ws) = &workspace {
@@ -991,12 +1130,7 @@ impl RunCtx {
         }
         /* Remembered whatever the ending, a ceiling included, so it isn't launched again for the same items. */
         let updated = self.updated_at(&wake.task_id).await;
-        let outcome = if exit == Exit::TimedOut {
-            format!("{status} (stopped at the {} ceiling)", runner::span(runner::CEILING))
-        } else {
-            status
-        };
-        self.summary(&short, &key, outcome);
+        self.ran(&run_id, &short, &key, status, &ended, &runtime);
         self.update(|s| s.run_ended(&short));
         Done::ran(wake, updated, false)
     }
@@ -1035,20 +1169,25 @@ impl RunCtx {
                 claimed
             }
             Err(e) => {
-                self.finish(&run_id, Ending::Interrupted).await;
+                self.finish(&run_id, Ending::Interrupted, None).await;
                 return Done::failed(wake, format!("claiming {n} message(s): {e}"));
             }
         };
         if claimed.is_empty() {
-            let ending = self.finish(&run_id, Ending::Cancelled).await;
+            let ending = self.finish(&run_id, Ending::Cancelled, None).await;
             tracing::info!(run = %short, "every message was claimed by another run or read; nothing to launch");
-            self.summary(&short, MESSAGES, format!("skipped ({ending}): nothing left to claim"));
+            self.summary(
+                &short,
+                MESSAGES,
+                format!("skipped ({ending}): nothing left to claim"),
+                false,
+            );
             return Done::ran(wake, None, false);
         }
         let n = claimed.len();
         tracing::info!(run = %short, messages = n, "claimed {n} message(s)");
         self.update(|s| s.run_started(&short, MESSAGES));
-        let exit = runner::run(
+        let ended = runner::run(
             Launch {
                 api: &self.api,
                 agent: &self.agent,
@@ -1068,9 +1207,17 @@ impl RunCtx {
         )
         .await;
         drop(started);
-        let status = self.finish(&run_id, ending_of(&exit)).await;
-        tracing::info!(run = %short, messages = n, "runtime {exit}; run {status}");
-        self.summary(&short, MESSAGES, status);
+        let how = ended.reason();
+        let status = self.finish(&run_id, ending_of(&ended.exit), Some(&how)).await;
+        tracing::info!(run = %short, messages = n, "runtime {how}; run {status}");
+        self.ran(
+            &run_id,
+            &short,
+            MESSAGES,
+            status,
+            &ended,
+            runner::program(&self.agent.command),
+        );
         self.update(|s| s.run_ended(&short));
         /* Remembered whatever the ending, so a message the run left unread doesn't launch another. */
         Done {
@@ -1129,11 +1276,31 @@ impl RunCtx {
         }))
     }
 
-    fn summary(&self, run: &str, task: &str, outcome: String) {
+    fn summary(&self, run: &str, task: &str, outcome: String, failed: bool) {
         let last = RunSummary {
             run: run.to_string(),
             task: task.to_string(),
             outcome,
+            failed,
+            how: None,
+            hint: None,
+            log: None,
+            ended: SystemTime::now(),
+        };
+        self.update(|s| s.last_run = Some(last));
+    }
+
+    /// A run whose runtime was launched is over: what the box says of it (COPL-136). Failed by how
+    /// the runtime ended, whatever the run's status says (a runtime may finish its run, then die).
+    fn ran(&self, run_id: &str, run: &str, task: &str, status: String, ended: &Ended, runtime: &str) {
+        let last = RunSummary {
+            run: run.to_string(),
+            task: task.to_string(),
+            outcome: status,
+            failed: !matches!(ended.exit, Exit::Code(0) | Exit::Stopped | Exit::Cancelled),
+            how: Some(ended.reason()),
+            hint: ended.hint(runtime),
+            log: Some(runner::log_path(&self.paths.state_dir, run_id)),
             ended: SystemTime::now(),
         };
         self.update(|s| s.last_run = Some(last));
@@ -1238,6 +1405,117 @@ mod tests {
         .await;
         assert!(err.is_err());
     }
+
+    fn agent(command: &[&str], code: Option<&[&str]>) -> AgentConfig {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        AgentConfig {
+            url: "http://127.0.0.1:9".into(),
+            handle: "me/dev".into(),
+            token: crate::config::Secret::new("cpl_x"),
+            command: argv(command),
+            workdir: std::env::temp_dir(),
+            client: "test".into(),
+            code_command: code.map(argv),
+            writable: Vec::new(),
+            runtime: crate::config::Runtime::detect(&argv(code.unwrap_or(command))),
+            code_dir: "/tmp/copland-code".into(),
+            max_runs: 10,
+        }
+    }
+
+    /// What the machine lacks is said before anything starts, and stops only the runs that need it.
+    #[test]
+    fn a_missing_program_is_said_and_stops_only_its_runs() {
+        let claude = ["/run/current-system/sw/bin/claude", "-p"];
+        let a = agent(&claude, Some(&claude));
+        /* The agent's backend: the platform's fallback for Claude Code, Codex's own for Codex (COPL-143). */
+        let program = sandbox::of(&a).program();
+        assert_eq!(sandbox::of(&agent(&claude, Some(&["codex"]))).program(), "codex");
+        let none = Missing::of(&a, |_| true);
+        assert_eq!(none.message(), None);
+        assert!(!none.stops(Role::Workdir) && !none.stops(Role::Worker));
+
+        /* Missing bwrap says which package has it (COPL-140). */
+        let no_bwrap = Missing::of(&a, |p| p != program);
+        assert_eq!(
+            no_bwrap.message().as_deref(),
+            Some(if cfg!(target_os = "macos") {
+                "sandbox-exec not found on PATH: coding runs can't start"
+            } else {
+                "bwrap not found on PATH: coding runs can't start; install the bubblewrap package (Arch, Debian, Ubuntu and Fedora all call it that)"
+            })
+        );
+        assert!(no_bwrap.stops(Role::Worker) && no_bwrap.stops(Role::Lead));
+        assert!(!no_bwrap.stops(Role::Workdir) && !no_bwrap.stops(Role::Skip));
+
+        /* There but not working: said, and it stops coding runs only. */
+        let broken = Missing {
+            broken: Some(sandbox::of(&a).broken("setting up uid map: Permission denied")),
+            ..none.clone()
+        };
+        let said = broken.message().expect("said");
+        assert!(said.contains("setting up uid map: Permission denied") && said.contains("coding runs can't start"));
+        if cfg!(target_os = "linux") {
+            assert!(
+                said.contains("AppArmor") && said.contains("bubblewrap package"),
+                "{said}"
+            );
+        }
+        assert!(broken.stops(Role::Worker) && broken.stops(Role::Lead) && !broken.stops(Role::Workdir));
+        let both = Missing {
+            broken: broken.broken.clone(),
+            ..Missing::of(&agent(&["codex", "exec"], Some(&claude)), |p| p != "codex")
+        };
+        assert_eq!(
+            both.message().as_deref(),
+            Some(format!("codex not found on PATH: only coding runs can start; {said}").as_str())
+        );
+        /* Without coding runs a broken sandbox is nothing to say. */
+        let plain = Missing {
+            broken: broken.broken.clone(),
+            ..Missing::of(&agent(&claude, None), |_| true)
+        };
+        assert_eq!(plain.message(), None);
+
+        let no_claude = Missing::of(&a, |p| p == program);
+        assert_eq!(
+            no_claude.message().as_deref(),
+            Some("claude not found on PATH: runs can't start")
+        );
+        assert!(no_claude.stops(Role::Workdir) && no_claude.stops(Role::Worker));
+
+        let other = agent(&["codex", "exec"], Some(&claude));
+        assert_eq!(
+            Missing::of(&other, |p| p != "codex").message().as_deref(),
+            Some("codex not found on PATH: only coding runs can start")
+        );
+        assert_eq!(
+            Missing::of(&other, |p| p == program).message().as_deref(),
+            Some("codex not found on PATH: runs can't start; claude not found on PATH: coding runs can't start")
+        );
+
+        /* No code_command: bwrap is never needed. */
+        let plain = agent(&claude, None);
+        assert_eq!(Missing::of(&plain, |p| p != program).message(), None);
+        assert_eq!(
+            Missing::of(&plain, |_| false).message().as_deref(),
+            Some("claude not found on PATH: runs can't start")
+        );
+    }
+
+    /// A runtime that never started is the machine's trouble: no strike for the task.
+    #[test]
+    fn a_spawn_failure_is_no_strike() {
+        assert_eq!(
+            ending_of(&Exit::SpawnFailed("bwrap: not found".into())),
+            Ending::Interrupted
+        );
+        assert_eq!(ending_of(&Exit::Code(1)), Ending::Failed);
+        assert_eq!(ending_of(&Exit::Signal(9)), Ending::Failed);
+        assert_eq!(ending_of(&Exit::TimedOut), Ending::Failed);
+        assert_eq!(ending_of(&Exit::Code(0)), Ending::Completed);
+    }
+
     #[test]
     fn a_leaf_task_is_coded_and_what_holds_work_is_led() {
         /* No coding setup or no repo: the old way, whatever the level. */

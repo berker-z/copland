@@ -246,6 +246,12 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   `text-faint` and the status in a hue:
   running `text-ink`, stale `text-yellow`, failed `text-red`, completed
   `text-muted`, cancelled `text-faint`.
+- While a run holds the task, the task modal's comment box has a line
+  above it (COPL-139) in `text-xs text-muted`, the handle in
+  `text-accent`: "berker-z/dev is working on this. It sees new comments
+  at its next step." for a run whose runtime asks for them at every step
+  (the heartbeat hook), "...when it next reads the task." for any other.
+  Nothing for a lapsed claim or a closed task.
 - `src/features/wired/`: the /wired pane, the one place the app draws
   pixel art. `scene.ts` draws on a canvas in logo pixels (LogoMark's
   16-unit grid: the same rectangles, a 2×2 lamp on each head) and the

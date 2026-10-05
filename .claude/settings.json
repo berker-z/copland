@@ -3,12 +3,12 @@
     "PostToolUse": [
       {
         "matcher": "^(?!mcp__copland__)",
-        "hooks": [{ "type": "mcp_tool", "server": "copland", "tool": "heartbeat", "timeout": 10 }]
+        "hooks": [{ "type": "mcp_tool", "server": "copland", "tool": "heartbeat", "input": { "event": "${hook_event_name}" }, "timeout": 10 }]
       }
     ],
     "UserPromptSubmit": [
       {
-        "hooks": [{ "type": "mcp_tool", "server": "copland", "tool": "heartbeat", "timeout": 10 }]
+        "hooks": [{ "type": "mcp_tool", "server": "copland", "tool": "heartbeat", "input": { "event": "${hook_event_name}" }, "timeout": 10 }]
       }
     ]
   }

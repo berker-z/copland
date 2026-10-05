@@ -418,15 +418,24 @@ mod tests {
         assert_eq!(c.agents[0].command, Runtime::Codex.command());
         assert_eq!(c.agents[0].client, "Codex");
         assert_eq!(c.agents[1].command, parse(&text).agents[1].command);
-        assert!(codex.contains("Codex template hasn't been run"));
+        assert!(
+            !codex.contains("hasn't been run"),
+            "every template has been run (COPL-143)"
+        );
         assert!(codex.ends_with("# mine, keep me\n"));
         /* Only dev's table changed. */
         let (b0, b1) = (agent_blocks(&text).unwrap(), agent_blocks(&codex).unwrap());
         assert_eq!(text[..b0[0].range.start], codex[..b1[0].range.start]);
         assert_eq!(text[b0[1].range.clone()], codex[b1[1].range.clone()]);
 
-        /* And back: the note goes, and the file is what it was. */
-        let back = set_runtime(&codex, "http://localhost:5173", "me/dev", Runtime::ClaudeCode).unwrap();
+        /* And back: the file is what it was, without the note an older setup wrote over Codex's. */
+        let at = codex.find("command = [").unwrap();
+        let mut old = codex.clone();
+        old.insert_str(
+            at,
+            "# The Codex template hasn't been run against Copland yet: check it before relying on it.\n",
+        );
+        let back = set_runtime(&old, "http://localhost:5173", "me/dev", Runtime::ClaudeCode).unwrap();
         assert_eq!(back, text);
         assert!(set_runtime(&text, "http://localhost:5173", "me/nobody", Runtime::Codex).is_err());
         fs::remove_dir_all(&dir).unwrap();

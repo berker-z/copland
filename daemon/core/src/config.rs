@@ -18,9 +18,12 @@
 //! workdir = "~/work/dev"
 //! client = "Claude Code"        # optional, what history says it came through
 //! # Optional: tasks on a board with a GitHub repo run this instead, in the task's worktree,
-//! # inside a sandbox (sandbox.rs) where only the worktree and `writable` can be written.
+//! # inside a sandbox (sandbox/) where only the worktree and `writable` can be written.
 //! code_command = ["claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config"]
 //! writable = ["~/.claude", "~/.claude.json", "~/.cache"]
+//! # Optional: which runtime code_command starts, for its sandbox (sandbox/): "claude-code",
+//! # "codex", or any other name. Left out, it's read off code_command's program.
+//! runtime = "claude-code"
 //! max_runs = 10                 # optional; runs going at once (coding tasks side by side)
 //! ```
 //!
@@ -115,6 +118,8 @@ pub struct AgentConfig {
     pub code_command: Option<Vec<String>>,
     /// What a sandboxed run may write besides its worktree: the runtime's own state, caches.
     pub writable: Vec<PathBuf>,
+    /// The runtime `code_command` starts (else `command`), which picks the sandbox coding runs get.
+    pub runtime: Runtime,
     /// The config's `code_dir`, the same for every agent.
     pub code_dir: PathBuf,
     /// Runs going at once, at most. Only coding tasks run side by side; the rest share `workdir`, one at a time.
@@ -153,7 +158,65 @@ struct RawAgent {
     code_command: Option<Vec<String>>,
     #[serde(default)]
     writable: Vec<String>,
+    runtime: Option<String>,
     max_runs: Option<usize>,
+}
+
+/// The runtime an agent's coding runs start (COPL-141): `runtime =` in its config, else read off
+/// its command. Each gets a sandbox backend of its own once one has been checked; until then, and
+/// for any runtime not known here, it gets the platform's fallback (sandbox/).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Runtime {
+    ClaudeCode,
+    Codex,
+    /// Any other, by the name given or the program's: not an error, it gets the fallback.
+    Unknown(String),
+}
+
+impl Runtime {
+    /// As written in `runtime =`.
+    pub fn named(name: &str) -> Self {
+        match name {
+            "claude-code" => Runtime::ClaudeCode,
+            "codex" => Runtime::Codex,
+            other => Runtime::Unknown(other.to_string()),
+        }
+    }
+
+    /// Read off an argv: the file name of its program, `claude` or `codex`. A shell running a
+    /// script (`sh -c '…' copland-codex …`, as the box writes Codex's command) goes by the name the
+    /// script is given, without its `copland-`.
+    pub fn detect(argv: &[String]) -> Self {
+        let name = |arg: &String| {
+            Path::new(arg)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let program = argv.first().map(name).unwrap_or_default();
+        let shell = matches!(program.as_str(), "sh" | "bash" | "dash" | "zsh");
+        let program = match argv.get(3) {
+            Some(script) if shell && argv[1] == "-c" => {
+                let script = name(script);
+                script.strip_prefix("copland-").unwrap_or(&script).to_string()
+            }
+            _ => program,
+        };
+        match program.as_str() {
+            "claude" => Runtime::ClaudeCode,
+            "codex" => Runtime::Codex,
+            _ => Runtime::Unknown(program),
+        }
+    }
+
+    /// As written in `runtime =`, for the logs.
+    pub fn name(&self) -> &str {
+        match self {
+            Runtime::ClaudeCode => "claude-code",
+            Runtime::Codex => "codex",
+            Runtime::Unknown(name) => name,
+        }
+    }
 }
 
 /// `~/…` against $HOME. Anything else as written.
@@ -269,6 +332,20 @@ impl Config {
                     bail!("{at}: code_command is empty");
                 }
             }
+            let runtime = match a.runtime.as_deref().map(str::trim) {
+                Some("") => bail!("{at}: runtime is empty; leave it out to read it off code_command"),
+                Some(name) => Runtime::named(name),
+                None => Runtime::detect(a.code_command.as_ref().unwrap_or(&a.command)),
+            };
+            /* Codex's coding runs are sandboxed by Codex, with the policy the daemon gives it (COPL-143). */
+            if let (Runtime::Codex, Some(code)) = (&runtime, &a.code_command) {
+                if let Some(word) = crate::sandbox::codex_forbidden(code) {
+                    bail!(
+                        "{at}: code_command says `{word}`, which would set Codex's sandbox in place of the one the \
+                         daemon gives coding runs; leave it out"
+                    );
+                }
+            }
             agents.push(AgentConfig {
                 url,
                 handle,
@@ -278,6 +355,7 @@ impl Config {
                 client: client.unwrap_or_else(|| DEFAULT_CLIENT.to_string()),
                 code_command: a.code_command,
                 writable: a.writable.iter().map(|w| expand_home(w)).collect(),
+                runtime,
                 code_dir: code_dir.clone(),
                 max_runs,
             });
@@ -458,6 +536,72 @@ mod tests {
         assert!(parse(&format!("{base}max_runs=0\n")).is_err());
         assert!(parse(&format!("{base}max_runs=51\n")).is_err());
         assert!(parse(&format!("{base}code_command=[]\n")).is_err());
+    }
+
+    /// `runtime =` wins; without it the runtime is read off code_command (else command); a name
+    /// neither knows is an unknown runtime, not an error (COPL-141).
+    #[test]
+    fn the_runtime_is_given_or_read_off_the_command() {
+        let w = tmp();
+        let claude = format!(
+            "[[agent]]\nurl=\"http://x\"\nhandle=\"a\"\ntoken=\"cpl_a\"\ncommand=[\"claude\",\"-p\"]\nworkdir=\"{w}\"\n"
+        );
+        let runtime = |text: String| parse(&text).unwrap().agents[0].runtime.clone();
+        assert_eq!(runtime(claude.clone()), Runtime::ClaudeCode);
+        assert_eq!(
+            runtime(format!("{claude}code_command=[\"/usr/local/bin/codex\",\"exec\"]\n")),
+            Runtime::Codex
+        );
+        assert_eq!(
+            runtime(format!("{claude}code_command=[\"codex\"]\nruntime=\"claude-code\"\n")),
+            Runtime::ClaudeCode
+        );
+        assert_eq!(
+            runtime(format!("{claude}code_command=[\"hermes\",\"run\"]\n")),
+            Runtime::Unknown("hermes".into())
+        );
+        assert_eq!(
+            runtime(format!("{claude}runtime=\" hermes \"\n")),
+            Runtime::Unknown("hermes".into())
+        );
+        assert!(parse(&format!("{claude}runtime=\"\"\n")).is_err());
+
+        /* A Codex code_command can't set Codex's sandbox itself: the daemon does (COPL-143). */
+        let refused = parse(&format!(
+            "{claude}code_command=[\"codex\",\"exec\",\"--sandbox\",\"read-only\"]\n"
+        ))
+        .unwrap_err();
+        assert!(format!("{refused:#}").contains("`--sandbox`"), "{refused:#}");
+        assert!(
+            parse(&format!(
+                "{claude}code_command=[\"sh\",\"-c\",\"exec codex exec --yolo\",\"copland-codex\"]\n"
+            ))
+            .is_err()
+        );
+        /* For another runtime it's that command's business. */
+        assert!(parse(&format!("{claude}code_command=[\"hermes\",\"--sandbox\"]\n")).is_ok());
+
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            Runtime::detect(&argv(&[
+                "sh",
+                "-c",
+                "exec codex exec \"$1\"",
+                "copland-codex",
+                "{prompt}"
+            ])),
+            Runtime::Codex
+        );
+        assert_eq!(
+            Runtime::detect(&argv(&["/bin/bash", "-c", "exec claude -p \"$1\"", "claude"])),
+            Runtime::ClaudeCode
+        );
+        assert_eq!(
+            Runtime::detect(&argv(&["sh", "-c", "codex"])),
+            Runtime::Unknown("sh".into())
+        );
+        assert_eq!(Runtime::detect(&[]), Runtime::Unknown(String::new()));
+        assert_eq!(Runtime::named("codex").name(), "codex");
     }
 
     #[test]

@@ -36,18 +36,35 @@ const COPLAND_TOOLS: [&str; 14] = [
     "create_task",
 ];
 
+/// Claude Code's settings for a run (COPL-139): the heartbeat hook, so the run stays alive between
+/// Copland calls and, given the hook's event, hears comments on its task at its next step. The same
+/// hooks as Copland's own `.claude/settings.json`, which a test holds it to, so a run in that repo
+/// gets them once.
+const CLAUDE_SETTINGS: &str = concat!(
+    r#"{"hooks":{"PostToolUse":[{"matcher":"^(?!mcp__copland__)","hooks":[{"type":"mcp_tool","server":"copland","#,
+    r#""tool":"heartbeat","input":{"event":"${hook_event_name}"},"timeout":10}]}],"#,
+    r#""UserPromptSubmit":[{"hooks":[{"type":"mcp_tool","server":"copland","tool":"heartbeat","#,
+    r#""input":{"event":"${hook_event_name}"},"timeout":10}]}]}}"#,
+);
+
 /// Codex can't read the MCP JSON file, so a shell takes the run's secret out of it into an
 /// environment variable Codex reads as the bearer token, kept from Codex's own shell commands;
-/// the URL is the daemon's `COPLAND_URL`. `$1` is the prompt, `$2` the MCP config file.
+/// the URL is the daemon's `COPLAND_URL`. `$1` is the prompt, `$2` the MCP config file, and
+/// whatever follows goes on to `codex exec`: in a coding run, the daemon's sandbox policy
+/// (COPL-143), whose `copland` profile replaces the read-only one here. Without it, as a plain
+/// `command`, Codex's commands read and don't write or reach the network.
 const CODEX_SCRIPT: &str = concat!(
     r#"COPLAND_RUN_SECRET=$(sed -n 's/.*"Bearer \([^"]*\)".*/\1/p' "$2") || exit 1; "#,
     r#"[ -n "$COPLAND_RUN_SECRET" ] || { echo "no run secret in $2" >&2; exit 1; }; "#,
-    "export COPLAND_RUN_SECRET; ",
-    r#"exec codex exec --ephemeral --skip-git-repo-check --ignore-user-config --sandbox read-only "#,
+    r#"export COPLAND_RUN_SECRET; prompt=$1; shift 2; "#,
+    r#"exec codex exec --ephemeral --skip-git-repo-check --ignore-user-config "#,
+    r#"-c approval_policy='"never"' "#,
+    r#"-c 'permissions.copland={filesystem={":root"="read"},network={enabled=false}}' "#,
+    r#"-c default_permissions='"copland"' "#,
     r#"-c "mcp_servers.copland.url=$COPLAND_URL/mcp" "#,
     r#"-c mcp_servers.copland.bearer_token_env_var=COPLAND_RUN_SECRET "#,
     r#"-c 'shell_environment_policy.exclude=["COPLAND_RUN_SECRET"]' "#,
-    r#""$1""#,
+    r#""$@" -- "$prompt""#,
 );
 
 impl Runtime {
@@ -78,11 +95,6 @@ impl Runtime {
         }
     }
 
-    /// Whether this template has been run end to end against Copland's MCP.
-    pub fn tested(self) -> bool {
-        matches!(self, Runtime::ClaudeCode)
-    }
-
     /// The argv for daemon.toml: the prompt as the task, Copland's MCP as the only tools.
     pub fn command(self) -> Vec<String> {
         let s = |v: &str| v.to_string();
@@ -101,6 +113,8 @@ impl Runtime {
                     "--permission-mode",
                     "dontAsk",
                     "--no-session-persistence",
+                    "--settings",
+                    CLAUDE_SETTINGS,
                     "--allowedTools",
                 ]
                 .map(s)
@@ -110,7 +124,8 @@ impl Runtime {
                 c
             }
             /* Codex has no flag for an MCP config file nor a way to take its shell away; a
-            read-only sandbox and none of your own Codex config is the nearest to the above. */
+            read-only profile and none of your own Codex config is the nearest to the above. A
+            coding run's sandbox comes after it, from the daemon (COPL-143). */
             Runtime::Codex => vec![
                 s("sh"),
                 s("-c"),
@@ -234,6 +249,34 @@ mod tests {
         assert!(claude[at + 1..].iter().all(|a| a.starts_with("mcp__copland__")));
     }
 
+    /// The daemon reads each template's runtime off it, for its sandbox (COPL-141): Codex's `sh`
+    /// wrapper included, by the name it gives its script.
+    #[test]
+    fn the_daemon_knows_each_template_for_its_runtime() {
+        use copland_daemon_core::config::Runtime as Kind;
+        for r in Runtime::ALL {
+            let kind = match r {
+                Runtime::ClaudeCode => Kind::ClaudeCode,
+                Runtime::Codex => Kind::Codex,
+            };
+            assert_eq!(Kind::detect(&r.command()), kind, "{r:?}");
+        }
+    }
+
+    /// The run's hooks are Copland's own `.claude/settings.json`, byte for byte but for spacing, so a
+    /// run in that repo runs the heartbeat once, and a change to one is a change to both (COPL-139).
+    #[test]
+    fn claude_runs_get_the_repos_heartbeat_hook() {
+        let claude = Runtime::ClaudeCode.command();
+        let at = claude.iter().position(|a| a == "--settings").unwrap();
+        assert_eq!(claude[at + 1], CLAUDE_SETTINGS);
+        let repo =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.claude/settings.json")).unwrap();
+        let bare = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        assert_eq!(bare(&repo), CLAUDE_SETTINGS);
+        assert!(CLAUDE_SETTINGS.contains(r#""input":{"event":"${hook_event_name}"}"#));
+    }
+
     #[test]
     fn the_codex_wrapper_takes_the_secret_out_of_the_mcp_config() {
         /* The script up to `exec`, run by a real shell on the daemon's own MCP JSON. */
@@ -246,13 +289,78 @@ mod tests {
         let file = dir.join("mcp.json");
         std::fs::write(&file, json).unwrap();
         let script = CODEX_SCRIPT.split("exec codex").next().unwrap().to_string()
-            + r#"printf '%s|%s' "$COPLAND_RUN_SECRET" "$1""#;
+            + r#"printf '%s|%s|%s' "$COPLAND_RUN_SECRET" "$prompt" "$#""#;
         let out = std::process::Command::new("sh")
             .args(["-c", &script, "copland-codex", "do it"])
             .arg(&file)
             .output()
             .unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "cplr_s3cret|do it");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "cplr_s3cret|do it|0");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// In a coding run the daemon's Codex backend appends its sandbox policy to the template
+    /// (COPL-143): the template hands it on to `codex exec` after its own read-only profile, so
+    /// the backend's wins, with the prompt last. Run through a real shell with a `codex` that
+    /// prints what it was given.
+    #[test]
+    fn the_codex_template_hands_the_daemons_sandbox_on_to_codex() {
+        use copland_daemon_core::sandbox::{Backend, Codex, Writable, codex_forbidden};
+        let template = Runtime::Codex.command();
+        assert_eq!(
+            codex_forbidden(&template),
+            None,
+            "the daemon would refuse it as a code_command"
+        );
+        let dir = std::env::temp_dir().join(format!("copland-codex-argv-{}", std::process::id()));
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let fake = bin.join("codex");
+        std::fs::write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let mcp = dir.join("mcp.json");
+        std::fs::write(
+            &mcp,
+            copland_daemon_core::runner::mcp_config_json(
+                "http://h",
+                &copland_daemon_core::config::Secret::new("cplr_x"),
+            ),
+        )
+        .unwrap();
+        let filled: Vec<String> = template
+            .iter()
+            .map(|a| a.replace(PROMPT, "do it").replace(MCP_CONFIG, &mcp.to_string_lossy()))
+            .collect();
+        let w = Writable {
+            dirs: vec![dir.clone()],
+            extra: Vec::new(),
+            chdir: dir.clone(),
+            tmp: None,
+        };
+        let argv = Codex.wrap(&filled, &w);
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        let out = std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .env("PATH", path)
+            .env("COPLAND_URL", "http://h")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let got: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(String::from).collect();
+        assert_eq!(got[0], "exec");
+        assert_eq!(got[got.len() - 2..], ["--".to_string(), "do it".to_string()]);
+        let profiles: Vec<usize> = (0..got.len())
+            .filter(|&i| got[i].starts_with("permissions.copland="))
+            .collect();
+        assert_eq!(profiles.len(), 2, "{got:?}");
+        assert!(got[profiles[0]].contains("enabled=false"));
+        assert!(got[profiles[1]].contains(&format!("{:?}=\"write\"", dir.canonicalize().unwrap())));
+        let chosen = |i: usize| got[i] == "default_permissions=\"copland\"";
+        assert!(
+            (profiles[1]..got.len()).any(chosen),
+            "the daemon's profile is chosen after it"
+        );
+        assert!(got.contains(&"mcp_servers.copland.url=http://h/mcp".to_string()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -15,4 +15,8 @@ the archive). Check them against SHA256SUMS on the release page first.
 
 Built on macOS 14 for macOS 11 and later. Not yet tried on real hardware.
 
+Coding runs are sandboxed with Seatbelt (/usr/bin/sandbox-exec), which
+macOS has built in: nothing to install. CI checks that sandbox on macOS 14;
+nobody has on a real Mac yet.
+
 Docs: https://github.com/berker-z/copland/blob/main/daemon/README.md

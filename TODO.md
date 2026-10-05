@@ -89,11 +89,17 @@ docs/DESIGN.md under Touch.
       `m` on an agent, approve the write token on `/device`, send a message,
       see the agent's reply in the bell and mark it read, then revoke the
       token in settings and check the next `m` asks again.
-- [ ] The box's setup writes a Codex command (`box/src/runtime.rs`) that
-      has never run against Copland: check that `codex exec` reaches the
-      MCP with the run's secret and may call its tools without asking. Paste
-      (ctrl+v) in setup's address field was only tested as editing logic,
-      not against a real Wayland clipboard.
+- [ ] Paste (ctrl+v) in setup's address field was only tested as editing
+      logic, not against a real Wayland clipboard.
+- [ ] Codex's coding sandbox (COPL-143) was run for real on Linux: `codex
+      exec` with the box's template and the daemon's policy reached the MCP,
+      committed in a scratch worktree, read GitHub and was refused outside.
+      Not yet: a whole daemon run on a Copland task through to a merged PR
+      (a real `git push` and `gh pr create` through Codex's proxy), and
+      anything on a real Mac, where only CI's `codex sandbox` tests run.
+      Codex's hosts are fixed (`sandbox/codex.rs`): a board whose remote
+      isn't GitHub, or a build that needs another registry, can't reach it
+      from a Codex run; an agent setting for more hosts would.
 - [ ] The box's bell and menu (COPL-64, COPL-65) were tested end to end on
       Hyprland with mako against a dev server: notifications, their click,
       every panel, compact, stopping a run and signing out. Not yet: another
@@ -115,7 +121,8 @@ docs/DESIGN.md under Touch.
       and aarch64 tarballs, an unsigned macOS arm64 app, and the Nix
       package pushed to Cachix. Not yet run on GitHub; the cache, its
       secret and its key in `flake.nix` are still to set up, and the Mac
-      build has never run on a Mac. Still to do: a second runtime (Codex) to prove the binding, and
+      build has never run on a Mac (its coding sandbox, Seatbelt, is
+      checked by CI on macos-14 only, COPL-140). Codex is the second runtime and has a sandbox of its own (COPL-143). Still to do:
       backoff for a runtime that keeps failing. Known gaps are in
       daemon/README.md.
 - [ ] Data export: everything a person has, as one download from settings.
@@ -187,6 +194,23 @@ docs/DESIGN.md under Touch.
   The message prompt names the task a message is about and reads "on
   <name>" as one of the agent's boards. Tested live with two daemons on one
   agent token and four messages: each was in exactly one run
+- Access checks count nothing (COPL-133, for COPL-131): `requireBoard` and
+  `boardsFor` read only membership and role (`BoardAccess`); the member and
+  open task counts are `GET /api/boards`'s alone (`boardSummariesFor`), and
+  `GET /api/boards/:id`'s `board` no longer carries them. The open count
+  reads a partial index of open tasks (`tasks_open`, migration 0029). Rows
+  read locally: `/api/inbox` 770 to 19, `/api/wired` 771 to 20, a board
+  route's access check about 125 to 1 (checks/access.check.ts)
+- Comments reach the run working on the task (COPL-139, for COPL-130):
+  `POST /api/runs/current/news` tells a run, once each, the unread comments
+  and mentions on the tasks it has claimed since it started
+  (`runs.heard_until`, migration 0031). The MCP's `heartbeat`, given the
+  Claude Code hook's event, returns them as the hook's
+  `additionalContext`, so they arrive at the run's next step; the box's
+  setup puts that hook in the Claude Code command. The guide has every run
+  read the task again before it integrates or moves it to done, and the
+  task modal tells a commenter when the run will see the comment
+  (checks/runNews.check.ts)
 - MCP server with OAuth and personal tokens, its tools, a coverage check
 - Deployed at copland.berkerz.dev with a published Google consent screen,
   privacy and terms pages, the pole mark and favicon
@@ -453,6 +477,15 @@ docs/DESIGN.md under Touch.
   flows at the same 15 (`FPS` in daemon/box/src/scene.rs, in place of
   20), its sway stays at 12, and travel is capped at 30 with a timer
   rather than drawn on every display frame
+- Opening a task reads its inbox items (COPL-138): the task modal marks
+  your unread items on that task read (given, mentioned, commented; never
+  a message), one write per opening and none when nothing is unread, from
+  the inbox pages already loaded (`readOnOpen` in src/domain/inbox.ts,
+  checked in checks/inbox.check.ts; `useReadOnOpen` in
+  src/features/inbox/inboxWrite.ts). Before, only clicking the item in the
+  inbox did, so a mention read on the task, or opened from the box's bell,
+  stayed unread for good and the bell never cleared. Nothing server-side
+  changed: agents still mark their own items read through the MCP
 - A hidden tab lets go of its socket (COPL-132). Chromium woke a background
   tab once a minute and its socket died with 1001 each time, and every drop
   refetched everything twice (on close and again on open). Now a hidden tab

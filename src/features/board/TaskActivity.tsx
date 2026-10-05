@@ -3,14 +3,15 @@
    ----------------------------------------------------------------------------
    Comments are plain text with line breaks kept, and their images under
    it (CommentImages.tsx): paste or drop one on the box to add it.
-   Ctrl/Cmd+Enter posts.
+   Ctrl/Cmd+Enter posts. While a run holds the task, a line above the box
+   says when a comment will reach it (COPL-139).
    History reads the event log; field changes are spelled out in words
    rather than dumped as JSON, since the log is for people.
    ========================================================================== */
 
 import { useState } from "react";
 import { Avatar } from "@/ui/Avatar";
-import type { BoardDetail, TaskEvent } from "@/domain/types";
+import type { BoardDetail, Task, TaskEvent } from "@/domain/types";
 import { useCommentEdits, useComments, useTaskEvents } from "@/lib/boardEdits";
 import { useMe } from "@/lib/queries";
 import { when } from "@/ui/tone";
@@ -67,7 +68,8 @@ function describe(event: TaskEvent, detail: BoardDetail): string {
   }
 }
 
-export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: string }) {
+export function TaskActivity({ detail, task }: { detail: BoardDetail; task: Task }) {
+  const taskId = task.id;
   const [tab, setTab] = useState<"comments" | "history">("comments");
   const me = useMe();
   const comments = useComments(taskId);
@@ -158,6 +160,7 @@ export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: 
               <CommentImages images={c.attachments} />
             </div>
           ))}
+          <ClaimNote detail={detail} task={task} />
           <div {...drop.handlers} className={drop.over ? "outline outline-1 outline-dashed outline-offset-2 outline-accent" : ""}>
             <MentionTextarea
               members={detail.members}
@@ -205,5 +208,24 @@ export function TaskActivity({ detail, taskId }: { detail: BoardDetail; taskId: 
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * Above the comment box while a run holds the task (COPL-139): whether a
+ * comment reaches it now or later. A run that asks for news at every step
+ * (the Claude Code hook) sees it at its next one; any other sees it when it
+ * next reads the task, which the guide has it do before it integrates.
+ */
+function ClaimNote({ detail, task }: { detail: BoardDetail; task: Task }) {
+  const claim = task.claim;
+  const closed = task.completedAt !== null;
+  const claimer = claim && !closed && Date.parse(claim.until) > Date.now() ? detail.members.find((m) => m.user.id === claim.userId)?.user : undefined;
+  if (!claim || !claimer) return null;
+  return (
+    <p className="text-xs text-muted mb-1.5">
+      <span className="text-accent">{claimer.handle}</span> is working on this.{" "}
+      {claim.hears ? "It sees new comments at its next step." : "It sees new comments when it next reads the task."}
+    </p>
   );
 }

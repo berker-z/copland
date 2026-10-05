@@ -269,7 +269,7 @@ const RUN_CLASS: Record<RunStatus, string> = {
   cancelled: "text-faint",
 };
 
-/** Its latest runs: supervised ones declared by whatever starts it (POST /api/runs), interactive ones made by a chat session's first claim; stale once they go quiet. */
+/** Its latest runs: supervised ones declared by whatever starts it (POST /api/runs), interactive ones made by a chat session's first claim; stale once they go quiet. How one ended, when its finish said (COPL-136), follows its status. */
 function RunsGroup({ agent }: { agent: Agent }) {
   return (
     <Group title="runs">
@@ -283,6 +283,7 @@ function RunsGroup({ agent }: { agent: Agent }) {
             <li key={r.id} className="flex flex-wrap gap-x-2 py-0.5">
               <span className="text-faint">{r.short}</span>
               <span className={RUN_CLASS[r.status]}>{r.status}</span>
+              {r.reason && <span className="text-muted">{r.reason}</span>}
               <span className="text-faint">{r.kind}</span>
               {r.client && <span className="text-muted">{r.client}</span>}
               {r.claims.length > 0 && <span className="text-muted">on {r.claims.join(", ")}</span>}

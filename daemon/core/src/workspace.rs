@@ -263,7 +263,7 @@ async fn sync(clone: &Path, remote: &str) -> Result<String> {
 
 /// What a lead reads to plan (COPL-87): the clone itself, checked out at the default branch's
 /// head as fetched just now, detached. Nobody works in the clone's own checkout (tasks have
-/// worktrees), and the run that reads it can't write there (sandbox.rs), so leads share it.
+/// worktrees), and the run that reads it can't write there (sandbox/), so leads share it.
 pub async fn view(code_dir: &Path, remote: &str, repo: &str, key: &str) -> Result<Workspace> {
     let (clone, _) = paths(code_dir, repo, key)?;
     let target = sync(&clone, remote).await?;
