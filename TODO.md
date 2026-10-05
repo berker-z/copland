@@ -86,11 +86,17 @@ docs/DESIGN.md under Touch.
       `m` on an agent, approve the write token on `/device`, send a message,
       see the agent's reply in the bell and mark it read, then revoke the
       token in settings and check the next `m` asks again.
-- [ ] The box's setup writes a Codex command (`box/src/runtime.rs`) that
-      has never run against Copland: check that `codex exec` reaches the
-      MCP with the run's secret and may call its tools without asking. Paste
-      (ctrl+v) in setup's address field was only tested as editing logic,
-      not against a real Wayland clipboard.
+- [ ] Paste (ctrl+v) in setup's address field was only tested as editing
+      logic, not against a real Wayland clipboard.
+- [ ] Codex's coding sandbox (COPL-143) was run for real on Linux: `codex
+      exec` with the box's template and the daemon's policy reached the MCP,
+      committed in a scratch worktree, read GitHub and was refused outside.
+      Not yet: a whole daemon run on a Copland task through to a merged PR
+      (a real `git push` and `gh pr create` through Codex's proxy), and
+      anything on a real Mac, where only CI's `codex sandbox` tests run.
+      Codex's hosts are fixed (`sandbox/codex.rs`): a board whose remote
+      isn't GitHub, or a build that needs another registry, can't reach it
+      from a Codex run; an agent setting for more hosts would.
 - [ ] The box's bell and menu (COPL-64, COPL-65) were tested end to end on
       Hyprland with mako against a dev server: notifications, their click,
       every panel, compact, stopping a run and signing out. Not yet: another
@@ -113,7 +119,7 @@ docs/DESIGN.md under Touch.
       package pushed to Cachix. Not yet run on GitHub; the cache, its
       secret and its key in `flake.nix` are still to set up, and the Mac
       build has never run on a Mac (its coding sandbox, Seatbelt, is
-      checked by CI on macos-14 only, COPL-140). Still to do: a second runtime (Codex) to prove the binding, and
+      checked by CI on macos-14 only, COPL-140). Codex is the second runtime and has a sandbox of its own (COPL-143). Still to do:
       backoff for a runtime that keeps failing. Known gaps are in
       daemon/README.md.
 - [ ] Data export: everything a person has, as one download from settings.

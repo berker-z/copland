@@ -1428,9 +1428,9 @@ mod tests {
     fn a_missing_program_is_said_and_stops_only_its_runs() {
         let claude = ["/run/current-system/sw/bin/claude", "-p"];
         let a = agent(&claude, Some(&claude));
-        /* The agent's backend, the platform's fallback for now; Codex's too (COPL-141). */
+        /* The agent's backend: the platform's fallback for Claude Code, Codex's own for Codex (COPL-143). */
         let program = sandbox::of(&a).program();
-        assert_eq!(program, sandbox::of(&agent(&claude, Some(&["codex"]))).program());
+        assert_eq!(sandbox::of(&agent(&claude, Some(&["codex"]))).program(), "codex");
         let none = Missing::of(&a, |_| true);
         assert_eq!(none.message(), None);
         assert!(!none.stops(Role::Workdir) && !none.stops(Role::Worker));

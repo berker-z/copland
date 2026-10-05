@@ -5,7 +5,9 @@
 # require; the daemon part is skipped, not left pending, on PRs that don't
 # touch it. The box (daemon/box) needs GPUI's native libraries and is checked
 # by box-release.yml under Nix instead. `macos` runs the daemon's tests on a
-# Mac too, for its sandbox (COPL-140).
+# Mac too, for its sandbox (COPL-140). Both install Codex, pinned, and require
+# its sandbox tests (COPL-143), which run `codex sandbox` with the policy the
+# daemon gives Codex's runs: no model, no account.
 
 name: ci
 
@@ -56,8 +58,18 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: daemon
+      # Codex's Linux sandbox is bubblewrap, which needs unprivileged user
+      # namespaces; Ubuntu 24.04's AppArmor keeps them from it otherwise.
+      - if: steps.daemon.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          npm i -g @openai/codex@0.159.2
       - if: steps.daemon.outputs.changed == 'true'
         working-directory: daemon
+        env:
+          COPLAND_TEST_CODEX: "1"
         run: cargo test && cargo clippy --all-targets -- -D warnings
 
   # The daemon on a Mac (COPL-140): its tests there run a command inside the
@@ -88,5 +100,13 @@ jobs:
         with:
           workspaces: daemon
       - if: steps.daemon.outputs.changed == 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - if: steps.daemon.outputs.changed == 'true'
+        run: npm i -g @openai/codex@0.159.2
+      - if: steps.daemon.outputs.changed == 'true'
         working-directory: daemon
+        env:
+          COPLAND_TEST_CODEX: "1"
         run: cargo test && cargo clippy --all-targets -- -D warnings
