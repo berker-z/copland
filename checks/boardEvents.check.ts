@@ -276,6 +276,31 @@ t("and is the server's board again, at its version", same(held(), await boardRea
   whole.length = 0;
 }
 
+/* A tab holding no board, only a task modal opened from the inbox (COPL-153): its shell, its task and that task's parent. */
+{
+  const modal = new QueryClient();
+  const under = (...rest: string[]) => ["board", "b1", ...rest];
+  modal.setQueryData(under("shell"), {});
+  modal.setQueryData(under("task", childId), {});
+  modal.setQueryData(under("task", epicId), {});
+  modal.setQueryData(under("task", looseId), {});
+  const stale = (k: unknown[]) => modal.getQueryState(k)?.isInvalidated === true;
+  const edit = await heard((c) => patchTask(req("PATCH", { title: "seen from the inbox" }), env, sam, looseId, c));
+  reads.length = 0;
+  await applyBoardEvents(modal, fetchTask, "b1", edit.events.map(({ topics: _t, tab: _b, ...change }) => change as BoardChange), false);
+  t("without the board, an event refetches the tasks it names and reads none itself", stale(under("task", looseId)) && reads.length === 0);
+  t("and leaves the others and the shell alone", !stale(under("task", childId)) && !stale(under("task", epicId)) && !stale(under("shell")));
+  t("and reads no board", modal.getQueryData(key) === undefined);
+  const parentMoved = await heard((c) => patchTask(req("PATCH", { stageId: "doing" }), env, sam, childId, c));
+  await applyBoardEvents(modal, fetchTask, "b1", parentMoved.events.map(({ topics: _t, tab: _b, ...change }) => change as BoardChange), false);
+  t("a child's move refetches the parent it names, whose progress moved", stale(under("task", childId)) && stale(under("task", epicId)));
+  const dropped = await heard((c) => postTask(req("POST", { title: "dropped" }), env, sam, "b1", c));
+  const droppedGone = await heard((c) => deleteTask(env, sam, dropped.body.id as string, c));
+  modal.setQueryData(under("shell"), {});
+  await applyBoardEvents(modal, fetchTask, "b1", droppedGone.events.map(({ topics: _t, tab: _b, ...change }) => change as BoardChange), false);
+  t("an event naming no tasks refetches everything under the board's key", stale(under("shell")));
+}
+
 /* --------------------------------------------------------------- report -- */
 
 const failed = cases.filter(([, pass]) => !pass);

@@ -89,6 +89,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
       "delete_doc",
     ],
   },
+  "GET /api/boards/:id/shell": { skip: "browser: a task modal opened from the inbox or /wired, without the board's tasks; get_board and get_task cover it" },
   "GET /api/boards/:id/closed": {
     tools: [
       "get_board",

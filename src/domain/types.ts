@@ -286,6 +286,12 @@ export interface BoardDetail {
   version: number;
 }
 
+/**
+ * GET /api/boards/:id/shell: a board without its tasks, what a task modal
+ * opened from outside the board (the inbox, /wired) needs of it.
+ */
+export type BoardShell = Pick<BoardDetail, "board" | "members" | "stages" | "labels" | "repos" | "version">;
+
 /** GET /api/boards/:id/closed: a board's tasks closed longer ago than RECENT_CLOSED_DAYS, newest first, a page at a time. */
 export interface ClosedPage {
   tasks: Task[];

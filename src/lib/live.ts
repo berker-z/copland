@@ -26,10 +26,8 @@
 import { useEffect } from "react";
 import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import type { BoardChange, LiveEvent, LiveTopic } from "@/domain/live";
-import type { TaskRead } from "@/domain/types";
-import { api, ApiError } from "./api";
-import { applyBoardEvents, type FetchTask } from "./boardPatch";
-import { KEYS } from "./queries";
+import { applyBoardEvents } from "./boardPatch";
+import { fetchTask, KEYS } from "./queries";
 import { setCatchingUp, setLive, TAB_ID } from "./liveState";
 import { listen } from "./liveSocket";
 
@@ -66,12 +64,6 @@ export function refresh(queryClient: QueryClient, topics: Iterable<LiveTopic>): 
 
 /* What reads tasks across boards: refetched on any board event, which can change whose work is whose. */
 const ACROSS_BOARDS = [KEYS.myWork, KEYS.wired, KEYS.recipients];
-
-const fetchTask: FetchTask = (id) =>
-  api<TaskRead>(`/tasks/${encodeURIComponent(id)}`).catch((error: unknown) => {
-    if (error instanceof ApiError && error.status === 404) return null;
-    throw error;
-  });
 
 /** Board events that say which board: each board patched or read on its own, and what reads across boards. */
 function boardRefresh(queryClient: QueryClient, byBoard: Map<string, BoardChange[]>): void {

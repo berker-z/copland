@@ -56,9 +56,11 @@ interface TaskModalProps {
   detail: BoardDetail;
   taskId: string;
   onClose: () => void;
+  /** Called on going into the form, whose pickers list the board's tasks: a modal opened without the board reads it then. */
+  onEdit?: () => void;
 }
 
-export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
+export function TaskModal({ detail, taskId, onClose, onEdit }: TaskModalProps) {
   const task = detail.tasks.find((t) => t.id === taskId);
   const update = useUpdateTask(detail.board.id);
   const remove = useDeleteTask(detail.board.id);
@@ -153,7 +155,7 @@ export function TaskModal({ detail, taskId, onClose }: TaskModalProps) {
           {canEdit && (
             <>
               <button
-                onClick={() => (editMode ? finishEditing() : setMode("edit"))}
+                onClick={() => (editMode ? finishEditing() : (onEdit?.(), setMode("edit")))}
                 className={`tap p-2 flex items-center gap-1.5 hover:bg-raised transition-colors ${editMode ? "text-accent" : "hover:text-accent"}`}
                 title={editMode ? "Done editing" : "Edit"}
               >

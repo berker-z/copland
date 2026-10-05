@@ -22,6 +22,11 @@
    too long ago) is not added to it: the paged older ones and a stray
    task opened by key refetch under their own keys instead.
 
+   A tab that holds no read of the board may still show one of its tasks,
+   opened from the inbox or /wired without the board (useTaskView, COPL-153):
+   then the tasks an event names refetch under the board's key, and an event
+   that names none refetches everything under it.
+
    One board's events are applied one batch after another, so a batch never
    starts from a version the batch before it is about to move.
    ========================================================================== */
@@ -98,10 +103,22 @@ async function apply(
   };
 
   const held = queryClient.getQueryData<BoardDetail>(key);
-  const plan = planBoard(held?.version, events);
+  if (!held) {
+    /* No board to patch. What is held under its key is at most a task modal's (COPL-153: its shell, its task and the few
+       that one names), so only the tasks named refetch; an event that names none reads everything under the key. */
+    if (events.some((e) => !e.tasks)) return whole();
+    for (const id of new Set(events.flatMap((e) => e.tasks ?? []))) {
+      void queryClient.invalidateQueries({ queryKey: [...key, "task", id], refetchType });
+      void queryClient.invalidateQueries({ queryKey: COMMENTS_KEY(id), refetchType });
+      void queryClient.invalidateQueries({ queryKey: EVENTS_KEY(id), refetchType });
+    }
+    void queryClient.invalidateQueries({ queryKey: [...key, "overlap"], refetchType });
+    return;
+  }
+  const plan = planBoard(held.version, events);
   if (plan.kind === "none") return;
   /* A hidden tab fetches nothing, and an edit of this tab's own in flight would be overwritten by a patch. */
-  if (plan.kind === "whole" || hidden || !held || queryClient.isMutating() > 0) return whole();
+  if (plan.kind === "whole" || hidden || queryClient.isMutating() > 0) return whole();
 
   for (const id of plan.tasks) {
     void queryClient.invalidateQueries({ queryKey: COMMENTS_KEY(id), refetchType });

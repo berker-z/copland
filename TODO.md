@@ -256,6 +256,15 @@ docs/DESIGN.md under Touch.
   rows, where it read the board and the boards list (778 on the reads
   check's seed, 12213 before COPL-150); pinned by
   checks/boardEvents.check.ts and the reads check's `live:` row
+- A task opened from the inbox or /wired loads that task, not its board
+  (COPL-153, for COPL-131): when the tab doesn't hold the board already,
+  the modal reads the task, the board's shell (`GET /api/boards/:id/shell`:
+  stages, labels, members, repos and your role, no tasks) and the tasks it
+  names (its parent and what it waits on), and reads the board only when
+  it goes into edit, whose parent and dependency pickers list the board's
+  tasks (`useTaskView` in `src/lib/queries.ts`). A live event naming one
+  of those tasks refetches just it. 107 rows on the reads check's seed
+  (its `inbox:` row), where it read the board (739)
 - Comments reach the run working on the task (COPL-139, for COPL-130):
   `POST /api/runs/current/news` tells a run, once each, the unread comments
   and mentions on the tasks it has claimed since it started

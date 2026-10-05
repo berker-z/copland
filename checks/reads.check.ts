@@ -26,7 +26,7 @@ import { BUDGETS } from "./reads.budgets.ts";
 import { sqlite } from "./worker.ts";
 import type { Viewer } from "../src/domain/types.ts";
 
-const { getBoard, getBoards, getClosed } = await import("../src/worker/routes/boards.ts");
+const { getBoard, getBoardShell, getBoards, getClosed } = await import("../src/worker/routes/boards.ts");
 const { getTask, patchTask } = await import("../src/worker/routes/tasks.ts");
 const { Changes } = await import("../src/worker/live.ts");
 const { getInbox } = await import("../src/worker/routes/inbox.ts");
@@ -338,10 +338,19 @@ async function taskEditHeard(env: Env, live: string, skip: () => void): Promise<
   return new Response("{}");
 }
 
+/** What a tab reads to open a task from the inbox without its board (COPL-153): the board's shell, the task, and the tasks it names. */
+async function openedFromInbox(env: Env, live: string): Promise<Response> {
+  await getBoardShell(env, sam, "big");
+  const task = (await (await getTask(env, sam, live)).json()) as { parentId: string | null; dependsOn: string[] };
+  for (const id of [task.parentId, ...task.dependsOn]) if (id) await getTask(env, sam, id);
+  return new Response("{}");
+}
+
 /** What each route is asked, and by whom: the browser's person, the daemon's agent for ready. */
 const ROUTES: Record<string, (env: Env, live: string, skip: () => void) => Promise<Response>> = {
   "GET /api/boards": (env) => getBoards(env, sam),
   "GET /api/boards/:id": (env) => getBoard(env, sam, "big"),
+  "GET /api/boards/:id/shell": (env) => getBoardShell(env, sam, "big"),
   "GET /api/boards/:id/closed": (env) => getClosed(env, sam, "big", new URL("http://x/api/boards/big/closed")),
   "GET /api/tasks/:id": (env, live) => getTask(env, sam, live),
   "GET /api/inbox": (env) => getInbox(env, sam, new URL("http://x/api/inbox")),
@@ -350,6 +359,7 @@ const ROUTES: Record<string, (env: Env, live: string, skip: () => void) => Promi
   "GET /api/tasks/mine": (env) => getMyWork(env, sam),
   "GET /api/messages/recipients": (env) => getRecipients(env, sam),
   "live: one task edit, heard": taskEditHeard,
+  "inbox: one task opened": openedFromInbox,
 };
 
 /** Nobody is connected: the Durable Object that would say so isn't here. */
