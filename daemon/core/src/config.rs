@@ -337,6 +337,15 @@ impl Config {
                 Some(name) => Runtime::named(name),
                 None => Runtime::detect(a.code_command.as_ref().unwrap_or(&a.command)),
             };
+            /* Codex's coding runs are sandboxed by Codex, with the policy the daemon gives it (COPL-143). */
+            if let (Runtime::Codex, Some(code)) = (&runtime, &a.code_command) {
+                if let Some(word) = crate::sandbox::codex_forbidden(code) {
+                    bail!(
+                        "{at}: code_command says `{word}`, which would set Codex's sandbox in place of the one the \
+                         daemon gives coding runs; leave it out"
+                    );
+                }
+            }
             agents.push(AgentConfig {
                 url,
                 handle,
@@ -556,6 +565,21 @@ mod tests {
             Runtime::Unknown("hermes".into())
         );
         assert!(parse(&format!("{claude}runtime=\"\"\n")).is_err());
+
+        /* A Codex code_command can't set Codex's sandbox itself: the daemon does (COPL-143). */
+        let refused = parse(&format!(
+            "{claude}code_command=[\"codex\",\"exec\",\"--sandbox\",\"read-only\"]\n"
+        ))
+        .unwrap_err();
+        assert!(format!("{refused:#}").contains("`--sandbox`"), "{refused:#}");
+        assert!(
+            parse(&format!(
+                "{claude}code_command=[\"sh\",\"-c\",\"exec codex exec --yolo\",\"copland-codex\"]\n"
+            ))
+            .is_err()
+        );
+        /* For another runtime it's that command's business. */
+        assert!(parse(&format!("{claude}code_command=[\"hermes\",\"--sandbox\"]\n")).is_ok());
 
         let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
