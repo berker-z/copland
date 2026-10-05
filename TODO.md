@@ -104,6 +104,12 @@ docs/DESIGN.md under Touch.
       action, compact on a compositor other than Hyprland, the autostart
       entry actually starting the box at a real login, and macOS, which sends
       no notifications yet (`box/src/notify.rs`).
+- [ ] A runtime that calls `finish_run` completed itself, with its task still
+      active, isn't caught by the daemon's check for unfinished runs
+      (COPL-147): a finished run can't be finished again as failed, so the
+      task stays in doing with nobody on it. The prompt and the guide tell
+      it not to; catching it would take Copland refusing such a finish, or
+      putting the task back itself.
 - [ ] Boards from before migration 0012 got a backlog stage but no blocked
       one, so agents there can only comment when they need an answer. Add a
       blocked stage by hand in board settings where agents work.

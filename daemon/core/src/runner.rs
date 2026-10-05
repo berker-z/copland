@@ -54,6 +54,9 @@ fn only(task_key: &str) -> String {
     )
 }
 
+/// What a run on a task is told of its end (COPL-147): the runtime's turn ending is the run ending.
+const TURN: &str = "Your run ends when your turn does, and nothing brings you back: wait for whatever you start instead of leaving it in the background to pick up later, and if it is too long to wait for, push what you have, comment where it stands, and move the task to todo.";
+
 /// The messages, quoted: who sent each, whether to trust it, what task it is about, and the ids to answer and mark it read with.
 fn quote(messages: &[Message]) -> String {
     let mut out = String::new();
@@ -99,7 +102,7 @@ pub fn prompt(
                 only = only(task_key),
             ),
             Some(ws) => format!(
-                "You are @{handle} working on {task_key}, in a git worktree of {repo} on the branch {branch} (from {target} at {base}). Read it with get_task, and work as the copland guide says, including its Code section on finishing coding work.{integrate} When you stop, leave the task in the right stage. {only}",
+                "You are @{handle} working on {task_key}, in a git worktree of {repo} on the branch {branch} (from {target} at {base}). Read it with get_task, and work as the copland guide says, including its Code section on finishing coding work.{integrate} When you stop, leave the task in the right stage. {TURN} {only}",
                 repo = ws.repo,
                 branch = ws.branch,
                 target = ws.target,
@@ -112,7 +115,7 @@ pub fn prompt(
                 only = only(task_key),
             ),
             None => format!(
-                "You are @{handle} working on {task_key}. Read it with get_task, and work as the copland guide says. When you stop, leave the task in the right stage. {only}",
+                "You are @{handle} working on {task_key}. Read it with get_task, and work as the copland guide says. When you stop, leave the task in the right stage. {TURN} {only}",
                 only = only(task_key),
             ),
         },
@@ -812,6 +815,33 @@ mod tests {
                 "{p}"
             );
         }
+    }
+
+    /// COPL-147: a run that works a task is told its turn is its run, so it doesn't end it with
+    /// work left in the background. A lead plans and leaves its task open, so it isn't told to move it.
+    #[test]
+    fn a_working_run_is_told_its_turn_is_its_run() {
+        let ws = Workspace {
+            repo: "o/r".into(),
+            key: "COPL-9".into(),
+            dir: "/c/work/COPL-9".into(),
+            clone: "/c/repos/o/r".into(),
+            branch: "copl-9-x".into(),
+            base: "0123456789abcdef".into(),
+            target: "origin/main".into(),
+            fresh: true,
+            read_only: false,
+            pull_requests: true,
+        };
+        for p in [
+            prompt_for("me/dev", "COPL-9", Brief::Work),
+            prompt("me/dev", "COPL-9", Brief::Work, Some(&ws), &[]),
+        ] {
+            assert!(p.contains("Your run ends when your turn does"), "{p}");
+            assert!(p.contains("instead of leaving it in the background"), "{p}");
+        }
+        let lead = Workspace { read_only: true, ..ws };
+        assert!(!prompt("me/dev", "COPL-9", Brief::Work, Some(&lead), &[]).contains(TURN));
     }
 
     fn changes(files: &[&str]) -> Changes {
