@@ -252,8 +252,12 @@ export async function boardTasks(
 /** The most a page of closedTasks holds. */
 export const CLOSED_PAGE = 100;
 
-/** A page cursor: the last task's completed_at and id. */
-const cursor = (t: Task) => `${t.completedAt}~${t.id}`;
+/**
+ * A page cursor: the last task's completed_at and rowid. tasks_completed
+ * (migration 0033) holds a board's closed tasks in that order, so a page
+ * reads only its own rows.
+ */
+const cursor = (r: TaskRow & { seq: number }) => `${r.completed_at}~${r.seq}`;
 
 /**
  * GET /api/boards/:id/closed: a board's tasks closed before
@@ -269,20 +273,20 @@ export async function closedTasks(
   limit = CLOSED_PAGE,
   now = Date.now(),
 ): Promise<ClosedPage> {
-  const [at, id] = before?.includes("~") ? before.split("~", 2) : [recentCutoff(now), ""];
+  const [at, seq] = before && /^[^~]+~\d+$/.test(before) ? [before.split("~")[0], Number(before.split("~")[1])] : [recentCutoff(now), 0];
   const { results } = await db
     .prepare(
-      `${TASK_SELECT}
+      `SELECT t.*, t.rowid AS seq, b.key AS board_key FROM tasks t JOIN boards b ON b.id = t.board_id
         WHERE t.board_id = ?1 AND t.deleted_at IS NULL AND t.completed_at IS NOT NULL
-          AND (t.completed_at < ?2 OR (t.completed_at = ?2 AND t.id < ?3))
-        ORDER BY t.completed_at DESC, t.id DESC
+          AND (t.completed_at < ?2 OR (t.completed_at = ?2 AND t.rowid < ?3))
+        ORDER BY t.completed_at DESC, t.rowid DESC
         LIMIT ?4`,
     )
-    .bind(boardId, at, id, limit + 1)
-    .all<TaskRow>();
+    .bind(boardId, at, seq, limit + 1)
+    .all<TaskRow & { seq: number }>();
   const rows = results.slice(0, limit);
   const [tasks, progress] = await Promise.all([hydrate(db, rows, false), progressFor(db, rows.map((r) => r.id))]);
-  return { tasks, progress, next: results.length > limit ? cursor(tasks[tasks.length - 1]) : null };
+  return { tasks, progress, next: results.length > limit ? cursor(rows[rows.length - 1]) : null };
 }
 
 /** An open task's latest changed files (migrations/0024_task_files.sql), with who is on it. */

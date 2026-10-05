@@ -169,7 +169,7 @@ do {
 } while (before !== null && pages.length < 50);
 const older = pages.flatMap((p) => p.tasks);
 const want = db
-  .prepare(`SELECT id FROM tasks WHERE board_id = 'b' AND deleted_at IS NULL AND completed_at < ? ORDER BY completed_at DESC, id DESC`)
+  .prepare(`SELECT id FROM tasks WHERE board_id = 'b' AND deleted_at IS NULL AND completed_at < ? ORDER BY completed_at DESC, rowid DESC`)
   .all(ago(RECENT_CLOSED_DAYS)) as Array<{ id: string }>;
 t("pages hold every older closed task once, newest first", eq(older.map((x) => x.id), want.map((x) => x.id)));
 t("tasks closed at the same moment are both paged", older.some((x) => x.id === "tie-a") && older.some((x) => x.id === "tie-b"));

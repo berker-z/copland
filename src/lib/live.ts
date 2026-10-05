@@ -10,17 +10,20 @@
    refetch goes through the API like any other read. A tab ignores its own
    writes, which it has already applied.
 
-   While the socket is up the fallback polls stop (isLive); when it drops
-   they start again, everything on screen is refetched, and it reconnects
-   with backoff. A hidden tab only marks things stale and catches up when it
-   is looked at again.
+   While the socket is up the fallback polls stop (isLive). When it drops
+   they start again and it reconnects with backoff; once it is back,
+   everything on screen is refetched, once. A hidden tab closes its socket,
+   marks things stale without fetching, and reconnects and catches up when
+   it is shown again. The socket's life is in lib/liveSocket.ts; this file
+   is what its messages mean.
    ========================================================================== */
 
 import { useEffect } from "react";
 import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import type { LiveEvent, LiveTopic } from "@/domain/live";
 import { KEYS } from "./queries";
-import { isLive, setLive, TAB_ID } from "./liveState";
+import { setCatchingUp, setLive, TAB_ID } from "./liveState";
+import { listen } from "./liveSocket";
 
 const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
   boards: [KEYS.boards],
@@ -43,8 +46,6 @@ const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
 /* Several writes in a burst (a drag across stages, an assistant filing ten
    tasks) become one refetch. */
 const COALESCE_MS = 300;
-const PING_MS = 30_000;
-const MAX_BACKOFF_MS = 30_000;
 
 /** Refetch what these topics cover. Also for a tab's own writes that touch more than the query it changed. */
 export function refresh(queryClient: QueryClient, topics: Iterable<LiveTopic>): void {
@@ -60,84 +61,41 @@ export function useLiveUpdates(enabled: boolean): void {
   useEffect(() => {
     if (!enabled || typeof WebSocket === "undefined") return;
 
-    let socket: WebSocket | null = null;
-    let stopped = false;
-    let attempts = 0;
-    let everConnected = false;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let ping: ReturnType<typeof setInterval> | undefined;
     let flush: ReturnType<typeof setTimeout> | undefined;
     const pending = new Set<LiveTopic>();
 
-    const connect = () => {
-      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(`${scheme}//${location.host}/api/live`);
-      socket = ws;
-
-      ws.onopen = () => {
-        attempts = 0;
-        setLive(true);
-        /* Whatever changed while we were away was never sent to us. */
-        if (everConnected) void queryClient.invalidateQueries();
-        everConnected = true;
-        ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send("ping"), PING_MS);
-      };
-
-      ws.onmessage = ({ data }) => {
-        if (typeof data !== "string" || data === "pong") return;
-        let event: LiveEvent;
-        try {
-          event = JSON.parse(data) as LiveEvent;
-        } catch {
-          return;
-        }
-        if (event.tab === TAB_ID || !Array.isArray(event.topics)) return;
-        for (const topic of event.topics) pending.add(topic);
-        flush ??= setTimeout(() => {
-          flush = undefined;
-          refresh(queryClient, pending);
-          pending.clear();
-        }, COALESCE_MS);
-      };
-
-      ws.onclose = () => {
-        clearInterval(ping);
-        if (socket !== ws) return;
-        socket = null;
-        if (isLive()) {
-          setLive(false);
-          /* Refetching also puts the polls back on: their interval is re-read
-             when the query updates. */
-          void queryClient.refetchQueries({ type: "active" });
-        }
-        if (stopped) return;
-        const delay = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** attempts) * (0.5 + Math.random() / 2);
-        attempts += 1;
-        retry = setTimeout(connect, delay);
-      };
+    const message = (data: string) => {
+      let event: LiveEvent;
+      try {
+        event = JSON.parse(data) as LiveEvent;
+      } catch {
+        return;
+      }
+      if (event.tab === TAB_ID || !Array.isArray(event.topics)) return;
+      for (const topic of event.topics) pending.add(topic);
+      flush ??= setTimeout(() => {
+        flush = undefined;
+        refresh(queryClient, pending);
+        pending.clear();
+      }, COALESCE_MS);
     };
 
-    /* A laptop waking up or a phone coming back online: try now, not after
-       the backoff. */
-    const onOnline = () => {
-      if (socket || stopped) return;
-      clearTimeout(retry);
-      attempts = 0;
-      connect();
-    };
-
-    connect();
-    window.addEventListener("online", onOnline);
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    const stop = listen(queryClient, {
+      open: () => new WebSocket(`${scheme}//${location.host}/api/live`),
+      hidden: () => document.hidden,
+      on: (event, listener) => {
+        const target = event === "visibilitychange" ? document : window;
+        target.addEventListener(event, listener);
+        return () => target.removeEventListener(event, listener);
+      },
+      setLive,
+      setCatchingUp,
+      message,
+    });
     return () => {
-      stopped = true;
-      setLive(false);
-      window.removeEventListener("online", onOnline);
-      clearTimeout(retry);
+      stop();
       clearTimeout(flush);
-      clearInterval(ping);
-      const ws = socket;
-      socket = null;
-      ws?.close();
     };
   }, [enabled, queryClient]);
 }
