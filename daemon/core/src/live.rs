@@ -2,9 +2,10 @@
 //! `/api/live` per credential, so a new assignment wakes the agent at once
 //! instead of at its next poll.
 //!
-//! The socket carries topic names only ("inbox", "board", …), never data: on
-//! one, the caller polls the HTTP API as usual, so access checks and what is
-//! read stay the routes'. A burst of topics becomes one wake (`Coalesce`). A
+//! The socket carries topic names ("inbox", "board", …) and, for a board, ids
+//! (COPL-151: which tasks changed and who is on them), never data: on one,
+//! the caller polls the HTTP API as usual, so access checks and what is read
+//! stay the routes'. A burst of messages becomes one wake (`Coalesce`). A
 //! dropped socket is retried with backoff and jitter (`Backoff`), and while
 //! it is down the caller's poll is all there is, so nothing waits on it.
 //!
@@ -60,11 +61,35 @@ pub enum Link {
     Reconnecting,
 }
 
+/// The tasks a burst's board events named, and everyone assigned to them before or after.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Touched {
+    pub tasks: BTreeSet<String>,
+    pub assignees: BTreeSet<String>,
+}
+
+/// A burst of messages, coalesced.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Burst {
+    /// The topics that changed (only those the caller wants).
+    pub topics: BTreeSet<String>,
+    /// What its "board" messages touched, when every one of them said (a server
+    /// since COPL-151, a write to tasks); None when one didn't, so anything on a
+    /// board may have changed.
+    pub touched: Option<Touched>,
+}
+
+impl Burst {
+    pub fn contains(&self, topic: &str) -> bool {
+        self.topics.contains(topic)
+    }
+}
+
 /// What the socket heard, after coalescing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Heard {
     /// These topics changed.
-    Topics(BTreeSet<String>),
+    Topics(Burst),
     /// The socket is back after being down: whatever changed meanwhile was never sent.
     Resync,
 }
@@ -95,19 +120,42 @@ impl Backoff {
     }
 }
 
-/// Topics gathered until `COALESCE` after the first, then handed over at once.
-#[derive(Debug, Default)]
+/// Messages gathered until `COALESCE` after the first, then handed over at once.
+#[derive(Debug)]
 pub struct Coalesce {
-    topics: BTreeSet<String>,
+    burst: Burst,
     due: Option<Instant>,
 }
 
+impl Default for Coalesce {
+    fn default() -> Self {
+        Self {
+            burst: Burst {
+                topics: BTreeSet::new(),
+                touched: Some(Touched::default()),
+            },
+            due: None,
+        }
+    }
+}
+
 impl Coalesce {
-    /// A message's topics arrived at `now` (only those the caller wants).
-    pub fn add(&mut self, topics: impl IntoIterator<Item = String>, now: Instant) {
-        let before = self.topics.len();
-        self.topics.extend(topics);
-        if self.topics.len() > before && self.due.is_none() {
+    /// A message arrived at `now`, its topics already narrowed to those the caller wants.
+    pub fn add(&mut self, event: Event, now: Instant) {
+        if event.topics.is_empty() {
+            return;
+        }
+        if event.topics.iter().any(|t| t == "board") {
+            match (&mut self.burst.touched, event.board.and(event.tasks)) {
+                (Some(t), Some(tasks)) => {
+                    t.tasks.extend(tasks);
+                    t.assignees.extend(event.assignees.unwrap_or_default());
+                }
+                (touched, _) => *touched = None,
+            }
+        }
+        self.burst.topics.extend(event.topics);
+        if self.due.is_none() {
             self.due = Some(now + COALESCE);
         }
     }
@@ -117,27 +165,35 @@ impl Coalesce {
         self.due
     }
 
-    /// The gathered topics, if they are due at `now`.
-    pub fn take(&mut self, now: Instant) -> Option<BTreeSet<String>> {
+    /// The gathered burst, if it is due at `now`.
+    pub fn take(&mut self, now: Instant) -> Option<Burst> {
         match self.due {
             Some(due) if now >= due => {
                 self.due = None;
-                Some(std::mem::take(&mut self.topics))
+                Some(std::mem::take(self).burst)
             }
             _ => None,
         }
     }
 }
 
-/// The topics of one hub message, `{"topics":[…],"tab":…}`, or none for anything else.
-pub fn topics_of(message: &str) -> Vec<String> {
-    #[derive(serde::Deserialize)]
-    struct Event {
-        topics: Vec<String>,
-    }
-    serde_json::from_str::<Event>(message)
-        .map(|e| e.topics)
-        .unwrap_or_default()
+/// One hub message, `{"topics":[…],"tab":…,"board"?,"version"?,"tasks"?,"assignees"?}`
+/// (`LiveEvent` in `src/domain/live.ts`), the parts read here. Everything past the topics
+/// is optional: a server before COPL-151 sends topics only.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Event {
+    pub topics: Vec<String>,
+    #[serde(default)]
+    pub board: Option<String>,
+    #[serde(default)]
+    pub tasks: Option<Vec<String>>,
+    #[serde(default)]
+    pub assignees: Option<Vec<String>>,
+}
+
+/// One hub message, or none for anything else (a pong).
+pub fn event_of(message: &str) -> Option<Event> {
+    serde_json::from_str::<Event>(message).ok()
 }
 
 /// Keep a socket to `base`'s `/api/live` open with `token` for as long as the future lives
@@ -327,8 +383,10 @@ impl Socket {
                     heard_at = Instant::now();
                     match frame {
                         Ok(Frame::Text(text)) => {
-                            let topics = topics_of(&text).into_iter().filter(|t| wanted(t));
-                            coalesce.add(topics, heard_at);
+                            if let Some(mut event) = event_of(&text) {
+                                event.topics.retain(|t| wanted(t));
+                                coalesce.add(event, heard_at);
+                            }
                         }
                         Ok(Frame::Ping(payload)) => {
                             if let Err(e) = send(&mut write, OP_PONG, &payload, rng).await {
@@ -344,8 +402,8 @@ impl Socket {
                     }
                 }
                 _ = async { tokio::time::sleep_until(flush.expect("guarded")).await }, if flush.is_some() => {
-                    if let Some(topics) = coalesce.take(Instant::now()) {
-                        on_heard(Heard::Topics(topics));
+                    if let Some(burst) = coalesce.take(Instant::now()) {
+                        on_heard(Heard::Topics(burst));
                     }
                 }
                 _ = ping.tick() => {
@@ -557,30 +615,90 @@ mod tests {
         let mut c = Coalesce::default();
         assert_eq!(c.due(), None);
         assert_eq!(c.take(t0), None);
-        c.add(["board".to_string()], t0);
-        c.add(
-            ["inbox".to_string(), "board".to_string()],
-            t0 + Duration::from_millis(200),
-        );
+        c.add(topics(&["board"]), t0);
+        c.add(topics(&["inbox", "board"]), t0 + Duration::from_millis(200));
         /* The window runs from the first, not the last. */
         assert_eq!(c.due(), Some(t0 + COALESCE));
         assert_eq!(c.take(t0 + Duration::from_millis(299)), None);
         let got = c.take(t0 + COALESCE).unwrap();
-        assert_eq!(got.into_iter().collect::<Vec<_>>(), ["board", "inbox"]);
+        assert_eq!(got.topics.into_iter().collect::<Vec<_>>(), ["board", "inbox"]);
+        /* Board messages that named no tasks: anything on a board may have changed. */
+        assert_eq!(got.touched, None);
         assert_eq!(c.due(), None);
         /* Nothing wanted: nothing scheduled. */
-        c.add(std::iter::empty(), t0);
+        c.add(topics(&[]), t0);
         assert_eq!(c.due(), None);
+    }
+
+    fn topics(t: &[&str]) -> Event {
+        Event {
+            topics: t.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_burst_says_what_its_board_messages_touched() {
+        let t0 = Instant::now();
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+        let mut c = Coalesce::default();
+        c.add(
+            event_of(r#"{"topics":["board"],"tab":null,"board":"b","version":4,"tasks":["t1"],"assignees":["dev"]}"#)
+                .unwrap(),
+            t0,
+        );
+        c.add(
+            event_of(r#"{"topics":["board","boards"],"tab":null,"board":"b","tasks":["t2"],"assignees":[]}"#).unwrap(),
+            t0,
+        );
+        c.add(topics(&["inbox"]), t0);
+        let got = c.take(t0 + COALESCE).unwrap();
+        assert_eq!(
+            got.touched,
+            Some(Touched {
+                tasks: set(&["t1", "t2"]),
+                assignees: set(&["dev"])
+            })
+        );
+        /* Taken: the next burst starts clean, not with what this one touched. */
+        c.add(
+            event_of(r#"{"topics":["board"],"tab":null,"board":"b","tasks":["t3"]}"#).unwrap(),
+            t0,
+        );
+        assert_eq!(c.take(t0 + COALESCE).unwrap().touched.unwrap().tasks, set(&["t3"]));
+        /* One message naming a board but no tasks (a stage renamed) spoils the burst: anything may have changed. */
+        c.add(
+            event_of(r#"{"topics":["board"],"tab":null,"board":"b","tasks":["t1"]}"#).unwrap(),
+            t0,
+        );
+        c.add(event_of(r#"{"topics":["board"],"tab":null,"board":"b"}"#).unwrap(), t0);
+        c.add(
+            event_of(r#"{"topics":["board"],"tab":null,"board":"b","tasks":["t2"]}"#).unwrap(),
+            t0,
+        );
+        assert_eq!(c.take(t0 + COALESCE).unwrap().touched, None);
+        /* So does an old server's, which names nothing. */
+        c.add(topics(&["board"]), t0);
+        assert_eq!(c.take(t0 + COALESCE).unwrap().touched, None);
+        /* A burst with no board message touched nothing. */
+        c.add(topics(&["inbox"]), t0);
+        assert_eq!(c.take(t0 + COALESCE).unwrap().touched, Some(Touched::default()));
     }
 
     #[test]
     fn reads_the_hubs_messages() {
         assert_eq!(
-            topics_of(r#"{"topics":["inbox","board"],"tab":null}"#),
+            event_of(r#"{"topics":["inbox","board"],"tab":null}"#).unwrap().topics,
             ["inbox", "board"]
         );
-        assert!(topics_of("pong").is_empty());
-        assert!(topics_of(r#"{"tab":"x"}"#).is_empty());
+        let full =
+            event_of(r#"{"topics":["board"],"tab":"x","board":"b","version":7,"tasks":["t"],"assignees":["u"]}"#)
+                .unwrap();
+        assert_eq!(full.board.as_deref(), Some("b"));
+        assert_eq!(full.tasks, Some(vec!["t".to_string()]));
+        assert_eq!(full.assignees, Some(vec!["u".to_string()]));
+        assert!(event_of("pong").is_none());
+        assert!(event_of(r#"{"tab":"x"}"#).is_none());
     }
 
     #[tokio::test]

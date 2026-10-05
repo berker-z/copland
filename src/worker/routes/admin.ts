@@ -169,7 +169,7 @@ export async function patchUser(
       env.DB.prepare(`UPDATE users SET disabled_at = ?2 WHERE id = ?1`).bind(id, disabled ? nowIso() : null),
       ...(disabled ? [env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?1`).bind(id), ...endRunsStatements(env.DB, id)] : []),
     ]);
-    for (const boardId of claimed) changes.notify(await boardAudience(env.DB, boardId), "board");
+    for (const boardId of claimed) changes.board(await boardAudience(env.DB, boardId), { board: boardId });
   }
 
   /* The person too: their own /me says whether they are an admin. */

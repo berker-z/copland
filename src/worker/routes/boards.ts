@@ -51,7 +51,8 @@ export async function getBoards(env: Env, viewer: Viewer): Promise<Response> {
 }
 
 export async function getBoard(env: Env, viewer: Viewer, id: string): Promise<Response> {
-  const board = await requireBoard(env.DB, viewer, id);
+  /* The version comes with the access check, before the tasks: a write landing between is then read twice, never missed. */
+  const { version, ...board } = await requireBoard(env.DB, viewer, id);
   const [members, stages, labels, tasks, notes, docs, repos] = await Promise.all([
     listMembers(env.DB, id),
     listStages(env.DB, id),
@@ -61,7 +62,7 @@ export async function getBoard(env: Env, viewer: Viewer, id: string): Promise<Re
     listDocs(env.DB, id),
     listRepos(env.DB, id),
   ]);
-  const detail: BoardDetail = { board, members, stages, labels, tasks, notes, docs, repos };
+  const detail: BoardDetail = { board, members, stages, labels, tasks, notes, docs, repos, version };
   return json(detail);
 }
 
@@ -128,7 +129,7 @@ export async function patchBoard(
   }
   if (sets.length === 0) throw badRequest("Nothing to update");
   await env.DB.prepare(`UPDATE boards SET ${sets.join(", ")} WHERE id = ?1`).bind(id, ...values).run();
-  changes.notify(await boardAudience(env.DB, id), "boards", "board");
+  changes.board(await boardAudience(env.DB, id), { board: id }, "boards");
   return getBoard(env, viewer, id);
 }
 
@@ -138,7 +139,7 @@ export async function deleteBoard(env: Env, viewer: Viewer, id: string, changes:
   if (board.isInbox) throw forbidden("Your inbox cannot be deleted");
   const audience = await boardAudience(env.DB, id);
   await env.DB.prepare(`UPDATE boards SET archived_at = ?2 WHERE id = ?1`).bind(id, nowIso()).run();
-  changes.notify(audience, "boards", "board");
+  changes.board(audience, { board: id }, "boards");
   return json({ ok: true });
 }
 
@@ -212,7 +213,7 @@ export async function postMember(
   )
     .bind(id, user.id, role)
     .run();
-  changes.notify(await boardAudience(env.DB, id), "boards", "board");
+  changes.board(await boardAudience(env.DB, id), { board: id }, "boards");
   return json({ added: true }, { status: 201 });
 }
 
@@ -234,7 +235,7 @@ export async function patchMember(
     .bind(id, userId, role)
     .run();
   if (result.meta.changes === 0) throw notFound("Not a member of this board");
-  changes.notify(await boardAudience(env.DB, id), "boards", "board");
+  changes.board(await boardAudience(env.DB, id), { board: id }, "boards");
   return json({ ok: true });
 }
 
@@ -257,7 +258,7 @@ export async function deleteMember(
       `DELETE FROM task_assignees WHERE user_id = ?2 AND task_id IN (SELECT id FROM tasks WHERE board_id = ?1)`,
     ).bind(id, userId),
   ]);
-  changes.notify(audience, "boards", "board");
+  changes.board(audience, { board: id }, "boards");
   /* An agent taken off: its owner's settings list its boards. */
   const agentOwner = await ownerOf(env.DB, userId);
   if (agentOwner) changes.notify([agentOwner], "agents");

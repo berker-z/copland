@@ -259,6 +259,8 @@ export interface BoardDetail {
   docs: BoardDoc[];
   /** GitHub repos connected to it (domain/github.ts). */
   repos: BoardRepo[];
+  /** boards.version when this was read, which live events count on from (domain/live.ts planBoard). */
+  version: number;
 }
 
 /**

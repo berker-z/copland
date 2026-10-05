@@ -66,7 +66,7 @@ export async function postStage(request: Request, env: Env, viewer: Viewer, boar
     .prepare(`INSERT INTO stages (id, board_id, position, name, category, tone) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`)
     .bind(crypto.randomUUID(), boardId, stages.length, name, category, tone)
     .run();
-  changes.notify(await boardAudience(db, boardId), "board");
+  changes.board(await boardAudience(db, boardId), { board: boardId });
   return json(await listStages(db, boardId), { status: 201 });
 }
 
@@ -106,7 +106,9 @@ export async function patchStage(request: Request, env: Env, viewer: Viewer, id:
   }
   if (sets.length === 0) throw badRequest("Nothing to update");
   await db.batch([db.prepare(`UPDATE stages SET ${sets.join(", ")} WHERE id = ?1`).bind(id, ...values), ...extra]);
-  changes.notify(await boardAudience(db, stage.board_id), "board");
+  /* A new category can close or reopen every task in it: the boards list's counts. */
+  const topics = extra.length ? (["boards"] as const) : [];
+  changes.board(await boardAudience(db, stage.board_id), { board: stage.board_id }, ...topics);
   return json(await listStages(db, stage.board_id));
 }
 
@@ -125,7 +127,7 @@ export async function putStageOrder(request: Request, env: Env, viewer: Viewer, 
     throw badRequest("`ids` must list every stage of the board exactly once");
   }
   await db.batch(ids.map((id, position) => db.prepare(`UPDATE stages SET position = ?2 WHERE id = ?1`).bind(id, position)));
-  changes.notify(await boardAudience(db, boardId), "board");
+  changes.board(await boardAudience(db, boardId), { board: boardId });
   return json(await listStages(db, boardId));
 }
 
@@ -162,7 +164,8 @@ export async function deleteStage(env: Env, viewer: Viewer, id: string, url: URL
     db.prepare(`DELETE FROM stages WHERE id = ?1`).bind(id),
     ...rest.map((s, position) => db.prepare(`UPDATE stages SET position = ?2 WHERE id = ?1`).bind(s.id, position)),
   ]);
-  changes.notify(await boardAudience(db, stage.board_id), "board");
+  /* Its tasks moved, maybe into a closing stage or out of one. */
+  changes.board(await boardAudience(db, stage.board_id), { board: stage.board_id }, "boards");
   return json(await listStages(db, stage.board_id));
 }
 
@@ -195,7 +198,7 @@ export async function postLabel(request: Request, env: Env, viewer: Viewer, boar
     db.prepare(`INSERT INTO labels (id, board_id, name, tone) VALUES (?1, ?2, ?3, ?4)`).bind(id, board.id, name, tone),
     eventStatement(db, { boardId: board.id, taskId: null, actorId: viewer.user.id, kind: "label.created", after: { name } }),
   ]);
-  changes.notify(await boardAudience(db, board.id), "board");
+  changes.board(await boardAudience(db, board.id), { board: board.id });
   return json({ id, name, tone }, { status: 201 });
 }
 
@@ -219,7 +222,7 @@ export async function patchLabel(request: Request, env: Env, viewer: Viewer, id:
   }
   if (sets.length === 0) throw badRequest("Nothing to update");
   await db.prepare(`UPDATE labels SET ${sets.join(", ")} WHERE id = ?1`).bind(id, ...values).run();
-  changes.notify(await boardAudience(db, label.board_id), "board");
+  changes.board(await boardAudience(db, label.board_id), { board: label.board_id });
   return json(await listLabels(db, label.board_id));
 }
 
@@ -229,6 +232,6 @@ export async function deleteLabel(env: Env, viewer: Viewer, id: string, changes:
   const label = await labelRow(db, id);
   await requireBoard(db, viewer, label.board_id, "editor");
   await db.prepare(`DELETE FROM labels WHERE id = ?1`).bind(id).run();
-  changes.notify(await boardAudience(db, label.board_id), "board");
+  changes.board(await boardAudience(db, label.board_id), { board: label.board_id });
   return json({ ok: true });
 }

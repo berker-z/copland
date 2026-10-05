@@ -50,7 +50,7 @@ import { badRequest, forbidden, HttpError, json, notFound, nowIso, readJson } fr
 import type { Changes } from "../live";
 import { agentsAmong } from "../repo/agents";
 import { inboxAudience, inboxStatements, type NewInboxItem } from "../repo/inbox";
-import { boardAudience } from "../repo/boards";
+import { boardAudience, bumpStatement, taskChange, versionOf } from "../repo/boards";
 import { releaseClaimsStatement } from "../repo/runs";
 import { bottomRank, eventStatement, findTask, listStages } from "../repo/tasks";
 
@@ -353,7 +353,8 @@ export async function postTask(
     actorId: viewer.user.id,
   }));
 
-  await db.batch([
+  const done = await db.batch([
+    bumpStatement(db, board.id),
     /* The number comes from the board's counter and the counter moves in the
        same transaction, so two tasks created at once never share a number. */
     db
@@ -390,7 +391,9 @@ export async function postTask(
     ...inboxStatements(db, assigned),
   ]);
 
-  changes.notify(await boardAudience(db, board.id), "board");
+  /* A new open task: the boards list's counts change too. */
+  const news = await taskChange(db, board.id, versionOf(done[0]), [id, parentId, ...follow.moved.map((m) => m.id)]);
+  changes.board(await boardAudience(db, board.id), news, "boards");
   changes.notify(inboxAudience(assigned), "inbox");
   return json(written(await findTask(db, id), follow.moved), { status: 201 });
 }
@@ -552,7 +555,8 @@ export async function patchTask(
 
   sets.push(`updated_at = ?${values.length + 2}`);
   values.push(nowIso());
-  await db.batch([
+  const done = await db.batch([
+    bumpStatement(db, board.id),
     db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?1`).bind(id, ...values),
     ...extra,
     eventStatement(db, { boardId: board.id, taskId: id, actorId: viewer.user.id, kind: "task.updated", before, after }),
@@ -561,7 +565,18 @@ export async function patchTask(
     releaseClaimsStatement(db, board.id),
   ]);
 
-  changes.notify(await boardAudience(db, board.id), "board");
+  /* A new stage or parent names its parents, old and new, too: their
+     children's progress changed. Whoever was on it before hears it as well as
+     whoever is now. A new stage can close or reopen it or a parent, which
+     changes the boards list's counts: sent on the write that can, never on
+     comparing counts. */
+  const parents =
+    "stageId" in after || "parentId" in after
+      ? [task.parentId, "parentId" in after ? (after.parentId as string | null) : null]
+      : [];
+  const news = await taskChange(db, board.id, versionOf(done[0]), [id, ...parents, ...follow.moved.map((m) => m.id)], task.assigneeIds);
+  const topics = "stageId" in after ? (["boards"] as const) : [];
+  changes.board(await boardAudience(db, board.id), news, ...topics);
   changes.notify(inboxAudience(assigned), "inbox");
   return json(written(await findTask(db, id), follow.moved));
 }
@@ -589,6 +604,7 @@ export async function deleteTask(env: Env, viewer: Viewer, id: string, changes: 
     ...follow.statements,
     releaseClaimsStatement(db, board.id),
   ]);
-  changes.notify(await boardAudience(db, board.id), "board");
+  /* No task ids: a task gone (and its children unparented) is read with the whole board. */
+  changes.board(await boardAudience(db, board.id), { board: board.id, assignees: task.assigneeIds }, "boards");
   return json(follow.moved.length ? { ok: true, alsoMoved: follow.moved } : { ok: true });
 }

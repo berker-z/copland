@@ -8,7 +8,8 @@
    its budget here in the same commit, and says so in its PR; one that makes
    it read more says why. Set at main's numbers when the check came in; the
    routes not yet flat read their board's whole history, which the rest of
-   COPL-131 takes away.
+   COPL-131 takes away. Besides the routes, one row is a live event's cost:
+   what a tab reads when it hears a task edit (COPL-151).
    ========================================================================== */
 
 export interface Budget {
@@ -27,4 +28,7 @@ export const BUDGETS: Record<string, Budget> = {
   "GET /api/tasks/ready": { rows: 43, flat: true },
   "GET /api/tasks/mine": { rows: 5731, flat: false },
   "GET /api/messages/recipients": { rows: 15, flat: true },
+  /* What a listening tab reads after one task edit (COPL-151): until then,
+     GET /api/boards/:id and GET /api/boards, 12213 rows on the larger seed. */
+  "live: one task edit, heard": { rows: 26, flat: true },
 };

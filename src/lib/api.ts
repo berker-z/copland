@@ -12,12 +12,13 @@ import { VERSION_HEADER } from "@/domain/version";
 import { TAB_ID } from "./liveState";
 import { noteServerVersion } from "./versionState";
 
+/* No parameter properties: the checks load this through node's type stripping. */
 export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
     super(message);
+    this.status = status;
     this.name = "ApiError";
   }
 }

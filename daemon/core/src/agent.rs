@@ -482,7 +482,7 @@ impl AgentLoop {
                     },
                     move |h| match h {
                         Heard::Resync => heard.heard(true, false),
-                        Heard::Topics(topics) => heard.heard(topics.contains("inbox"), topics.contains("board")),
+                        Heard::Topics(burst) => heard.heard(burst.contains("inbox"), burst.contains("board")),
                     },
                 )
                 .await

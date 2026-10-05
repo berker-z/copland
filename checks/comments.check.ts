@@ -81,6 +81,7 @@ const env = { DB, FILES: files.bucket } as unknown as Parameters<typeof postComm
 const notified: string[][] = [];
 const changes = {
   notify: (ids: string[], ...topics: string[]) => void (topics.includes("board") && notified.push(ids)),
+  board: (ids: string[]) => void notified.push(ids),
 } as unknown as Parameters<typeof postComment>[4];
 const who = (id: string): Viewer => ({ user: { id, kind: "person", email: `${id}@x.test`, handle: id, avatar: null, isAdmin: false, ownerId: null } });
 const sam = who("sam");

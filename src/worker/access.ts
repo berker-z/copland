@@ -15,7 +15,7 @@
 
 import type { AgentGrant, BoardAccess, BoardRole, BoardSummary, Viewer } from "@/domain/types";
 import { forbidden, notFound } from "./http";
-import { boardFor, listBoardSummariesFor, listBoardsFor, rolesOn } from "./repo/boards";
+import { boardFor, listBoardSummariesFor, listBoardsFor, rolesOn, type VersionedAccess } from "./repo/boards";
 
 const RANK: Record<BoardRole, number> = { viewer: 0, editor: 1, owner: 2 };
 
@@ -53,7 +53,7 @@ export async function requireBoard(
   viewer: Viewer,
   boardId: string,
   needed: BoardRole = "viewer",
-): Promise<BoardAccess> {
+): Promise<VersionedAccess> {
   const found = await boardFor(db, viewer.user.id, boardId);
   const [board] = found ? await capped(db, viewer, [found]) : [];
   if (!board) throw notFound("No such board");

@@ -201,7 +201,7 @@ export async function patchAgent(request: Request, env: Env, viewer: Viewer, id:
   }
   changes.notify([viewer.user.id], "agents");
   if (renamed) changes.notify(await peopleAudience(db, id), "people");
-  for (const boardId of released) changes.notify(await boardAudience(db, boardId), "board");
+  for (const boardId of released) changes.board(await boardAudience(db, boardId), { board: boardId });
   return json((await listAgents(db, viewer.user.id)).find((a) => a.user.id === id));
 }
 
@@ -227,7 +227,7 @@ export async function deleteAgent(env: Env, viewer: Viewer, id: string, changes:
   ]);
   if (agent.avatar_key) await replaceAvatar(env, id, null);
   changes.notify([viewer.user.id], "agents");
-  for (const audience of audiences) changes.notify(audience, "boards", "board");
+  for (const [i, audience] of audiences.entries()) changes.board(audience, { board: boards[i].board_id }, "boards");
   return json({ ok: true });
 }
 
@@ -275,7 +275,7 @@ export async function putAgentBoard(
     .bind(boardId, id, role)
     .run();
   changes.notify([viewer.user.id], "agents");
-  changes.notify(await boardAudience(db, boardId), "boards", "board");
+  changes.board(await boardAudience(db, boardId), { board: boardId }, "boards");
   return json((await listAgents(db, viewer.user.id)).find((a) => a.user.id === id));
 }
 
@@ -293,7 +293,7 @@ export async function deleteAgentBoard(env: Env, viewer: Viewer, id: string, boa
     ),
   ]);
   changes.notify([viewer.user.id], "agents");
-  changes.notify(audience, "boards", "board");
+  changes.board(audience, { board: boardId }, "boards");
   return json((await listAgents(db, viewer.user.id)).find((a) => a.user.id === id));
 }
 

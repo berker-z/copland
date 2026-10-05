@@ -81,7 +81,7 @@ export async function putTaskFiles(request: Request, env: Env, viewer: Viewer, i
     .run();
   if (!written.meta.changes) throw notClaimed(`${task.key}: this run's claim just lapsed; claim it again before reporting its files`);
 
-  if (!unchanged) changes.notify(await boardAudience(db, board.id), "board");
+  if (!unchanged) changes.board(await boardAudience(db, board.id), { board: board.id });
   return json({ base: report.base, count: report.files.length, truncated: report.truncated, reportedAt });
 }
 

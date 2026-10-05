@@ -62,7 +62,14 @@ export function d1(db: DatabaseSync): D1Database {
     batch: async (stmts: Stmt[]) => {
       db.exec("BEGIN");
       try {
-        const out = stmts.map((s) => ({ meta: { changes: Number(db.prepare(s.sql).run(...s.args).changes) } }));
+        /* A RETURNING statement answers its rows, as D1's batch does. */
+        const out = stmts.map((s) => {
+          if (/\bRETURNING\b/i.test(s.sql)) {
+            const results = db.prepare(s.sql).all(...s.args).map((r) => plain(r));
+            return { results, meta: { changes: results.length } };
+          }
+          return { results: [], meta: { changes: Number(db.prepare(s.sql).run(...s.args).changes) } };
+        });
         db.exec("COMMIT");
         return out;
       } catch (error) {

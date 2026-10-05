@@ -137,7 +137,7 @@ export async function putBoardNotes(request: Request, env: Env, viewer: Viewer, 
     env.DB.prepare(`UPDATE boards SET notes = ?2 WHERE id = ?1`).bind(boardId, notes),
     eventStatement(env.DB, { boardId, taskId: null, actorId: viewer.user.id, kind: "board.notes", before: before?.notes ?? "", after: notes }),
   ]);
-  changes.notify(await boardAudience(env.DB, boardId), "board");
+  changes.board(await boardAudience(env.DB, boardId), { board: boardId });
   return json({ notes });
 }
 
@@ -186,7 +186,7 @@ export async function postBoardDoc(request: Request, env: Env, viewer: Viewer, b
     ).bind(id, boardId, name, mime, size, key, about, excerpt, viewer.user.id),
     eventStatement(env.DB, { boardId, taskId: null, actorId: viewer.user.id, kind: "doc.added", after: { name, type: mime } }),
   ]);
-  changes.notify(await boardAudience(env.DB, boardId), "board");
+  changes.board(await boardAudience(env.DB, boardId), { board: boardId });
   return json({ doc: await findDoc(env.DB, boardId, id) }, { status: 201 });
 }
 
@@ -247,7 +247,7 @@ export async function patchBoardDoc(request: Request, env: Env, viewer: Viewer, 
     }),
   ]);
   if (key !== doc.key) await env.FILES.delete(doc.key);
-  changes.notify(await boardAudience(env.DB, boardId), "board");
+  changes.board(await boardAudience(env.DB, boardId), { board: boardId });
   return json({ doc: await findDoc(env.DB, boardId, docId) });
 }
 
@@ -261,6 +261,6 @@ export async function deleteBoardDoc(env: Env, viewer: Viewer, boardId: string, 
     eventStatement(env.DB, { boardId, taskId: null, actorId: viewer.user.id, kind: "doc.removed", before: { name: doc.name } }),
   ]);
   await env.FILES.delete(doc.key);
-  changes.notify(await boardAudience(env.DB, boardId), "board");
+  changes.board(await boardAudience(env.DB, boardId), { board: boardId });
   return json({ ok: true, id: docId });
 }

@@ -34,7 +34,7 @@ import type { Env } from "../env";
 import { badRequest, conflict, HttpError, json, notFound, nowIso, randomToken, readJson } from "../http";
 import type { Changes } from "../live";
 import { finishManifest, githubApp, installedRepos, manifest, webhookSecret } from "../githubApp";
-import { boardAudience } from "../repo/boards";
+import { boardAudience, bumped, taskChange } from "../repo/boards";
 import { findRepo, listRepos } from "../repo/github";
 import { adminIds } from "./admin";
 import { eventStatement, listStages } from "../repo/tasks";
@@ -141,7 +141,7 @@ export async function postRepo(request: Request, env: Env, viewer: Viewer, board
     ),
     eventStatement(env.DB, { boardId, taskId: null, actorId: viewer.user.id, kind: "board.repo", after: { repo } }),
   ]);
-  changes.notify(await boardAudience(env.DB, boardId), "board");
+  changes.board(await boardAudience(env.DB, boardId), { board: boardId });
   const out: BoardRepo = (await findRepo(env.DB, id))!;
   return json(out, { status: 201 });
 }
@@ -159,7 +159,7 @@ async function postRemote(env: Env, viewer: Viewer, boardId: string, raw: unknow
     ).bind(id, boardId, parsed.name, parsed.remote, viewer.user.id, nowIso()),
     eventStatement(env.DB, { boardId, taskId: null, actorId: viewer.user.id, kind: "board.repo", after: { repo: parsed.name } }),
   ]);
-  changes.notify(await boardAudience(env.DB, boardId), "board");
+  changes.board(await boardAudience(env.DB, boardId), { board: boardId });
   const out: BoardRepo = (await findRepo(env.DB, id))!;
   return json(out, { status: 201 });
 }
@@ -176,7 +176,7 @@ export async function deleteRepo(env: Env, viewer: Viewer, boardId: string, repo
     env.DB.prepare(`DELETE FROM board_repos WHERE id = ?1`).bind(repoId),
     eventStatement(env.DB, { boardId, taskId: null, actorId: viewer.user.id, kind: "board.repo", before: { repo: row.repo } }),
   ]);
-  changes.notify(await boardAudience(env.DB, boardId), "board");
+  changes.board(await boardAudience(env.DB, boardId), { board: boardId });
   return json({ ok: true });
 }
 
@@ -250,13 +250,21 @@ export async function postWebhook(request: Request, env: Env, ctx: ExecutionCont
 
   let touched = false;
   for (const hook of hooks) {
-    if (event === "push") touched = (await onPush(env, hook, payload, now)) || touched;
-    else if (event === "pull_request") touched = (await onPull(env, hook, payload, now, changes)) || touched;
+    let tasks: string[] = [];
+    if (event === "push") tasks = await onPush(env, hook, payload, now);
+    else if (event === "pull_request") tasks = await onPull(env, hook, payload, now, changes);
     else if (event === "check_suite" && payload.action === "completed" && payload.check_suite) {
-      touched = (await onCi(env, hook, payload.check_suite.head_sha, payload.check_suite.conclusion, now)) || touched;
-    } else if (event === "status" && payload.sha && payload.context !== DRIFT_CONTEXT) touched = (await onCi(env, hook, payload.sha, payload.state ?? null, now)) || touched;
-    /* The repo's row in board settings shows the last delivery, so the owner can see it arrives. */
-    changes.notify(await boardAudience(env.DB, hook.board_id), "board");
+      tasks = await onCi(env, hook, payload.check_suite.head_sha, payload.check_suite.conclusion, now);
+    } else if (event === "status" && payload.sha && payload.context !== DRIFT_CONTEXT) tasks = await onCi(env, hook, payload.sha, payload.state ?? null, now);
+    touched ||= tasks.length > 0;
+    /* The tasks whose code changed, bumped after their write: a board read
+       between the two has the write already and reads it again, never misses
+       it. A delivery that touched no task sends nothing (most of them: CI
+       on main); the repo's last delivery in board settings shows at the
+       board's next whole read. */
+    if (!tasks.length) continue;
+    const version = await bumped(env.DB, hook.board_id, []);
+    changes.board(await boardAudience(env.DB, hook.board_id), await taskChange(env.DB, hook.board_id, version, tasks));
   }
   measureLater(env, ctx, event, payload, repo, new URL(request.url).origin);
   return json({ ok: true, event, touched });
@@ -320,11 +328,13 @@ function upsertCode(
   ).bind(crypto.randomUUID(), link.taskId, link.repoId, link.kind, link.name, link.title, link.url, link.state, link.ref, link.headSha, now);
 }
 
-async function onPush(env: Env, hook: HookRow, payload: Payload, now: string): Promise<boolean> {
+/* Each of these answers the tasks whose code it changed. */
+
+async function onPush(env: Env, hook: HookRow, payload: Payload, now: string): Promise<string[]> {
   const branch = payload.ref?.startsWith("refs/heads/") ? payload.ref.slice("refs/heads/".length) : null;
-  if (!branch) return false;
+  if (!branch) return [];
   const tasks = await tasksNumbered(env, hook, keysIn(hook.board_key, branch));
-  if (!tasks.size) return false;
+  if (!tasks.size) return [];
   const url = `https://github.com/${hook.repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`;
   const sha = payload.deleted ? null : (payload.after ?? null);
   await env.DB.batch(
@@ -336,12 +346,12 @@ async function onPush(env: Env, hook: HookRow, payload: Payload, now: string): P
       ),
     ),
   );
-  return true;
+  return [...tasks.values()];
 }
 
-async function onPull(env: Env, hook: HookRow, payload: Payload, now: string, changes: Changes): Promise<boolean> {
+async function onPull(env: Env, hook: HookRow, payload: Payload, now: string, changes: Changes): Promise<string[]> {
   const pr = payload.pull_request;
-  if (!pr) return false;
+  if (!pr) return [];
   const refs = pullRefs(hook.board_key, { branch: pr.head.ref, title: pr.title, body: pr.body ?? "" });
   const tasks = await tasksNumbered(env, hook, [...refs.keys()]);
   const state: PullState = pr.merged ? "merged" : pr.state === "closed" ? "closed" : pr.draft ? "draft" : "open";
@@ -350,9 +360,9 @@ async function onPull(env: Env, hook: HookRow, payload: Payload, now: string, ch
 
   /* A PR edited to stop naming a task comes off it. */
   const keep = linked.map((l) => l.taskId);
-  await env.DB.batch([
+  const [dropped] = await env.DB.batch([
     env.DB.prepare(
-      `DELETE FROM task_code WHERE repo_id = ?1 AND kind = 'pull' AND name = ?2${keep.length ? ` AND task_id NOT IN (${keep.map((_, i) => `?${i + 3}`).join(", ")})` : ""}`,
+      `DELETE FROM task_code WHERE repo_id = ?1 AND kind = 'pull' AND name = ?2${keep.length ? ` AND task_id NOT IN (${keep.map((_, i) => `?${i + 3}`).join(", ")})` : ""} RETURNING task_id`,
     ).bind(hook.id, name, ...keep),
     ...linked.map((l) =>
       upsertCode(
@@ -367,7 +377,7 @@ async function onPull(env: Env, hook: HookRow, payload: Payload, now: string, ch
   if (payload.action === "closed" && pr.merged && pr.base?.ref === payload.repository?.default_branch) {
     await closeMerged(env, hook, linked.filter((l) => l.ref === "closes").map((l) => l.taskId), changes);
   }
-  return linked.length > 0;
+  return [...new Set([...keep, ...(dropped.results as { task_id: string }[]).map((r) => r.task_id)])];
 }
 
 /**
@@ -394,15 +404,15 @@ async function closeMerged(env: Env, hook: HookRow, taskIds: string[], changes: 
   }
 }
 
-async function onCi(env: Env, hook: HookRow, sha: string, raw: string | null, now: string): Promise<boolean> {
+async function onCi(env: Env, hook: HookRow, sha: string, raw: string | null, now: string): Promise<string[]> {
   const ci = ciFrom(raw);
-  if (!ci) return false;
+  if (!ci) return [];
   /* One state per commit, not per check: the latest report wins, except that
      a failure stays until a new commit, so one green check can't hide another's red. */
-  const result = await env.DB.prepare(
-    `UPDATE task_code SET ci = CASE WHEN ci = 'failure' THEN ci ELSE ?3 END, updated_at = ?4 WHERE repo_id = ?1 AND head_sha = ?2`,
+  const { results } = await env.DB.prepare(
+    `UPDATE task_code SET ci = CASE WHEN ci = 'failure' THEN ci ELSE ?3 END, updated_at = ?4 WHERE repo_id = ?1 AND head_sha = ?2 RETURNING task_id`,
   )
     .bind(hook.id, sha, ci, now)
-    .run();
-  return (result.meta.changes ?? 0) > 0;
+    .all<{ task_id: string }>();
+  return [...new Set(results.map((r) => r.task_id))];
 }
