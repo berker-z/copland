@@ -917,6 +917,31 @@ fn ending_of(exit: &Exit) -> Ending {
     }
 }
 
+/// The reason a run is failed with when its runtime exited 0 but left its work going (COPL-147).
+pub const UNFINISHED: &str = "ended with the task still active";
+
+/// Whether a run that claimed a task and whose runtime exited 0 left it unfinished (COPL-147): a
+/// runtime's turn ending is its run ending, so work left in the background goes nowhere. These
+/// are ways to stop: the task closed, blocked, back in todo or backlog; held by another run now;
+/// planned rather than coded (an epic, a story, a task with children, a milestone), which stays
+/// open while its children are worked; review_first with its PR open for a person, or on a repo
+/// without PRs, where the branch is pushed and left. Only a task still in an active stage, none of
+/// those, is unfinished. `category` is its stage's, None when that couldn't be read: not
+/// unfinished, since failing a run needs to be sure.
+pub fn unfinished(
+    task: &crate::api::Task,
+    category: Option<&str>,
+    has_children: bool,
+    run_id: &str,
+    pull_requests: bool,
+) -> bool {
+    let active = task.completed_at.is_none() && category == Some("active");
+    let planned = matches!(task.level.as_deref(), Some("epic" | "story" | "milestone")) || has_children;
+    let elsewhere = task.claim.as_ref().is_some_and(|c| c.run_id != run_id);
+    let for_review = task.review_first && (task.open_pr() || !pull_requests);
+    active && !planned && !elsewhere && !for_review
+}
+
 /// What a run tells its loop when it is over.
 struct Done {
     wake: Wake,
@@ -1108,8 +1133,24 @@ impl RunCtx {
             stop_requested(self.stop_run.clone(), self.slot, short.clone()),
         )
         .await;
+        let (mut ending, mut how) = (ending_of(&ended.exit), ended.reason());
+        let mut left = false;
+        let lead = workspace.as_ref().is_some_and(|ws| ws.read_only);
+        if brief == Brief::Work && ending == Ending::Completed && !lead {
+            let pull_requests = workspace.as_ref().is_some_and(|ws| ws.pull_requests);
+            if let Some(task) = self.left_going(&wake.task_id, &key, &run_id, pull_requests).await {
+                /* Failing puts back what the run holds: one that let it go takes it again first. */
+                if task.claim.is_none() {
+                    if let Err(e) = self.api.claim(&started.secret, &wake.task_id).await {
+                        tracing::warn!(run = %short, task = %key, "taking it again to put it back: {e}");
+                    }
+                }
+                tracing::warn!(run = %short, task = %key, "runtime {how}, with the task still active; failing the run");
+                (ending, how) = (Ending::Failed, UNFINISHED.to_string());
+                left = true;
+            }
+        }
         drop(started);
-        let (ending, how) = (ending_of(&ended.exit), ended.reason());
         let status = self.finish(&run_id, ending, Some(&how)).await;
         if status == ending.as_str() {
             tracing::info!(run = %short, task = %key, "runtime {how}; run {status}");
@@ -1130,9 +1171,35 @@ impl RunCtx {
         }
         /* Remembered whatever the ending, a ceiling included, so it isn't launched again for the same items. */
         let updated = self.updated_at(&wake.task_id).await;
-        self.ran(&run_id, &short, &key, status, &ended, &runtime);
+        self.ran(&run_id, &short, &key, status, &ended, &runtime, left);
         self.update(|s| s.run_ended(&short));
         Done::ran(wake, updated, false)
+    }
+
+    /// The task, when the run whose runtime just exited 0 left it unfinished (`unfinished`).
+    /// None when it stopped properly, or when the task or its board can't be read.
+    async fn left_going(
+        &self,
+        task_id: &str,
+        key: &str,
+        run_id: &str,
+        pull_requests: bool,
+    ) -> Option<crate::api::Task> {
+        let read = async {
+            let task = self.api.task(&self.agent.token, task_id).await?;
+            let board = self.api.board_repos(&self.agent.token, &task.board_id).await?;
+            Ok::<_, ApiError>((task, board))
+        };
+        let (task, board) = match read.await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(task = %key, "reading where the run left it: {e}");
+                return None;
+            }
+        };
+        let category = task.stage_id.as_deref().and_then(|s| board.category(s));
+        let has_children = board.tasks.iter().any(|t| t.parent_id.as_deref() == Some(task_id));
+        unfinished(&task, category, has_children, run_id, pull_requests).then_some(task)
     }
 
     /// One run on messages, about a task or not (COPL-127): start it, claim each message for it
@@ -1217,6 +1284,7 @@ impl RunCtx {
             status,
             &ended,
             runner::program(&self.agent.command),
+            false,
         );
         self.update(|s| s.run_ended(&short));
         /* Remembered whatever the ending, so a message the run left unread doesn't launch another. */
@@ -1291,14 +1359,20 @@ impl RunCtx {
     }
 
     /// A run whose runtime was launched is over: what the box says of it (COPL-136). Failed by how
-    /// the runtime ended, whatever the run's status says (a runtime may finish its run, then die).
-    fn ran(&self, run_id: &str, run: &str, task: &str, status: String, ended: &Ended, runtime: &str) {
+    /// the runtime ended, whatever the run's status says (a runtime may finish its run, then die),
+    /// or because it exited 0 with its task still active (`left`, COPL-147).
+    #[allow(clippy::too_many_arguments)]
+    fn ran(&self, run_id: &str, run: &str, task: &str, status: String, ended: &Ended, runtime: &str, left: bool) {
         let last = RunSummary {
             run: run.to_string(),
             task: task.to_string(),
             outcome: status,
-            failed: !matches!(ended.exit, Exit::Code(0) | Exit::Stopped | Exit::Cancelled),
-            how: Some(ended.reason()),
+            failed: left || !matches!(ended.exit, Exit::Code(0) | Exit::Stopped | Exit::Cancelled),
+            how: Some(if left {
+                format!("{}, {UNFINISHED}", ended.reason())
+            } else {
+                ended.reason()
+            }),
             hint: ended.hint(runtime),
             log: Some(runner::log_path(&self.paths.state_dir, run_id)),
             ended: SystemTime::now(),
@@ -1514,6 +1588,86 @@ mod tests {
         assert_eq!(ending_of(&Exit::Signal(9)), Ending::Failed);
         assert_eq!(ending_of(&Exit::TimedOut), Ending::Failed);
         assert_eq!(ending_of(&Exit::Code(0)), Ending::Completed);
+    }
+
+    /// A task as GET /api/tasks/:id sends it, with `extra` over a plain leaf in a stage "s".
+    fn task_with(extra: serde_json::Value) -> crate::api::Task {
+        let mut t = serde_json::json!({
+            "id": "t1", "key": "COPL-1", "boardId": "b1", "title": "", "updatedAt": "",
+            "completedAt": null, "level": "task", "claim": null, "stageId": "s",
+            "reviewFirst": false, "code": [],
+        });
+        t.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(t).unwrap()
+    }
+
+    /// COPL-147: a runtime that exits 0 with its task still active, and none of the ways to stop,
+    /// left its work going (in the background, "I'll pick it up from there").
+    #[test]
+    fn an_active_task_left_behind_is_unfinished() {
+        let plain = task_with(serde_json::json!({}));
+        /* Held by this run, or by none (it let the task go): either way nobody is on it. */
+        let mine = task_with(serde_json::json!({ "claim": { "runId": "r1", "run": "r1" } }));
+        for t in [&plain, &mine] {
+            assert!(unfinished(t, Some("active"), false, "r1", true));
+            assert!(unfinished(t, Some("active"), false, "r1", false));
+        }
+        /* An open PR is no excuse without review_first: the agent merges those itself. */
+        let pr = task_with(serde_json::json!({ "code": [{ "kind": "pull", "state": "open" }] }));
+        assert!(unfinished(&pr, Some("active"), false, "r1", true));
+        /* review_first on a GitHub repo needs the PR open; a branch or a merged PR isn't one. */
+        let no_pr = task_with(serde_json::json!({
+            "reviewFirst": true,
+            "code": [{ "kind": "branch", "state": "open" }, { "kind": "pull", "state": "merged" }],
+        }));
+        assert!(unfinished(&no_pr, Some("active"), false, "r1", true));
+    }
+
+    /// COPL-147: the ways a run stops properly, which never fail it.
+    #[test]
+    fn the_ways_to_stop_are_not_unfinished() {
+        let plain = task_with(serde_json::json!({}));
+        for stage in ["done", "cancelled", "blocked", "todo", "backlog"] {
+            assert!(!unfinished(&plain, Some(stage), false, "r1", true), "{stage}");
+        }
+        /* Closed, whatever the stage read says. */
+        let closed = task_with(serde_json::json!({ "completedAt": "2026-10-05T00:00:00Z" }));
+        assert!(!unfinished(&closed, Some("active"), false, "r1", true));
+        /* A stage that couldn't be read: failing a run needs to be sure. */
+        assert!(!unfinished(&plain, None, false, "r1", true));
+        /* Another run is on it now. */
+        let other = task_with(serde_json::json!({ "claim": { "runId": "r2", "run": "r2" } }));
+        assert!(!unfinished(&other, Some("active"), false, "r1", true));
+        /* Planned, not coded: it stays open while its children are worked. */
+        for level in ["epic", "story", "milestone"] {
+            let t = task_with(serde_json::json!({ "level": level }));
+            assert!(!unfinished(&t, Some("active"), false, "r1", true), "{level}");
+        }
+        assert!(!unfinished(&plain, Some("active"), true, "r1", true));
+        /* review_first, left in doing for a person: its PR open (a draft too), as COPL-146 was left. */
+        for state in ["open", "draft"] {
+            let t = task_with(serde_json::json!({
+                "reviewFirst": true,
+                "code": [{ "kind": "pull", "state": state }],
+            }));
+            assert!(!unfinished(&t, Some("active"), false, "r1", true), "{state}");
+        }
+        /* review_first on a repo without PRs (or no repo): the pushed branch is what it leaves. */
+        let review = task_with(serde_json::json!({ "reviewFirst": true }));
+        assert!(!unfinished(&review, Some("active"), false, "r1", false));
+    }
+
+    /// An older server sends none of what `unfinished` reads: no stage, so never unfinished.
+    #[test]
+    fn an_older_servers_task_reads_and_is_never_unfinished() {
+        let t: crate::api::Task = serde_json::from_value(serde_json::json!({
+            "id": "t1", "key": "COPL-1", "boardId": "b1", "title": "", "updatedAt": "", "completedAt": null,
+        }))
+        .unwrap();
+        assert!(t.stage_id.is_none() && !t.review_first && !t.open_pr());
+        let board: crate::api::BoardRepos = serde_json::from_value(serde_json::json!({ "repos": [] })).unwrap();
+        assert_eq!(board.category("s"), None);
+        assert!(!unfinished(&t, None, false, "r1", true));
     }
 
     #[test]
