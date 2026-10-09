@@ -1,18 +1,22 @@
 # copland
 
-A personal dashboard and project tracker that runs on your own Cloudflare account. Boards and tasks, which you can share with friends and hand to AI agents, with your calendar, notes and inbox beside them, and crypto prices, the weather and the moon if you want them.
+Copland is a self-hosted workspace for organizing your projects and coordinating work with AI agents. It has real project boards, a personal dashboard, and an MCP server that lets tools like Claude Code and other compatible assistants participate in the same workflow as you. Tasks, assignments, comments, and activity all live in one place, whether the work is yours or an agent's.
+
+Agents are first-class participants. Each has its own identity, permissions, inbox, and work history. Runs and task claims keep track of who's working on what, while a local daemon can pick up assigned work, launch your configured runtime, and handle completion or failure. Copland coordinates the work; your existing agents do the thinking and execution.
 
 ![A copland board in the kanban view](docs/screenshot.png)
 
-It's the successor to [nord-dash](https://github.com/berker-z/nord-dash) (the look, the panes, the themes) built on the backend of a task tracker I wrote for work (the Worker, sign-in, live updates). The name is Copland OS from Serial Experiments Lain, since nord-dash was already "the Wired".
+It runs on your own Cloudflare account. Alongside the boards are configurable widgets for your calendar, notes, inbox, and optional personal data. Use it as a straightforward project tracker, a personal dashboard, or the coordination layer for agents working across your projects.
+
+## Features
 
 **Status:** early, but usable locally. The backbone works: sign-in, invites, per-user settings, the encrypted key vault, and live updates between tabs and between people.
 
-Every nord-dash pane is ported: calendar and agenda (Google or any ICS link), tasks, markets, notepad, and the statusline weather. Which panes and statusline items are on, and where, is yours to arrange on a map of the dashboard (settings › widgets, or the customize button in the statusline): one to three columns, drag panes between them, drag widgets in from a tray to switch them on and back out to switch them off. Markets, weather and the moon start off. A new dashboard has three columns, /wired and /nudge on the left, then boards, tasks and inbox, then agenda, calendar and notepad. /wired is your agents' work drawn as the pole from the logo and its wires (more under Agents), and /nudge a list of the agents you may message, to send one a line.
+The dashboard has calendar and agenda (Google or any ICS link), tasks, markets, notepad, and the statusline weather. Which panes and statusline items are on, and where, is yours to arrange on a map of the dashboard (settings › widgets, or the customize button in the statusline): one to three columns, drag panes between them, drag widgets in from a tray to switch them on and back out to switch them off. Markets, weather and the moon start off. A new dashboard has three columns, /wired and /nudge on the left, then boards, tasks and inbox, then agenda, calendar and notepad. /wired is your agents' work drawn as the pole from the logo and its wires (more under Agents), and /nudge a list of the agents you may message, to send one a line.
 
 The tracker has boards you can share, a kanban with drag and drop, a list view, a Gantt you can drag bars on, labels, comments, editable stages, planning (epics, milestones, parent tasks, dependencies) on every board, with three dots on each card saying where it sits and a parent's progress (`3/7`) beside them, filters over all three views (level, a task's subtree, assignee, labels, text, and closed tasks only from the last two weeks unless you ask) that live in the URL so a filtered board is a link, a link for every task (`/b/BOARD?task=KEY`, the board with that task open), swimlanes by epic on the kanban, and per-board notes and docs for whoever works there, agents included.
 
-It works on a phone (a swipeable board, long-press to move a task) and installs to the home screen. Claude and other AI assistants can connect over MCP. See [TODO.md](TODO.md).
+It works on a phone (a swipeable board, long-press to move a task) and installs to the home screen. See [TODO.md](TODO.md).
 
 ## How it fits together
 
