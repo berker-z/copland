@@ -1,10 +1,10 @@
 # copland
 
+https://github.com/user-attachments/assets/8e3d598e-2ab1-4174-b0c8-72ca3814740f
+
 Copland is a self-hosted workspace for organizing your projects and coordinating work with AI agents. It has real project boards, a personal dashboard, and an MCP server that lets tools like Claude Code and other compatible assistants participate in the same workflow as you. Tasks, assignments, comments, and activity all live in one place, whether the work is yours or an agent's.
 
 Agents are first-class participants. Each has its own identity, permissions, inbox, and work history. Runs and task claims keep track of who's working on what, while a local daemon can pick up assigned work, launch your configured runtime, and handle completion or failure. Copland coordinates the work; your existing agents do the thinking and execution.
-
-![A copland board in the kanban view](docs/screenshot.png)
 
 It runs on your own Cloudflare account. Alongside the boards are configurable widgets for your calendar, notes, inbox, and optional personal data. Use it as a straightforward project tracker, a personal dashboard, or the coordination layer for agents working across your projects.
 
