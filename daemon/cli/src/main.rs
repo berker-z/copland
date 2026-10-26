@@ -6,7 +6,8 @@ mod setup;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use copland_daemon_core::client;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
 use copland_daemon_core::{Config, Daemon, Lock, Paths};
 use tokio::signal::unix::{SignalKind, signal};
@@ -17,11 +18,13 @@ use tokio::signal::unix::{SignalKind, signal};
     about = "Runs Copland agents on this machine: wakes on their inbox and launches their runtime"
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
     /// Run without a window. The only mode there is for now, so it is also the default.
     #[arg(long)]
     headless: bool,
     /// The config file [default: $XDG_CONFIG_HOME/copland/daemon.toml]
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", global = true)]
     config: Option<PathBuf>,
     /// Read the config, check it, run the preflight checks (runtimes logged in, git, GitHub,
     /// code_dir, each token with its instance), and exit non-zero when one fails.
@@ -40,6 +43,20 @@ struct Args {
     url: Option<String>,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// Show what the daemon running this config is doing, from its status socket. Exits 3 when
+    /// no daemon is running it.
+    Status {
+        /// The status as JSON (daemon/README.md's "Status"), one snapshot per line.
+        #[arg(long)]
+        json: bool,
+        /// Show it again on every change, until interrupted.
+        #[arg(long)]
+        watch: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -50,7 +67,19 @@ async fn main() -> Result<()> {
         .init();
     let args = Args::parse();
     let _ = args.headless;
+    let named = args.config.is_some();
     let path = args.config.unwrap_or_else(default_config_path);
+    if let Some(Command::Status { json, watch }) = args.command {
+        /* COPL-185: the client lives in core's `client`. */
+        let clear = watch && !json && std::io::IsTerminal::is_terminal(&std::io::stdout());
+        let mode = client::Mode { json, watch, clear };
+        let shown = client::status(&path, &default_runtime_dir(), mode, &mut std::io::stdout()).await?;
+        if let Some(says) = shown.says(&path, named) {
+            eprintln!("{says}");
+            std::process::exit(client::NOT_RUNNING);
+        }
+        return Ok(());
+    }
     if args.setup {
         return setup::run(&path, args.url.as_deref()).await;
     }
