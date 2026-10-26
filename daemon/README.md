@@ -234,7 +234,7 @@ The local database starts empty: the first request makes the dev user, and a boa
 
 ## Status
 
-What the daemon is doing, outside its own process (COPL-170): `Status::of(&DaemonState)` (`core/src/status.rs`, COPL-181) is the same state the box draws, as JSON, and `Status::render` says it for a person, one block per agent in the box's words. The daemon serves it on the status socket (below), and `copland-daemon status` reads it from a terminal (further below).
+What the daemon is doing, outside its own process (COPL-170): `Status::of(&DaemonState)` (`core/src/status.rs`, COPL-181) is the daemon's state as JSON, and `Status::render` says it for a person, one block per agent in the box's words. The daemon serves it on the status socket (below), and `copland-daemon status` reads it from a terminal (further below). The box draws from it too (COPL-203): everything the window shows comes from a `Status`, never from `DaemonState`, so what goes through the JSON is all it needs. For now the box still runs its daemon in-process and maps the daemon's `watch` of `DaemonState` to one of `Status` (`statuses` in `box/src/main.rs`); its tests check that the scene's board and the agents screen come out the same from a `Status` and from that status sent through JSON and back. A field the box needs that `Status` lacks is added here, the add-only way.
 
 The JSON is a contract. `version` is 1; fields are only ever added, never renamed, removed or given another meaning, so a client ignores fields it doesn't know, and a field it needs that is missing means an older daemon. Times are RFC 3339 in UTC, to the second (`2026-10-04T23:20:41Z`); a field with nothing to say is `null`, a list with nothing in it `[]`. The tests in `status.rs` pin every name below.
 
@@ -342,7 +342,7 @@ Its icon is one of the four in `release/tray` (see "Cutting a release"): `needs`
 
 ## Building
 
-It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. `tray` is `copland-tray` (above), and `box` is `copland-box`, the same loop with a GPUI window (below). `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, waiting tasks, messages waiting for a run, last run) as a `tokio::sync::watch` receiver, which the headless binary ignores and the box draws. `Daemon::reload(config)` changes the agents it runs in place (see "The agents screen"); only the box calls it, and the headless daemon still reads its config once, at start. The workspace's `default-members` are `core`, `cli` and `tray`, so plain `cargo` here builds and checks the headless daemon and the tray, with no GPUI anywhere in their graph.
+It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. `tray` is `copland-tray` (above), and `box` is `copland-box`, the same loop with a GPUI window (below). `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, waiting tasks, messages waiting for a run, last run) as a `tokio::sync::watch` receiver, which the status socket serves and the box draws, both as a `Status` (see "Status"). `Daemon::reload(config)` changes the agents it runs in place (see "The agents screen"); only the box calls it, and the headless daemon still reads its config once, at start. The workspace's `default-members` are `core`, `cli` and `tray`, so plain `cargo` here builds and checks the headless daemon and the tray, with no GPUI anywhere in their graph.
 
 ```sh
 cd daemon

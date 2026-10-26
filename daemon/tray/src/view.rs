@@ -158,21 +158,11 @@ fn line(a: &Agent) -> String {
         parts.push("held".into());
     }
     /* Not a need: the account's usage comes back by itself at the reset (COPL-195). */
-    if let Some(t) = &a.out_of_usage_until {
-        parts.push(format!("out of usage until {}", clock(t)));
-    }
+    parts.extend(a.out_of_usage_line());
     if let Some(n) = a.needs.first() {
         parts.push(format!("needs you: {}", n.says));
     }
     parts.join(" · ")
-}
-
-/// "2026-10-26T17:10:00Z" → "17:10 UTC", as the status's text says it.
-fn clock(rfc: &str) -> String {
-    match rfc.get(11..16) {
-        Some(hm) => format!("{hm} UTC"),
-        None => rfc.to_string(),
-    }
 }
 
 fn entries(a: &Agent, menu: &mut Vec<Entry>) {

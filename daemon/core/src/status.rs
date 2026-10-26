@@ -1,6 +1,6 @@
-//! What the daemon is doing, as a value for anything outside it (COPL-181): the box draws
-//! `DaemonState` in-process, and this is the same state as JSON for the status socket and
-//! `copland-daemon status` (COPL-170), and as text for a person.
+//! What the daemon is doing, as a value for anything outside it (COPL-181): the daemon's
+//! `DaemonState` as JSON for the status socket and `copland-daemon status` (COPL-170), as text
+//! for a person, and what the box draws (COPL-203), so the JSON carries everything it shows.
 //!
 //! The JSON is a contract (see the README's "Status"): `version` is 1, fields are only ever
 //! added, never renamed or removed, and a client ignores fields it doesn't know. Times are
@@ -109,6 +109,20 @@ pub struct Need {
     /// stopped (the agent isn't watching), missing (its runs can't start) or failed (its last run).
     pub why: String,
     pub says: String,
+}
+
+impl Run {
+    /// The task's key, or `runner::MESSAGES` for a run on messages: what `ActiveRun::task` says.
+    pub fn key(&self) -> &str {
+        self.task.as_deref().unwrap_or(MESSAGES)
+    }
+}
+
+impl LastRun {
+    /// The task's key, or `runner::MESSAGES` for a run on messages: what `RunSummary::task` says.
+    pub fn key(&self) -> &str {
+        self.task.as_deref().unwrap_or(MESSAGES)
+    }
 }
 
 impl Status {
@@ -241,6 +255,31 @@ impl Agent {
                 }
             }),
         }
+    }
+
+    /// The live socket as the daemon has it; a word this reader doesn't know is still connecting.
+    pub fn link(&self) -> Link {
+        match self.live.as_str() {
+            "connected" => Link::Connected,
+            "reconnecting" => Link::Reconnecting,
+            _ => Link::Connecting,
+        }
+    }
+
+    /// What the agent's line says while Copland is down: "Copland unavailable since 23:20 UTC",
+    /// as `AgentState::unavailable_line` does.
+    pub fn unavailable_line(&self) -> Option<String> {
+        self.unavailable_since
+            .as_deref()
+            .map(|t| format!("Copland unavailable since {}", clock(t)))
+    }
+
+    /// "out of usage until 17:10 UTC", as `AgentState::out_of_usage_line` says it, when the status
+    /// has it. Whether the reset has passed since is the reader's to see.
+    pub fn out_of_usage_line(&self) -> Option<String> {
+        self.out_of_usage_until
+            .as_deref()
+            .map(|t| format!("out of usage until {}", clock(t)))
     }
 
     fn render(&self, out: &mut String) {
@@ -490,6 +529,32 @@ mod tests {
     }
 
     #[test]
+    fn says_what_the_state_says() {
+        let mut st = busy();
+        st.agents[0].unavailable = Some(at(0));
+        let s = Status::of(&st);
+        let a = &s.agents[0];
+        assert_eq!(a.link(), Link::Connected);
+        assert_eq!(a.unavailable_line(), st.agents[0].unavailable_line());
+        assert_eq!(
+            a.runs.iter().map(Run::key).collect::<Vec<_>>(),
+            st.agents[0].runs.iter().map(|r| r.task.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(a.last_run.as_ref().map(LastRun::key), Some("T-9"));
+        for (live, link) in [
+            ("connecting", Link::Connecting),
+            ("reconnecting", Link::Reconnecting),
+            ("later", Link::Connecting),
+        ] {
+            let b = Agent {
+                live: live.into(),
+                ..a.clone()
+            };
+            assert_eq!(b.link(), link);
+        }
+    }
+
+    #[test]
     fn a_refused_claim_is_a_skipped_last_run_and_a_stopped_agent_needs_you() {
         let mut a = AgentState::new("me/dev", "http://x");
         a.phase = Phase::Stopped;
@@ -542,6 +607,10 @@ mod tests {
         };
         let s = Status::of(&st);
         assert_eq!(s.agents[0].out_of_usage_until, Some(rfc3339(until)));
+        assert_eq!(
+            s.agents[0].out_of_usage_line(),
+            st.agents[0].out_of_usage_line(SystemTime::now())
+        );
         assert!(!s.agents[0].held, "not a hold by hand");
         let line = format!(
             "  ‖ out of usage until {}: starts nothing until then\n",
