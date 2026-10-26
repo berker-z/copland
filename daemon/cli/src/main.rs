@@ -1,6 +1,6 @@
 //! `copland-daemon --headless`: run the agents in daemon.toml until stopped.
 //! `--setup` writes daemon.toml on a terminal, `--check` checks this machine,
-//! `--install-service` runs it as a systemd or launchd service.
+//! `--install-service` runs it as a systemd or launchd service, `status` asks the one running.
 
 mod service;
 mod setup;
