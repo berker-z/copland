@@ -34,12 +34,13 @@ When Copland is down (COPL-148): a poll that gets no answer, or a 502, 503 or 50
 
 ## The wake guard
 
-The agent marks its inbox read itself, over the MCP, because only it knows what it dealt with. The daemon never marks anything read, so it needs its own way of not relaunching forever on items a run has already seen:
+The agent marks its inbox read itself, over the MCP, because only it knows what it dealt with. The daemon marks something read only when nothing could ever answer it (a closed task, below), so it needs its own way of not relaunching forever on items a run has already seen:
 
 - After a run on a task (a failed one, or one stopped at the ceiling, included), or a refused claim, it remembers the unread items it had for that task and the task's `updatedAt` as the run left it.
 - On later polls, if every unread item for that task is one it remembers and the task's `updatedAt` hasn't moved, it leaves the task alone.
 - A newer inbox item for the task, or any change to the task, wakes it again. An `unblocked` item is how a task the claim refused as `waiting` wakes once what it waited on closes.
 - A claim refused because another run holds the task is remembered as held. On each poll the daemon reads the task (its summary carries the live claim) and tries again once there is no claim, as long as the agent still has unread items there. While the claim is live, nothing else about the task wakes it.
+- A claim refused because the task is closed (409 `closed`) launches a run only for a mention, which answers in the comments without a claim and marks it read itself. Anything else there (an assignment, a comment, an `unblocked` item) has nothing left to answer, so the daemon marks those items read itself (`POST /api/inbox/read`, COPL-165). Before, they stayed unread and every start of the daemon woke for them again, a claim refused per item per start.
 - Once a task has nothing unread, its memory is dropped.
 
 This applies to failed runs too, so a runtime that crashes on start doesn't get relaunched every 30 seconds. The memory is in-process: restart the daemon and it launches once more for whatever is still unread.

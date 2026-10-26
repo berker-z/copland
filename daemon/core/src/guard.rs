@@ -1,8 +1,8 @@
 //! What wakes an agent, and what must not wake it twice.
 //!
-//! The agent marks its inbox read itself, over the MCP. The daemon never
-//! does, so it has to keep from relaunching on items a run has already seen
-//! and left unread. The rules:
+//! The agent marks its inbox read itself, over the MCP. The daemon does only
+//! for a closed task with nothing to answer (below), so it has to keep from
+//! relaunching on items a run has already seen and left unread. The rules:
 //!
 //! - Items the agent wrote itself never wake it. "Itself" is the actor's id
 //!   against the token's own (the handle only when a server sends no id).
@@ -31,6 +31,12 @@
 //! - A claim refused because another run holds the task is remembered as
 //!   held: that task wakes again once it has no live claim (its run ended or
 //!   went quiet), and not while it still has one, whatever else changes.
+//! - A claim refused because the task is closed, when nobody mentioned the
+//!   agent there (an assignment, a comment, an unblocked item), is dismissed:
+//!   the daemon marks those items read itself (COPL-165), since no run will
+//!   ever answer them and its memory would not outlive a restart. A mention
+//!   on a closed task still gets a run that answers without a claim, and
+//!   that run marks it read.
 //! - Once a task has no unread items, its memory is dropped; so is that of a
 //!   message once it is read.
 //! - Nothing reaches a run once it has started: what arrives while one is
@@ -199,14 +205,16 @@ pub enum Refused {
     Hold,
     /// Launch anyway, without the claim, to answer what was said to the agent.
     Answer(Brief),
+    /// The task is closed and nothing in it asks for an answer: mark its items read (COPL-165).
+    Dismiss,
     /// Leave it until something new arrives.
     Skip,
 }
 
 /// Someone else's task is answered when it was discussed with the agent (a
 /// mention or a comment); a closed one only when the agent was mentioned, so
-/// chatter on finished work doesn't launch anything. A bare assignment the
-/// agent has since lost is skipped.
+/// chatter on finished work doesn't launch anything, and is dismissed instead.
+/// A bare assignment the agent has since lost is skipped.
 pub fn refused(code: Option<&str>, wake: &Wake) -> Refused {
     match code {
         Some("claimed") => Refused::Hold,
@@ -215,6 +223,7 @@ pub fn refused(code: Option<&str>, wake: &Wake) -> Refused {
         Some("assigned_elsewhere") if wake.mentioned => Refused::Answer(Brief::Mentioned),
         Some("assigned_elsewhere") if wake.commented => Refused::Answer(Brief::Commented),
         Some("closed") if wake.mentioned => Refused::Answer(Brief::Closed),
+        Some("closed") => Refused::Dismiss,
         _ => Refused::Skip,
     }
 }
@@ -515,7 +524,9 @@ mod tests {
             refused(Some("closed"), &one("mentioned")),
             Refused::Answer(Brief::Closed)
         );
-        assert_eq!(refused(Some("closed"), &one("commented")), Refused::Skip);
+        assert_eq!(refused(Some("closed"), &one("commented")), Refused::Dismiss);
+        assert_eq!(refused(Some("closed"), &one("assigned")), Refused::Dismiss);
+        assert_eq!(refused(Some("closed"), &one("unblocked")), Refused::Dismiss);
         assert_eq!(refused(None, &one("mentioned")), Refused::Skip);
         assert_eq!(refused(Some("something_new"), &one("mentioned")), Refused::Skip);
     }
@@ -648,7 +659,7 @@ mod tests {
         let w = &p.wakes[0];
         assert_eq!(w.items, ["i1"]);
         assert!(!w.mentioned && !w.commented);
-        assert_eq!(refused(Some("closed"), w), Refused::Skip);
+        assert_eq!(refused(Some("closed"), w), Refused::Dismiss);
         /* The message is a message run's, with the task's key to quote. */
         assert_eq!(p.messages.len(), 1);
         assert_eq!(p.messages[0].id, "m-i2");
