@@ -33,6 +33,9 @@ impl Icon {
 /// What a menu entry does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
+    /// Start `copland-box` on the same config (COPL-201). With no daemon running it offers to
+    /// start one, so it is there either way.
+    OpenBox,
     /// Hold the agent in this slot on this machine (the socket's `hold`).
     Hold {
         slot: u64,
@@ -92,6 +95,8 @@ pub fn view(status: Option<&Status>, error: Option<&str>) -> View {
         menu.push(Entry::note(format!("× {e}")));
         menu.push(Entry::Separator);
     }
+    menu.push(Entry::does("Open the box", Action::OpenBox));
+    menu.push(Entry::Separator);
     let icon = match status {
         None => {
             tooltip.push("not running".to_string());
@@ -236,6 +241,10 @@ mod tests {
         }
     }
 
+    fn open() -> [Entry; 2] {
+        [Entry::does("Open the box", Action::OpenBox), Entry::Separator]
+    }
+
     fn quit() -> [Entry; 2] {
         [Entry::Separator, Entry::does("Quit tray", Action::Quit)]
     }
@@ -246,7 +255,8 @@ mod tests {
         assert_eq!(v.icon, Icon::Stopped);
         assert_eq!(v.title, "Copland");
         assert_eq!(v.tooltip, ["not running"]);
-        let mut menu = vec![Entry::note("The daemon isn't running")];
+        let mut menu = open().to_vec();
+        menu.push(Entry::note("The daemon isn't running"));
         menu.extend(quit());
         assert_eq!(v.menu, menu);
     }
@@ -256,7 +266,8 @@ mod tests {
         let v = view(Some(&status(vec![agent(1, "berker-z/dev")])), None);
         assert_eq!(v.icon, Icon::Idle);
         assert_eq!(v.tooltip, ["dev · idle"]);
-        let mut menu = vec![Entry::does("Hold dev on this machine", Action::Hold { slot: 1 })];
+        let mut menu = open().to_vec();
+        menu.push(Entry::does("Hold dev on this machine", Action::Hold { slot: 1 }));
         menu.extend(quit());
         assert_eq!(v.menu, menu);
     }
@@ -269,7 +280,7 @@ mod tests {
         assert_eq!(v.icon, Icon::Idle);
         assert_eq!(v.tooltip, ["dev · idle · held"]);
         assert_eq!(
-            v.menu[0],
+            v.menu[2],
             Entry::does("Release dev on this machine", Action::Release { slot: 4 })
         );
     }
@@ -288,7 +299,8 @@ mod tests {
             v.tooltip,
             ["dev · working on COPL-166 and 1 more", "ops · working on COPL-12"]
         );
-        let mut menu = vec![
+        let mut menu = open().to_vec();
+        menu.extend([
             Entry::does("Hold dev on this machine", Action::Hold { slot: 2 }),
             Entry::does(
                 "Stop dev's run on COPL-166",
@@ -313,7 +325,7 @@ mod tests {
                     run: "cccc".into(),
                 },
             ),
-        ];
+        ]);
         menu.extend(quit());
         assert_eq!(v.menu, menu);
     }
@@ -364,7 +376,8 @@ mod tests {
         let v = view(Some(&status(vec![])), None);
         assert_eq!(v.icon, Icon::Idle);
         assert_eq!(v.tooltip, ["no agents configured"]);
-        let mut menu = vec![Entry::note("No agents configured")];
+        let mut menu = open().to_vec();
+        menu.push(Entry::note("No agents configured"));
         menu.extend(quit());
         assert_eq!(v.menu, menu);
     }
@@ -380,10 +393,11 @@ mod tests {
             ["dev · idle", "× no run zzzz going for @berker-z/dev (slot 1)"]
         );
         assert_eq!(
-            v.menu[..2],
+            v.menu[..3],
             [
                 Entry::note("× no run zzzz going for @berker-z/dev (slot 1)"),
-                Entry::Separator
+                Entry::Separator,
+                Entry::does("Open the box", Action::OpenBox),
             ]
         );
         assert_eq!(view(None, Some("x")).icon, Icon::Stopped);

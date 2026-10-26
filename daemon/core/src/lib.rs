@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod api;
+pub mod autostart;
 pub mod chain;
 pub mod client;
 pub mod config;

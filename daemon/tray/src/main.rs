@@ -1,7 +1,8 @@
 //! `copland-tray`: the daemon running a config in the system tray (COPL-198). It watches the
 //! daemon's status socket, shows whether its agents are idle, working or need you, and can hold
-//! an agent on this machine or stop a run. It never starts the daemon, and quitting it leaves the
-//! daemon running. Linux (a StatusNotifierItem) only for now.
+//! an agent on this machine or stop a run, and opens the box on the same config (COPL-201). It
+//! never starts the daemon, and quitting it leaves the daemon (and any box) running. Linux (a
+//! StatusNotifierItem) only for now.
 
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
@@ -47,7 +48,9 @@ async fn main() -> anyhow::Result<()> {
     let (requests, requests_rx) = mpsc::unbounded_channel();
     let (seen_tx, mut seen) = watch::channel(Seen::default());
     tracing::info!(config = %config.display(), "watching");
-    tokio::spawn(follow::run(config, default_runtime_dir(), requests_rx, seen_tx));
+    tokio::spawn(follow::run(config.clone(), default_runtime_dir(), requests_rx, seen_tx));
+    /* Why opening the box failed, from the blocking task that tried. */
+    let (failed_tx, mut failed) = mpsc::unbounded_channel::<String>();
     loop {
         tokio::select! {
             changed = seen.changed() => {
@@ -59,9 +62,24 @@ async fn main() -> anyhow::Result<()> {
                     anyhow::bail!("the tray icon went away");
                 }
             }
+            Some(why) = failed.recv() => {
+                tracing::warn!(error = %why, "opening the box");
+                if tray.update(|t| t.fail(why)).await.is_none() {
+                    anyhow::bail!("the tray icon went away");
+                }
+            }
             action = actions.recv() => {
                 let request = match action {
                     None | Some(Action::Quit) => break,
+                    Some(Action::OpenBox) => {
+                        let (config, failed) = (config.clone(), failed_tx.clone());
+                        tokio::task::spawn_blocking(move || {
+                            if let Err(e) = copland_tray::open::open(&config) {
+                                let _ = failed.send(format!("{e:#}"));
+                            }
+                        });
+                        continue;
+                    }
                     Some(Action::Hold { slot }) => Request::Hold { slot },
                     Some(Action::Release { slot }) => Request::Release { slot },
                     Some(Action::StopRun { slot, run }) => Request::StopRun { slot, run },

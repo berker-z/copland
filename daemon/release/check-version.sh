@@ -18,7 +18,9 @@ version_of() {
 
 box=$(version_of copland-box)
 cli=$(version_of copland-daemon)
+tray=$(version_of copland-tray)
 [ "$box" = "$cli" ] || fail "copland-box is $box but copland-daemon is $cli"
+[ "$box" = "$tray" ] || fail "copland-box is $box but copland-tray is $tray"
 
 if [ $# -gt 0 ] && [ -n "$1" ]; then
   tag=${1#refs/tags/}

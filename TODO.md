@@ -121,6 +121,13 @@ docs/DESIGN.md under Touch.
       an installed one), the 0.4.x note on a config with no service, signing
       out stopping the service and setup starting it again, and any of it on
       macOS's launchd.
+- [ ] Opening the box from the tray and starting the tray at login
+      (COPL-201) are tested as units (the menu entry, starting a box
+      detached and saying when it exits at once, the autostart entries,
+      setup's question) and the release tarball was packed locally. Not
+      yet: clicking Open the box in a real bar's tray, the entry starting
+      the tray at a real login, and the box's tray at login switch in its
+      window (no GPU in the run's sandbox).
 - [ ] What runs cost (COPL-71) was checked against the routes in
       `checks/usage.check.ts`, the parser against a real `claude -p
       --output-format json` result, and a fake runtime through the runner;

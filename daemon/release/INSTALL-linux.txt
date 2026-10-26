@@ -2,7 +2,8 @@ Copland box @VERSION@, Linux @ARCH@
 
   bin/copland-box      a window on the daemon (GPUI)
   bin/copland-daemon   the same daemon, headless
-  share/               the launcher entry, the icon and the daemon's
+  bin/copland-tray     the daemon in your bar's system tray
+  share/               the launcher entries, the icon and the daemon's
                        systemd user unit
 
 The layout matches ~/.local, so installing for yourself is one copy:
@@ -10,8 +11,8 @@ The layout matches ~/.local, so installing for yourself is one copy:
   cp -r bin share ~/.local/
   gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor 2>/dev/null || true
 
-That puts the binaries in ~/.local/bin, copland-box.desktop in
-~/.local/share/applications and the icon in
+That puts the binaries in ~/.local/bin, copland-box.desktop and
+copland-tray.desktop in ~/.local/share/applications and the icon in
 ~/.local/share/icons/hicolor/{scalable,32x32,...,256x256}/apps. The launcher
 runs `copland-box` from PATH; if ~/.local/bin isn't on your desktop
 session's PATH, change Exec= in the desktop file to the full path.
@@ -23,6 +24,13 @@ to the box), which runs your agents from then on, at every login, whether
 the box is open or not. Whenever no daemon is running, the box offers to
 install or start the service, or to run one until you log out.
 `copland-box --demo` shows the scene without a server.
+
+copland-tray shows whether your agents are idle, working or need you, can
+hold an agent or stop a run, and opens the box. Turn it on at login in the
+box (menu › settings › tray at login), or answer yes when
+`copland-daemon --setup` asks. It needs a bar or panel with a
+StatusNotifierItem tray: KDE Plasma, waybar, and most others do; GNOME
+needs the AppIndicator extension. Quitting it leaves the daemon running.
 
 Upgrading from 0.4.x, where the box ran the agents itself and closing it
 stopped them: the first start says so once and offers the service.

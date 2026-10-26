@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Packs a Linux release tarball from built binaries:
 #   daemon/release/package-linux.sh VERSION ARCH BIN_DIR OUT_DIR
-# BIN_DIR holds copland-box and copland-daemon (target/release); writes
+# BIN_DIR holds copland-box, copland-daemon and copland-tray (target/release); writes
 # OUT_DIR/copland-box-VERSION-linux-ARCH.tar.gz, laid out like ~/.local.
 # Needs GNU tar, readelf, and rsvg-convert or resvg.
 set -euo pipefail
@@ -16,7 +16,10 @@ root=$stage/$name
 
 install -Dm755 "$bin/copland-box" "$root/bin/copland-box"
 install -Dm755 "$bin/copland-daemon" "$root/bin/copland-daemon"
+install -Dm755 "$bin/copland-tray" "$root/bin/copland-tray"
 install -Dm644 "$here/copland-box.desktop" "$root/share/applications/copland-box.desktop"
+# The tray's state icons are built into it; it uses the box's icon for its launcher entry.
+install -Dm644 "$here/copland-tray.desktop" "$root/share/applications/copland-tray.desktop"
 # The headless daemon as a systemd user service, for ~/.local/bin (daemon/README.md, Server mode).
 install -Dm644 "$here/copland-daemon.service" "$root/share/systemd/user/copland-daemon.service"
 
@@ -28,7 +31,7 @@ for n in 32 48 64 128 256; do
   install -Dm644 "$stage/png/$n.png" "$icons/${n}x${n}/apps/copland-box.png"
 done
 
-glibc=$("$here/glibc-floor.sh" "$root/bin/copland-box" "$root/bin/copland-daemon")
+glibc=$("$here/glibc-floor.sh" "$root/bin/copland-box" "$root/bin/copland-daemon" "$root/bin/copland-tray")
 sed -e "s/@VERSION@/$version/g" -e "s/@ARCH@/$arch/g" -e "s/@GLIBC@/$glibc/g" \
   "$here/INSTALL-linux.txt" >"$root/INSTALL"
 install -m644 "$repo/LICENSE" "$root/LICENSE"

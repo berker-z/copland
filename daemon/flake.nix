@@ -1,12 +1,13 @@
 {
   # The daemon's package and dev shell.
   #
-  # The package builds both binaries, `copland-daemon` (headless) and
-  # `copland-box` (the GPUI window), from Cargo.lock, offline: crane vendors
+  # The package builds the three binaries, `copland-daemon` (headless),
+  # `copland-box` (the GPUI window) and `copland-tray` (the daemon in a bar's
+  # tray), from Cargo.lock, offline: crane vendors
   # every crate from the lock, so the lock stays the one source of truth for
   # versions. It builds in two derivations: `deps` compiles every dependency
   # (GPUI and the rest, nearly all of the work) from Cargo.toml and
-  # Cargo.lock alone, and the package compiles our three crates on top of
+  # Cargo.lock alone, and the package compiles our four crates on top of
   # it. A change to our code rebuilds only those; `deps` changes only with
   # the lock, and the release workflow pushes both to Cachix.
   #
@@ -22,7 +23,7 @@
   # `target/` instead of two compilers invalidating each other's cache.
   # `rust-version` in Cargo.toml is the floor. Only the box needs the shell;
   # the headless daemon (`core`, `cli`) builds with plain cargo outside it.
-  description = "copland-daemon and copland-box, and a dev shell for the GPUI box";
+  description = "copland-daemon, copland-box and copland-tray, and a dev shell for the GPUI box";
 
   # Pinned to revs, not just locked, so `nix flake update` cannot move them
   # (AGENTS.md: pins move only when forced). crane is v0.24.0 and has no
@@ -85,12 +86,19 @@
           common = {
             pname = "copland-daemon";
             version = (lib.importTOML ./Cargo.toml).workspace.package.version;
-            src = craneLib.cleanCargoSource ./.;
+            src = lib.cleanSourceWith {
+              src = ./.;
+              name = "source";
+              filter =
+                path: type:
+                craneLib.filterCargoSources path type
+                || (lib.hasInfix "/release/tray/" (toString path) && lib.hasSuffix ".png" (toString path));
+            };
             strictDeps = true;
-            # default-members leaves the box out; name both binaries'
-            # packages, here and for the deps, so they build the same
+            # default-members leaves the box out; name every binary's
+            # package, here and for the deps, so they build the same
             # features. crane adds --locked only when cargoExtraArgs is unset.
-            cargoExtraArgs = "--locked -p copland-daemon -p copland-box";
+            cargoExtraArgs = "--locked -p copland-daemon -p copland-box -p copland-tray";
             # The tests run with cargo in the dev shell (README). Some of the
             # box's read the web app's sources (themes.css, scene.ts), which
             # are outside this package's source on purpose.
@@ -123,8 +131,10 @@
               # its tile, at the sizes release/package-linux.sh renders too.
               # The headless daemon as a systemd user unit, the tarball's with
               # this package's binary in ExecStart (daemon/README.md, Server mode).
+              # The tray gets a launcher entry too; its state icons are in the binary.
               postInstall = ''
                 install -Dm644 ${./release/copland-box.desktop} $out/share/applications/copland-box.desktop
+                install -Dm644 ${./release/copland-tray.desktop} $out/share/applications/copland-tray.desktop
                 install -Dm644 ${./release/copland-daemon.service} $out/share/systemd/user/copland-daemon.service
                 substituteInPlace $out/share/systemd/user/copland-daemon.service \
                   --replace-fail '%h/.local/bin/copland-daemon' "$out/bin/copland-daemon"
@@ -170,6 +180,7 @@
         {
           box = app "copland-box" "A window on the Copland daemon";
           daemon = app "copland-daemon" "The Copland daemon, headless";
+          tray = app "copland-tray" "The Copland daemon in the system tray";
           default = self.apps.${pkgs.stdenv.hostPlatform.system}.box;
         }
       );
