@@ -13,7 +13,7 @@
 //! They are async, on Tokio, and every program they start is given [`CHECK_TIMEOUT`] and killed
 //! after it. Nothing they say holds a secret: the credential helper's answer is read for whether
 //! it has a password and dropped. [`terminal`] is the one blocking part, offering the fixes on a
-//! terminal for `copland-box --check --fix`.
+//! terminal for `copland-daemon --check --fix` and `copland-box --check --fix`.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -592,7 +592,7 @@ pub async fn token(agent: &AgentConfig) -> Check {
     let name = format!("token @{}", agent.handle);
     let fix = || {
         Fix::manual(
-            "run `copland-box --setup` to approve this machine again (or make a read and write token on the \
+            "run `copland-daemon --setup` (or `copland-box --setup`) to approve this machine again (or make a read and write token on the \
              agent's page in Copland's settings and put it in its token_file)",
         )
     };
@@ -660,7 +660,7 @@ fn first_line(text: &str) -> String {
     line.chars().take(200).collect()
 }
 
-/// Offering the fixes on a terminal, for `copland-box --check --fix`. Blocking: it reads stdin and
+/// Offering the fixes on a terminal, for `copland-daemon --check --fix` and `copland-box --check --fix`. Blocking: it reads stdin and
 /// hands the terminal to what it runs, so call it from no async task (or in `spawn_blocking`).
 pub mod terminal {
     use std::io::{self, BufRead, Write};
