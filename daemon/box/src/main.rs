@@ -7,6 +7,7 @@ mod agents;
 mod edit;
 mod feed;
 mod hyprland;
+mod log;
 mod menu;
 mod notify;
 mod prefs;
@@ -326,17 +327,48 @@ impl Running {
 /// Starts the daemon on a config: the window's next source.
 type Launch = Rc<dyn Fn(Config) -> Result<Source>>;
 
-fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        /* GPUI and its renderer log a page at info on every start; the daemon's own lines are what matter here. */
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("COPLAND_LOG")
-                .unwrap_or_else(|_| "warn,copland_box=info,copland_daemon_core=info".into()),
-        )
+/// Logs to stderr and to the box's own file (`log::path_in`): a box started from a launcher has
+/// a stderr nobody reads. Returns why the file couldn't be opened, if it couldn't.
+fn init_logging(file: &Path) -> Option<std::io::Error> {
+    use tracing_subscriber::prelude::*;
+    /* GPUI and its renderer log a page at info on every start; the daemon's own lines are what matter here. */
+    let filter = tracing_subscriber::EnvFilter::try_from_env("COPLAND_LOG")
+        .unwrap_or_else(|_| "warn,copland_box=info,copland_daemon_core=info".into());
+    let stderr = tracing_subscriber::fmt::layer()
         .with_target(false)
         .with_writer(std::io::stderr)
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()));
+    let (to_file, error) = match log::LogFile::open(file, log::CAP) {
+        Ok(f) => (
+            Some(
+                tracing_subscriber::fmt::layer()
+                    .with_target(false)
+                    .with_ansi(false)
+                    .with_writer(Arc::new(f)),
+            ),
+            None,
+        ),
+        Err(e) => (None, Some(e)),
+    };
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(stderr)
+        .with(to_file)
         .init();
+    error
+}
+
+fn main() -> Result<()> {
+    let log_file = log::path_in(&default_state_dir());
+    if let Some(e) = init_logging(&log_file) {
+        tracing::warn!("can't write the log to {}: {e}; only to stderr", log_file.display());
+    }
+    /* A panic prints to stderr only, which a launcher throws away: put it in the log too. */
+    let print = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("{info}");
+        print(info);
+    }));
     let args = Args::parse();
     if args.hyprland_rule {
         let (w, h) = BoxView::window_size(&Scene::live(Tune::default()), Tune::default().scale as f32, 1.0);
@@ -345,8 +377,10 @@ fn main() -> Result<()> {
     }
     let path = args.config.clone().unwrap_or_else(default_config_path);
     if args.check {
+        println!("log: {}", log_file.display());
         return check(&path, args.fix);
     }
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), log = %log_file.display(), "copland-box");
     let tune = Tune::default();
     /* The box's settings (the menu changes them): as the file says, even one the daemon refuses. */
     let mut prefs = Prefs::from_table(table_in(&path).as_ref());
