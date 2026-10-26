@@ -10,7 +10,8 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { LISTENING_SILENCE_MS, listeningTokens } from "../src/domain/live.ts";
+import { liveOnTwoHosts } from "../src/domain/hosts.ts";
+import { LISTENING_SILENCE_MS, listeningSockets } from "../src/domain/live.ts";
 import { mayMessage, recipientsOf, type MessageParty } from "../src/domain/messages.ts";
 
 const cases: Array<[string, boolean]> = [];
@@ -60,13 +61,24 @@ t("every offer is one a send would allow", recipientsOf(ada, [...everyone, c(ope
 /* The pane says whether an agent's box is connected: a socket with one of its tokens, heard from lately (COPL-126). */
 const now = 1_000_000_000;
 const ago = (s: number) => now - s * 1000;
-const heard = (sockets: Parameters<typeof listeningTokens>[0]) => listeningTokens(sockets, now).sort().join(",");
+const heard = (sockets: Parameters<typeof listeningSockets>[0]) =>
+  listeningSockets(sockets, now)
+    .map((s) => s.tokenId + (s.host ? `@${s.host}` : ""))
+    .sort()
+    .join(",");
 t("a socket that just opened is connected", heard([{ tokenId: "k1", openedAt: ago(1), pongAt: null }]) === "k1");
 t("a socket whose last ping was answered lately is connected", heard([{ tokenId: "k1", openedAt: ago(3600), pongAt: ago(30) }]) === "k1");
 t("a socket silent past the limit isn't, however long it has been held", heard([{ tokenId: "k1", openedAt: ago(3600), pongAt: ago(76) }]) === "" && heard([{ tokenId: "k1", openedAt: ago(80), pongAt: null }]) === "");
 t("a socket from before COPL-126 counts on its pings alone", heard([{ tokenId: "k1", openedAt: 0, pongAt: ago(10) }]) === "k1" && heard([{ tokenId: "k1", openedAt: 0, pongAt: null }]) === "");
 t("a browser tab never makes a box connected", heard([{ openedAt: ago(1), pongAt: ago(1) }]) === "");
 t("each token once, however many sockets it has", heard([{ tokenId: "k1", openedAt: ago(1), pongAt: null }, { tokenId: "k1", openedAt: ago(2), pongAt: ago(1) }, { tokenId: "k2", openedAt: ago(5), pongAt: null }]) === "k1,k2");
+/* Each socket keeps the host its daemon named, so one agent live on two hosts is exact (COPL-135). */
+t("a socket keeps the host it named", heard([{ tokenId: "k1", host: "laptop", openedAt: ago(1), pongAt: null }]) === "k1@laptop");
+t("each token and host once", heard([{ tokenId: "k1", host: "laptop", openedAt: ago(1), pongAt: null }, { tokenId: "k1", host: "laptop", openedAt: ago(2), pongAt: ago(1) }, { tokenId: "k1", host: "server", openedAt: ago(2), pongAt: null }]) === "k1@laptop,k1@server");
+t("a silent socket's host isn't live", heard([{ tokenId: "k1", host: "server", openedAt: ago(3600), pongAt: ago(90) }, { tokenId: "k2", host: "laptop", openedAt: ago(1), pongAt: null }]) === "k2@laptop");
+t("two named hosts at once is live on two hosts", liveOnTwoHosts(["laptop", "server"]) && liveOnTwoHosts(["laptop", null, "server"]));
+t("one host, however many sockets, isn't", !liveOnTwoHosts(["laptop"]) && !liveOnTwoHosts([]) && !liveOnTwoHosts(new Set(["laptop", "laptop"])));
+t("a socket that named no host never makes a second one", !liveOnTwoHosts(["laptop", null]) && !liveOnTwoHosts([null, null]));
 t("the hub gives a socket up when the daemon does (SILENCE in daemon/core/src/live.rs)", (() => {
   const m = /pub const SILENCE: Duration = Duration::from_secs\((\d+)\);/.exec(readFileSync("daemon/core/src/live.rs", "utf8"));
   return !!m && Number(m[1]) * 1000 === LISTENING_SILENCE_MS;

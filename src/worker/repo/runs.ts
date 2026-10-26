@@ -200,10 +200,11 @@ interface RunRow {
   ended_at: string | null;
   reason: string | null;
   claims: string | null;
+  host: string | null;
 }
 
 const RUN_SELECT = `
-  SELECT r.id, r.user_id, r.client, r.kind, r.status, r.started_at, r.last_seen_at, r.ended_at, r.reason,
+  SELECT r.id, r.user_id, r.client, r.kind, r.status, r.started_at, r.last_seen_at, r.ended_at, r.reason, r.host,
          (SELECT group_concat(b.key || '-' || t.number)
             FROM task_claims c JOIN tasks t ON t.id = c.task_id JOIN boards b ON b.id = t.board_id
            WHERE c.run_id = r.id AND c.claimed_until > ${NOW_SQL} AND r.status = 'running') AS claims
@@ -221,6 +222,7 @@ function toRun(row: RunRow): Run {
     endedAt: row.ended_at,
     reason: row.reason,
     claims: row.claims ? row.claims.split(",") : [],
+    host: row.host,
   };
 }
 

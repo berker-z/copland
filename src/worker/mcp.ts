@@ -892,7 +892,7 @@ const TOOLS: Tool[] = [
     name: "whoami",
     title: "Who am I",
     description:
-      "Who this connection acts as: a person (handle, email, whether they are an instance admin) or one of their agents (handle \"owner/name\" and agent_of, the person it acts for); the inbox's board key (for an agent, its owner's inbox if it was added there, else null), how many boards they are on, access (\"read and write\" or \"read-only\": a read-only connection cannot change anything), and run: the run this connection works in (id; kind, supervised when something launched you through it, interactive when claim_task made it for a chat session; status, since, the tasks it has claimed), or null when it has none yet (the first claim_task makes one).",
+      "Who this connection acts as: a person (handle, email, whether they are an instance admin) or one of their agents (handle \"owner/name\" and agent_of, the person it acts for); the inbox's board key (for an agent, its owner's inbox if it was added there, else null), how many boards they are on, access (\"read and write\" or \"read-only\": a read-only connection cannot change anything), and run: the run this connection works in (id; kind, supervised when something launched you through it, interactive when claim_task made it for a chat session; status, since, the tasks it has claimed, and host: the machine its launcher started it on, when it said), or null when it has none yet (the first claim_task makes one).",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
     async run(_args, ctx) {
@@ -910,7 +910,9 @@ const TOOLS: Tool[] = [
         boards: boards.length,
         /* /api/me says what the token may do; a connection without one (none today) can do anything its roles allow. */
         access: me.access?.scope === "read" ? "read-only" : "read and write",
-        run: run ? { id: run.short, kind: run.kind, status: run.status, since: run.startedAt, claims: run.claims } : null,
+        run: run
+          ? { id: run.short, kind: run.kind, status: run.status, since: run.startedAt, claims: run.claims, ...(run.host ? { host: run.host } : {}) }
+          : null,
       };
     },
   },

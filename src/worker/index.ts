@@ -92,6 +92,7 @@ import {
 } from "./routes/runs";
 import { getInbox, postInboxDismiss, postInboxRead } from "./routes/inbox";
 import { getRecipients, postMessage } from "./routes/messages";
+import { putOwnHost } from "./routes/hosts";
 import { getDevice, postDeviceApprove, postDeviceDeny, postDevicePoll, postDeviceStart, sweepDeviceRequests } from "./routes/device";
 import { deleteOwnToken, deleteToken, getTokens, postToken, SELF_REVOKE_PATH } from "./routes/tokens";
 import { handleIntegration, isIntegrationPath } from "./integrations";
@@ -154,6 +155,9 @@ const api = new Router<Ctx>()
   /* Not mine(grant) either: a message is from whoever sends it, to someone's own inbox. */
   .on("POST", "/api/messages", ({ request, env, viewer, changes }) => postMessage(request, env, viewer, changes))
   .on("GET", "/api/messages/recipients", ({ env, viewer }) => getRecipients(env, viewer))
+  /* Not mine(grant): an agent's daemon reporting the machine it runs on, with
+     the agent's own token; its owner reads it on GET /api/agents (routes/hosts.ts). */
+  .on("PUT", "/api/hosts/self", ({ request, env, viewer, changes }) => putOwnHost(request, env, viewer, changes))
 
   .on("GET", "/api/settings", mine(null, ({ env, viewer }) => getSettings(env, viewer)))
   .on("PATCH", "/api/settings", mine(null, ({ request, env, viewer, changes }) => patchSettings(request, env, viewer, changes)))

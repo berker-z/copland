@@ -111,27 +111,38 @@ export const TAB_HEADER = "x-copland-tab";
  */
 export const LISTENING_SILENCE_MS = 75_000;
 
-/** One open socket in a hub, as listeningTokens weighs it. */
+/** One open socket in a hub, as listeningSockets weighs it. */
 export interface HeldSocket {
   /** The API token it was opened with; absent for a browser tab. */
   tokenId?: string;
+  /** The host its daemon named when it opened it (domain/hosts.ts HOST_HEADER); absent when it named none. */
+  host?: string;
   /** When it was opened (ms), or 0 when the hub doesn't know. */
   openedAt: number;
   /** When its last ping was answered (ms), or null when none has been. */
   pongAt: number | null;
 }
 
+/** A token heard from lately, and the host it is on (null: its socket named none). */
+export interface Listening {
+  tokenId: string;
+  host: string | null;
+}
+
 /**
  * The tokens with a socket heard from within LISTENING_SILENCE_MS: opened,
- * or a ping answered, that recently. A browser tab has no token and never
- * counts. A socket whose peer died without a close can sit in the hub for a
- * while, so being held is not enough; a recent ping is the daemon still there.
+ * or a ping answered, that recently, each with the host it named, once per
+ * token and host. A browser tab has no token and never counts. A socket
+ * whose peer died without a close can sit in the hub for a while, so being
+ * held is not enough; a recent ping is the daemon still there.
  */
-export function listeningTokens(sockets: HeldSocket[], now: number): string[] {
-  const live = new Set<string>();
+export function listeningSockets(sockets: HeldSocket[], now: number): Listening[] {
+  const live = new Map<string, Listening>();
   for (const s of sockets) {
     if (!s.tokenId) continue;
-    if (now - Math.max(s.openedAt, s.pongAt ?? 0) <= LISTENING_SILENCE_MS) live.add(s.tokenId);
+    if (now - Math.max(s.openedAt, s.pongAt ?? 0) > LISTENING_SILENCE_MS) continue;
+    const host = s.host ?? null;
+    live.set(JSON.stringify([s.tokenId, host]), { tokenId: s.tokenId, host });
   }
-  return [...live];
+  return [...live.values()];
 }

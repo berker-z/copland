@@ -575,6 +575,14 @@ docs/DESIGN.md under Touch.
   login's commands for a terminal, `r` checks again, and Enter starts the
   daemon whatever they say. Its last line says to connect your own chat to
   `/mcp` as "you".
+- Setup on a terminal (COPL-177): `copland-daemon --setup [--url]` asks
+  for the address, prints the device code and link and polls as the box
+  does, saves the tokens at once (so it resumes at the runtimes from
+  `daemon.toml.setup`), asks a runtime and workdir per agent, writes the
+  box's `daemon.toml` with a backup, and runs the preflight offering its
+  fixes. Refuses without a terminal. `copland-daemon --check --fix` too
+  (`daemon/cli/src/setup.rs`). Run end to end against a stub device
+  server; not yet against a real Copland.
 - Waiting work starts when what it waits on closes (COPL-164): a write
   that closes or deletes the last open task a todo task depends on puts an
   `unblocked` item in each of its assignees' inboxes (migration 0035,
@@ -584,3 +592,19 @@ docs/DESIGN.md under Touch.
   remembered by its daemon's wake guard and nothing new ever came, so the
   task sat in todo. Checked in checks/inbox.check.ts and the daemon's
   guard tests.
+- Where each agent runs, server side (COPL-176, for COPL-135): an agent's
+  daemon reports its machine with the agent's own token,
+  `PUT /api/hosts/self { hostname, version, capabilities }` (runtimes on
+  PATH and logged in; per board repo, clone, push and a one-line detail),
+  kept per agent and hostname in `agent_hosts` (migration 0036,
+  `src/worker/routes/hosts.ts`, checked and bounded by
+  `parseHostReport` in src/domain/hosts.ts, at most 16 hosts an agent). A
+  session, a person's token and a run's secret are refused. A run's
+  launcher names its host on `POST /api/runs { host }`, and runs say it.
+  The live socket's upgrade names its host (`x-copland-host`), so
+  `GET /api/agents` gives each agent its hosts with which are live now and
+  `liveOnTwoHosts`, and the nudge pane's recipients say where your own
+  agents are live (`liveHosts` in live.ts). Checked in
+  checks/hosts.check.ts. Not yet: the daemon reporting and naming its host
+  (COPL-179), its repo preflight (COPL-178), and the web app and the box
+  showing any of it
