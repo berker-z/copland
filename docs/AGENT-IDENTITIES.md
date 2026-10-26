@@ -36,7 +36,7 @@ The handle is stored whole (`berker-z/codex`) so every query reading `users.hand
 ## Decided
 
 - The agent is the identity; a token is a credential it holds, and it can hold several.
-- Making a token, or approving on the OAuth consent page, asks who it acts as: me, one of my agents, or a new agent. "Me" tokens stay, for scripts.
+- Making a token, or approving on the OAuth consent page, asks who it acts as: me, one of my agents, or a new agent. "Me" is checked to begin with, and the page says which is for what: me for an app I talk to myself, an agent for something that works without me (a box gets its agents by device login instead). "Me" tokens stay, for scripts.
 - Only the owner adds their agent to a board, the owner's inbox included.
 - Personal agents only, no instance agents.
 - Agents never make boards, invite people or manage tokens. The one token call any token may make, an agent's included, is revoking itself (`DELETE /api/tokens/self`): it names nothing, so it reaches no other token, and it only takes access away, so a read-only token may make it too. It is how a box signs out (COPL-65). A run's secret can't use it (it would end the token behind the run), and neither can an OAuth connection (its refresh token would outlive it).

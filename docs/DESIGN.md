@@ -405,7 +405,9 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
 - The OAuth consent page (`src/worker/oauth.ts`) is served by the Worker and
   cannot load the app's stylesheet. It is one pane in the modal's shape
   (hairline border, rule under the title, footer on `bar`), with the nord
-  theme's role values copied in under the same variable names.
+  theme's role values copied in under the same variable names. Its agent
+  choices sit under an `aside` line (smaller, `muted`, a `divider` rule above)
+  that says what an agent is for, below "you".
 - `/device` (`src/features/device/DeviceScreen.tsx`) is the app's own
   route, under the statusline, so it has the app's theme. One centred pane
   with the login screen's header (`connect_a_box` in `text-blue` on a rule).
