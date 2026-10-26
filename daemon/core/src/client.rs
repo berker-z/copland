@@ -1,6 +1,7 @@
 //! `copland-daemon status` (COPL-185): the status socket (COPL-184) read from a terminal or a
 //! script. One snapshot as text or JSON, or every change until interrupted. `copland-daemon hold`
-//! and `release` (COPL-186) hold an agent on this machine through it, and let it go.
+//! and `release` (COPL-186) hold an agent on this machine through it, and let it go; `reload`
+//! (COPL-197) has it read its config again.
 //!
 //! "Not running" is an answer, not an error: `Outcome::NotRunning`, which the command exits 3
 //! on (`NOT_RUNNING`), so a script can tell it from something going wrong (exit 1).
@@ -81,6 +82,109 @@ fn not_running(config: &Path, runtime_dir: &Path, socket: PathBuf) -> Result<Out
     Ok(Outcome::NotRunning { socket, ended: false })
 }
 
+/// A connection to the daemon running a config, asking one request at a time.
+struct Asker {
+    socket: PathBuf,
+    lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    write: tokio::net::unix::OwnedWriteHalf,
+}
+
+impl Asker {
+    /// Connect to the daemon running `config`, or say why not.
+    async fn connect(config: &Path, runtime_dir: &Path) -> Result<Result<Self, Outcome>> {
+        let socket = lock::socket_for(config, runtime_dir);
+        let stream = match UnixStream::connect(&socket).await {
+            Ok(s) => s,
+            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
+                return not_running(config, runtime_dir, socket).map(Err);
+            }
+            Err(e) => return Err(e).with_context(|| format!("connecting to {}", socket.display())),
+        };
+        let (read, write) = stream.into_split();
+        Ok(Ok(Self {
+            socket,
+            lines: BufReader::new(read).lines(),
+            write,
+        }))
+    }
+
+    async fn ask(&mut self, request: &str) -> Result<String> {
+        self.write
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .with_context(|| format!("asking {}", self.socket.display()))?;
+        self.lines
+            .next_line()
+            .await
+            .with_context(|| format!("reading {}", self.socket.display()))?
+            .with_context(|| format!("the daemon at {} hung up without answering", self.socket.display()))
+    }
+
+    /// Ask, for an answer that is `{"ok":true,…}` or `{"error":…}`.
+    async fn ask_ok(&mut self, request: &str) -> Result<serde_json::Value> {
+        let answer: serde_json::Value =
+            serde_json::from_str(&self.ask(request).await?).context("the daemon's answer isn't JSON")?;
+        if let Some(e) = answer.get("error") {
+            bail!("the daemon says: {}", e.as_str().unwrap_or(&e.to_string()));
+        }
+        Ok(answer)
+    }
+}
+
+/// Have the daemon running `config` load it again and run what it says now (COPL-197), and say
+/// on `out` what changed. A config that doesn't load is an error, and the daemon goes on as it was.
+pub async fn reload(config: &Path, runtime_dir: &Path, out: &mut (dyn Write + Send)) -> Result<Outcome> {
+    let mut daemon = match Asker::connect(config, runtime_dir).await? {
+        Ok(a) => a,
+        Err(o) => return Ok(o),
+    };
+    let answer = daemon.ask_ok(r#"{"op":"reload"}"#).await?;
+    let reloaded: Reloaded = serde_json::from_value(answer["reloaded"].clone())
+        .context("the daemon's answer doesn't say what it reloaded")?;
+    out.write_all(reloaded.says(config).as_bytes())
+        .context("writing the answer")?;
+    Ok(Outcome::Shown)
+}
+
+/// What a reload did, as the socket says it (`daemon::Reloaded`); lists a daemon leaves out are empty.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+struct Reloaded {
+    kept: Vec<String>,
+    started: Vec<String>,
+    rebound: Vec<String>,
+    stopped: Vec<String>,
+}
+
+impl Reloaded {
+    fn says(&self, config: &Path) -> String {
+        let handles = |hs: &[String]| {
+            hs.iter()
+                .map(|h| format!("@{}", h.trim_start_matches('@')))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut out = format!("reloaded {}", config.display());
+        let changed = [
+            ("started", &self.started),
+            ("rebound (after its runs)", &self.rebound),
+            ("stopped (after its runs)", &self.stopped),
+        ];
+        if changed.iter().all(|(_, hs)| hs.is_empty()) {
+            out.push_str(": nothing changed\n");
+            return out;
+        }
+        out.push('\n');
+        for (what, hs) in changed.into_iter().filter(|(_, hs)| !hs.is_empty()) {
+            out.push_str(&format!("{what}: {}\n", handles(hs)));
+        }
+        if !self.kept.is_empty() {
+            out.push_str(&format!("as they were: {}\n", handles(&self.kept)));
+        }
+        out
+    }
+}
+
 /// Hold (`held`) or release the agent `handle` (as the server says it, or as `daemon.toml` has
 /// it, with or without the @) of the daemon running `config`, and say so on `out`. Holding is
 /// this machine's alone: Copland's pause is untouched (see daemon/README.md's "The status socket").
@@ -91,28 +195,11 @@ pub async fn hold(
     held: bool,
     out: &mut (dyn Write + Send),
 ) -> Result<Outcome> {
-    let socket = lock::socket_for(config, runtime_dir);
-    let stream = match UnixStream::connect(&socket).await {
-        Ok(s) => s,
-        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
-            return not_running(config, runtime_dir, socket);
-        }
-        Err(e) => return Err(e).with_context(|| format!("connecting to {}", socket.display())),
+    let mut daemon = match Asker::connect(config, runtime_dir).await? {
+        Ok(a) => a,
+        Err(o) => return Ok(o),
     };
-    let (read, mut write) = stream.into_split();
-    let mut lines = BufReader::new(read).lines();
-    let mut ask = async |request: String| -> Result<String> {
-        write
-            .write_all(format!("{request}\n").as_bytes())
-            .await
-            .with_context(|| format!("asking {}", socket.display()))?;
-        lines
-            .next_line()
-            .await
-            .with_context(|| format!("reading {}", socket.display()))?
-            .with_context(|| format!("the daemon at {} hung up without answering", socket.display()))
-    };
-    let status = parse(&ask(r#"{"op":"status"}"#.into()).await?)?;
+    let status = parse(&daemon.ask(r#"{"op":"status"}"#).await?)?;
     let wanted = handle.trim_start_matches('@');
     let Some(agent) = status
         .agents
@@ -131,12 +218,9 @@ pub async fn hold(
         );
     };
     let op = if held { "hold" } else { "release" };
-    let answer: serde_json::Value =
-        serde_json::from_str(&ask(format!(r#"{{"op":"{op}","slot":{}}}"#, agent.slot)).await?)
-            .context("the daemon's answer isn't JSON")?;
-    if let Some(e) = answer.get("error") {
-        bail!("the daemon says: {}", e.as_str().unwrap_or(&e.to_string()));
-    }
+    daemon
+        .ask_ok(&format!(r#"{{"op":"{op}","slot":{}}}"#, agent.slot))
+        .await?;
     let says = if held {
         format!(
             "@{} held on this machine: it starts nothing until `copland-daemon release {}`; runs going finish\n",
@@ -229,7 +313,7 @@ mod tests {
 
     use super::*;
     use crate::agent::StopRequest;
-    use crate::daemon::{Holder, RunStopper};
+    use crate::daemon::{Holder, Reloader, RunStopper};
     use crate::socket::Server;
     use crate::state::{AgentState, DaemonState, Phase};
 
@@ -301,6 +385,7 @@ mod tests {
             state,
             RunStopper(stop_tx),
             Holder(state_tx.clone()),
+            Reloader::nowhere(),
         )
         .unwrap();
 
@@ -389,6 +474,7 @@ mod tests {
             state,
             RunStopper(stop_tx),
             Holder(state_tx.clone()),
+            Reloader::nowhere(),
         )
         .unwrap();
 

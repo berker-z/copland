@@ -61,6 +61,12 @@ pub fn systemd_unit(program: &str, config: Option<&str>, path: Option<&str>) -> 
          [Service]\n",
     );
     out.push_str(&format!("ExecStart={}\n", exec.join(" ")));
+    /* `systemctl reload`: the daemon reads its config again, and a config that doesn't load fails the reload. */
+    let mut reload = vec![exec_word(program), "reload".to_string()];
+    if let Some(c) = config {
+        reload.extend(["--config".to_string(), exec_word(c)]);
+    }
+    out.push_str(&format!("ExecReload={}\n", reload.join(" ")));
     if let Some(p) = path {
         out.push_str(&format!("Environment={}\n", word(&format!("PATH={p}"))));
     }
@@ -285,13 +291,16 @@ mod tests {
         assert!(unit.contains(
             "\nExecStart=/home/me/.local/bin/copland-daemon --headless --config \"/home/me/my configs/daemon.toml\"\n"
         ));
+        assert!(unit.contains(
+            "\nExecReload=/home/me/.local/bin/copland-daemon reload --config \"/home/me/my configs/daemon.toml\"\n"
+        ));
         assert!(unit.contains("\nEnvironment=PATH=/home/me/.local/bin:/usr/bin\n"));
         assert!(unit.contains("\nRestart=on-failure\nRestartSec=10\n"));
         assert!(unit.contains("\nKillMode=mixed\n"));
         assert!(unit.ends_with("[Install]\nWantedBy=default.target\n"));
         /* No --config, no PATH: the daemon's defaults and the user manager's. */
         let bare = systemd_unit("/bin/copland-daemon", None, None);
-        assert!(bare.contains("\nExecStart=/bin/copland-daemon --headless\n"));
+        assert!(bare.contains("\nExecStart=/bin/copland-daemon --headless\nExecReload=/bin/copland-daemon reload\n"));
         assert!(!bare.contains("Environment="));
     }
 

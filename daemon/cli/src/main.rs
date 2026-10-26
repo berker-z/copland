@@ -1,7 +1,8 @@
 //! `copland-daemon --headless`: run the agents in daemon.toml until stopped.
 //! `--setup` writes daemon.toml on a terminal, `--check` checks this machine,
 //! `--install-service` runs it as a systemd or launchd service, `status` asks the one running,
-//! `hold` and `release` hold one of its agents on this machine and let it go.
+//! `hold` and `release` hold one of its agents on this machine and let it go, `reload` has it read
+//! its config again (as SIGHUP does).
 
 mod service;
 mod setup;
@@ -12,6 +13,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use copland_daemon_core::client;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
+use copland_daemon_core::socket::Serve;
 use copland_daemon_core::{Config, Daemon, Lock, Paths};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -78,6 +80,11 @@ enum Command {
         /// The agent's handle, as Copland or daemon.toml has it.
         handle: String,
     },
+    /// Have the daemon running this config read it again and run what it says now, as SIGHUP
+    /// does: new agents start, removed ones stop and changed ones start again with what changed,
+    /// each after its runs. Prints what changed. A config that doesn't load changes nothing and
+    /// exits 1. Exits 3 when no daemon is running the config.
+    Reload,
 }
 
 #[tokio::main]
@@ -103,6 +110,7 @@ async fn main() -> Result<()> {
             }
             Command::Hold { handle } => client::hold(&path, &runtime_dir, &handle, true, out).await?,
             Command::Release { handle } => client::hold(&path, &runtime_dir, &handle, false, out).await?,
+            Command::Reload => client::reload(&path, &runtime_dir, out).await?,
         };
         if let Some(says) = shown.says(&path, named) {
             eprintln!("{says}");
@@ -158,15 +166,34 @@ async fn main() -> Result<()> {
             state_dir: default_state_dir(),
             runtime_dir: default_runtime_dir(),
         },
-        Some(lock.socket()),
+        Some(Serve {
+            socket: lock.socket(),
+            config: path.clone(),
+        }),
     )?;
+    let mut reloads = daemon.reloads().expect("taken once, here");
+    let reloader = daemon.reloader(path.clone());
     let mut term = signal(SignalKind::terminate())?;
     let mut int = signal(SignalKind::interrupt())?;
-    tokio::select! {
-        _ = term.recv() => tracing::info!("SIGTERM: stopping"),
-        _ = int.recv() => tracing::info!("SIGINT: stopping"),
-        /* Every agent's loop ended by itself: each had a token it can't use (read-only, or a run's secret). */
-        _ = daemon.join() => anyhow::bail!("no agent left to watch"),
+    let mut hup = signal(SignalKind::hangup())?;
+    loop {
+        tokio::select! {
+            _ = term.recv() => { tracing::info!("SIGTERM: stopping"); break }
+            _ = int.recv() => { tracing::info!("SIGINT: stopping"); break }
+            /* COPL-197: the config again, as the socket's reload. Answered below, by this loop. */
+            _ = hup.recv() => {
+                tracing::info!("SIGHUP: reloading {}", path.display());
+                let reloader = reloader.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = reloader.reload().await {
+                        tracing::error!("reload: {e:#}");
+                    }
+                });
+            }
+            Some(req) = reloads.recv() => req.answer(&mut daemon),
+            /* Every agent's loop ended by itself: each had a token it can't use (read-only, or a run's secret). */
+            _ = daemon.join() => anyhow::bail!("no agent left to watch"),
+        }
     }
     daemon.shutdown();
     /* A second signal means now: runs left behind go stale and their claims lapse within the lease. */
