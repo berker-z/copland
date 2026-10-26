@@ -957,7 +957,7 @@ struct TaskInfo {
 /// trouble, not the task's: interrupted, so it costs the task no strike toward blocked.
 fn ending_of(exit: &Exit) -> Ending {
     match exit {
-        Exit::Code(0) => Ending::Completed,
+        Exit::Code(0) | Exit::ForReview => Ending::Completed,
         Exit::Stopped | Exit::SpawnFailed(_) => Ending::Interrupted,
         Exit::Cancelled => Ending::Cancelled,
         _ => Ending::Failed,
@@ -1438,7 +1438,7 @@ impl RunCtx {
             run: run.to_string(),
             task: task.to_string(),
             outcome: status,
-            failed: left || !matches!(ended.exit, Exit::Code(0) | Exit::Stopped | Exit::Cancelled),
+            failed: left || !matches!(ended.exit, Exit::Code(0) | Exit::ForReview | Exit::Stopped | Exit::Cancelled),
             how: Some(if left {
                 format!("{}, {UNFINISHED}", ended.reason())
             } else {
@@ -2017,6 +2017,8 @@ mod tests {
         assert_eq!(ending_of(&Exit::Signal(9)), Ending::Failed);
         assert_eq!(ending_of(&Exit::TimedOut), Ending::Failed);
         assert_eq!(ending_of(&Exit::Code(0)), Ending::Completed);
+        /* Stopped with its review_first PR open (COPL-193): left for a person, so done for now. */
+        assert_eq!(ending_of(&Exit::ForReview), Ending::Completed);
     }
 
     /// A task as GET /api/tasks/:id sends it, with `extra` over a plain leaf in a stage "s".
