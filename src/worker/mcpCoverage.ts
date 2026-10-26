@@ -116,6 +116,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /api/inbox/dismiss": { tools: ["mark_read"] },
   "POST /api/messages": { tools: ["send_message"] },
   "GET /api/messages/recipients": { skip: "browser: the nudge pane's list; an agent messages only its owner, and send_message names whom" },
+  "PUT /api/hosts/self": { skip: "private: an agent's daemon reports the machine it runs on; an assistant has no host of its own to report, and whoami shows the run's" },
   "GET /api/tasks/:id": {
     tools: ["get_task", "create_task", "update_task", "move_task", "claim_task", "release_task", "comment_on_task", "delete_task", "drift", "overlap", "revalidate"],
   },

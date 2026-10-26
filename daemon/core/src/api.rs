@@ -9,8 +9,8 @@ use std::fmt;
 use std::sync::Once;
 use std::time::Duration;
 
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::watch;
 
@@ -276,6 +276,61 @@ pub struct Run {
     pub short: String,
     pub status: String,
     pub claims: Vec<String>,
+    /// The machine its launcher started it on (COPL-135); missing from a server older than that.
+    #[serde(default)]
+    pub host: Option<String>,
+}
+
+/// The header the live socket's upgrade names its host with (`HOST_HEADER` in `src/domain/hosts.ts`).
+pub const HOST_HEADER: &str = "x-copland-host";
+
+/// PUT /api/hosts/self: the machine an agent's daemon runs on (`HostReport` in `src/domain/hosts.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostReport {
+    pub hostname: String,
+    /// The box's version.
+    pub version: String,
+    pub capabilities: HostCapabilities,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct HostCapabilities {
+    pub runtimes: Vec<RuntimeCapability>,
+    pub repos: Vec<RepoCapability>,
+}
+
+/// A runtime the daemon can start: on its PATH, and logged in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeCapability {
+    pub name: String,
+    pub on_path: bool,
+    pub logged_in: bool,
+}
+
+/// One board repo ("owner/name" or a remote), as this machine reaches it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RepoCapability {
+    pub repo: String,
+    pub clone: bool,
+    pub push: bool,
+    /// One line on why not, or how.
+    pub detail: Option<String>,
+}
+
+/// PUT /api/hosts/self: the host as kept.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HostReported {
+    pub host: ReportedHost,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportedHost {
+    /// Lowercased by the server.
+    pub hostname: String,
+    pub first_reported_at: String,
+    pub last_reported_at: String,
 }
 
 /// PUT /api/tasks/:id/files: what was kept.
@@ -794,6 +849,12 @@ impl Api {
         .await
     }
 
+    /// Report the machine this daemon runs on, with the agent's own token (never a run's secret).
+    pub async fn report_host(&self, token: &Secret, report: &HostReport) -> ApiResult<HostReported> {
+        self.send(self.http.put(self.url("/api/hosts/self")).json(report), token)
+            .await
+    }
+
     /// Read the run. Called with the run's secret, it is also the run's keepalive.
     pub async fn run(&self, cred: &Secret, id: &str) -> ApiResult<Run> {
         self.send(self.http.get(self.url(&format!("/api/runs/{id}"))), cred)
@@ -862,6 +923,49 @@ impl Api {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_report_is_the_shape_the_worker_reads() {
+        let report = HostReport {
+            hostname: "laptop".into(),
+            version: "0.9.0".into(),
+            capabilities: HostCapabilities {
+                runtimes: vec![RuntimeCapability {
+                    name: "claude".into(),
+                    on_path: true,
+                    logged_in: false,
+                }],
+                repos: vec![RepoCapability {
+                    repo: "berker-z/copland".into(),
+                    clone: true,
+                    push: false,
+                    detail: Some("no push access".into()),
+                }],
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            json!({
+                "hostname": "laptop",
+                "version": "0.9.0",
+                "capabilities": {
+                    "runtimes": [{ "name": "claude", "onPath": true, "loggedIn": false }],
+                    "repos": [{ "repo": "berker-z/copland", "clone": true, "push": false, "detail": "no push access" }]
+                }
+            })
+        );
+        let hosts = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/domain/hosts.ts")).unwrap();
+        assert!(hosts.contains(&format!("export const HOST_HEADER = \"{HOST_HEADER}\";")));
+    }
+
+    #[test]
+    fn a_run_says_its_host_when_the_server_does() {
+        let run: Run =
+            serde_json::from_str(r#"{"id":"r","short":"r","status":"running","claims":[],"host":"laptop"}"#).unwrap();
+        assert_eq!(run.host.as_deref(), Some("laptop"));
+        let old: Run = serde_json::from_str(r#"{"id":"r","short":"r","status":"running","claims":[]}"#).unwrap();
+        assert_eq!(old.host, None);
+    }
 
     #[test]
     fn a_finish_says_how_the_runtime_ended() {

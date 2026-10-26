@@ -19,12 +19,13 @@
    item lands in the recipient's inbox, and they hear about it on "inbox".
    ========================================================================== */
 
+import { liveOnTwoHosts } from "@/domain/hosts";
 import { MESSAGE_MAX, mayMessage, recipientsOf, type MessageParty } from "@/domain/messages";
 import type { Recipient, SentMessage, Viewer } from "@/domain/types";
 import { requireBoard } from "../access";
 import type { Env } from "../env";
 import { badRequest, forbidden, json, notFound, nowIso, readJson } from "../http";
-import { connectedPrincipals, type Changes } from "../live";
+import { liveHosts, type Changes } from "../live";
 import { rowToUser, type UserRow } from "../repo/users";
 import { currentVia } from "../tokens";
 
@@ -193,8 +194,10 @@ interface CandidateRow extends UserRow {
  * someone a send would refuse. Disabled agents are left out, as findParty
  * leaves them out of sending.
  *
- * Each says whether its daemon is connected (connectedPrincipals in
- * live.ts): nothing reads a message while it is not. Whether it has a run
+ * Each says whether its daemon is connected (liveHosts in live.ts):
+ * nothing reads a message while it is not. Your own agents also say which
+ * hosts they are live on, and whether that is two at once (COPL-135);
+ * someone else's never say where they run. Whether it has a run
  * going isn't said: runs go side by side and a message gets one of its own
  * (COPL-123), so a run says nothing about when a message is read.
  */
@@ -221,11 +224,18 @@ export async function getRecipients(env: Env, viewer: Viewer): Promise<Response>
     party: party(row),
   }));
   const offered = recipientsOf(party(sender), candidates);
-  const connected = await connectedPrincipals(env, offered.map(({ row }) => row.id));
-  const list: Recipient[] = offered.map(({ row }) => ({
-    user: rowToUser(row),
-    own: row.owner_id === sender.id,
-    connected: connected.has(row.id),
-  }));
+  const live = await liveHosts(env, offered.map(({ row }) => row.id));
+  const list: Recipient[] = offered.map(({ row }) => {
+    const own = row.owner_id === sender.id;
+    /* Where it runs is its owner's to know, not every board member's. */
+    const hosts = own ? (live.get(row.id) ?? []) : [];
+    return {
+      user: rowToUser(row),
+      own,
+      connected: live.has(row.id),
+      hosts: hosts.filter((h): h is string => h !== null).sort(),
+      liveOnTwoHosts: liveOnTwoHosts(hosts),
+    };
+  });
   return json(list);
 }
