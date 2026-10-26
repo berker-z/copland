@@ -608,3 +608,10 @@ docs/DESIGN.md under Touch.
   checks/hosts.check.ts. Not yet: the daemon reporting and naming its host
   (COPL-179), its repo preflight (COPL-178), and the web app and the box
   showing any of it
+- Worktrees share build output (COPL-187): a worker's run gets
+  `CARGO_TARGET_DIR=code_dir/build/<repo>`, writable in its sandbox, so a
+  repo's worktrees build into one target dir instead of 6 to 7 GB each
+  (measured against sccache, which saved no disk: numbers in
+  daemon/README.md). It goes with the repo's last worktree. The preflight
+  has a disk check: a warning under `min_free_gb` (20 GB) free on
+  `code_dir`'s filesystem, naming the biggest things under it.
