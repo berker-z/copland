@@ -1,12 +1,13 @@
 //! Preflight (COPL-161): whether this machine can run its agents, checked before a run finds out.
 //!
-//! Five kinds of check, each a [`Check`] with a status, a one-line detail and, when there is a way
+//! Six kinds of check, each a [`Check`] with a status, a one-line detail and, when there is a way
 //! out, a [`Fix`]:
 //!
 //! - each runtime the agents start is on PATH and logged in (`claude auth status`, `codex login status`);
 //! - git is there and has a name and an email to commit as (global or system config);
 //! - git can reach GitHub over https without asking: its credential helper has a login for github.com;
 //! - `code_dir` is there (or can be made), is writable, and a git worktree can be made in it;
+//! - `code_dir`'s filesystem has `min_free_gb` free, and when it hasn't, what under it takes the space;
 //! - each agent's token is good, and read and write (`agent::whoami`).
 //!
 //! [`run`] does them all; each is also a function of its own, so a front end can run one again.
@@ -172,16 +173,17 @@ pub fn render(checks: &[Check]) -> String {
     out
 }
 
-/// Every check, for every agent in the config: runtimes, git, GitHub, code_dir, tokens, in that
-/// order. With no agent that has a `code_command`, nothing clones or commits, so the git, GitHub
+/// Every check, for every agent in the config: runtimes, git, GitHub, code_dir, disk, tokens, in
+/// that order. With no agent that has a `code_command`, nothing clones or commits, so the git, GitHub
 /// and code_dir checks only warn.
 pub async fn run(config: &Config) -> Vec<Check> {
     let coding = config.agents.iter().any(|a| a.code_command.is_some());
-    let (runtimes, git, github, code, tokens) = tokio::join!(
+    let (runtimes, git, github, code, space, tokens) = tokio::join!(
         runtimes(&config.agents),
         git_identity(),
         github(),
         code_dir(&config.code_dir),
+        disk(&config.code_dir, config.min_free_gb),
         async {
             let mut out = Vec::new();
             for a in &config.agents {
@@ -199,6 +201,7 @@ pub async fn run(config: &Config) -> Vec<Check> {
         }
         checks.push(c);
     }
+    checks.push(space);
     checks.extend(tokens);
     checks
 }
@@ -497,6 +500,125 @@ pub async fn code_dir(dir: &Path) -> Check {
         .with_fix(Fix::manual("set code_dir in daemon.toml to a directory you can write")),
         None => Check::fail("code_dir", format!("{shown} isn't there and can't be made")),
     }
+}
+
+/// A GB, as disks are sold and `df -H` counts.
+const GB: u64 = 1_000_000_000;
+/// How many of the biggest things under `code_dir` a disk warning names.
+const USAGE_SHOWN: usize = 5;
+
+/// `code_dir`'s filesystem has at least `min_gb` GB free (COPL-187): a coding run's worktree and
+/// build output take gigabytes, and a full disk fails it halfway. Below that it warns, naming the
+/// biggest things under `code_dir`. Measured where `code_dir` would be made when it isn't there yet.
+pub async fn disk(dir: &Path, min_gb: u64) -> Check {
+    let Some(there) = dir.ancestors().find(|a| a.exists()) else {
+        return Check::warn("disk", format!("{} isn't there to measure", dir.display()));
+    };
+    let free = match free_bytes(there) {
+        Ok(free) => free,
+        Err(e) => {
+            return Check::warn(
+                "disk",
+                format!("can't tell how much is free on {}: {e}", there.display()),
+            );
+        }
+    };
+    if free >= min_gb.saturating_mul(GB) {
+        return disk_check(free, min_gb, None);
+    }
+    let root = dir.to_path_buf();
+    let usage = tokio::time::timeout(CHECK_TIMEOUT, tokio::task::spawn_blocking(move || usage(&root)))
+        .await
+        .ok()
+        .and_then(Result::ok);
+    disk_check(free, min_gb, Some(usage))
+}
+
+/// The disk check from what was measured: `usage` is None when there's enough free, Some(None)
+/// when what's under `code_dir` took too long to add up.
+fn disk_check(free: u64, min_gb: u64, usage: Option<Option<Vec<(String, u64)>>>) -> Check {
+    let said = format!("{} free", gb(free));
+    let Some(usage) = usage else {
+        return Check::ok("disk", format!("{said}, of the {min_gb} GB wanted"));
+    };
+    let under = match usage {
+        Some(u) if u.is_empty() => "nothing of it is under code_dir".to_string(),
+        Some(u) => {
+            let named: Vec<String> = u
+                .iter()
+                .take(USAGE_SHOWN)
+                .map(|(name, bytes)| format!("{name} {}", gb(*bytes)))
+                .collect();
+            format!("code_dir has {}", named.join(", "))
+        }
+        None => "code_dir took too long to measure".to_string(),
+    };
+    Check::warn("disk", format!("{said}, under the {min_gb} GB wanted; {under}")).with_fix(Fix::manual(
+        "free some space: a closed task's worktree goes by itself, and build/ (shared build output) can be \
+         removed while no run builds, at the price of compiling again; or lower min_free_gb in daemon.toml",
+    ))
+}
+
+/// "12.3 GB".
+fn gb(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / GB as f64)
+}
+
+/// Bytes free to an unprivileged user on the filesystem holding `path`.
+fn free_bytes(path: &Path) -> std::io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    // SAFETY: a zeroed statvfs is a valid out-parameter, and the path is NUL-terminated for the call.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok((st.f_bavail as u64).saturating_mul(st.f_frsize as u64))
+}
+
+/// What takes the space under `code_dir`, biggest first: each task's worktree (`work/COPL-12`),
+/// the clones (`repos`) and the shared build output (`build`) each as a whole, and anything else
+/// at its top level by name. Empty ones are left out.
+fn usage(code_dir: &Path) -> Vec<(String, u64)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(code_dir) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let path = e.path();
+        if name == "work" && path.is_dir() && !path.is_symlink() {
+            for w in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+                let size = du(&w.path(), &mut seen);
+                out.push((format!("work/{}", w.file_name().to_string_lossy()), size));
+            }
+        } else {
+            out.push((name, du(&path, &mut seen)));
+        }
+    }
+    out.retain(|(_, size)| *size > 0);
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out
+}
+
+/// What `path` takes on disk, as `du` counts it: blocks, not lengths, without following symlinks,
+/// and a file with hard links (cargo's `deps/` and the binaries beside them) once.
+fn du(path: &Path, seen: &mut std::collections::HashSet<(u64, u64)>) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = path.symlink_metadata() else {
+        return 0;
+    };
+    if meta.nlink() > 1 && !meta.is_dir() && !seen.insert((meta.dev(), meta.ino())) {
+        return 0;
+    }
+    let mut size = meta.blocks().saturating_mul(512);
+    if meta.is_dir() {
+        for e in std::fs::read_dir(path).into_iter().flatten().flatten() {
+            size = size.saturating_add(du(&e.path(), seen));
+        }
+    }
+    size
 }
 
 fn writable(dir: &Path) -> bool {
@@ -910,6 +1032,55 @@ mod tests {
         let file = dir.0.join("file");
         std::fs::write(&file, "").unwrap();
         assert_eq!(code_dir(&file).await.status, Status::Fail);
+    }
+
+    #[test]
+    fn the_disk_check_warns_under_the_minimum_and_says_what_takes_the_space() {
+        let ok = disk_check(25 * GB, 20, None);
+        assert_eq!(
+            (ok.status, ok.detail.as_str()),
+            (Status::Ok, "25.0 GB free, of the 20 GB wanted")
+        );
+
+        let usage: Vec<(String, u64)> = (1..=7).rev().map(|n| (format!("work/COPL-{n}"), n * GB)).collect();
+        let low = disk_check(12_900_000_000, 20, Some(Some(usage)));
+        assert_eq!(low.status, Status::Warn);
+        assert_eq!(
+            low.detail,
+            "12.9 GB free, under the 20 GB wanted; code_dir has work/COPL-7 7.0 GB, work/COPL-6 6.0 GB, \
+             work/COPL-5 5.0 GB, work/COPL-4 4.0 GB, work/COPL-3 3.0 GB"
+        );
+        assert!(low.fix.is_some_and(|f| !f.runnable()));
+        assert!(
+            disk_check(0, 20, Some(None))
+                .detail
+                .ends_with("code_dir took too long to measure")
+        );
+        assert!(
+            disk_check(0, 20, Some(Some(Vec::new())))
+                .detail
+                .ends_with("nothing of it is under code_dir")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_disk_is_measured_and_what_is_under_code_dir_added_up() {
+        let dir = scratch("disk");
+        for d in ["work/COPL-1", "work/COPL-2", "repos/o/r", "build/o/r/debug"] {
+            std::fs::create_dir_all(dir.0.join(d)).unwrap();
+        }
+        std::fs::write(dir.0.join("work/COPL-1/big"), vec![1u8; 300_000]).unwrap();
+        std::fs::write(dir.0.join("build/o/r/debug/lib"), vec![1u8; 200_000]).unwrap();
+        /* A hard link (as cargo makes them) counts once. */
+        std::fs::hard_link(dir.0.join("build/o/r/debug/lib"), dir.0.join("build/o/r/debug/bin")).unwrap();
+        std::os::unix::fs::symlink("/", dir.0.join("work/COPL-2/root")).unwrap();
+        let u = usage(&dir.0);
+        let names: Vec<&str> = u.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(&names[..2], ["work/COPL-1", "build"], "{u:?}");
+        assert!(u[0].1 >= 300_000 && u[1].1 >= 200_000 && u[1].1 < 400_000, "{u:?}");
+        /* No filesystem has this much free, and one where code_dir is yet to be made is measured too. */
+        assert_eq!(disk(&dir.0, u64::MAX / GB).await.status, Status::Warn);
+        assert_eq!(disk(&dir.0.join("not/yet"), 0).await.status, Status::Ok);
     }
 
     #[tokio::test]
