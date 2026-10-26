@@ -30,7 +30,7 @@ pub mod workspace;
 
 pub use agent::Paths;
 pub use config::Config;
-pub use daemon::{Daemon, Reloaded, RunStopper};
+pub use daemon::{Daemon, Holder, Reloaded, RunStopper};
 pub use live::Link;
 pub use lock::Lock;
 pub use state::{AgentState, DaemonState, Phase};

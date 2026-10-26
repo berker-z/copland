@@ -66,6 +66,31 @@ impl RunStopper {
     }
 }
 
+/// Holds and releases an agent of this daemon on this machine only (COPL-186): while held, its
+/// loop starts no run and claims nothing, and runs going finish as they would. Releasing it polls
+/// at once. Not Copland's pause, which this never touches. A reload keeps a slot's hold; the next
+/// start of the daemon forgets it. Safe to call from any thread.
+#[derive(Clone)]
+pub struct Holder(pub(crate) watch::Sender<DaemonState>);
+
+impl Holder {
+    /// Hold (`held`) or release the agent in `slot` (`AgentState::slot`). False when no agent is in it.
+    pub fn set(&self, slot: u64, held: bool) -> bool {
+        let mut found = false;
+        self.0
+            .send_if_modified(|s| match s.agents.iter_mut().find(|a| a.slot == slot) {
+                Some(a) => {
+                    found = true;
+                    let changed = a.held != held;
+                    a.held = held;
+                    changed
+                }
+                None => false,
+            });
+        found
+    }
+}
+
 /// What a reload did, by handle as configured.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Reloaded {
@@ -98,7 +123,12 @@ impl Daemon {
             socket: None,
         };
         if let Some(path) = socket {
-            daemon.socket = Some(Server::start(&path, daemon.subscribe(), daemon.run_stopper())?);
+            daemon.socket = Some(Server::start(
+                &path,
+                daemon.subscribe(),
+                daemon.run_stopper(),
+                daemon.holder(),
+            )?);
         }
         for agent in config.agents {
             let slot = daemon.spawn(agent, None);
@@ -115,6 +145,11 @@ impl Daemon {
     /// A handle that stops one run by hand, for the box.
     pub fn run_stopper(&self) -> RunStopper {
         RunStopper(self.stop_run.clone())
+    }
+
+    /// A handle that holds and releases an agent on this machine, for the box and the status socket.
+    pub fn holder(&self) -> Holder {
+        Holder(self.state_tx.clone())
     }
 
     /// Start a supervisor for `agent`: in a new slot, its state listed last, or again in

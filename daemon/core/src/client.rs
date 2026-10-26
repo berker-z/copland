@@ -1,5 +1,6 @@
 //! `copland-daemon status` (COPL-185): the status socket (COPL-184) read from a terminal or a
-//! script. One snapshot as text or JSON, or every change until interrupted.
+//! script. One snapshot as text or JSON, or every change until interrupted. `copland-daemon hold`
+//! and `release` (COPL-186) hold an agent on this machine through it, and let it go.
 //!
 //! "Not running" is an answer, not an error: `Outcome::NotRunning`, which the command exits 3
 //! on (`NOT_RUNNING`), so a script can tell it from something going wrong (exit 1).
@@ -62,19 +63,90 @@ impl Outcome {
 pub async fn status(config: &Path, runtime_dir: &Path, mode: Mode, out: &mut (dyn Write + Send)) -> Result<Outcome> {
     let socket = lock::socket_for(config, runtime_dir);
     match show(&socket, mode, out).await? {
-        Outcome::NotRunning { ended: false, .. } => {
-            /* No socket, yet something holds the lock: a daemon from before the socket. */
-            if let Some(holder) = lock::running(config, runtime_dir)? {
-                bail!(
-                    "a daemon is running {} ({holder}) but serves no status at {}: it predates `status`; restart it",
-                    config.display(),
-                    socket.display()
-                );
-            }
-            Ok(Outcome::NotRunning { socket, ended: false })
-        }
+        Outcome::NotRunning { ended: false, .. } => not_running(config, runtime_dir, socket),
         o => Ok(o),
     }
+}
+
+/// Nothing answers at `socket`: no daemon, unless something holds the lock, which is a daemon
+/// from before the socket.
+fn not_running(config: &Path, runtime_dir: &Path, socket: PathBuf) -> Result<Outcome> {
+    if let Some(holder) = lock::running(config, runtime_dir)? {
+        bail!(
+            "a daemon is running {} ({holder}) but serves no status at {}: it predates `status`; restart it",
+            config.display(),
+            socket.display()
+        );
+    }
+    Ok(Outcome::NotRunning { socket, ended: false })
+}
+
+/// Hold (`held`) or release the agent `handle` (as the server says it, or as `daemon.toml` has
+/// it, with or without the @) of the daemon running `config`, and say so on `out`. Holding is
+/// this machine's alone: Copland's pause is untouched (see daemon/README.md's "The status socket").
+pub async fn hold(
+    config: &Path,
+    runtime_dir: &Path,
+    handle: &str,
+    held: bool,
+    out: &mut (dyn Write + Send),
+) -> Result<Outcome> {
+    let socket = lock::socket_for(config, runtime_dir);
+    let stream = match UnixStream::connect(&socket).await {
+        Ok(s) => s,
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
+            return not_running(config, runtime_dir, socket);
+        }
+        Err(e) => return Err(e).with_context(|| format!("connecting to {}", socket.display())),
+    };
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    let mut ask = async |request: String| -> Result<String> {
+        write
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .with_context(|| format!("asking {}", socket.display()))?;
+        lines
+            .next_line()
+            .await
+            .with_context(|| format!("reading {}", socket.display()))?
+            .with_context(|| format!("the daemon at {} hung up without answering", socket.display()))
+    };
+    let status = parse(&ask(r#"{"op":"status"}"#.into()).await?)?;
+    let wanted = handle.trim_start_matches('@');
+    let Some(agent) = status
+        .agents
+        .iter()
+        .find(|a| a.handle == wanted || a.configured.trim_start_matches('@') == wanted)
+    else {
+        let runs: Vec<String> = status.agents.iter().map(|a| format!("@{}", a.handle)).collect();
+        bail!(
+            "the daemon running {} has no agent @{wanted}; it runs {}",
+            config.display(),
+            if runs.is_empty() {
+                "none".into()
+            } else {
+                runs.join(", ")
+            }
+        );
+    };
+    let op = if held { "hold" } else { "release" };
+    let answer: serde_json::Value =
+        serde_json::from_str(&ask(format!(r#"{{"op":"{op}","slot":{}}}"#, agent.slot)).await?)
+            .context("the daemon's answer isn't JSON")?;
+    if let Some(e) = answer.get("error") {
+        bail!("the daemon says: {}", e.as_str().unwrap_or(&e.to_string()));
+    }
+    let says = if held {
+        format!(
+            "@{} held on this machine: it starts nothing until `copland-daemon release {}`; runs going finish\n",
+            agent.handle, agent.handle
+        )
+    } else {
+        format!("@{} released on this machine\n", agent.handle)
+    };
+    out.write_all(says.as_bytes()).context("writing the answer")?;
+    Ok(Outcome::Shown)
 }
 
 /// Show what the daemon serving `socket` says, on `out`.
@@ -157,7 +229,7 @@ mod tests {
 
     use super::*;
     use crate::agent::StopRequest;
-    use crate::daemon::RunStopper;
+    use crate::daemon::{Holder, RunStopper};
     use crate::socket::Server;
     use crate::state::{AgentState, DaemonState, Phase};
 
@@ -224,7 +296,13 @@ mod tests {
         fs::write(&config, "").unwrap();
         let (state_tx, state) = watch::channel(running());
         let (stop_tx, _) = watch::channel::<StopRequest>(None);
-        let server = Server::start(&lock::socket_for(&config, &dir), state, RunStopper(stop_tx)).unwrap();
+        let server = Server::start(
+            &lock::socket_for(&config, &dir),
+            state,
+            RunStopper(stop_tx),
+            Holder(state_tx.clone()),
+        )
+        .unwrap();
 
         /* status: Status::render. */
         let mut out = Vec::new();
@@ -294,6 +372,58 @@ mod tests {
                 }
             );
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hold_and_release_name_the_agent_by_handle() {
+        let dir = scratch("hold");
+        let config = dir.join("daemon.toml");
+        fs::write(&config, "").unwrap();
+        let mut st = running();
+        st.agents[0].handle = "me/dev-renamed".into();
+        let (state_tx, state) = watch::channel(st);
+        let (stop_tx, _) = watch::channel::<StopRequest>(None);
+        let _server = Server::start(
+            &lock::socket_for(&config, &dir),
+            state,
+            RunStopper(stop_tx),
+            Holder(state_tx.clone()),
+        )
+        .unwrap();
+
+        /* By the handle the server says, with the @. */
+        let mut out = Vec::new();
+        assert_eq!(
+            hold(&config, &dir, "@me/dev-renamed", true, &mut out).await.unwrap(),
+            Outcome::Shown
+        );
+        assert!(state_tx.borrow().agents[0].held);
+        let said = String::from_utf8(out).unwrap();
+        assert!(said.starts_with("@me/dev-renamed held on this machine"), "{said}");
+        let mut out = Vec::new();
+        status(&config, &dir, ONCE, &mut out).await.unwrap();
+        assert!(String::from_utf8(out).unwrap().contains("held on this machine"));
+
+        /* By the handle daemon.toml has. */
+        let mut out = Vec::new();
+        hold(&config, &dir, "me/dev", false, &mut out).await.unwrap();
+        assert!(!state_tx.borrow().agents[0].held);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "@me/dev-renamed released on this machine\n"
+        );
+
+        let err = hold(&config, &dir, "me/ops", true, &mut Vec::new()).await.unwrap_err();
+        assert!(
+            err.to_string().contains("no agent @me/ops; it runs @me/dev-renamed"),
+            "{err}"
+        );
+        drop(_server);
+        assert!(matches!(
+            hold(&config, &dir, "me/dev", true, &mut Vec::new()).await.unwrap(),
+            Outcome::NotRunning { ended: false, .. }
+        ));
         let _ = fs::remove_dir_all(&dir);
     }
 

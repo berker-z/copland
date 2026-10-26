@@ -55,6 +55,11 @@ pub struct AgentState {
     /// What this machine lacks to start the agent's runs (`agent::Missing::message`), None when
     /// nothing is missing. Also said in `last_error` after a good poll, which is what the box draws.
     pub missing: Option<String>,
+    /// Held on this machine (COPL-186), from the status socket's `hold` until its `release`: the
+    /// loop starts no run and claims nothing, as while Copland is unavailable, and leaves runs going
+    /// alone. Not Copland's pause, which stops the agent's tokens everywhere and which the daemon
+    /// never sets. Kept by a reload, forgotten by a restart.
+    pub held: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +169,7 @@ impl AgentState {
             live: Link::Connecting,
             unavailable: None,
             missing: None,
+            held: false,
         }
     }
 }
