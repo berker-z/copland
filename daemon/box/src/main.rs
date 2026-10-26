@@ -3,8 +3,9 @@
 //! service) through that daemon's status socket (COPL-200), draws what it says
 //! as the wired scene (COPL-33), and asks it to stop a run or reload
 //! `daemon.toml` over the same socket. Closing the window leaves the daemon and
-//! its runs going. `--demo` draws the prototype's simulation instead, with no
-//! config and no server.
+//! its runs going. While none runs, it offers to install the service or start one
+//! (COPL-205, `offer.rs`), and setup ends by doing that. `--demo` draws the
+//! prototype's simulation instead, with no config and no server.
 
 mod agents;
 mod edit;
@@ -13,6 +14,7 @@ mod hyprland;
 mod log;
 mod menu;
 mod notify;
+mod offer;
 mod prefs;
 mod scene;
 mod setup;
@@ -43,6 +45,7 @@ use crate::agents::{Control, SetupAgain};
 use crate::feed::{Feed, Notices};
 use crate::menu::Prefs;
 use crate::notify::{Desktop, Notifier};
+use crate::offer::Opening;
 use crate::scene::{Scene, Tune};
 use crate::theme::Theme;
 use crate::view::{BoxView, Source};
@@ -180,8 +183,9 @@ fn pick_font(available: &[String]) -> String {
 
 /// What the window watches: the status of the daemon running the config, through its socket
 /// (COPL-200), and with an owner token the owner's feed, which also sends desktop notifications
-/// while `notes` says so. Must be called inside the box's Tokio runtime.
-fn watch(config: &Config, config_path: &Path, notes: Arc<AtomicBool>, setup: SetupAgain) -> Source {
+/// while `notes` says so. `opening` is what the view does first about the daemon. Must be called
+/// inside the box's Tokio runtime.
+fn watch(config: &Config, config_path: &Path, notes: Arc<AtomicBool>, setup: SetupAgain, opening: Opening) -> Source {
     let watcher = Arc::new(Watcher::start(config_path, &default_runtime_dir()));
     let connection = watcher.subscribe();
     let owner = config.owner.clone();
@@ -221,6 +225,7 @@ fn watch(config: &Config, config_path: &Path, notes: Arc<AtomicBool>, setup: Set
         control: Some(control),
         clicks,
         _feeding: feeding,
+        opening,
     }
 }
 
@@ -244,8 +249,8 @@ fn statuses(mut connection: watch::Receiver<Connection>) -> watch::Receiver<Stat
     rx
 }
 
-/// Watches the daemon on a config: the window's next source.
-type Launch = Rc<dyn Fn(Config) -> Result<Source>>;
+/// Watches the daemon on a config: the window's next source, opening as it says.
+type Launch = Rc<dyn Fn(Config, Opening) -> Result<Source>>;
 
 /// Logs to stderr and to the box's own file (`log::path_in`): a box started from a launcher has
 /// a stderr nobody reads. Returns why the file couldn't be opened, if it couldn't.
@@ -315,13 +320,11 @@ fn main() -> Result<()> {
         let notes = prefs.notifications.clone();
         let setup_again = setup_again.clone();
         let rt = rt.handle().clone();
-        Rc::new(move |config: Config| -> Result<Source> {
+        Rc::new(move |config: Config, opening: Opening| -> Result<Source> {
             tracing::info!(agents = config.agents.len(), "watching the daemon for this config");
             if config.owner.is_none() {
                 tracing::info!("no owner_token_file: drawing what the daemon knows (todo and doing)");
             }
-            /* Until COPL-205 starts the service from here, a daemon has to be started apart from
-            the box: until one is, the window says it isn't running. */
             let setup_again = setup_again.clone();
             let setup: SetupAgain = Rc::new(move |url, note| {
                 let again = setup_again.get().expect("set before any window");
@@ -332,7 +335,7 @@ fn main() -> Result<()> {
                 Ok(w)
             });
             let _in_rt = rt.enter();
-            Ok(watch(&config, &path, notes.clone(), setup))
+            Ok(watch(&config, &path, notes.clone(), setup, opening))
         })
     };
     {
@@ -340,7 +343,7 @@ fn main() -> Result<()> {
         let path = path.clone();
         let _ = setup_again.set(Rc::new(move |url: Option<&str>, _note: Option<String>| {
             let l = launch.clone();
-            Wizard::new(path.clone(), url, Box::new(move |c| l(c)))
+            Wizard::new(path.clone(), url, Box::new(move |c| l(c, Opening::AfterSetup)))
         }));
     }
     /* No config (or one setup left half done) sets the box up; a broken one is shown, not replaced. */
@@ -350,13 +353,22 @@ fn main() -> Result<()> {
     } else if wants_setup {
         tracing::info!(config = %path.display(), "setting up");
         let l = launch.clone();
-        let wizard = Wizard::new(path.clone(), args.url.as_deref(), Box::new(move |c| l(c)))?;
+        let wizard = Wizard::new(
+            path.clone(),
+            args.url.as_deref(),
+            Box::new(move |c| l(c, Opening::AfterSetup)),
+        )?;
         (Scene::live(tune), Source::Setup(Box::new(wizard)))
     } else {
         match Config::load(&path) {
             Ok(config) => {
                 tracing::info!(config = %path.display(), "read");
-                (Scene::live(tune), launch(config)?)
+                /* A config and no service: a box from before 0.5 ran the agents itself, so say once that it doesn't. */
+                let opening = offer::opening(
+                    copland_daemon_core::service::installed().as_ref(),
+                    &offer::state_file(&default_state_dir()),
+                );
+                (Scene::live(tune), launch(config, opening)?)
             }
             Err(e) => {
                 tracing::warn!("{e:#}; copland-box --setup sets it up again, keeping it as a backup");

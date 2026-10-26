@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, watch};
 use crate::agents::{Agents, Control};
 use crate::feed::Feed;
 use crate::menu::{Act, Menu, Prefs, Tab};
+use crate::offer::{Ask, Offer, Opening, State as Offered};
 use crate::scene::{AgentLabel, Board, DONE_TAIL, Doing, FPS, Layout, Line, Role, Scene, Span};
 use crate::theme::{Rgb, Theme};
 use crate::wizard::{Panel, Wizard, hint_key, key};
@@ -85,6 +86,8 @@ pub enum Source {
         clicks: Option<mpsc::UnboundedReceiver<String>>,
         /// The feed's task, which ends with the source (signing out).
         _feeding: Option<Abort>,
+        /// What the view does first about the daemon (COPL-205).
+        opening: Opening,
     },
     /// Nothing to watch, and why.
     Quiet(String),
@@ -120,9 +123,9 @@ pub fn not_connected(c: &Connection) -> Option<String> {
     }
 }
 
-/// The daemon isn't running this config, and how to start one: the box picks it up once it is.
-pub const NOT_RUNNING: &str =
-    "the daemon isn't running this config · copland-daemon --install-service, or systemctl --user start copland-daemon";
+/// The daemon isn't running this config: the status line then offers to start one
+/// (`Offer::keys`), and the box picks it up once it runs, however it was started.
+pub const NOT_RUNNING: &str = "the daemon isn't running this config";
 
 /// A run of this box's that "stop this run" has been pressed for once.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +180,10 @@ pub struct BoxView {
     flash: Option<(String, Role, Instant)>,
     /// Whether the window is the compact one now.
     shown_compact: bool,
+    /// Starting the daemon from here (COPL-205).
+    offer: Offer,
+    /// The ask in flight, which a new source drops.
+    asking: Option<Task<()>>,
 }
 
 impl BoxView {
@@ -196,11 +203,105 @@ impl BoxView {
             armed: None,
             flash: None,
             shown_compact,
+            offer: Offer::new(None),
+            asking: None,
         };
         if let Some(w) = view.wizard() {
             w.begin(cx);
         }
+        view.open(cx);
         view
+    }
+
+    /// A live source just arrived: look for the service, and do what it opens with.
+    fn open(&mut self, cx: &mut Context<Self>) {
+        let Source::Live { opening, .. } = &self.source else {
+            return;
+        };
+        let opening = *opening;
+        self.asking = None;
+        self.offer = Offer::new(copland_daemon_core::service::installed());
+        match opening {
+            Opening::Plain => {}
+            Opening::Migration => {
+                tracing::info!("no service installed: telling a box from before 0.5 that the daemon runs apart now");
+                self.offer.state = Offered::Migration;
+            }
+            Opening::AfterSetup => self.ask(Ask::AfterSetup, cx),
+        }
+    }
+
+    /// Whether the source is live and no daemon is running its config.
+    fn not_running(&self) -> bool {
+        matches!(&self.source, Source::Live { connection, .. } if *connection.borrow() == Connection::NotRunning)
+    }
+
+    /// Install, start or run the daemon, on the box's runtime, and show what came of it.
+    fn ask(&mut self, ask: Ask, cx: &mut Context<Self>) {
+        let Some(c) = self.control() else { return };
+        if matches!(self.offer.state, Offered::Busy(_)) {
+            return;
+        }
+        tracing::info!(?ask, "starting the daemon from the box");
+        self.offer.state = Offered::Busy(ask);
+        self.offer.since = Instant::now();
+        let config = c.config.clone();
+        let job = c.rt.spawn_blocking(move || crate::offer::perform(ask, &config));
+        self.asking = Some(cx.spawn(async move |this, cx| {
+            let Ok((out, service)) = job.await else { return };
+            let _ = this.update(cx, |view, cx| {
+                view.offer.service = service;
+                view.offer.state = match out {
+                    Ok(o) => {
+                        tracing::info!(?o, "the daemon from the box");
+                        Offered::Done(o)
+                    }
+                    Err(e) => {
+                        tracing::error!(?ask, "starting the daemon from the box: {e:#}");
+                        Offered::Failed(ask, format!("{e:#}"))
+                    }
+                };
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// A key for the offer: its panel's while one is up, else the not-running keys. Whether it
+    /// took it.
+    fn offer_key(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
+        let remember = || {
+            let file = crate::offer::state_file(&copland_daemon_core::config::default_state_dir());
+            if let Err(e) = crate::offer::remember(&file) {
+                tracing::warn!("remembering the service was offered: {e:#}");
+            }
+        };
+        match (&self.offer.state, name) {
+            (Offered::Migration, "i") => {
+                remember();
+                self.ask(Ask::Install, cx);
+            }
+            (Offered::Migration, "r") => {
+                remember();
+                self.ask(Ask::Session, cx);
+            }
+            (Offered::Migration, "n" | "escape") => {
+                remember();
+                self.offer.state = Offered::Idle;
+            }
+            (Offered::Done(_) | Offered::Failed(..), "enter" | "escape" | "space") => self.offer.state = Offered::Idle,
+            /* "i" over a session's word installs the service after all. */
+            (Offered::Done(crate::offer::Outcome::Session(_)), "i") if self.offer.service.is_none() => {
+                self.ask(Ask::Install, cx)
+            }
+            (Offered::Busy(_), "escape") => {}
+            (Offered::Idle, "i") if self.not_running() && self.offer.service.is_none() => self.ask(Ask::Install, cx),
+            (Offered::Idle, "s") if self.not_running() && self.offer.service.is_some() => self.ask(Ask::Start, cx),
+            (Offered::Idle, "r") if self.not_running() => self.ask(Ask::Session, cx),
+            _ => return false,
+        }
+        cx.notify();
+        true
     }
 
     /// The setup in progress, if that is what the window shows.
@@ -253,6 +354,7 @@ impl BoxView {
     fn go_live(&mut self, mut source: Source, cx: &mut Context<Self>) {
         self._watchers = watch_source(&mut source, cx);
         self.source = source;
+        self.open(cx);
         cx.notify();
     }
 
@@ -489,6 +591,9 @@ impl BoxView {
             cx.notify();
             return;
         }
+        if self.offer_key(name, cx) {
+            return;
+        }
         let control = self.control();
         let runs = live.as_ref().map(|(st, _)| runs_here(st)).unwrap_or_default();
         /* Anything but s (or tab among runs) after a first press of s keeps the run going. */
@@ -605,9 +710,9 @@ impl BoxView {
         }
     }
 
-    /// Sign out: revoke the box's tokens, delete them and the config, and set the box up again
-    /// in this window. The daemon running the config is left alone here; what becomes of it is
-    /// COPL-205's to decide (stop the service, say), before `menu::sign_out` below.
+    /// Sign out: stop the daemon running the config (the service, or one started otherwise),
+    /// revoke the box's tokens, delete them and the config, and set the box up again in this
+    /// window. Setup's end starts the service again on the new config.
     fn sign_out(&mut self, cx: &mut Context<Self>) {
         let Some(control) = self.control() else { return };
         if let Some(m) = self.menu.as_mut() {
@@ -617,7 +722,23 @@ impl BoxView {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let config = control.config.clone();
         let spawned = std::thread::Builder::new().name("sign-out".into()).spawn(move || {
-            let _ = tx.send(crate::menu::sign_out(&config, &crate::notify::memory_path()));
+            /* First the daemon, so nothing runs on tokens about to go; setup starts it again. */
+            let mut failed = Vec::new();
+            match copland_daemon_core::service::stop_daemon(&config) {
+                Ok(true) => tracing::info!("sign out: stopped the daemon running {}", config.display()),
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!("sign out: stopping the daemon: {e:#}");
+                    failed.push(format!("couldn't stop the daemon ({})", e.root_cause()));
+                }
+            }
+            let revoked = crate::menu::sign_out(&config, &crate::notify::memory_path());
+            failed.extend(
+                revoked
+                    .into_iter()
+                    .map(|t| format!("couldn't revoke {t}; revoke it in settings › tokens")),
+            );
+            let _ = tx.send(failed);
         });
         if let Err(e) = spawned {
             tracing::error!("sign out: {e}");
@@ -628,12 +749,7 @@ impl BoxView {
                 .await
                 .unwrap_or_else(|_| vec!["the sign-out thread ended early".into()]);
             let _ = this.update(cx, |view, cx| {
-                let note = (!failed.is_empty()).then(|| {
-                    format!(
-                        "signed out, but couldn't revoke {}; revoke it in settings › tokens",
-                        failed.join("; ")
-                    )
-                });
+                let note = (!failed.is_empty()).then(|| format!("signed out, but {}", failed.join("; ")));
                 if failed.is_empty() {
                     tracing::info!("signed out");
                 }
@@ -952,6 +1068,7 @@ impl Render for BoxView {
         let dots = ["   ", ".  ", ".. ", "..."][(self.began.elapsed().as_millis() / 500 % 4) as usize];
         let panel = match (&self.menu, &live) {
             (Some(m), Some((st, feed))) => Some((m.animating(), m.panel(&self.prefs, st, feed.as_ref(), dots), "menu")),
+            (None, Some(_)) => self.offer.panel(dots).map(|p| (self.offer.animating(), p, "daemon")),
             _ => self.wizard().map(|w| (w.animating(), w.panel(), "setup")),
         };
         if let Some((true, _, _)) = &panel {
@@ -1077,8 +1194,12 @@ impl Render for BoxView {
                     s
                 }
                 None => {
-                    let mut parts: Vec<(Line, Option<String>)> =
-                        self.scene.status().into_iter().map(|l| (l, None)).collect();
+                    /* No daemon: the offer to start one, in place of "nothing on the wire". */
+                    let mut parts: Vec<(Line, Option<String>)> = if self.not_running() && has_menu {
+                        self.offer.keys()
+                    } else {
+                        self.scene.status().into_iter().map(|l| (l, None)).collect()
+                    };
                     /* The way to the menu, before the last word (which can be long and get cut off). */
                     if has_menu && !compact {
                         let at = if self.scene.has_note() {
@@ -1359,14 +1480,13 @@ mod tests {
     use copland_daemon_core::api::{Wired, WiredAgent, WiredTask};
     use copland_daemon_core::{AgentState, DaemonState, Phase};
 
-    /// The box draws the daemon only while connected; otherwise it says why, and with no
-    /// daemon running the config, how to start one.
+    /// The box draws the daemon only while connected; otherwise it says why (the offer to
+    /// start one is the status line's, `Offer::keys`).
     #[test]
-    fn says_how_to_start_a_daemon_that_isnt_running() {
+    fn says_why_there_is_no_daemon() {
         assert_eq!(not_connected(&Connection::Connected(no_daemon())), None);
         let said = not_connected(&Connection::NotRunning).unwrap();
-        assert!(said.contains("copland-daemon --install-service"), "{said}");
-        assert!(said.contains("systemctl --user start copland-daemon"), "{said}");
+        assert_eq!(said, "the daemon isn't running this config");
         assert_eq!(
             not_connected(&Connection::Unreadable("version 2".into())).as_deref(),
             Some("version 2")

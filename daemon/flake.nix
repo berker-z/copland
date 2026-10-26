@@ -168,7 +168,7 @@
           };
         in
         {
-          box = app "copland-box" "The Copland daemon with a window";
+          box = app "copland-box" "A window on the Copland daemon";
           daemon = app "copland-daemon" "The Copland daemon, headless";
           default = self.apps.${pkgs.stdenv.hostPlatform.system}.box;
         }

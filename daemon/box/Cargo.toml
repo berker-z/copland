@@ -1,6 +1,6 @@
 [package]
 name = "copland-box"
-description = "The Copland daemon with a window: the agents' loop, drawn as wires and poles"
+description = "A window on the Copland daemon: the agents' work, drawn as wires and poles"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
