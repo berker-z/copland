@@ -14,7 +14,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 copland-daemon-core = { path = "core" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "sync", "fs", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "sync", "fs", "io-util", "net"] }
 # rustls with ring, not the default aws-lc-rs: no cmake or system OpenSSL needed.
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls-no-provider", "http2"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
