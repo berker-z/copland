@@ -28,7 +28,9 @@
 //! ```
 //!
 //! `code_dir = "~/copland"` (top level, optional) is where repos are cloned and tasks'
-//! worktrees made (workspace.rs).
+//! worktrees made (workspace.rs), with Cargo's build output shared per repo under `build/`.
+//! `min_free_gb = 20` (top level, optional) is how much free space on `code_dir`'s filesystem
+//! the preflight wants before it warns (COPL-187).
 //!
 //! `copland-box --setup` writes all of an agent's runtime keys (`client`, `command`,
 //! `code_command`, `writable`, `runtime`) from its templates (core/src/runtime.rs, COPL-160):
@@ -46,6 +48,8 @@ use serde::Deserialize;
 
 pub const DEFAULT_POLL_SECS: u64 = 30;
 pub const DEFAULT_CODE_DIR: &str = "~/copland";
+/// Free space on `code_dir`'s filesystem under which the preflight warns, in GB (COPL-187).
+pub const DEFAULT_MIN_FREE_GB: u64 = 20;
 /// How many runs an agent may have going at once, unless its config says (COPL-82).
 pub const DEFAULT_MAX_RUNS: usize = 10;
 pub const DEFAULT_CLIENT: &str = "Claude Code";
@@ -78,6 +82,8 @@ pub struct Config {
     pub poll_interval: Duration,
     /// Where repos are cloned and coding tasks' worktrees made.
     pub code_dir: PathBuf,
+    /// Free space on `code_dir`'s filesystem, in GB, under which the preflight warns.
+    pub min_free_gb: u64,
     pub agents: Vec<AgentConfig>,
     /// The box's colour theme by name (`theme = "nord"`). Only the window reads it; the headless daemon ignores it.
     pub theme: Option<String>,
@@ -136,6 +142,7 @@ pub struct AgentConfig {
 struct RawConfig {
     poll_interval: Option<u64>,
     code_dir: Option<String>,
+    min_free_gb: Option<u64>,
     theme: Option<String>,
     motion: Option<bool>,
     notifications: Option<bool>,
@@ -409,6 +416,7 @@ impl Config {
         Ok(Config {
             poll_interval: Duration::from_secs(poll),
             code_dir,
+            min_free_gb: raw.min_free_gb.unwrap_or(DEFAULT_MIN_FREE_GB),
             agents,
             theme: raw.theme.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()),
             motion: raw.motion,
@@ -527,8 +535,9 @@ mod tests {
         assert_eq!(a.max_runs, DEFAULT_MAX_RUNS);
         assert!(a.code_command.is_none() && a.writable.is_empty());
         assert_eq!(a.code_dir, expand_home(DEFAULT_CODE_DIR));
+        assert_eq!(plain.min_free_gb, DEFAULT_MIN_FREE_GB);
         let coding = parse(&format!(
-            "code_dir=\"/c\"\n{base}code_command=[\"y\",\"{{prompt}}\"]\nwritable=[\"/s\"]\nmax_runs=3\n"
+            "code_dir=\"/c\"\nmin_free_gb=5\n{base}code_command=[\"y\",\"{{prompt}}\"]\nwritable=[\"/s\"]\nmax_runs=3\n"
         ))
         .unwrap();
         let a = &coding.agents[0];
@@ -538,6 +547,7 @@ mod tests {
         );
         assert_eq!(a.writable, vec![PathBuf::from("/s")]);
         assert_eq!((a.max_runs, a.code_dir.clone()), (3, PathBuf::from("/c")));
+        assert_eq!(coding.min_free_gb, 5);
         assert!(parse(&format!("{base}max_runs=0\n")).is_err());
         assert!(parse(&format!("{base}max_runs=51\n")).is_err());
         assert!(parse(&format!("{base}code_command=[]\n")).is_err());
