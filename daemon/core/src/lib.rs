@@ -20,6 +20,7 @@ pub mod runner;
 pub mod runtime;
 pub mod sandbox;
 pub mod setup;
+pub mod socket;
 pub mod state;
 pub mod status;
 pub mod usage;
