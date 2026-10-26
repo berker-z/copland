@@ -115,3 +115,18 @@ export function parseHostReport(body: unknown): { ok: true; report: HostReport }
 export function liveOnTwoHosts(hosts: Iterable<string | null>): boolean {
   return new Set([...hosts].filter((h) => h !== null)).size > 1;
 }
+
+/** Hostnames as a sentence names them: "laptop", "laptop and server", "a, b and c". */
+export function hostList(hosts: string[]): string {
+  if (hosts.length <= 1) return hosts.join("");
+  return `${hosts.slice(0, -1).join(", ")} and ${hosts[hosts.length - 1]}`;
+}
+
+/**
+ * What the web app says when an agent is live on two hosts at once, naming
+ * the ones it knows (a live host that never reported has no name to give).
+ */
+export function twoHostsWarning(hosts: string[]): string {
+  const where = hosts.length > 1 ? hostList(hosts) : "two hosts";
+  return `Live on ${where} at once: usually a forgotten daemon. Stop the one you don't mean to run.`;
+}

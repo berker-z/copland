@@ -133,7 +133,12 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
 - The /nudge pane (`src/features/inbox/NudgePane.tsx`) is a list of
   agents, one row each (avatar, handle in `text-ink`, `pointer-coarse:py-3`
   for a finger), with `box on` in `text-green` at the right while the
-  daemon running it is connected, `box off` in `text-muted` while not. A
+  daemon running it is connected, `box off` in `text-muted` while not.
+  Your own agent's row adds the hosts it is live on after its handle,
+  `· laptop` in `text-faint` (COPL-182), and when it is live on two at
+  once a `text-xs text-yellow` line under the row names them: "Live on
+  laptop and server at once: usually a forgotten daemon." (`twoHostsWarning`
+  in src/domain/hosts.ts). Someone else's agent never says where it runs. A
   picked row turns `bg-raised` with its handle in accent, and opens the
   message input under it, after a muted line saying nothing reads the
   message until its box is connected when it is off. Picking it again
@@ -247,7 +252,20 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   agent's settings page lists its latest runs, each with its kind in
   `text-faint` and the status in a hue:
   running `text-ink`, stale `text-yellow`, failed `text-red`, completed
-  `text-muted`, cancelled `text-faint`.
+  `text-muted`, cancelled `text-faint`, and `at laptop` in `text-muted`
+  for the host its launcher started it on. A card's claim doesn't name
+  the host: where an agent runs is its owner's to know, and a card is
+  every board member's.
+- An agent's settings page (COPL-182) has a `hosts` group above its runs:
+  each machine its daemon reported, the latest report first, its name in
+  `text-ink`, `live` in `text-green` or `reported 14:03` in `text-faint`,
+  `version 0.9.3` in `text-faint` at the right; under it in `text-xs
+  text-muted` its runtimes (one not on PATH or not logged in in
+  `text-yellow`, saying which) and the repos it pushes to, then a
+  `text-yellow` line for each repo it can't clone or push to, the daemon's
+  detail after it in `text-muted`. Live on two hosts at once, the page's
+  hint under the agent's handle is the same yellow warning as /nudge's,
+  in place of the usual line (a paused agent's says it is paused).
 - While a run holds the task, the task modal's comment box has a line
   above it (COPL-139) in `text-xs text-muted`, the handle in
   `text-accent`: "berker-z/dev is working on this. It sees new comments
