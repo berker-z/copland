@@ -27,6 +27,58 @@ pub const GRACE: Duration = Duration::from_secs(10);
 /// How long a runtime may run before the daemon stops it and fails the run. Fixed, on purpose.
 pub const CEILING: Duration = Duration::from_secs(2 * 60 * 60);
 
+/// How often a worker's task is read for a review_first PR it opened (COPL-193).
+pub const REVIEW_EVERY: Duration = Duration::from_secs(60);
+
+/// How long a runtime may go on once its review_first PR is open before the daemon stops it and
+/// the run completes (COPL-193): long enough to comment on the task, not to wait for the merge.
+pub const REVIEW_GRACE: Duration = Duration::from_secs(5 * 60);
+
+/// The clocks a run is held to: the ceiling, and how its review_first PR is watched.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    ceiling: Duration,
+    review_every: Duration,
+    review_grace: Duration,
+}
+
+impl Limits {
+    const RUN: Limits = Limits {
+        ceiling: CEILING,
+        review_every: REVIEW_EVERY,
+        review_grace: REVIEW_GRACE,
+    };
+}
+
+/// Whether a task waits on a person's merge (COPL-193): review_first, open, with an open PR
+/// (a draft too) naming it.
+pub fn waits_for_review(task: &crate::api::Task) -> bool {
+    task.review_first && task.completed_at.is_none() && task.open_pr()
+}
+
+/// What a run has seen of its task waiting for review (COPL-193). The clock starts when the task
+/// is seen to start waiting during the run, a PR opened by it; a PR already open at the first look
+/// (a run woken by a comment on one) starts none, since that run is answering the person. Stops
+/// waiting (merged, closed, review_first off) and the clock goes with it.
+#[derive(Debug, Default)]
+pub struct ReviewWait {
+    seen: Option<bool>,
+    since: Option<Instant>,
+}
+
+impl ReviewWait {
+    /// One look at the task, `waiting` by `waits_for_review`: whether it has now waited `grace`.
+    pub fn look(&mut self, waiting: bool, now: Instant, grace: Duration) -> bool {
+        let was = self.seen.replace(waiting);
+        if !waiting {
+            self.since = None;
+        } else if was == Some(false) && self.since.is_none() {
+            self.since = Some(now);
+        }
+        self.since.is_some_and(|t| now.duration_since(t) >= grace)
+    }
+}
+
 /// What the runtime is launched to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Brief {
@@ -152,6 +204,9 @@ pub enum Exit {
     Cancelled,
     /// The daemon stopped it at the ceiling.
     TimedOut,
+    /// The daemon stopped it once its review_first PR had been open `REVIEW_GRACE` (COPL-193):
+    /// its work is left for a person, so the run is completed.
+    ForReview,
     /// It never started.
     SpawnFailed(String),
 }
@@ -164,6 +219,7 @@ impl std::fmt::Display for Exit {
             Exit::Stopped => write!(f, "stopped by the daemon"),
             Exit::Cancelled => write!(f, "stopped from the box"),
             Exit::TimedOut => write!(f, "stopped at the run ceiling"),
+            Exit::ForReview => write!(f, "stopped with its PR open for review"),
             Exit::SpawnFailed(e) => write!(f, "did not start: {e}"),
         }
     }
@@ -351,19 +407,19 @@ pub async fn run(
     shutdown: watch::Receiver<bool>,
     cancel: impl std::future::Future<Output = ()>,
 ) -> Ended {
-    run_until(launch, shutdown, cancel, CEILING).await
+    run_until(launch, shutdown, cancel, Limits::RUN).await
 }
 
 async fn run_until(
     launch: Launch<'_>,
     shutdown: watch::Receiver<bool>,
     cancel: impl std::future::Future<Output = ()>,
-    ceiling: Duration,
+    limits: Limits,
 ) -> Ended {
     let log = log_path(launch.state_dir, launch.run_id);
     let started = std::time::Instant::now();
     let mut header = None;
-    let exit = supervise(launch, shutdown, cancel, ceiling, &mut header).await;
+    let exit = supervise(launch, shutdown, cancel, limits, &mut header).await;
     /* Silent: nothing after the header, or no header at all (it never got that far). */
     let silent = header.is_none_or(|len| fs::metadata(&log).map_or(true, |m| m.len() <= len));
     let ended = Ended {
@@ -388,9 +444,10 @@ async fn supervise(
     launch: Launch<'_>,
     mut shutdown: watch::Receiver<bool>,
     cancel: impl std::future::Future<Output = ()>,
-    ceiling: Duration,
+    limits: Limits,
     header: &mut Option<u64>,
 ) -> Exit {
+    let ceiling = limits.ceiling;
     let Launch {
         api,
         agent,
@@ -526,6 +583,10 @@ async fn supervise(
     let reported = workspace.filter(|ws| brief == Brief::Work && !ws.read_only);
     let mut reporter = Reporter::default();
     let mut report = interval_at(Instant::now() + REPORT_EVERY, REPORT_EVERY);
+    /* A worker on a repo with PRs: its task is watched for a review_first PR it opened (COPL-193). */
+    let watched = reported.is_some_and(|ws| ws.pull_requests);
+    let mut review = interval_at(Instant::now(), limits.review_every);
+    let mut wait = ReviewWait::default();
     let exit = loop {
         tokio::select! {
             status = child.wait() => {
@@ -552,6 +613,18 @@ async fn supervise(
             _ = report.tick(), if alive && reported.is_some() => {
                 if let Some(ws) = reported {
                     reporter.report(api, secret, task_id, ws).await;
+                }
+            }
+            _ = review.tick(), if watched => {
+                match api.task(&agent.token, task_id).await {
+                    Ok(t) => {
+                        if wait.look(waits_for_review(&t), Instant::now(), limits.review_grace) {
+                            tracing::info!(run = %short(run_id), task = task_key, "its review_first PR has been open {}; stopping it, the merge is a person's", span(limits.review_grace));
+                            stop(&mut child, pid).await;
+                            break Exit::ForReview;
+                        }
+                    }
+                    Err(e) => tracing::debug!(run = %short(run_id), "reading the task for its PR: {e}"),
                 }
             }
             _ = tokio::time::sleep_until(deadline) => {
@@ -981,6 +1054,16 @@ mod tests {
     /// A Copland that answers `GET /api/runs/run-1` with `run` (status and body) and every files
     /// report with 200, and keeps the calls it got.
     fn fake_copland(run: (u16, &'static str)) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        fake_copland_by(move |call, _| match call {
+            "GET /api/runs/run-1" => (run.0, run.1.to_string()),
+            _ => (200, r#"{"count":1,"truncated":false}"#.to_string()),
+        })
+    }
+
+    /// A Copland that answers each call with `answer(call, how many times it came before)`.
+    fn fake_copland_by(
+        answer: impl Fn(&str, usize) -> (u16, String) + Send + 'static,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         use std::io::{BufRead, BufReader, Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -1005,10 +1088,8 @@ mod tests {
                     }
                 }
                 let _ = reader.read_exact(&mut vec![0; length]);
-                let (status, answer) = match call.as_str() {
-                    "GET /api/runs/run-1" => run,
-                    _ => (200, r#"{"count":1,"truncated":false}"#),
-                };
+                let before = seen.lock().unwrap().iter().filter(|c| **c == call).count();
+                let (status, answer) = answer(&call, before);
                 seen.lock().unwrap().push(call);
                 let _ = write!(
                     conn,
@@ -1114,13 +1195,115 @@ mod tests {
             },
             shutdown,
             std::future::pending(),
-            Duration::from_millis(300),
+            Limits {
+                ceiling: Duration::from_millis(300),
+                ..Limits::RUN
+            },
         )
         .await;
         let _ = fs::remove_dir_all(&scratch);
         assert_eq!(ended.exit, Exit::TimedOut);
         /* sleep dies on SIGTERM, so the grace period is not waited out. */
         assert!(started.elapsed() < GRACE, "took {:?}", started.elapsed());
+    }
+
+    /// The clock on a review_first PR (COPL-193) starts when the run sees it open, not before.
+    #[test]
+    fn a_pr_opened_in_the_run_is_waited_on_for_the_grace_only() {
+        let grace = Duration::from_secs(300);
+        let t0 = Instant::now();
+        let at = |s| t0 + Duration::from_secs(s);
+        let mut w = ReviewWait::default();
+        assert!(!w.look(false, at(0), grace));
+        assert!(!w.look(true, at(60), grace));
+        assert!(!w.look(true, at(359), grace));
+        assert!(w.look(true, at(360), grace));
+        /* Merged or closed, or review_first turned off: no clock, until it waits again. */
+        let mut w = ReviewWait::default();
+        w.look(false, at(0), grace);
+        w.look(true, at(10), grace);
+        assert!(!w.look(false, at(200), grace));
+        assert!(!w.look(true, at(400), grace));
+        assert!(w.look(true, at(700), grace));
+        /* Open at the first look: a run woken on a waiting PR answers the person, unhurried. */
+        let mut w = ReviewWait::default();
+        assert!(!w.look(true, at(0), grace));
+        assert!(!w.look(true, at(3600), grace));
+    }
+
+    /// A worker whose review_first PR opens while it runs is stopped once the grace is up and ends
+    /// for review (COPL-193); one whose PR was open from the start, or without review_first, isn't.
+    #[tokio::test]
+    async fn a_run_waiting_on_its_review_first_pr_is_ended() {
+        let task = |review_first: bool, pr: bool| {
+            format!(
+                r#"{{"id":"t-1","key":"T-1","boardId":"b-1","title":"t","updatedAt":"x","completedAt":null,"reviewFirst":{review_first},"code":[{}]}}"#,
+                if pr { r#"{"kind":"pull","state":"open"}"# } else { "" }
+            )
+        };
+        let cases = [
+            /* review_first, PR opened after the first look */
+            ((true, false), (true, true), Exit::ForReview),
+            ((true, true), (true, true), Exit::TimedOut),
+            ((false, false), (false, true), Exit::TimedOut),
+        ];
+        for (i, (first, then, want)) in cases.into_iter().enumerate() {
+            let (first, then) = (task(first.0, first.1), task(then.0, then.1));
+            let (url, _) = fake_copland_by(move |call, before| match call {
+                "GET /api/tasks/t-1" if before == 0 => (200, first.clone()),
+                "GET /api/tasks/t-1" => (200, then.clone()),
+                _ => (200, r#"{"count":1,"truncated":false}"#.to_string()),
+            });
+            let scratch = std::env::temp_dir().join(format!("copland-review-{}-{i}", std::process::id()));
+            let ws = worktree(&scratch.join("wt"));
+            let agent = AgentConfig {
+                url: url.clone(),
+                handle: "me/dev".into(),
+                token: Secret::new("cpl_x"),
+                command: vec!["sleep".into(), "30".into()],
+                workdir: std::env::temp_dir(),
+                client: "test".into(),
+                code_command: None,
+                writable: Vec::new(),
+                runtime: crate::config::Runtime::ClaudeCode,
+                code_dir: "/tmp/copland-code".into(),
+                max_runs: 10,
+            };
+            let api = Api::new(&url).unwrap();
+            let (_tx, shutdown) = watch::channel(false);
+            let started = std::time::Instant::now();
+            let ended = run_until(
+                Launch {
+                    api: &api,
+                    agent: &agent,
+                    handle: "me/dev",
+                    run_id: "00000000-0000-0000-0000-000000000002",
+                    secret: &Secret::new("cplr_x"),
+                    task_id: "t-1",
+                    task_key: "T-1",
+                    brief: Brief::Work,
+                    messages: &[],
+                    state_dir: &scratch,
+                    runtime_dir: &scratch,
+                    workspace: Some(&ws),
+                    last_word: Backoff::LAST_WORD,
+                },
+                shutdown,
+                std::future::pending(),
+                Limits {
+                    ceiling: Duration::from_millis(1500),
+                    review_every: Duration::from_millis(50),
+                    review_grace: Duration::from_millis(300),
+                },
+            )
+            .await;
+            let _ = fs::remove_dir_all(&scratch);
+            assert_eq!(ended.exit, want, "case {i}");
+            if want == Exit::ForReview {
+                assert!(started.elapsed() < Duration::from_millis(1500), "took {:?}", started.elapsed());
+                assert!(ended.reason().starts_with("stopped with its PR open for review after "));
+            }
+        }
     }
 
     /// A run stopped by hand: its process group gets SIGTERM and it ends as cancelled.
@@ -1162,7 +1345,7 @@ mod tests {
             },
             shutdown,
             tokio::time::sleep(Duration::from_millis(300)),
-            CEILING,
+            Limits::RUN,
         )
         .await;
         let _ = fs::remove_dir_all(&scratch);
@@ -1207,7 +1390,7 @@ mod tests {
             },
             shutdown,
             std::future::pending(),
-            CEILING,
+            Limits::RUN,
         )
         .await;
         let log = fs::read_to_string(log_path(&scratch, run_id)).unwrap_or_default();
