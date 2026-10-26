@@ -5,7 +5,8 @@ use std::process::Command;
 
 #[test]
 fn status_with_no_daemon_exits_3() {
-    let dir = std::env::temp_dir().join(format!("copland-cli-status-{}", std::process::id()));
+    /* /tmp, not $TMPDIR: macOS's is long enough to push the socket past SUN_LEN. */
+    let dir = std::path::PathBuf::from("/tmp").join(format!("copland-cli-status-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let config = dir.join("daemon.toml");
