@@ -541,6 +541,8 @@ Running the workflow by hand (Actions, box-release, Run workflow) is a dry run: 
 
 The packaging is plain scripts in `daemon/release/`, so it can be tried on a laptop: `check-version.sh [tag]`, `package-linux.sh VERSION ARCH target/release OUT` (needs `rsvg-convert` or `resvg`, e.g. `nix shell nixpkgs#resvg -c …`), `package-macos.sh` (on a Mac), and `notes.sh`. `copland-box.desktop` there is also what the flake installs, so the two launchers can't drift.
 
+The tray's icons are there too: `tray-icons.sh` writes the mark in four states, `tray/<state>.svg` and `tray/<state>/<size>.png` at 16, 22, 24, 32, 48 and 64 pixels, all checked in. `idle` is the plain mark, `working` has a `green` badge (a run going), `needs` an `orange` one (an agent needs you, or a last run failed), and `stopped` (no daemon answers the socket) is the mark in `muted`, greyed out. Every colour is a nord role read from `src/styles/themes.css` and the mark's paths come from `public/favicon.svg`, so rerun it (with `rsvg-convert` or `resvg` on PATH) after a change to either and commit what it writes. The tray embeds those PNGs with `include_bytes!` and sends them as the item's pixmaps, so it needs no icon theme and the build no SVG renderer.
+
 One-time setup, for the Nix cache only; without it the release still happens and the Nix jobs say they skipped the push:
 
 1. Create a public cache on [cachix.org](https://app.cachix.org), named `copland` or anything else.
