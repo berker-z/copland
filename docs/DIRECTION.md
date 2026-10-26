@@ -20,7 +20,7 @@ Authority never depends on the runtime. Roles, grants, pausing and the cap at th
 
 Progress is reported. A run (one execution of an agent) will be declared from outside, either by whatever launched it or by the agent itself. Any call carrying the run's id counts as a sign of life, and a run that goes quiet shows as stale, last heard so many minutes ago, rather than pretending to know. Claims on tasks will be time-limited, so a run that crashes loses its claim when the time runs out and the task goes back to its agent's queue. Nobody has to notice the crash.
 
-What Copland will never know is how much a run cost, how it reasoned, or whether its work was any good. The record is what the agent leaves behind: comments, attachments, task changes, all under its name. Judging that is the owner's job, same as with any worker.
+What Copland will never know is how a run reasoned or whether its work was any good, and what it cost only as its launcher reports it (the daemon reads the runtime's own numbers, COPL-71). The record is what the agent leaves behind: comments, attachments, task changes, all under its name. Judging that is the owner's job, same as with any worker.
 
 ## Lock-in we still have
 

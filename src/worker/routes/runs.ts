@@ -6,7 +6,7 @@
      GET    /api/runs/current       { run: { id, short, kind } | null }: this credential's run
      POST   /api/runs/current/news  { run, items }: what came in on its claimed tasks since it was last told
      GET    /api/runs/:id           the run, with what it has claimed
-     POST   /api/runs/:id/finish    { status: completed | failed | cancelled, interrupted?, reason? }| failed | cancelled }
+     POST   /api/runs/:id/finish    { status: completed | failed | cancelled, interrupted?, reason?, usage? }
      POST   /api/tasks/:id/claim    this run takes the task
      DELETE /api/tasks/:id/claim    this run lets it go
      POST   /api/messages/:id/claim     this run takes the message (COPL-124)
@@ -50,6 +50,11 @@
    goes to a blocked stage, and when the claimer comes off the task's
    assignees (routes/tasks.ts).
 
+   A run counts toward the first task it claims (runs.task_id, COPL-71),
+   and its launcher reports what it cost with its finish (`usage`, taken
+   once, even on a run the runtime already finished itself): a task sums
+   its runs, a parent its subtree's (repo/tasks.ts).
+
    A supervised run that dies (failed, cancelled, or past its lease, which
    the cron's sweep ends as failed) puts the tasks it held back where the
    next run, or a person, will find them (deadRuns.ts, COPL-97).
@@ -74,20 +79,21 @@ import {
   RUN_ENDINGS,
   RUN_REASON_MAX,
   runReason,
+  runUsage,
   shortRunId,
   type ClaimRefusal,
   type MessageClaimRefusal,
   type RunEnding,
   type RunKind,
 } from "@/domain/runs";
-import type { MessageClaimed, RunNews, RunNewsItem, StartedRun, TaskClaim, Viewer } from "@/domain/types";
+import type { MessageClaimed, RunNews, RunNewsItem, RunUsage, StartedRun, TaskClaim, Viewer } from "@/domain/types";
 import { personOf } from "../access";
 import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } from "../http";
 import { claimedBy, deathOf, putBack } from "../deadRuns";
 import type { Changes } from "../live";
 import { boardAudience, bumped, bumpStatement, taskChange, versionOf } from "../repo/boards";
-import { claimUntil, correctSweptStatement, finishRunStatements, findRun, interactiveRun, LIVE_CLAIM } from "../repo/runs";
+import { claimUntil, correctSweptStatement, finishRunStatements, findRun, interactiveRun, LIVE_CLAIM, recordUsageStatement } from "../repo/runs";
 import { bottomRank, eventStatement, findTask, listStages } from "../repo/tasks";
 import { enterRun, mint, RUN_PREFIX } from "../tokens";
 import { followStatements, requireAssignable, taskFor, written } from "./tasks";
@@ -204,7 +210,7 @@ export async function getRun(env: Env, viewer: Viewer, id: string): Promise<Resp
 }
 
 /**
- * POST /api/runs/:id/finish { status, interrupted?, reason? }: the run is
+ * POST /api/runs/:id/finish { status, interrupted?, reason?, usage? }: the run is
  * over, its claims are released, and its secret stops working. A supervised
  * run that did not complete puts back the tasks it held (deadRuns.ts):
  * `interrupted` says a cancel was its launcher's own (shutting down,
@@ -216,6 +222,9 @@ export async function getRun(env: Env, viewer: Viewer, id: string): Promise<Resp
  * run the cron's sweep ended as stale takes the first finish that lands
  * after, its launcher's word on how it really ended (COPL-148: Copland was
  * down, not the run). That finish puts nothing back; the sweep already did.
+ * `usage` is what the run cost, read from its runtime (COPL-71, runUsage in
+ * domain/runs.ts): kept from the first finish that sends it, even one that
+ * comes after the run is over (its runtime called finish_run first).
  */
 export async function postRunFinish(request: Request, env: Env, viewer: Viewer, id: string, changes: Changes) {
   const db = env.DB;
@@ -226,6 +235,12 @@ export async function postRunFinish(request: Request, env: Env, viewer: Viewer, 
   if (body.interrupted !== undefined && typeof body.interrupted !== "boolean") throw badRequest("`interrupted` must be a boolean");
   const reason = runReason(body.reason);
   if (reason === undefined) throw badRequest(`\`reason\` must be a string of at most ${RUN_REASON_MAX} characters`);
+  const usage = runUsage(body.usage);
+  if (usage === undefined) {
+    throw badRequest(
+      "`usage` must be { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd?, turns?, durationMs?, resumed? }: whole numbers of at least 0, a cost in dollars, resumed a boolean",
+    );
+  }
   const started = await ownRun(db, viewer, id);
   const held = await claimedBy(db, id);
   const { results: claimed } = await db
@@ -253,9 +268,27 @@ export async function postRunFinish(request: Request, env: Env, viewer: Viewer, 
     const tasks = claimed.filter((c) => c.board_id === b).map((c) => c.id);
     changes.board(await boardAudience(db, b), await taskChange(db, b, versionOf(versions[i]), tasks));
   }
+  if (usage) await recordUsage(db, id, usage, changes);
   if (viewer.agent) changes.notify([personOf(viewer)], "agents");
   const { userId: _userId, ...run } = await ownRun(db, viewer, id);
   return json(run);
+}
+
+/**
+ * A finish's usage on its run (COPL-71), the first one sent, whether or not
+ * this finish was the one that ended it. The run's task, and every task
+ * above it, now cost more: their board hears it.
+ */
+async function recordUsage(db: D1Database, runId: string, usage: RunUsage, changes: Changes) {
+  const recorded = await recordUsageStatement(db, runId, usage).run();
+  if (!recorded.meta.changes) return;
+  const task = await db
+    .prepare(`SELECT t.id, t.board_id, t.parent_id FROM runs r JOIN tasks t ON t.id = r.task_id WHERE r.id = ?1 AND t.deleted_at IS NULL`)
+    .bind(runId)
+    .first<{ id: string; board_id: string; parent_id: string | null }>();
+  if (!task) return;
+  const [bump] = await db.batch([bumpStatement(db, task.board_id)]);
+  changes.board(await boardAudience(db, task.board_id), await taskChange(db, task.board_id, versionOf(bump), [task.id], [], [task.parent_id]));
 }
 
 interface ClaimRow {
@@ -379,6 +412,8 @@ export async function postClaim(env: Env, viewer: Viewer, id: string, changes: C
         )
         .bind(task.id, runId),
       ...(assigning ? [db.prepare(`INSERT INTO task_assignees (task_id, user_id) VALUES (?1, ?2)`).bind(task.id, me)] : []),
+      /* The run's first task is the one its cost counts toward (COPL-71). */
+      db.prepare(`UPDATE runs SET task_id = ?2 WHERE id = ?1 AND task_id IS NULL`).bind(runId, task.id),
       ...(active
         ? [
             db

@@ -11,7 +11,7 @@
 
 import { clientLabel } from "@/domain/clients";
 import { INTERACTIVE_LEASE_MS, leaseFor, runStatus, shortRunId, type RunEnding, type RunKind } from "@/domain/runs";
-import type { ApiAccess, Run } from "@/domain/types";
+import type { ApiAccess, Run, RunUsage } from "@/domain/types";
 import { randomToken, sha256Hex } from "../http";
 
 const NOW_SQL = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
@@ -141,6 +141,21 @@ export function finishRunStatements(db: D1Database, runId: string, status: RunEn
 }
 
 /**
+ * A run's usage (COPL-71), taken once: guarded on none being there yet, not
+ * on the run still running, since the runtime often finishes its own run
+ * (finish_run) before its launcher sends the numbers with its own finish.
+ */
+export function recordUsageStatement(db: D1Database, runId: string, u: RunUsage): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE runs SET input_tokens = ?2, output_tokens = ?3, cache_read_tokens = ?4, cache_write_tokens = ?5,
+                       cost_usd = ?6, turns = ?7, duration_ms = ?8, resumed = ?9
+        WHERE id = ?1 AND input_tokens IS NULL`,
+    )
+    .bind(runId, u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheWriteTokens, u.costUsd, u.turns, u.durationMs, u.resumed ? 1 : 0);
+}
+
+/**
  * A finish that lands after the cron's sweep ended the run as stale
  * (COPL-148, deadRuns.ts): its launcher's ending replaces the sweep's
  * "failed", once. Matches nothing for a run that is still running or that
@@ -201,10 +216,21 @@ interface RunRow {
   reason: string | null;
   claims: string | null;
   host: string | null;
+  task: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  cost_usd: number | null;
+  turns: number | null;
+  duration_ms: number | null;
+  resumed: number | null;
 }
 
 const RUN_SELECT = `
   SELECT r.id, r.user_id, r.client, r.kind, r.status, r.started_at, r.last_seen_at, r.ended_at, r.reason, r.host,
+         r.input_tokens, r.output_tokens, r.cache_read_tokens, r.cache_write_tokens, r.cost_usd, r.turns, r.duration_ms, r.resumed,
+         (SELECT b.key || '-' || t.number FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = r.task_id) AS task,
          (SELECT group_concat(b.key || '-' || t.number)
             FROM task_claims c JOIN tasks t ON t.id = c.task_id JOIN boards b ON b.id = t.board_id
            WHERE c.run_id = r.id AND c.claimed_until > ${NOW_SQL} AND r.status = 'running') AS claims
@@ -223,6 +249,20 @@ function toRun(row: RunRow): Run {
     reason: row.reason,
     claims: row.claims ? row.claims.split(",") : [],
     host: row.host,
+    task: row.task,
+    usage:
+      row.input_tokens === null
+        ? null
+        : {
+            inputTokens: row.input_tokens,
+            outputTokens: row.output_tokens ?? 0,
+            cacheReadTokens: row.cache_read_tokens ?? 0,
+            cacheWriteTokens: row.cache_write_tokens ?? 0,
+            costUsd: row.cost_usd,
+            turns: row.turns,
+            durationMs: row.duration_ms,
+            resumed: row.resumed === 1,
+          },
   };
 }
 

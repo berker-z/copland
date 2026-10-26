@@ -15,6 +15,7 @@ use serde_json::json;
 use tokio::sync::watch;
 
 use crate::config::Secret;
+use crate::usage::Usage;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct User {
@@ -494,12 +495,15 @@ impl Ending {
     }
 }
 
-/// What `POST /api/runs/:id/finish` is sent: the ending, whether it was the daemon's own, and why
-/// when there is a word for it.
-fn finish_body(ending: Ending, reason: Option<&str>) -> serde_json::Value {
+/// What `POST /api/runs/:id/finish` is sent: the ending, whether it was the daemon's own, why
+/// when there is a word for it, and what the run cost when its runtime said (COPL-71).
+fn finish_body(ending: Ending, reason: Option<&str>, usage: Option<&Usage>) -> serde_json::Value {
     let mut body = json!({ "status": ending.as_str(), "interrupted": ending == Ending::Interrupted });
     if let Some(r) = reason {
         body["reason"] = json!(r);
+    }
+    if let Some(u) = usage {
+        body["usage"] = json!(u);
     }
     body
 }
@@ -862,13 +866,21 @@ impl Api {
     }
 
     /// Finish the run, with how its runtime ended in a line when it was launched ("exit 1 after
-    /// 3.8s", COPL-136; at most `runner::REASON_MAX` characters, never the log). Works with the
-    /// agent's token even after the run's secret has died; a run already over is answered as it is.
-    pub async fn finish_run(&self, token: &Secret, id: &str, ending: Ending, reason: Option<&str>) -> ApiResult<Run> {
+    /// 3.8s", COPL-136; at most `runner::REASON_MAX` characters, never the log) and what it cost
+    /// when the runtime said (COPL-71). Works with the agent's token even after the run's secret
+    /// has died; a run already over is answered as it is, and still takes the usage.
+    pub async fn finish_run(
+        &self,
+        token: &Secret,
+        id: &str,
+        ending: Ending,
+        reason: Option<&str>,
+        usage: Option<&Usage>,
+    ) -> ApiResult<Run> {
         let req = self
             .http
             .post(self.url(&format!("/api/runs/{id}/finish")))
-            .json(&finish_body(ending, reason));
+            .json(&finish_body(ending, reason, usage));
         self.send(req, token).await
     }
 
@@ -970,19 +982,37 @@ mod tests {
     #[test]
     fn a_finish_says_how_the_runtime_ended() {
         assert_eq!(
-            finish_body(Ending::Failed, Some("exit 1 after 3.8s")),
+            finish_body(Ending::Failed, Some("exit 1 after 3.8s"), None),
             json!({ "status": "failed", "interrupted": false, "reason": "exit 1 after 3.8s" })
         );
         assert_eq!(
             finish_body(
                 Ending::Interrupted,
-                Some("did not start: bwrap: No such file or directory (os error 2)")
+                Some("did not start: bwrap: No such file or directory (os error 2)"),
+                None
             ),
             json!({ "status": "cancelled", "interrupted": true, "reason": "did not start: bwrap: No such file or directory (os error 2)" })
         );
         assert_eq!(
-            finish_body(Ending::Cancelled, None),
+            finish_body(Ending::Cancelled, None, None),
             json!({ "status": "cancelled", "interrupted": false })
+        );
+        /* What the run cost, when its runtime said (COPL-71), as Copland's runUsage takes it. */
+        let usage = Usage {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_tokens: 3,
+            cache_write_tokens: 4,
+            cost_usd: Some(0.5),
+            turns: None,
+            duration_ms: Some(60_000),
+            resumed: false,
+        };
+        assert_eq!(
+            finish_body(Ending::Completed, Some("exit 0 after 1m 0s"), Some(&usage)),
+            json!({ "status": "completed", "interrupted": false, "reason": "exit 0 after 1m 0s",
+                    "usage": { "inputTokens": 1, "outputTokens": 2, "cacheReadTokens": 3, "cacheWriteTokens": 4,
+                               "costUsd": 0.5, "durationMs": 60_000, "resumed": false } })
         );
     }
 

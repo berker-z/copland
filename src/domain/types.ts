@@ -158,6 +158,8 @@ export interface Task {
    * task list: a single task read leaves it empty.
    */
   overlap: TaskOverlap[];
+  /** What its own runs cost (COPL-71), or null when none reported; a parent's subtree is on its progress. */
+  spent: Spent | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -258,6 +260,8 @@ export interface ParentProgress {
   done: number;
   /** Leaf tasks under it at any depth, the cancelled ones left out. */
   total: number;
+  /** What the runs on it and on every task under it cost (COPL-71), when any reported. */
+  spent?: Spent;
 }
 
 /**
@@ -516,6 +520,47 @@ export interface Run {
   claims: string[];
   /** The hostname its launcher started it on (COPL-135), when it said. */
   host: string | null;
+  /** The key of the first task it claimed, whose cost it counts toward (COPL-71), or null. */
+  task: string | null;
+  /** What it cost, as its launcher reported with its finish (COPL-71), or null when nobody did. */
+  usage: RunUsage | null;
+}
+
+/** What one run cost, read from its runtime by its launcher (POST /api/runs/:id/finish, COPL-71). */
+export interface RunUsage {
+  /** Tokens sent to the model fresh, not read from the cache. */
+  inputTokens: number;
+  outputTokens: number;
+  /** Tokens read from the prompt cache. */
+  cacheReadTokens: number;
+  /** Tokens written to the prompt cache. */
+  cacheWriteTokens: number;
+  /** In US dollars, as the runtime worked it out, when it did. */
+  costUsd: number | null;
+  turns: number | null;
+  /** How long the runtime worked, as it said. */
+  durationMs: number | null;
+  /** It resumed an earlier session instead of starting fresh (COPL-188). */
+  resumed: boolean;
+}
+
+/**
+ * What a task's runs cost all together (COPL-71): Task.spent its own,
+ * ParentProgress.spent its whole subtree's, itself included. Only runs that
+ * reported usage count; costUsd adds up those that said a cost.
+ */
+export interface Spent {
+  /** Runs that reported usage. */
+  runs: number;
+  /** How many of them resumed a session. */
+  resumed: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number;
+  turns: number;
+  durationMs: number;
 }
 
 /**
