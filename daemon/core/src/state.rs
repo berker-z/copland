@@ -65,6 +65,10 @@ pub struct AgentState {
     /// cloned and pushed from here. Its coding tasks on one it can't push to stay in todo,
     /// unclaimed, for a machine that can. Empty for an agent without a `code_command`.
     pub repos: Vec<RepoCapability>,
+    /// Until when its runtime's account is out of usage (COPL-195): the reset its last run's runtime
+    /// said, or a back-off when it said none. Until then the agent is held as by `held`; a release
+    /// by hand clears it, and the loop does once it has passed.
+    pub out_of_usage: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +159,21 @@ impl AgentState {
             .map(|t| format!("Copland unavailable since {}", clock(t)))
     }
 
+    /// Whether the loop starts nothing at `now`: held by hand, or out of usage until later.
+    pub fn holds(&self, now: SystemTime) -> bool {
+        self.held || self.until(now).is_some()
+    }
+
+    /// Until when it is out of usage, while that is after `now`.
+    pub fn until(&self, now: SystemTime) -> Option<SystemTime> {
+        self.out_of_usage.filter(|t| *t > now)
+    }
+
+    /// "out of usage until 17:10 UTC", while it is.
+    pub fn out_of_usage_line(&self, now: SystemTime) -> Option<String> {
+        self.until(now).map(|t| format!("out of usage until {}", clock(t)))
+    }
+
     pub fn new(handle: &str, url: &str) -> Self {
         Self {
             slot: 0,
@@ -176,6 +195,7 @@ impl AgentState {
             missing: None,
             held: false,
             repos: Vec::new(),
+            out_of_usage: None,
         }
     }
 }
@@ -200,6 +220,25 @@ mod tests {
             a.unavailable_line().as_deref(),
             Some("Copland unavailable since 23:20 UTC")
         );
+    }
+
+    #[test]
+    fn out_of_usage_holds_until_the_reset() {
+        let mut a = AgentState::new("me/dev", "http://x");
+        /* 2026-10-04 23:20:41 UTC. */
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_791_156_041);
+        assert!(!a.holds(now));
+        a.out_of_usage = Some(now + std::time::Duration::from_secs(600));
+        assert!(a.holds(now));
+        assert_eq!(
+            a.out_of_usage_line(now).as_deref(),
+            Some("out of usage until 23:30 UTC")
+        );
+        let later = now + std::time::Duration::from_secs(601);
+        assert!(!a.holds(later), "the reset passed");
+        assert_eq!(a.out_of_usage_line(later), None);
+        a.held = true;
+        assert!(a.holds(later));
     }
 
     #[test]

@@ -650,3 +650,13 @@ docs/DESIGN.md under Touch.
   daemon/README.md). It goes with the repo's last worktree. The preflight
   has a disk check: a warning under `min_free_gb` (20 GB) free on
   `code_dir`'s filesystem, naming the biggest things under it.
+- A runtime out of usage is the account's trouble (COPL-195): a runtime
+  that exits non-zero with its last lines saying it hit its limit (Claude
+  Code's "You've hit your session limit · resets 8:10pm", Codex's "You've
+  hit your usage limit … try again at …") finishes its run as interrupted,
+  no strike, and the daemon holds the agent on this machine until the
+  reset it said, or for a back-off (15 min doubling to an hour) when it
+  said none (`daemon/core/src/limit.rs`). The reset polls at once and picks
+  the work up again; a release ends it sooner. `status` and the box say
+  "out of usage until 17:10 UTC". Before, every run until the reset failed
+  in seconds, and two tasks got two strikes in a minute.
