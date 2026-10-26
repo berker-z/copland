@@ -3,9 +3,9 @@
 //! its runtime (which can be changed), its working folder and what it is
 //! doing; one it doesn't can be brought here through a device login that
 //! asks for that agent alone; one can be stopped here. Changes are written
-//! to `daemon.toml` in place (`edit.rs`, the old file kept as a backup) and
-//! handed to the running daemon, which applies them without a restart
-//! (`Daemon::reload`): an agent in a run finishes it first.
+//! to `daemon.toml` in place (`edit.rs`, the old file kept as a backup), and
+//! the daemon running it is asked over its socket to read it again (COPL-197),
+//! which it applies without a restart: an agent in a run finishes it first.
 //!
 //! Your agents come from `/api/wired` (the owner's feed), which lists them
 //! all, paused ones too, with your read-only token. Without an owner token
@@ -24,9 +24,8 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::Result;
 use copland_daemon_core::api::{Api, DeviceIdentity, DevicePoll, DeviceStart, WiredAgent};
 use copland_daemon_core::config::AgentConfig;
-use copland_daemon_core::{Config, Reload, Status, status};
+use copland_daemon_core::{Config, Status, Watcher, status};
 use gpui::{Context, KeyDownEvent, Task};
-use tokio::sync::{mpsc, oneshot};
 
 use crate::edit;
 use crate::feed::Feed;
@@ -47,17 +46,15 @@ const MESSAGE_MAX: usize = 1000;
 /// Setup over the same config, the address filled in and a note to show (after signing out).
 pub type SetupAgain = std::rc::Rc<dyn Fn(Option<&str>, Option<String>) -> Result<crate::wizard::Wizard>>;
 
-/// How the window reaches the running daemon: its config file, its Tokio runtime (for the
-/// screen's network calls), the way to hand it a changed config, to stop one of its runs, and
-/// for signing out, to stop it altogether and set the box up again.
+/// How the window reaches the daemon: its config file, the box's Tokio runtime (for the
+/// screen's network calls), the daemon's socket (to stop one of its runs, or have it read
+/// `daemon.toml` again), and for signing out, setting the box up again.
 #[derive(Clone)]
 pub struct Control {
     pub config: PathBuf,
     pub rt: tokio::runtime::Handle,
-    pub reload: mpsc::UnboundedSender<Reload>,
-    pub stopper: copland_daemon_core::RunStopper,
-    /// Stops the daemon (its runs finish as cancelled) and waits for it. Blocking.
-    pub stop_daemon: std::sync::Arc<dyn Fn() + Send + Sync>,
+    /// The daemon running `config`, through its status socket (COPL-200).
+    pub daemon: std::sync::Arc<Watcher>,
     /// Setup over the same config, the address filled in and a note to show.
     pub setup: SetupAgain,
 }
@@ -440,7 +437,7 @@ impl Agents {
 
     /// Write `text` as the config and have the daemon run it. `said` is what to say once it does.
     fn apply(&mut self, text: String, said: String, cx: &mut Context<BoxView>) {
-        let (config, backup) = match edit::save(&self.control.config, &text) {
+        let (_, backup) = match edit::save(&self.control.config, &text) {
             Ok(c) => c,
             Err(e) => {
                 self.message = Some((format!("× {e:#}"), Role::Red));
@@ -452,11 +449,15 @@ impl Agents {
             self.control.config.display(),
             backup.display()
         );
-        let (reply, answer) = oneshot::channel();
-        if self.control.reload.send(Reload { config, reply }).is_err() {
-            self.message = Some(("× saved, but the daemon has stopped: restart the box".into(), Role::Red));
-            return;
-        }
+        let (daemon, path) = (self.control.daemon.clone(), self.control.config.clone());
+        let answer = async move {
+            let r = daemon.reload().await;
+            match &r {
+                Ok(done) => tracing::info!("agents screen: {}", done.says(&path).trim_end()),
+                Err(e) => tracing::error!("agents screen: reloading: {e:#}"),
+            }
+            r
+        };
         self.busy = true;
         let kept = backup
             .file_name()
@@ -469,12 +470,9 @@ impl Agents {
                 a.read();
                 a.message = Some(match out {
                     /* The backup is named when there is room on the line; the log always names it. */
-                    Ok(Ok(_)) if said.chars().count() + kept.len() < 72 => {
-                        (format!("{said} · kept {kept}"), Role::Green)
-                    }
-                    Ok(Ok(_)) => (said, Role::Green),
-                    Ok(Err(e)) => (format!("× saved, but not applied: {e:#}; restart the box"), Role::Red),
-                    Err(_) => ("× saved, but the daemon has stopped: restart the box".into(), Role::Red),
+                    Ok(_) if said.chars().count() + kept.len() < 72 => (format!("{said} · kept {kept}"), Role::Green),
+                    Ok(_) => (said, Role::Green),
+                    Err(e) => (format!("× saved, but not applied: {e:#}"), Role::Red),
                 });
             },
             cx,

@@ -1,8 +1,8 @@
 //! Setup in the window (COPL-47), for a box started without a usable config or
 //! with `--setup`: the Copland address, approving this machine in the browser
 //! (a device code), the runtimes found on PATH, then daemon.toml written, the
-//! preflight run on it (COPL-162), and the daemon started in place, without a
-//! restart.
+//! preflight run on it (COPL-162), and the live view in place, watching for the
+//! daemon on the new config. Starting that daemon from here is COPL-205's.
 //!
 //! The steps are plain state here; `Panel` is what one of them says, which the
 //! view draws under the idle poles. Network calls and runtime detection run on
@@ -155,7 +155,7 @@ pub struct Wizard {
     rt: Arc<tokio::runtime::Runtime>,
     /// The config this would replace (kept as a backup), when there is one.
     replaces: Option<PathBuf>,
-    /// Starts the daemon on a config once it is written: the view's next source.
+    /// Watches the daemon on a config once it is written: the view's next source.
     launch: Option<Box<dyn FnOnce(Config) -> anyhow::Result<crate::view::Source>>>,
     /// The step's network call or detection; replacing it cancels the old one.
     job: Option<Task<()>>,
@@ -534,7 +534,7 @@ impl Wizard {
         self.check(cx);
     }
 
-    /// Start the daemon on the written config: the view's next source.
+    /// Watch the daemon on the written config: the view's next source.
     fn launch(&mut self) -> Option<crate::view::Source> {
         let Step::Check { config, note, .. } = &mut self.step else {
             return None;
@@ -543,7 +543,7 @@ impl Wizard {
         match launch(config.clone()) {
             Ok(source) => Some(source),
             Err(e) => {
-                *note = Some((format!("× starting the daemon: {e:#}"), Role::Red));
+                *note = Some((format!("× {e:#}"), Role::Red));
                 None
             }
         }
