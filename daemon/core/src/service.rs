@@ -646,7 +646,8 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("copland-service-{name}-{}", std::process::id()));
+        /* /tmp, not $TMPDIR: macOS's is long enough to push the socket past SUN_LEN. */
+        let dir = PathBuf::from("/tmp").join(format!("copland-service-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
