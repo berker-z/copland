@@ -29,7 +29,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use crate::agent::whoami;
-use crate::api::{Api, RepoCapability};
+use crate::api::{Api, RepoCapability, RuntimeCapability};
 use crate::config::{AgentConfig, Config, Runtime};
 use crate::runner::locate;
 
@@ -216,15 +216,7 @@ pub async fn run(config: &Config) -> Vec<Check> {
 pub async fn runtimes(agents: &[AgentConfig]) -> Vec<Check> {
     let mut seen: Vec<(Runtime, String, Vec<String>, Vec<String>)> = Vec::new();
     for a in agents {
-        let mut uses = Vec::new();
-        match &a.code_command {
-            Some(code) => {
-                uses.push((Runtime::detect(&a.command), a.command.clone()));
-                uses.push((a.runtime.clone(), code.clone()));
-            }
-            None => uses.push((a.runtime.clone(), a.command.clone())),
-        }
-        for (runtime, argv) in uses {
+        for (runtime, argv) in uses(a) {
             let program = program_of(&runtime, &argv);
             match seen.iter_mut().find(|(r, p, ..)| *r == runtime && *p == program) {
                 Some((.., handles)) => {
@@ -242,6 +234,37 @@ pub async fn runtimes(agents: &[AgentConfig]) -> Vec<Check> {
         let who: Vec<String> = handles.iter().map(|h| format!("@{h}")).collect();
         c.detail.push_str(&format!(" (for {})", who.join(", ")));
         out.push(c);
+    }
+    out
+}
+
+/// The runtimes an agent starts, with the argv each starts with: `command`'s, and `code_command`'s
+/// when there is one.
+fn uses(a: &AgentConfig) -> Vec<(Runtime, Vec<String>)> {
+    match &a.code_command {
+        Some(code) => vec![
+            (Runtime::detect(&a.command), a.command.clone()),
+            (a.runtime.clone(), code.clone()),
+        ],
+        None => vec![(a.runtime.clone(), a.command.clone())],
+    }
+}
+
+/// What an agent's daemon reports of its runtimes (COPL-179): the checks `runtimes` makes, for this
+/// agent's, once each, by name. A runtime not known here is logged in as far as anyone can tell.
+pub async fn runtime_capabilities(agent: &AgentConfig) -> Vec<RuntimeCapability> {
+    let mut out: Vec<RuntimeCapability> = Vec::new();
+    for (runtime, argv) in uses(agent) {
+        let check = self::runtime(&runtime, &argv).await;
+        if out.iter().any(|r| r.name == check.name) {
+            continue;
+        }
+        let on_path = locate(&program_of(&runtime, &argv)).is_some();
+        out.push(RuntimeCapability {
+            name: check.name,
+            on_path,
+            logged_in: on_path && check.status == Status::Ok,
+        });
     }
     out
 }
@@ -1317,5 +1340,37 @@ mod tests {
         assert_eq!(c.status, Status::Fail);
         assert!(c.detail.contains("not found on PATH"), "{}", c.detail);
         assert!(!c.fix.unwrap().runnable());
+    }
+
+    /// COPL-179: what the daemon reports of an agent's runtimes, both of them, once each.
+    #[tokio::test]
+    async fn an_agents_runtimes_are_reported_on_path_and_logged_in() {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mut agent = AgentConfig {
+            url: "http://127.0.0.1:9".into(),
+            handle: "me/dev".into(),
+            token: crate::config::Secret::new("cpl_x"),
+            command: argv(&["sh"]),
+            workdir: std::env::temp_dir(),
+            client: "test".into(),
+            code_command: Some(argv(&["copland-no-such-program"])),
+            writable: Vec::new(),
+            runtime: Runtime::detect(&argv(&["copland-no-such-program"])),
+            code_dir: "/tmp/copland-code".into(),
+            max_runs: 1,
+            resume_chains: false,
+        };
+        let said = |name: &str, on_path, logged_in| RuntimeCapability {
+            name: name.into(),
+            on_path,
+            logged_in,
+        };
+        assert_eq!(
+            runtime_capabilities(&agent).await,
+            [said("sh", true, true), said("copland-no-such-program", false, false)]
+        );
+        agent.code_command = Some(argv(&["sh"]));
+        agent.runtime = Runtime::detect(&argv(&["sh"]));
+        assert_eq!(runtime_capabilities(&agent).await, [said("sh", true, true)]);
     }
 }

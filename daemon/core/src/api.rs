@@ -311,6 +311,9 @@ pub struct HostReport {
     pub capabilities: HostCapabilities,
 }
 
+/// The most repos a report carries (`MAX_REPOS` in `src/domain/hosts.ts`): more is refused whole.
+pub const MAX_REPOS: usize = 64;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct HostCapabilities {
     pub runtimes: Vec<RuntimeCapability>,
@@ -521,6 +524,16 @@ fn finish_body(ending: Ending, reason: Option<&str>, usage: Option<&Usage>) -> s
     }
     if let Some(u) = usage {
         body["usage"] = json!(u);
+    }
+    body
+}
+
+/// What `POST /api/runs` is sent: the client, and the machine the run starts on (COPL-179) when
+/// there is a name for it.
+fn start_run_body(client: &str, host: Option<&str>) -> serde_json::Value {
+    let mut body = json!({ "client": client });
+    if let Some(h) = host {
+        body["host"] = json!(h);
     }
     body
 }
@@ -862,9 +875,11 @@ impl Api {
     }
 
     /// Start a run with the agent's own token.
-    pub async fn start_run(&self, token: &Secret, client: &str) -> ApiResult<StartedRun> {
+    pub async fn start_run(&self, token: &Secret, client: &str, host: Option<&str>) -> ApiResult<StartedRun> {
         self.send(
-            self.http.post(self.url("/api/runs")).json(&json!({ "client": client })),
+            self.http
+                .post(self.url("/api/runs"))
+                .json(&start_run_body(client, host)),
             token,
         )
         .await
@@ -985,6 +1000,19 @@ mod tests {
         );
         let hosts = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/domain/hosts.ts")).unwrap();
         assert!(hosts.contains(&format!("export const HOST_HEADER = \"{HOST_HEADER}\";")));
+        assert!(hosts.contains(&format!("export const MAX_REPOS = {MAX_REPOS};")));
+    }
+
+    #[test]
+    fn a_run_is_started_naming_its_host_when_there_is_one() {
+        assert_eq!(
+            start_run_body("copland-daemon", Some("laptop")),
+            json!({ "client": "copland-daemon", "host": "laptop" })
+        );
+        assert_eq!(
+            start_run_body("copland-daemon", None),
+            json!({ "client": "copland-daemon" })
+        );
     }
 
     #[test]

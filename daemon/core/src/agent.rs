@@ -24,7 +24,10 @@ use tokio::sync::{Notify, watch};
 use tokio::task::{Id, JoinError, JoinHandle, JoinSet};
 use tracing::Instrument;
 
-use crate::api::{Api, ApiError, Backoff, BoardRepos, Ending, InboxItem, Me, RepoCapability};
+use crate::api::{
+    Api, ApiError, Backoff, BoardRepos, Ending, HostCapabilities, HostReport, InboxItem, MAX_REPOS, Me, RepoCapability,
+    RuntimeCapability,
+};
 use crate::chain;
 use crate::config::AgentConfig;
 use crate::guard::{Check, Identity, Message, Plan, Refused, Wake, WakeGuard, add_ready, plan, refused};
@@ -165,7 +168,22 @@ pub struct AgentLoop {
     /// (COPL-195): `limit::FIRST`, doubled each time up to `limit::MOST`, and back to the first once
     /// a runtime runs without running out.
     usage_wait: Duration,
+    /// This machine's name as Copland keeps it (`setup::host`), read every poll; None when it has
+    /// none to give, and then no run, socket or report names one.
+    host: Option<String>,
+    /// Where `host` is read from: `setup::host`, but for tests.
+    hostname: fn() -> Option<String>,
+    /// The token is an agent's: only an agent's reports its host (a person's would be refused).
+    is_agent: bool,
+    /// What the runtime checks (COPL-179) found, and when: made again every `RECHECK_RUNTIMES`.
+    runtimes: Option<(Vec<RuntimeCapability>, tokio::time::Instant)>,
+    /// The host report as it stands; the reporter (`report_host`) sends it when it changes.
+    report: watch::Sender<Option<HostReport>>,
 }
+
+/// How often the runtimes' checks are made again for the host report, so a login made or lost
+/// shows on the agent's page without a restart. Each runs the runtime's own status command.
+const RECHECK_RUNTIMES: Duration = Duration::from_secs(10 * 60);
 
 /// One repo's check, and when it was made.
 struct Checked {
@@ -306,6 +324,21 @@ impl Drop for Live {
     }
 }
 
+/// The host reporter, stopped when dropped.
+struct Reporter(JoinHandle<()>);
+
+impl Drop for Reporter {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The repos a host report carries: as many as Copland keeps (`MAX_REPOS`), the first by repo.
+fn host_repos(mut repos: Vec<RepoCapability>) -> Vec<RepoCapability> {
+    repos.truncate(MAX_REPOS);
+    repos
+}
+
 impl AgentLoop {
     /// `guard` is what an earlier loop for the same agent remembered (see `run`).
     #[allow(clippy::too_many_arguments)]
@@ -345,6 +378,11 @@ impl AgentLoop {
             repos: HashMap::new(),
             boards_checked: false,
             usage_wait: limit::FIRST,
+            host: crate::setup::host(),
+            hostname: crate::setup::host,
+            is_agent: false,
+            runtimes: None,
+            report: watch::channel(None).0,
         })
     }
 
@@ -376,6 +414,7 @@ impl AgentLoop {
             stop_run: self.stop_run.clone(),
             last_word: self.last_word,
             user_id: self.me.as_ref().map(|m| m.id.clone()),
+            host: self.host.clone(),
         }
     }
 
@@ -450,6 +489,7 @@ impl AgentLoop {
     /// the loop that takes over the agent after a reload doesn't relaunch on items already seen.
     pub async fn run(mut self) -> WakeGuard {
         let live = self.listen();
+        let _reporter = self.reporter();
         /* The same failure every poll (server down) is said once, until it changes. */
         let mut last_error: Option<String> = None;
         let mut runs: JoinSet<Done> = JoinSet::new();
@@ -557,7 +597,7 @@ impl AgentLoop {
     fn listen(&self) -> Live {
         let wakes = Arc::new(Wakes::default());
         let (link_tx, link) = watch::channel(Link::Connecting);
-        let (base, token) = (self.agent.url.clone(), self.agent.token.clone());
+        let (base, token, host) = (self.agent.url.clone(), self.agent.token.clone(), self.host.clone());
         let (state, slot) = (self.state.clone(), self.slot);
         let heard = wakes.clone();
         let task = tokio::spawn(
@@ -565,6 +605,7 @@ impl AgentLoop {
                 live::listen(
                     &base,
                     &token,
+                    host.as_deref(),
                     |topic| topic == "inbox" || topic == "board",
                     move |l| {
                         link_tx.send_replace(l);
@@ -586,6 +627,87 @@ impl AgentLoop {
             .in_current_span(),
         );
         Live { wakes, link, task }
+    }
+
+    /// Send the host report (COPL-179) whenever it changes from the last one sent, for as long as
+    /// the returned value lives. Copland being down is asked again with the runs' backoff
+    /// (`last_word`); a refusal (an older server, a report it won't take) is said and left until
+    /// the report changes. A newer report waits for the one being sent.
+    fn reporter(&self) -> Reporter {
+        let mut rx = self.report.subscribe();
+        let (api, token, backoff, shutdown) = (
+            self.api.clone(),
+            self.agent.token.clone(),
+            self.last_word,
+            self.shutdown.clone(),
+        );
+        let task = tokio::spawn(
+            async move {
+                let mut sent: Option<HostReport> = None;
+                loop {
+                    let report = rx.borrow_and_update().clone();
+                    if let Some(report) = report.filter(|r| sent.as_ref() != Some(r)) {
+                        let what = format!("reporting this host ({}) to Copland", report.hostname);
+                        match backoff
+                            .retry(&what, shutdown.clone(), || api.report_host(&token, &report))
+                            .await
+                        {
+                            Ok(_) => {
+                                tracing::debug!("{what}: done");
+                                sent = Some(report);
+                            }
+                            Err(e) => tracing::warn!("{what}: {e}"),
+                        }
+                    }
+                    if rx.changed().await.is_err() {
+                        return;
+                    }
+                }
+            }
+            .in_current_span(),
+        );
+        Reporter(task)
+    }
+
+    /// The host report as it is now: the hostname, read again; the runtimes, checked again once
+    /// `RECHECK_RUNTIMES` has passed; the repos as their checks found them. Handed to the reporter,
+    /// which sends it only when it changed. Nothing is reported without a hostname, or for a token
+    /// that isn't an agent's.
+    async fn report_host(&mut self) {
+        self.host = (self.hostname)();
+        let Some(hostname) = self.host.clone().filter(|_| self.is_agent) else {
+            return;
+        };
+        if self
+            .runtimes
+            .as_ref()
+            .is_none_or(|(_, at)| at.elapsed() >= RECHECK_RUNTIMES)
+        {
+            let found = crate::preflight::runtime_capabilities(&self.agent).await;
+            self.runtimes = Some((found, tokio::time::Instant::now()));
+        }
+        let report = HostReport {
+            hostname,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            capabilities: HostCapabilities {
+                runtimes: self.runtimes.as_ref().map(|(r, _)| r.clone()).unwrap_or_default(),
+                repos: host_repos(self.repo_list()),
+            },
+        };
+        self.report.send_if_modified(|r| {
+            let changed = r.as_ref() != Some(&report);
+            if changed {
+                *r = Some(report);
+            }
+            changed
+        });
+    }
+
+    /// Every repo checked so far, sorted by repo.
+    fn repo_list(&self) -> Vec<RepoCapability> {
+        let mut all: Vec<RepoCapability> = self.repos.values().map(|c| c.access.clone()).collect();
+        all.sort_by(|a, b| a.repo.cmp(&b.repo));
+        all
     }
 
     /// Between polls: until the poll is due (seldom while the socket is up, at `poll_interval`
@@ -764,8 +886,7 @@ impl AgentLoop {
                 at: tokio::time::Instant::now(),
             },
         );
-        let mut all: Vec<RepoCapability> = self.repos.values().map(|c| c.access.clone()).collect();
-        all.sort_by(|a, b| a.repo.cmp(&b.repo));
+        let all = self.repo_list();
         self.update(|s| s.repos = all);
         access
     }
@@ -791,6 +912,7 @@ impl AgentLoop {
             );
         }
         tracing::info!(url = %self.agent.url, "watching @{}'s inbox", me.user.handle);
+        self.is_agent = me.user.kind == "agent";
         let identity = Identity {
             id: me.user.id,
             handle: me.user.handle,
@@ -879,6 +1001,7 @@ impl AgentLoop {
                 Err(e) => tracing::debug!("checking its boards' repos, again next poll: {e:#}"),
             }
         }
+        self.report_host().await;
         let (unread, items) = self.unread().await?;
         let mut plan: Plan = plan(&me, &items);
         /* Work nobody said anything about but that can start now: a task the agent gave itself, one whose dependencies just closed. */
@@ -1350,6 +1473,8 @@ struct RunCtx {
     last_word: Backoff,
     /// The agent's id, once the server has said: whose tasks a chain carries on from (COPL-189).
     user_id: Option<String>,
+    /// The machine its runs start on, named on each (COPL-179).
+    host: Option<String>,
 }
 
 impl RunCtx {
@@ -1399,7 +1524,11 @@ impl RunCtx {
     async fn work(self, me: &str, wake: Wake) -> Done {
         let key = wake.task_key.clone();
         tracing::info!(task = %key, items = wake.items.len(), "waking for {key}");
-        let started = match self.api.start_run(&self.agent.token, &self.agent.client).await {
+        let started = match self
+            .api
+            .start_run(&self.agent.token, &self.agent.client, self.host.as_deref())
+            .await
+        {
             Ok(s) => s,
             Err(e) => return Done::failed(wake, format!("starting a run for {key}: {e}")),
         };
@@ -1656,7 +1785,11 @@ impl RunCtx {
         };
         let n = batch.len();
         tracing::info!(messages = n, "waking for {n} message(s)");
-        let started = match self.api.start_run(&self.agent.token, &self.agent.client).await {
+        let started = match self
+            .api
+            .start_run(&self.agent.token, &self.agent.client, self.host.as_deref())
+            .await
+        {
             Ok(s) => s,
             Err(e) => return Done::failed(wake, format!("starting a run for {n} message(s): {e}")),
         };
@@ -2049,6 +2182,9 @@ mod tests {
         );
     }
 
+    /// A call, its body, and the host it named.
+    type Sent = (String, Option<serde_json::Value>, Option<String>);
+
     /// A fake Copland on a socket of its own, for one agent with one task assigned (COPL-148): it
     /// answers every call with a 503 `storage_unavailable` while `down`, and the run's finish with
     /// one for its first `finish_down` tries, the way D1 running out of quota did.
@@ -2068,6 +2204,8 @@ mod tests {
         marked: std::sync::Mutex<Vec<serde_json::Value>>,
         /// The plain git remote its board's one repo is at, when it has one (COPL-178).
         remote: std::sync::Mutex<Option<String>>,
+        /// Each call's body, and the host it named in `x-copland-host`, in the order they came.
+        sent: std::sync::Mutex<Vec<Sent>>,
     }
 
     impl Fake {
@@ -2099,6 +2237,7 @@ mod tests {
                 )
             };
             let mut length = 0;
+            let mut host = None;
             loop {
                 let mut h = String::new();
                 if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
@@ -2108,6 +2247,9 @@ mod tests {
                     if k.eq_ignore_ascii_case("content-length") {
                         length = v.trim().parse().unwrap_or(0);
                     }
+                    if k.eq_ignore_ascii_case(crate::api::HOST_HEADER) {
+                        host = Some(v.trim().to_string());
+                    }
                 }
             }
             let mut body = vec![0; length];
@@ -2115,6 +2257,8 @@ mod tests {
             let path = path.split('?').next().unwrap_or("").to_string();
             let call = format!("{method} {path}");
             self.calls.lock().unwrap().push(call.clone());
+            let said = serde_json::from_slice(&body).ok();
+            self.sent.lock().unwrap().push((call.clone(), said, host));
             let (status, answer) = self.answer(&call, &body);
             let _ = write!(
                 conn,
@@ -2166,6 +2310,10 @@ mod tests {
                 "GET /api/tasks/t1" | "POST /api/tasks/t1/claim" => (200, task.into()),
                 "POST /api/runs" => (200, format!(r#"{{"run":{},"secret":"cplr_run"}}"#, run("running"))),
                 "GET /api/runs/run-1" => (200, run("running")),
+                "PUT /api/hosts/self" => (
+                    200,
+                    r#"{"host":{"hostname":"test-host","firstReportedAt":"x","lastReportedAt":"x"}}"#.into(),
+                ),
                 "POST /api/runs/run-1/finish" => {
                     if self.finish_down.load(Ordering::SeqCst) > 0 {
                         self.finish_down.fetch_sub(1, Ordering::SeqCst);
@@ -2182,6 +2330,15 @@ mod tests {
 
         fn count(&self, call: &str) -> usize {
             self.calls.lock().unwrap().iter().filter(|c| *c == call).count()
+        }
+
+        /// The bodies of each `call`, and the host each named.
+        fn sent(&self, call: &str) -> Vec<(Option<serde_json::Value>, Option<String>)> {
+            let sent = self.sent.lock().unwrap();
+            sent.iter()
+                .filter(|(c, ..)| c == call)
+                .map(|(_, body, host)| (body.clone(), host.clone()))
+                .collect()
         }
     }
 
@@ -2301,6 +2458,8 @@ mod tests {
                 WakeGuard::default(),
             )
             .unwrap();
+            l.hostname = || Some("test-host".into());
+            l.host = (l.hostname)();
             l.last_word = Backoff {
                 first: Duration::from_millis(20),
                 most: Duration::from_millis(50),
@@ -2370,6 +2529,73 @@ mod tests {
         assert_eq!(fake.count("GET /api/boards"), 1, "its boards are checked once");
         assert_eq!(l.state.borrow().agents[0].waiting, ["COPL-1"]);
         l.stop().await;
+    }
+
+    /// COPL-179: the loop reports its host once, with its runtimes and its boards' repos, and again
+    /// only when that changes; each run and the live socket name the host.
+    #[tokio::test]
+    async fn the_host_is_reported_once_and_named_on_each_run() {
+        let fake = Arc::new(Fake::default());
+        let gone = std::env::temp_dir().join(format!("copland-no-such-remote-host-{}.git", std::process::id()));
+        *fake.remote.lock().unwrap() = Some(gone.display().to_string());
+        let mut a = agent(&["true"], Some(&["true"]));
+        a.code_dir = std::env::temp_dir().join(format!("copland-host-code-{}", std::process::id()));
+        let l = Looping::start_agent(&fake.start(), "host-report", a, false);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fake.count("PUT /api/hosts/self") == 0 || fake.count("GET /api/live") == 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("reported");
+        let polls = fake.count("GET /api/inbox");
+        while fake.count("GET /api/inbox") < polls + 3 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let reports = fake.sent("PUT /api/hosts/self");
+        assert_eq!(reports.len(), 1, "only on a change: {reports:?}");
+        let report = reports[0].0.clone().unwrap();
+        assert_eq!(report["hostname"], "test-host");
+        assert_eq!(report["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            report["capabilities"]["runtimes"],
+            serde_json::json!([{ "name": "true", "onPath": true, "loggedIn": true }])
+        );
+        let repos = &report["capabilities"]["repos"];
+        assert_eq!(repos.as_array().map(Vec::len), Some(1), "{report}");
+        assert_eq!(
+            (&repos[0]["repo"], &repos[0]["clone"], &repos[0]["push"]),
+            (
+                &serde_json::json!("o/r"),
+                &serde_json::json!(false),
+                &serde_json::json!(false)
+            )
+        );
+        let live = fake.sent("GET /api/live");
+        assert_eq!(live[0].1.as_deref(), Some("test-host"), "the socket names it");
+        l.stop().await;
+
+        /* A run names its host when it starts. */
+        let fake = Arc::new(Fake::default());
+        let l = Looping::start(&fake.start(), "host-run");
+        finished(&fake).await;
+        let runs = fake.sent("POST /api/runs");
+        assert_eq!(runs[0].0.as_ref().unwrap()["host"], "test-host");
+        l.stop().await;
+    }
+
+    /// A report carries as many repos as Copland keeps.
+    #[test]
+    fn a_host_report_carries_at_most_max_repos() {
+        let repo = |n: usize| RepoCapability {
+            repo: format!("o/r{n:03}"),
+            clone: true,
+            push: true,
+            detail: None,
+        };
+        let kept = host_repos((0..MAX_REPOS + 5).map(repo).collect());
+        assert_eq!(kept.len(), MAX_REPOS);
+        assert_eq!(kept.last(), Some(&repo(MAX_REPOS - 1)));
     }
 
     /// COPL-178: coding needs push, leading only clone; nothing else is stopped by a repo.
