@@ -210,6 +210,7 @@ mod tests {
             held: false,
             out_of_usage_until: None,
             runs: vec![],
+            repos: vec![],
             missing: None,
             needs: vec![],
             last_error: None,
