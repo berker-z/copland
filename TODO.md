@@ -652,8 +652,11 @@ docs/DESIGN.md under Touch.
   and pushed from its machine (COPL-178, `preflight::repo_access`), claims
   no coding task on one it can't push to, and says so in
   `copland-daemon status`; each result is the report's `RepoCapability`.
-  Not yet: the daemon reporting and naming its host (COPL-179), and the box
-  showing any of it. The web app shows it (COPL-182): /nudge says the hosts your agent is
+  Each agent's loop reports its host (COPL-179): when it starts and when
+  the hostname, its runtimes (checked again every ten minutes) or a repo's
+  check change, only on a change, asked again with backoff while Copland
+  is down; it names the host on every run it starts and on its live
+  socket. Not yet: the box showing any of it. The web app shows it (COPL-182): /nudge says the hosts your agent is
   live on and warns when it is two at once, an agent's settings page lists
   its hosts with version, last report and capabilities (runtimes not
   ready and repos it can't push to called out), the same warning, and the

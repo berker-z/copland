@@ -197,11 +197,13 @@ pub fn event_of(message: &str) -> Option<Event> {
 }
 
 /// Keep a socket to `base`'s `/api/live` open with `token` for as long as the future lives
-/// (drop or abort it to stop), reporting its state to `on_link` and, for the topics `wanted`
+/// (drop or abort it to stop), naming `host` on the upgrade when there is one (an agent's daemon
+/// does, a person's box doesn't), reporting its state to `on_link` and, for the topics `wanted`
 /// takes, each coalesced burst (or a resync after a reconnect) to `on_heard`. Never returns.
 pub async fn listen(
     base: &str,
     token: &Secret,
+    host: Option<&str>,
     wanted: impl Fn(&str) -> bool,
     on_link: impl Fn(Link),
     on_heard: impl Fn(Heard),
@@ -222,7 +224,7 @@ pub async fn listen(
         }
     };
     loop {
-        match connect(&http, base, token, &rng).await {
+        match connect(&http, base, token, host, &rng).await {
             Ok(socket) => {
                 if said.take().is_some() || ever {
                     tracing::info!("live updates connected again");
@@ -305,19 +307,24 @@ async fn connect(
     http: &reqwest::Client,
     base: &str,
     token: &Secret,
+    host: Option<&str>,
     rng: &ring::rand::SystemRandom,
 ) -> Result<Socket, Failure> {
     let mut nonce = [0u8; 16];
     rng.fill(&mut nonce)
         .map_err(|_| Failure::Network("no randomness".into()))?;
     let key = base64(&nonce);
-    let request = http
+    let mut request = http
         .get(live_url(base))
         .bearer_auth(token.expose())
         .header("connection", "Upgrade")
         .header("upgrade", "websocket")
         .header("sec-websocket-version", "13")
         .header("sec-websocket-key", &key);
+    /* The hub keeps it, so an agent live on two hosts at once is told apart (COPL-176). */
+    if let Some(h) = host {
+        request = request.header(crate::api::HOST_HEADER, h);
+    }
     let response = tokio::time::timeout(HANDSHAKE_TIMEOUT, request.send())
         .await
         .map_err(|_| Failure::Network("the handshake timed out".into()))?
