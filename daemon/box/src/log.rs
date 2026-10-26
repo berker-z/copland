@@ -9,6 +9,48 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::field::RecordFields;
+use tracing_subscriber::fmt::format::{DefaultFields, Writer};
+use tracing_subscriber::fmt::{FormatFields, MakeWriter};
+use tracing_subscriber::registry::LookupSpan;
+
+/// What the box logs when `COPLAND_LOG` doesn't say (COPL-166): Copland's own crates at info,
+/// everything else (GPUI's locale, fonts and Vulkan setup, hyper, rustls) only at warn.
+pub const DEFAULT_FILTER: &str = "warn,copland_box=info,copland_daemon_core=info";
+
+/// The filter for both of the box's logs: `COPLAND_LOG` when it is set and parses, replacing
+/// the default entirely, otherwise `DEFAULT_FILTER`.
+pub fn filter(copland_log: Option<String>) -> EnvFilter {
+    copland_log
+        .and_then(|directives| EnvFilter::try_new(directives).ok())
+        .unwrap_or_else(|| EnvFilter::new(DEFAULT_FILTER))
+}
+
+/// The layer that writes to the file: no colour, no target, like stderr's otherwise.
+pub fn file_layer<S, W>(writer: W) -> impl tracing_subscriber::Layer<S>
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    W: for<'w> MakeWriter<'w> + Send + Sync + 'static,
+{
+    tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_ansi(false)
+        .fmt_fields(PlainFields)
+        .with_writer(writer)
+}
+
+/// `DefaultFields` under a type of its own. A span's fields are formatted once per formatter
+/// type and kept on the span, so with the same type as stderr's layer the file got stderr's
+/// coloured `agent{handle=…}` escapes.
+struct PlainFields;
+
+impl<'w> FormatFields<'w> for PlainFields {
+    fn format_fields<R: RecordFields>(&self, writer: Writer<'w>, fields: R) -> std::fmt::Result {
+        DefaultFields::new().format_fields(writer, fields)
+    }
+}
+
 /// How big `box.log` gets before it is rotated.
 pub const CAP: u64 = 1024 * 1024;
 
@@ -148,5 +190,86 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
         assert_eq!(fs::read_to_string(previous(&path)).unwrap().len(), 20);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// What a subscriber writes while `emit` runs: the file's layer under `filter`, with a
+    /// coloured stderr-style layer beside it like the box has.
+    fn logged(filter: EnvFilter, emit: impl FnOnce()) -> String {
+        use tracing_subscriber::prelude::*;
+        let file = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let to_file = {
+            let file = file.clone();
+            move || Captured(file.clone())
+        };
+        let stderr = tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .with_ansi(true)
+            .with_writer(io::sink);
+        let subscriber = tracing_subscriber::registry()
+            .with(filter)
+            .with(stderr)
+            .with(file_layer(to_file));
+        tracing::subscriber::with_default(subscriber, emit);
+        String::from_utf8(file.lock().unwrap().clone()).unwrap()
+    }
+
+    struct Captured(std::sync::Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn a_start() {
+        tracing::debug!(target: "gpui::platform::linux", "Locale: en-US");
+        tracing::info!(target: "blade_graphics::vulkan::init", "Enabling Vulkan Portability");
+        tracing::warn!(target: "blade_graphics::vulkan::init", "no presentation");
+        tracing::info!(target: "copland_box", "copland-box started");
+        tracing::debug!(target: "copland_box", "a poll");
+        tracing::info!(target: "copland_daemon_core::daemon", "watching the inbox");
+    }
+
+    #[test]
+    fn by_default_keeps_only_coplands_info_and_everyones_warnings() {
+        let out = logged(filter(None), a_start);
+        assert!(out.contains("copland-box started"), "{out}");
+        assert!(out.contains("watching the inbox"), "{out}");
+        assert!(out.contains("no presentation"), "{out}");
+        assert!(!out.contains("Locale"), "{out}");
+        assert!(!out.contains("Vulkan"), "{out}");
+        assert!(!out.contains("a poll"), "{out}");
+    }
+
+    #[test]
+    fn copland_log_replaces_the_default_entirely() {
+        let out = logged(filter(Some("debug".into())), a_start);
+        assert!(
+            out.contains("Locale") && out.contains("Vulkan") && out.contains("a poll"),
+            "{out}"
+        );
+        let out = logged(filter(Some("error".into())), a_start);
+        assert!(
+            !out.contains("copland-box started") && !out.contains("no presentation"),
+            "{out}"
+        );
+        /* One that doesn't parse leaves the default. */
+        let out = logged(filter(Some("copland_box=loud".into())), a_start);
+        assert!(out.contains("copland-box started") && !out.contains("Vulkan"), "{out}");
+    }
+
+    #[test]
+    fn writes_span_fields_to_the_file_without_colour() {
+        let out = logged(filter(None), || {
+            let _agent = tracing::info_span!(target: "copland_box", "agent", handle = "berker-z/dev").entered();
+            tracing::info!(target: "copland_box", "claimed");
+        });
+        assert!(out.contains("agent{handle=\"berker-z/dev\"}: claimed"), "{out}");
+        assert!(!out.contains('\x1b'), "{out:?}");
     }
 }
