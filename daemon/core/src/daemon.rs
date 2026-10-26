@@ -14,8 +14,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
-use tokio::sync::watch;
+use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
@@ -24,7 +25,7 @@ use crate::api::Api;
 use crate::config::{AgentConfig, Config};
 use crate::guard::WakeGuard;
 use crate::reload::{self, Plan};
-use crate::socket::Server;
+use crate::socket::{Serve, Server};
 use crate::state::{AgentState, DaemonState, Phase};
 
 /// One agent as the daemon runs it.
@@ -50,6 +51,10 @@ pub struct Daemon {
     next_slot: u64,
     /// The status socket, served while this lives (COPL-184).
     socket: Option<Server>,
+    /// Reloads asked for from outside the daemon's owner (COPL-197): `reloader`, the socket.
+    reload_tx: mpsc::UnboundedSender<Reload>,
+    /// Until its owner takes it (`reloads`).
+    reload_rx: Option<mpsc::UnboundedReceiver<Reload>>,
 }
 
 /// Stops one run of this daemon by hand: the agent's loop sends its runtime's process group
@@ -108,24 +113,114 @@ impl Holder {
     }
 }
 
-/// What a reload did, by handle as configured.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// A config for the daemon to run, and its answer (COPL-197). `Daemon::reload` needs the daemon
+/// itself, which only its owner's loop has, so the box's agents screen and the status socket send
+/// one of these there (`Daemon::reloads`), and the loop answers it (`Reload::answer`).
+pub struct Reload {
+    pub config: Config,
+    pub reply: oneshot::Sender<Result<Reloaded>>,
+}
+
+impl Reload {
+    /// Run the config on `daemon`, and send back what that did.
+    pub fn answer(self, daemon: &mut Daemon) {
+        let done = daemon.reload(self.config);
+        match &done {
+            Ok(r) => tracing::info!(?r, "reloaded"),
+            Err(e) => tracing::error!("reload: {e:#}"),
+        }
+        let _ = self.reply.send(done);
+    }
+}
+
+/// Reloads the daemon from its config file, as it is now (COPL-197): for the status socket's
+/// `reload` and the headless daemon's SIGHUP. A config that doesn't load changes nothing. Safe to
+/// call from any task; the answer comes once the daemon's owner has run it (`Daemon::reloads`).
+#[derive(Clone)]
+pub struct Reloader {
+    pub(crate) config: PathBuf,
+    pub(crate) tx: mpsc::UnboundedSender<Reload>,
+}
+
+impl Reloader {
+    /// One that loads `config` and sends it to whoever reads `requests`: a `socket::Server` that
+    /// isn't a `Daemon`'s, as a test of a socket client serves.
+    pub fn new(config: PathBuf, requests: mpsc::UnboundedSender<Reload>) -> Self {
+        Self { config, tx: requests }
+    }
+
+    /// Load the config file again and have the daemon run it.
+    pub async fn reload(&self) -> Result<Reloaded> {
+        let config = Config::load(&self.config).context("loading the config")?;
+        let (reply, answer) = oneshot::channel();
+        let stopped = || anyhow!("the daemon is stopping");
+        self.tx.send(Reload { config, reply }).map_err(|_| stopped())?;
+        answer.await.map_err(|_| stopped())?
+    }
+}
+
+#[cfg(test)]
+impl Reloader {
+    /// One no daemon answers, for tests of the socket's other ops.
+    pub(crate) fn nowhere() -> Self {
+        Self::new(PathBuf::new(), mpsc::unbounded_channel().0)
+    }
+}
+
+/// What a reload did, by handle as configured. As JSON, the status socket's `reload` answer;
+/// read back, a list an older daemon leaves out is empty.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Reloaded {
+    /// Run as they were.
+    pub kept: Vec<String>,
     pub started: Vec<String>,
     pub rebound: Vec<String>,
     pub stopped: Vec<String>,
 }
 
+impl Reloaded {
+    /// What `copland-daemon reload` prints for a reload of `config`.
+    pub fn says(&self, config: &std::path::Path) -> String {
+        let handles = |hs: &[String]| {
+            hs.iter()
+                .map(|h| format!("@{}", h.trim_start_matches('@')))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut out = format!("reloaded {}", config.display());
+        let changed = [
+            ("started", &self.started),
+            ("rebound (after its runs)", &self.rebound),
+            ("stopped (after its runs)", &self.stopped),
+        ];
+        if changed.iter().all(|(_, hs)| hs.is_empty()) {
+            out.push_str(": nothing changed\n");
+            return out;
+        }
+        out.push('\n');
+        for (what, hs) in changed.into_iter().filter(|(_, hs)| !hs.is_empty()) {
+            out.push_str(&format!("{what}: {}\n", handles(hs)));
+        }
+        if !self.kept.is_empty() {
+            out.push_str(&format!("as they were: {}\n", handles(&self.kept)));
+        }
+        out
+    }
+}
+
 impl Daemon {
-    /// Start every agent's loop, and serve the status socket at `socket` (`Lock::socket`) until
-    /// the daemon is dropped. Must be called inside a Tokio runtime.
-    pub fn start(config: Config, paths: Paths, socket: Option<PathBuf>) -> Result<Self> {
+    /// Start every agent's loop, and serve the status socket (`Lock::socket`) until the daemon is
+    /// dropped. Must be called inside a Tokio runtime. Whoever calls it owns the daemon and takes
+    /// its `reloads`, or the socket's `reload` is never answered.
+    pub fn start(config: Config, paths: Paths, socket: Option<Serve>) -> Result<Self> {
         for agent in &config.agents {
             Api::new(&agent.url)?;
         }
         let (state_tx, state) = watch::channel(DaemonState::default());
         let (shutdown, _) = watch::channel(false);
         let (stop_run, _) = watch::channel(None);
+        let (reload_tx, reload_rx) = mpsc::unbounded_channel();
         let mut daemon = Self {
             state,
             state_tx,
@@ -138,13 +233,16 @@ impl Daemon {
             paths: Arc::new(paths),
             next_slot: 1,
             socket: None,
+            reload_tx,
+            reload_rx: Some(reload_rx),
         };
-        if let Some(path) = socket {
+        if let Some(serve) = socket {
             daemon.socket = Some(Server::start(
-                &path,
+                &serve.socket,
                 daemon.subscribe(),
                 daemon.run_stopper(),
                 daemon.holder(),
+                daemon.reloader(serve.config),
             )?);
         }
         for agent in config.agents {
@@ -167,6 +265,25 @@ impl Daemon {
     /// A handle that holds and releases an agent on this machine, for the box and the status socket.
     pub fn holder(&self) -> Holder {
         Holder(self.state_tx.clone())
+    }
+
+    /// A handle that reloads the daemon from the config file at `config`, for the socket and SIGHUP.
+    pub fn reloader(&self, config: PathBuf) -> Reloader {
+        Reloader {
+            config,
+            tx: self.reload_tx.clone(),
+        }
+    }
+
+    /// Where a config already loaded is sent to be run, for the box's agents screen.
+    pub fn reload_sender(&self) -> mpsc::UnboundedSender<Reload> {
+        self.reload_tx.clone()
+    }
+
+    /// The reloads asked for, for the daemon's owner to answer (`Reload::answer`) in its loop.
+    /// Taken once: None after the first call.
+    pub fn reloads(&mut self) -> Option<mpsc::UnboundedReceiver<Reload>> {
+        self.reload_rx.take()
     }
 
     /// Start a supervisor for `agent`: in a new slot, its state listed last, or again in
@@ -225,6 +342,7 @@ impl Daemon {
         let mut old_slots: Vec<Option<Slot>> = std::mem::take(&mut self.slots).into_iter().map(Some).collect();
         let mut placed: Vec<Option<Slot>> = (0..config.agents.len()).map(|_| None).collect();
         for (o, n) in keep {
+            done.kept.push(config.agents[n].handle.clone());
             placed[n] = old_slots[o].take();
         }
         for (o, n) in rebind {
@@ -430,7 +548,10 @@ mod tests {
         let mut d = Daemon::start(
             config(vec![agent("me/dev", "claude"), agent("me/old", "claude")]),
             paths,
-            Some(dir.join("daemon.sock")),
+            Some(Serve {
+                socket: dir.join("daemon.sock"),
+                config: dir.join("daemon.toml"),
+            }),
         )
         .unwrap();
         assert!(dir.join("daemon.sock").exists());
@@ -446,6 +567,7 @@ mod tests {
         assert_eq!(
             done,
             Reloaded {
+                kept: vec![],
                 started: vec!["me/new".into()],
                 rebound: vec!["me/dev".into()],
                 stopped: vec!["me/old".into()],
@@ -465,7 +587,13 @@ mod tests {
         let same = d
             .reload(config(vec![agent("me/dev", "codex"), agent("me/new", "claude")]))
             .unwrap();
-        assert_eq!(same, Reloaded::default());
+        assert_eq!(
+            same,
+            Reloaded {
+                kept: vec!["me/dev".into(), "me/new".into()],
+                ..Reloaded::default()
+            }
+        );
 
         d.shutdown();
         tokio::time::timeout(Duration::from_secs(5), d.join())
@@ -475,6 +603,109 @@ mod tests {
         /* The socket goes with the daemon. */
         drop(d);
         assert!(!dir.join("daemon.sock").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_sockets_reload_reads_the_config_again_and_a_broken_one_changes_nothing() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        /* /tmp, not $TMPDIR: macOS's is long enough to push the socket past SUN_LEN. */
+        let dir = PathBuf::from("/tmp").join(format!("copland-sock-reload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("daemon.toml");
+        let toml = |handles: &[&str]| {
+            handles
+                .iter()
+                .map(|h| {
+                    format!(
+                        "[[agent]]\nurl=\"http://127.0.0.1:9\"\nhandle=\"{h}\"\ntoken=\"cpl_t\"\ncommand=[\"claude\"]\nworkdir=\"{}\"\n",
+                        dir.display()
+                    )
+                })
+                .collect::<String>()
+        };
+        std::fs::write(&path, toml(&["me/dev"])).unwrap();
+        let paths = Paths {
+            state_dir: dir.clone(),
+            runtime_dir: dir.clone(),
+        };
+        let socket = crate::lock::socket_for(&path, &dir);
+        let serve = Serve {
+            socket: socket.clone(),
+            config: path.clone(),
+        };
+        let mut d = Daemon::start(Config::load(&path).unwrap(), paths, Some(serve)).unwrap();
+        let mut reloads = d.reloads().unwrap();
+        assert!(d.reloads().is_none());
+        let st = d.subscribe();
+
+        /* An agent added to the file starts, through `copland-daemon reload`. */
+        std::fs::write(&path, toml(&["me/dev", "me/new"])).unwrap();
+        let asked = {
+            let (path, dir) = (path.clone(), dir.clone());
+            tokio::spawn(async move {
+                let mut out = Vec::new();
+                let o = crate::client::reload(&path, &dir, &mut out).await;
+                (o.unwrap(), String::from_utf8(out).unwrap())
+            })
+        };
+        let req = tokio::time::timeout(Duration::from_secs(5), reloads.recv())
+            .await
+            .expect("the reload came to the owner")
+            .unwrap();
+        req.answer(&mut d);
+        let (outcome, said) = tokio::time::timeout(Duration::from_secs(5), asked)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome, crate::client::Outcome::Shown);
+        assert_eq!(
+            said,
+            format!("reloaded {}\nstarted: @me/new\nas they were: @me/dev\n", path.display())
+        );
+        assert_eq!(
+            handles(&st.borrow()),
+            [(1, "me/dev".into(), false), (2, "me/new".into(), false)]
+        );
+
+        /* A file that doesn't load answers its error on a connection that stays, and changes nothing. */
+        std::fs::write(&path, "[[agent]\n").unwrap();
+        let (read, mut write) = tokio::net::UnixStream::connect(&socket).await.unwrap().into_split();
+        let mut lines = BufReader::new(read).lines();
+        write.write_all(b"{\"op\":\"reload\"}\n").await.unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        let e = answer["error"].as_str().unwrap();
+        assert!(e.starts_with("loading the config: in "), "{e}");
+        assert!(reloads.try_recv().is_err());
+        write.write_all(b"{\"op\":\"status\"}\n").await.unwrap();
+        let status: serde_json::Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(status["agents"].as_array().unwrap().len(), 2);
+        assert_eq!(d.slots.len(), 2);
+
+        /* The answer as the socket sends it, once the file is fixed: me/new gone. */
+        std::fs::write(&path, toml(&["me/dev"])).unwrap();
+        write.write_all(b"{\"op\":\"reload\"}\n").await.unwrap();
+        reloads.recv().await.unwrap().answer(&mut d);
+        let answer: serde_json::Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(
+            answer,
+            serde_json::json!({
+                "ok": true,
+                "reloaded": { "kept": ["me/dev"], "started": [], "rebound": [], "stopped": ["me/new"] }
+            })
+        );
+
+        d.shutdown();
+        tokio::time::timeout(Duration::from_secs(5), d.join())
+            .await
+            .expect("stopped");
+        /* The daemon stopping: the reload is refused, not left waiting. */
+        drop(reloads);
+        let e = d.reloader(path.clone()).reload().await.unwrap_err();
+        assert!(e.to_string().contains("stopping"), "{e}");
+        drop(d);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

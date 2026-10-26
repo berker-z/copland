@@ -1,5 +1,5 @@
-//! `copland-daemon status`, `hold` and `release` with no daemon running the config exit 3
-//! (COPL-185, COPL-186); the rest is tested against a served socket in core's `client`.
+//! `copland-daemon status`, `hold`, `release` and `reload` with no daemon running the config exit 3
+//! (COPL-185, COPL-186, COPL-197); the rest is tested against a served socket in core's `client`.
 
 use std::process::Command;
 
@@ -16,6 +16,7 @@ fn status_with_no_daemon_exits_3() {
         &["status", "--watch", "--json"],
         &["hold", "me/dev"],
         &["release", "@me/dev"],
+        &["reload"],
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_copland-daemon"))
             .args(args)

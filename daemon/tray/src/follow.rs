@@ -115,7 +115,7 @@ mod tests {
 
     use copland_daemon_core::agent::StopRequest;
     use copland_daemon_core::socket::Server;
-    use copland_daemon_core::{AgentState, DaemonState, Holder, Phase, RunStopper};
+    use copland_daemon_core::{AgentState, DaemonState, Holder, Phase, Reloader, RunStopper};
 
     use super::*;
 
@@ -152,6 +152,7 @@ mod tests {
             rx,
             RunStopper::new(stop_tx),
             Holder::new(state.clone()),
+            Reloader::new(config.to_path_buf(), tokio::sync::mpsc::unbounded_channel().0),
         )
         .unwrap();
         Daemon { state, stops, server }
