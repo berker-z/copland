@@ -4,10 +4,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use copland_daemon_core::agent::whoami;
-use copland_daemon_core::api::Api;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
-use copland_daemon_core::{Config, Daemon, Paths};
+use copland_daemon_core::{Config, Daemon, Paths, preflight};
 use tokio::signal::unix::{SignalKind, signal};
 
 #[derive(Parser)]
@@ -22,7 +20,8 @@ struct Args {
     /// The config file [default: $XDG_CONFIG_HOME/copland/daemon.toml]
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
-    /// Read the config, check it and each token with its instance, and exit.
+    /// Read the config, check it, run the preflight checks (runtimes logged in, git, GitHub,
+    /// code_dir, each token with its instance), and exit non-zero when one fails.
     #[arg(long)]
     check: bool,
 }
@@ -47,20 +46,18 @@ async fn main() -> Result<()> {
     }
     let config = Config::load(&path).with_context(|| "loading the config")?;
     if args.check {
-        /* Ask each instance who the token is, so a bad or read-only token shows now, not at the first poll. */
-        let mut failed = 0;
+        /* What each agent runs, then the preflight (COPL-161): runtimes logged in, git, GitHub,
+        code_dir, and each token asked who it is, so a bad or read-only one shows now, not at the
+        first poll. */
         for a in &config.agents {
             println!("@{} at {}: {:?} in {}", a.handle, a.url, a.command, a.workdir.display());
-            match whoami(&Api::new(&a.url)?, a).await {
-                Ok(me) => println!("  token: @{} ({}), read and write", me.user.handle, me.user.kind),
-                Err(e) => {
-                    println!("  token: {e:#}");
-                    failed += 1;
-                }
-            }
         }
+        println!();
+        let checks = preflight::run(&config).await;
+        print!("{}", preflight::render(&checks));
+        let failed = preflight::failures(&checks);
         if failed > 0 {
-            anyhow::bail!("{failed} agent(s) can't run as configured");
+            anyhow::bail!("{failed} check(s) failed; `copland-box --check --fix` offers the fixes it can run");
         }
         return Ok(());
     }

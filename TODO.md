@@ -271,7 +271,7 @@ docs/DESIGN.md under Touch.
   (`runs.heard_until`, migration 0031). The MCP's `heartbeat`, given the
   Claude Code hook's event, returns them as the hook's
   `additionalContext`, so they arrive at the run's next step; the box's
-  setup puts that hook in the Claude Code command. The guide has every run
+  setup puts that hook in both Claude Code commands. The guide has every run
   read the task again before it integrates or moves it to done, and the
   task modal tells a commenter when the run will see the comment
   (checks/runNews.check.ts)
@@ -560,3 +560,12 @@ docs/DESIGN.md under Touch.
   focus and on reconnect stand down while the live socket does the
   catching up (`liveCatchesUp`). The socket's life moved to
   `src/lib/liveSocket.ts`, pinned by `checks/live.check.ts`.
+- Preflight checks (COPL-161): `copland-daemon --check` and
+  `copland-box --check` (no window) say whether this machine can run its
+  agents: each runtime on PATH and logged in (`claude auth status`,
+  `codex login status`), git with a name and email, a github.com login in
+  git's credential helper (`git credential fill`, prompts off), code_dir
+  writable and taking a git worktree, and each token read and write.
+  `--check --fix` offers each fix on the terminal and checks again
+  (`daemon/core/src/preflight.rs`, a list of results the setup wizard can
+  draw too).

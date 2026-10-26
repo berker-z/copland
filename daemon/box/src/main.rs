@@ -85,6 +85,46 @@ struct Args {
     /// It floats by itself; the rule is for pinning it and choosing where it goes.
     #[arg(long, conflicts_with_all = ["demo", "setup"])]
     hyprland_rule: bool,
+    /// Check this machine for the agents in the config, with no window: runtimes logged in, git's
+    /// name and email, GitHub over https, code_dir, each token. Exits non-zero when one fails.
+    #[arg(long, conflicts_with_all = ["demo", "setup", "hyprland_rule"])]
+    check: bool,
+    /// With --check: offer each failing check's fix on the terminal (y/N), run the ones you say
+    /// yes to, then check again.
+    #[arg(long, requires = "check")]
+    fix: bool,
+}
+
+/// `--check [--fix]`: the preflight on the terminal, before any window (COPL-161).
+fn check(path: &Path, fix: bool) -> Result<()> {
+    use copland_daemon_core::preflight;
+    if !path.exists() {
+        anyhow::bail!("no config at {}: `copland-box --setup` makes one", path.display());
+    }
+    let config = Config::load(path).with_context(|| "loading the config")?;
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let mut checks = rt.block_on(preflight::run(&config));
+    print!("{}", preflight::render(&checks));
+    if fix && preflight::worst(&checks) != preflight::Status::Ok {
+        let ran = preflight::terminal::offer_fixes(&checks)?;
+        if ran > 0 {
+            println!("\nchecking again:");
+            checks = rt.block_on(preflight::run(&config));
+            print!("{}", preflight::render(&checks));
+        }
+    }
+    let failed = preflight::failures(&checks);
+    if failed > 0 {
+        anyhow::bail!(
+            "{failed} check(s) failed{}",
+            if fix {
+                ""
+            } else {
+                "; --check --fix offers the fixes it can run"
+            }
+        );
+    }
+    Ok(())
 }
 
 /// The config file as a plain table, read leniently, so a config the daemon refuses still sets the box's looks.
@@ -304,6 +344,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let path = args.config.clone().unwrap_or_else(default_config_path);
+    if args.check {
+        return check(&path, args.fix);
+    }
     let tune = Tune::default();
     /* The box's settings (the menu changes them): as the file says, even one the daemon refuses. */
     let mut prefs = Prefs::from_table(table_in(&path).as_ref());
@@ -511,6 +554,8 @@ mod tests {
             url: None,
             theme: None,
             hyprland_rule: false,
+            check: false,
+            fix: false,
         };
         assert_eq!(pick_theme(&args, &file).unwrap().name, "dracula");
         std::fs::remove_dir_all(&dir).unwrap();
@@ -525,6 +570,8 @@ mod tests {
             url: None,
             theme: Some("nope".into()),
             hyprland_rule: false,
+            check: false,
+            fix: false,
         };
         assert!(pick_theme(&args, Path::new("/nonexistent")).is_err());
     }

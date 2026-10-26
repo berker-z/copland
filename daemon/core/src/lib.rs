@@ -13,6 +13,7 @@ pub mod config;
 pub mod daemon;
 pub mod guard;
 pub mod live;
+pub mod preflight;
 pub mod reload;
 pub mod runner;
 pub mod sandbox;
