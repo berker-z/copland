@@ -1471,7 +1471,7 @@ mod tests {
             },
             shutdown,
             std::future::pending(),
-            CEILING,
+            Limits::RUN,
         )
         .await;
         let built = fs::read_to_string(code_dir.join("build/o/r/out"));
