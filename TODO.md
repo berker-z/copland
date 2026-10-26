@@ -107,6 +107,15 @@ docs/DESIGN.md under Touch.
       action, compact on a compositor other than Hyprland, the autostart
       entry actually starting the box at a real login, and macOS, which sends
       no notifications yet (`box/src/notify.rs`).
+- [ ] What runs cost (COPL-71) was checked against the routes in
+      `checks/usage.check.ts`, the parser against a real `claude -p
+      --output-format json` result, and a fake runtime through the runner;
+      no daemon run has reported one to a deployed Copland yet. Codex runs
+      send no usage (it reports it only in `codex exec --json`'s events),
+      and nothing yet sets `resumed`: that waits on COPL-188's resume. A run
+      the daemon stops (its review_first PR open five minutes, COPL-193, the
+      ceiling, a stop from the box) never prints its result, so it reports
+      nothing either.
 - [ ] A runtime that calls `finish_run` completed itself, with its task still
       active, isn't caught by the daemon's check for unfinished runs
       (COPL-147): a finished run can't be finished again as failed, so the
@@ -583,6 +592,16 @@ docs/DESIGN.md under Touch.
   fixes. Refuses without a terminal. `copland-daemon --check --fix` too
   (`daemon/cli/src/setup.rs`). Run end to end against a stub device
   server; not yet against a real Copland.
+- Server mode (COPL-180): `copland-daemon --install-service [--config]`
+  writes a systemd user unit (Linux) or launchd agent (macOS) for the
+  running binary, its config and your PATH, then enables and starts it,
+  noting `loginctl enable-linger` when lingering is off;
+  `--uninstall-service` removes it. Refuses without a config, pointing at
+  `--setup`. The Linux tarball and the Nix package ship the unit, the macOS
+  tarball the plist as a template (`daemon/cli/src/service.rs`, tested
+  against `daemon/release/`). A config written by `copland-daemon --setup`
+  no longer points at the box's agents screen. The systemd side checked
+  with systemd-analyze; launchd not yet tried on a Mac.
 - Waiting work starts when what it waits on closes (COPL-164): a write
   that closes or deletes the last open task a todo task depends on puts an
   `unblocked` item in each of its assignees' inboxes (migration 0035,

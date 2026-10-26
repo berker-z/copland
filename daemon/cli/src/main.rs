@@ -1,12 +1,15 @@
 //! `copland-daemon --headless`: run the agents in daemon.toml until stopped.
-//! `--setup` writes daemon.toml on a terminal, `--check` checks this machine.
+//! `--setup` writes daemon.toml on a terminal, `--check` checks this machine,
+//! `--install-service` runs it as a systemd or launchd service, `status` asks the one running.
 
+mod service;
 mod setup;
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use copland_daemon_core::client;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
 use copland_daemon_core::{Config, Daemon, Lock, Paths};
 use tokio::signal::unix::{SignalKind, signal};
@@ -17,11 +20,13 @@ use tokio::signal::unix::{SignalKind, signal};
     about = "Runs Copland agents on this machine: wakes on their inbox and launches their runtime"
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
     /// Run without a window. The only mode there is for now, so it is also the default.
     #[arg(long)]
     headless: bool,
     /// The config file [default: $XDG_CONFIG_HOME/copland/daemon.toml]
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", global = true)]
     config: Option<PathBuf>,
     /// Read the config, check it, run the preflight checks (runtimes logged in, git, GitHub,
     /// code_dir, each token with its instance), and exit non-zero when one fails.
@@ -38,6 +43,28 @@ struct Args {
     /// With --setup: your Copland's address, instead of being asked for it.
     #[arg(long, value_name = "ADDRESS", requires = "setup")]
     url: Option<String>,
+    /// Run the daemon as a service of yours, on this binary and this config: a systemd user unit
+    /// on Linux, a launchd agent on macOS. Written, enabled and started; it starts again at login
+    /// (or boot, with lingering) and after a failure. Needs the config, so --setup first.
+    #[arg(long, conflicts_with_all = ["check", "setup", "uninstall_service"])]
+    install_service: bool,
+    /// Stop, disable and remove the service --install-service wrote.
+    #[arg(long, conflicts_with_all = ["check", "setup"])]
+    uninstall_service: bool,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Show what the daemon running this config is doing, from its status socket. Exits 3 when
+    /// no daemon is running it.
+    Status {
+        /// The status as JSON (daemon/README.md's "Status"), one snapshot per line.
+        #[arg(long)]
+        json: bool,
+        /// Show it again on every change, until interrupted.
+        #[arg(long)]
+        watch: bool,
+    },
 }
 
 #[tokio::main]
@@ -50,9 +77,27 @@ async fn main() -> Result<()> {
         .init();
     let args = Args::parse();
     let _ = args.headless;
+    let named = args.config.is_some();
     let path = args.config.unwrap_or_else(default_config_path);
+    if let Some(Command::Status { json, watch }) = args.command {
+        /* COPL-185: the client lives in core's `client`. */
+        let clear = watch && !json && std::io::IsTerminal::is_terminal(&std::io::stdout());
+        let mode = client::Mode { json, watch, clear };
+        let shown = client::status(&path, &default_runtime_dir(), mode, &mut std::io::stdout()).await?;
+        if let Some(says) = shown.says(&path, named) {
+            eprintln!("{says}");
+            std::process::exit(client::NOT_RUNNING);
+        }
+        return Ok(());
+    }
     if args.setup {
         return setup::run(&path, args.url.as_deref()).await;
+    }
+    if args.install_service {
+        return service::install(&path);
+    }
+    if args.uninstall_service {
+        return service::uninstall();
     }
     if !path.exists() {
         anyhow::bail!(

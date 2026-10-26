@@ -6,7 +6,9 @@
 //! runs in the task's worktree inside the daemon's sandbox with the runtime's
 //! own tools (COPL-160). The daemon itself knows nothing of these; it fills
 //! `{prompt}` and `{mcp_config}` (a Claude Code-shaped MCP JSON file holding
-//! the run's URL and secret) into whatever the command says.
+//! the run's URL and secret) into whatever the command says. Claude Code's end
+//! with its result as JSON, which the daemon reads what the run cost from and
+//! writes to the run log as the text it stands for (`usage.rs`, COPL-71).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -122,6 +124,8 @@ impl Runtime {
                     "claude",
                     "-p",
                     PROMPT,
+                    "--output-format",
+                    "json",
                     "--mcp-config",
                     MCP_CONFIG,
                     "--strict-mcp-config",
@@ -164,6 +168,8 @@ impl Runtime {
                 "claude",
                 "-p",
                 PROMPT,
+                "--output-format",
+                "json",
                 "--mcp-config",
                 MCP_CONFIG,
                 "--strict-mcp-config",
@@ -353,6 +359,15 @@ mod tests {
             CLAUDE_CODE_SETTINGS,
             format!(r#"{{"sandbox":{{"enabled":false}},{}"#, &bare(&repo)[1..])
         );
+    }
+
+    /// Every Claude Code run ends with its result as JSON, for what it cost (COPL-71, `usage.rs`).
+    #[test]
+    fn claude_runs_print_their_result_as_json() {
+        for c in [Runtime::ClaudeCode.command(), Runtime::ClaudeCode.code_command()] {
+            let at = c.iter().position(|a| a == "--output-format").expect("--output-format");
+            assert_eq!(c[at + 1], "json");
+        }
     }
 
     /// A coding run is limited by the daemon's sandbox, not by its tools (COPL-160): Claude Code

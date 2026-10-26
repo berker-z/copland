@@ -17,7 +17,7 @@
 import { clientLabel } from "@/domain/clients";
 import { shortRunId } from "@/domain/runs";
 import { RECENT_CLOSED_DAYS } from "@/domain/tasks";
-import type { Attachment, ClosedPage, Label, Level, ParentProgress, Priority, Stage, StageCategory, Task } from "@/domain/types";
+import type { Attachment, ClosedPage, Label, Level, ParentProgress, Priority, Spent, Stage, StageCategory, Task } from "@/domain/types";
 import { currentRun, currentVia } from "../tokens";
 import { overlaps } from "@/domain/overlap";
 import { codeFor } from "./github";
@@ -70,6 +70,7 @@ function rowToTask(row: TaskRow): Task {
     reviewFirst: row.review_first === 1,
     code: [],
     overlap: [],
+    spent: null,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -77,6 +78,40 @@ function rowToTask(row: TaskRow): Task {
 }
 
 const TASK_SELECT = `SELECT t.*, b.key AS board_key FROM tasks t JOIN boards b ON b.id = t.board_id`;
+
+/** What a group of runs cost (COPL-71), summed over `r`, the runs that reported usage: Spent's columns. */
+const SPENT_SUMS = `count(*) AS runs, sum(r.resumed) AS resumed, sum(r.input_tokens) AS input_tokens,
+  sum(r.output_tokens) AS output_tokens, sum(r.cache_read_tokens) AS cache_read_tokens,
+  sum(r.cache_write_tokens) AS cache_write_tokens, total(r.cost_usd) AS cost_usd, total(r.turns) AS turns,
+  total(r.duration_ms) AS duration_ms`;
+
+interface SpentRow {
+  runs: number | null;
+  resumed: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  cost_usd: number | null;
+  turns: number | null;
+  duration_ms: number | null;
+}
+
+const toSpent = (r: SpentRow): Spent | undefined =>
+  r.runs
+    ? {
+        runs: r.runs,
+        resumed: r.resumed ?? 0,
+        inputTokens: r.input_tokens ?? 0,
+        outputTokens: r.output_tokens ?? 0,
+        cacheReadTokens: r.cache_read_tokens ?? 0,
+        cacheWriteTokens: r.cache_write_tokens ?? 0,
+        /* Summed in floating point: a cent's worth of rounding at most. */
+        costUsd: Math.round((r.cost_usd ?? 0) * 1e6) / 1e6,
+        turns: r.turns ?? 0,
+        durationMs: r.duration_ms ?? 0,
+      }
+    : undefined;
 
 /** A set of task ids, bound as one JSON array (?1): `task_id ${IN_IDS}`. */
 const IN_IDS = `IN (SELECT value FROM json_each(?1))`;
@@ -118,7 +153,7 @@ async function hydrate(db: D1Database, rows: TaskRow[], overlap: boolean): Promi
   const openIds = tasks.filter((t) => t.completedAt === null).map((t) => t.id);
   const open = one ? ids : JSON.stringify(openIds);
   const pairs = (sql: string) => db.prepare(sql).bind(ids).all<{ task_id: string; value: string }>();
-  const [assignees, labels, dependsOn, comments, claims, attachments, code, files] = await Promise.all([
+  const [assignees, labels, dependsOn, comments, claims, attachments, code, files, spent] = await Promise.all([
     pairs(`SELECT task_id, user_id AS value FROM task_assignees WHERE task_id ${IN} ORDER BY task_id, user_id`),
     pairs(`SELECT task_id, label_id AS value FROM task_labels WHERE task_id ${IN} ORDER BY task_id, label_id`),
     pairs(`SELECT task_id, depends_on_id AS value FROM task_dependencies WHERE task_id ${IN} ORDER BY task_id, depends_on_id`),
@@ -138,6 +173,10 @@ async function hydrate(db: D1Database, rows: TaskRow[], overlap: boolean): Promi
     overlap && openIds.length
       ? db.prepare(`SELECT task_id, files FROM task_files WHERE task_id ${IN}`).bind(open).all<{ task_id: string; files: string }>()
       : null,
+    db
+      .prepare(`SELECT r.task_id, ${SPENT_SUMS} FROM runs r WHERE r.task_id ${IN} AND r.input_tokens IS NOT NULL GROUP BY r.task_id`)
+      .bind(ids)
+      .all<SpentRow & { task_id: string }>(),
   ]);
   const byTask = new Map(tasks.map((t) => [t.id, t]));
   for (const r of assignees.results) byTask.get(r.task_id)?.assigneeIds.push(r.value);
@@ -150,6 +189,10 @@ async function hydrate(db: D1Database, rows: TaskRow[], overlap: boolean): Promi
   for (const r of claims?.results ?? []) {
     const task = byTask.get(r.task_id);
     if (task) task.claim = toClaim(r);
+  }
+  for (const r of spent.results) {
+    const task = byTask.get(r.task_id);
+    if (task) task.spent = toSpent(r) ?? null;
   }
   for (const task of tasks) {
     task.attachments = attachments.get(task.id) ?? [];
@@ -181,19 +224,36 @@ export async function progressFor(db: D1Database, ids: string[]): Promise<Record
          SELECT parent_id, id FROM tasks WHERE parent_id ${IN_IDS} AND deleted_at IS NULL
          UNION
          SELECT b.root, t.id FROM below b JOIN tasks t ON t.parent_id = b.id AND t.deleted_at IS NULL
+       ),
+       counted AS (
+         SELECT root, sum(parent_id = root) AS children,
+                sum(leaf AND category = 'done') AS done, sum(leaf AND category != 'cancelled') AS total
+           FROM (SELECT b.root, t.parent_id, s.category,
+                        t.level IS NOT 'milestone'
+                          AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id AND c.deleted_at IS NULL) AS leaf
+                   FROM below b JOIN tasks t ON t.id = b.id JOIN stages s ON s.id = t.stage_id
+                  WHERE b.id != b.root)
+          GROUP BY root
+       ),
+       /* What the runs on the parent and on its subtree cost (COPL-71): each task once (UNION), the parent too. */
+       tree(root, id) AS (SELECT root, id FROM below UNION SELECT root, root FROM counted),
+       spent AS (
+         SELECT x.root, ${SPENT_SUMS}
+           FROM tree x JOIN runs r ON r.task_id = x.id AND r.input_tokens IS NOT NULL
+          GROUP BY x.root
        )
-       SELECT root, sum(parent_id = root) AS children,
-              sum(leaf AND category = 'done') AS done, sum(leaf AND category != 'cancelled') AS total
-         FROM (SELECT b.root, t.parent_id, s.category,
-                      t.level IS NOT 'milestone'
-                        AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id AND c.deleted_at IS NULL) AS leaf
-                 FROM below b JOIN tasks t ON t.id = b.id JOIN stages s ON s.id = t.stage_id
-                WHERE b.id != b.root)
-        GROUP BY root`,
+       SELECT c.root, c.children, c.done, c.total, s.runs, s.resumed, s.input_tokens, s.output_tokens,
+              s.cache_read_tokens, s.cache_write_tokens, s.cost_usd, s.turns, s.duration_ms
+         FROM counted c LEFT JOIN spent s ON s.root = c.root`,
     )
     .bind(JSON.stringify(ids))
-    .all<{ root: string; children: number; done: number; total: number }>();
-  return Object.fromEntries(results.map((r) => [r.root, { children: r.children, done: r.done, total: r.total }]));
+    .all<SpentRow & { root: string; children: number; done: number; total: number }>();
+  return Object.fromEntries(
+    results.map((r) => {
+      const spent = toSpent(r);
+      return [r.root, { children: r.children, done: r.done, total: r.total, ...(spent ? { spent } : {}) }];
+    }),
+  );
 }
 
 const recentCutoff = (now: number) => new Date(now - RECENT_CLOSED_DAYS * 86_400_000).toISOString();

@@ -23,9 +23,12 @@ export interface Budget {
 
 export const BUDGETS: Record<string, Budget> = {
   "GET /api/boards": { rows: 39, flat: true },
-  "GET /api/boards/:id": { rows: 739, flat: true },
+  /* What runs cost (COPL-71): every task's own runs, and each parent's
+     subtree's, one grouped read each over the same ids. 739 and 2914 before;
+     neither grows with history. */
+  "GET /api/boards/:id": { rows: 806, flat: true },
   "GET /api/boards/:id/shell": { rows: 29, flat: true },
-  "GET /api/boards/:id/closed": { rows: 2914, flat: true },
+  "GET /api/boards/:id/closed": { rows: 3116, flat: true },
   "GET /api/tasks/:id": { rows: 26, flat: true },
   "GET /api/inbox": { rows: 241, flat: true },
   "GET /api/wired": { rows: 139, flat: true },
@@ -41,6 +44,7 @@ export const BUDGETS: Record<string, Budget> = {
   "live: one task edit, heard": { rows: 24, flat: true },
   /* What a tab reads to open a task from the inbox or /wired without holding
      its board (COPL-153): its shell, the task and its parent. Until then,
-     GET /api/boards/:id, 739 rows. */
-  "inbox: one task opened": { rows: 107, flat: true },
+     GET /api/boards/:id, 739 rows. 107 before its parent's progress summed
+     what its subtree's runs cost (COPL-71). */
+  "inbox: one task opened": { rows: 136, flat: true },
 };
