@@ -682,6 +682,8 @@ impl AgentLoop {
                     }
                 }
             }
+            let said = missing.message();
+            self.update(|s| s.missing = said);
             self.missing = missing;
         }
         let me = self.identity().await?;
@@ -1172,6 +1174,7 @@ impl RunCtx {
         };
         if let Some(ws) = &workspace {
             tracing::info!(run = %short, task = %key, dir = %ws.dir.display(), branch = %ws.branch, fresh = ws.fresh, "workspace ready");
+            self.update(|s| s.run_worktree(&short, ws.dir.clone()));
         }
 
         /* The program the run starts, for the plain word on one that dies at once. */
