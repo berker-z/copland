@@ -10,6 +10,11 @@
 //! - `code_dir`'s filesystem has `min_free_gb` free, and when it hasn't, what under it takes the space;
 //! - each agent's token is good, and read and write (`agent::whoami`).
 //!
+//! Beside them, [`repo_access`] (COPL-178) says whether one board repo can be cloned and pushed
+//! from here. It isn't in [`run`]: the daemon checks each repo its agents' boards have when it
+//! starts and when a board names a repo it hasn't checked, and claims no coding task on one it
+//! can't push to.
+//!
 //! [`run`] does them all; each is also a function of its own, so a front end can run one again.
 //! They are async, on Tokio, and every program they start is given [`CHECK_TIMEOUT`] and killed
 //! after it. Nothing they say holds a secret: the credential helper's answer is read for whether
@@ -24,7 +29,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use crate::agent::whoami;
-use crate::api::Api;
+use crate::api::{Api, RepoCapability};
 use crate::config::{AgentConfig, Config, Runtime};
 use crate::runner::locate;
 
@@ -472,6 +477,156 @@ fn github_fix() -> Fix {
             run(&["auth", "setup-git"]),
         ],
     )
+}
+
+/// The branch a push check names, which its dry run never makes.
+const PUSH_CHECK_REF: &str = "refs/heads/copland-push-check";
+
+/// Whether this machine can clone and push one board repo (COPL-178), the way a coding run would:
+/// `git ls-remote` for clone, and for push a dry push of a throwaway commit to a branch that is
+/// never made (`--dry-run` connects as a push does, so a remote that would refuse it says so, and
+/// sends nothing). The same for GitHub and a plain remote. Prompts are off and every git gets
+/// [`CHECK_TIMEOUT`]; a remote's or git's words have any login in a URL taken out. `repo` is the
+/// name shown ("owner/name"), `remote` what is cloned.
+pub async fn repo_access(repo: &str, remote: &str) -> RepoCapability {
+    repo_access_in(repo, remote, &[]).await
+}
+
+async fn repo_access_in(repo: &str, remote: &str, env: &[(&str, &OsStr)]) -> RepoCapability {
+    let failed = |clone: bool, detail: String| RepoCapability {
+        repo: repo.to_string(),
+        clone,
+        push: false,
+        detail: Some(scrub(&detail)),
+    };
+    let Some(git) = locate("git") else {
+        return failed(false, "git not found on PATH".into());
+    };
+    let mut env: Vec<(&str, &OsStr)> = env.to_vec();
+    env.extend([
+        ("GIT_TERMINAL_PROMPT", OsStr::new("0")),
+        ("GIT_ASKPASS", OsStr::new("")),
+    ]);
+    let quiet = ["-c", "credential.interactive=false"];
+    let listed = output(
+        &git,
+        &[&quiet[..], &["ls-remote", "--quiet", remote, "HEAD"]].concat(),
+        &env,
+        None,
+    )
+    .await;
+    if let Some(why) = refused(listed) {
+        return failed(false, format!("can't clone: {why}"));
+    }
+    let scratch = match scratch_commit(&git).await {
+        Ok(s) => s,
+        Err(e) => return failed(true, format!("clones, but its push couldn't be checked: {e}")),
+    };
+    let dir = scratch.0.to_string_lossy();
+    let refspec = format!("HEAD:{PUSH_CHECK_REF}");
+    let push = [
+        &quiet[..],
+        &[
+            "-C",
+            &dir,
+            "push",
+            "--dry-run",
+            "--quiet",
+            "--no-verify",
+            remote,
+            &refspec,
+        ],
+    ]
+    .concat();
+    match refused(output(&git, &push, &env, None).await) {
+        Some(why) => failed(true, format!("clones, but can't push: {why}")),
+        None => RepoCapability {
+            repo: repo.to_string(),
+            clone: true,
+            push: true,
+            detail: None,
+        },
+    }
+}
+
+/// Why a git command didn't do it, None when it did.
+fn refused(out: Result<Output, String>) -> Option<String> {
+    match out {
+        Ok(out) if out.success => None,
+        Ok(out) => Some(git_reason(&out.stderr)),
+        Err(e) => Some(format!("git {e}")),
+    }
+}
+
+/// What git said went wrong, in a line: the remote's own words when it gave some ("Permission to
+/// o/r.git denied to me."), else git's last fatal or error line, without its prefix.
+fn git_reason(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let said = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("remote: ").map(str::trim).filter(|l| !l.is_empty()))
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .find_map(|l| l.strip_prefix("fatal: ").or_else(|| l.strip_prefix("error: ")))
+        })
+        .or_else(|| lines.last().copied())
+        .unwrap_or("no reason given");
+    said.chars().take(200).collect()
+}
+
+/// `text` with the login taken out of any URL in it: `https://me:token@host/` → `https://host/`.
+pub fn scrub(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        let end = tail.find(|c: char| c == '/' || c.is_whitespace()).unwrap_or(tail.len());
+        rest = match tail[..end].rfind('@') {
+            Some(login) => &tail[login + 1..],
+            None => tail,
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A repo with one empty commit in the temp dir, removed when dropped: what a push check pushes.
+async fn scratch_commit(git: &Path) -> Result<Scratch, String> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let scratch = Scratch(std::env::temp_dir().join(format!("copland-push-check-{}-{nanos}", std::process::id())));
+    let dir = scratch.0.to_string_lossy().into_owned();
+    let steps: [&[&str]; 2] = [
+        &["init", "--quiet", &dir],
+        &[
+            "-c",
+            "user.name=copland",
+            "-c",
+            "user.email=copland@localhost",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-C",
+            &dir,
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "copland push check",
+        ],
+    ];
+    for args in steps {
+        if let Some(why) = refused(output(git, args, &[], None).await) {
+            return Err(why);
+        }
+    }
+    Ok(scratch)
 }
 
 /// The code directory is there, writable, and takes a git worktree: a throwaway repo and a
@@ -1010,6 +1165,79 @@ mod tests {
             some.detail.contains("(me)") && !some.detail.contains("hunter2"),
             "{}",
             some.detail
+        );
+    }
+
+    #[test]
+    fn a_login_in_a_url_is_never_said() {
+        assert_eq!(
+            scrub("fatal: unable to access 'https://me:ghp_secret@github.com/o/r.git/': 403"),
+            "fatal: unable to access 'https://github.com/o/r.git/': 403"
+        );
+        assert_eq!(
+            scrub("ssh://git@host:22/r and https://x@y"),
+            "ssh://host:22/r and https://y"
+        );
+        assert_eq!(scrub("no url here, a@b"), "no url here, a@b");
+        assert_eq!(scrub("https://host/a@b"), "https://host/a@b");
+    }
+
+    #[test]
+    fn says_what_the_remote_said_or_gits_last_word() {
+        let github = "remote: Permission to o/r.git denied to me.\nfatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 403\n";
+        assert_eq!(git_reason(github), "Permission to o/r.git denied to me.");
+        let plain =
+            "fatal: '/nope' does not appear to be a git repository\nfatal: Could not read from remote repository.\n";
+        assert_eq!(git_reason(plain), "Could not read from remote repository.");
+        assert_eq!(
+            git_reason("error: failed to push some refs"),
+            "failed to push some refs"
+        );
+        assert_eq!(git_reason("\n"), "no reason given");
+    }
+
+    /// Against remotes on disk: one it can clone and push, one that isn't there, and one whose
+    /// pushes go somewhere that isn't (`pushInsteadOf`), so it clones and can't push.
+    #[tokio::test]
+    async fn a_repo_is_checked_for_clone_and_push() {
+        let dir = scratch("repo-access");
+        let bare = dir.0.join("r.git");
+        let made = std::process::Command::new("git")
+            .args(["init", "--quiet", "--bare"])
+            .arg(&bare)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let global = dir.0.join("gitconfig");
+        std::fs::write(&global, "").unwrap();
+        let env = [
+            ("GIT_CONFIG_GLOBAL", global.as_os_str()),
+            ("GIT_CONFIG_NOSYSTEM", OsStr::new("1")),
+        ];
+        let remote = bare.to_string_lossy().into_owned();
+        let ok = repo_access_in("o/r", &remote, &env).await;
+        assert_eq!((ok.clone, ok.push, ok.detail.as_deref()), (true, true, None), "{ok:?}");
+        let refs = std::process::Command::new("git")
+            .args(["-C", &remote, "for-each-ref"])
+            .output()
+            .unwrap();
+        assert!(refs.stdout.is_empty(), "the dry push made a branch");
+
+        let gone = dir.0.join("gone.git").to_string_lossy().into_owned();
+        let none = repo_access_in("o/gone", &gone, &env).await;
+        assert!(!none.clone && !none.push, "{none:?}");
+        assert!(none.detail.as_deref().unwrap().starts_with("can't clone: "), "{none:?}");
+
+        std::fs::write(&global, format!("[url \"{gone}\"]\n\tpushInsteadOf = {remote}\n")).unwrap();
+        let read_only = repo_access_in("o/r", &remote, &env).await;
+        assert!(read_only.clone && !read_only.push, "{read_only:?}");
+        assert!(
+            read_only
+                .detail
+                .as_deref()
+                .unwrap()
+                .starts_with("clones, but can't push: "),
+            "{read_only:?}"
         );
     }
 

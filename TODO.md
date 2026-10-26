@@ -640,9 +640,12 @@ docs/DESIGN.md under Touch.
   `GET /api/agents` gives each agent its hosts with which are live now and
   `liveOnTwoHosts`, and the nudge pane's recipients say where your own
   agents are live (`liveHosts` in live.ts). Checked in
-  checks/hosts.check.ts. Not yet: the daemon reporting and naming its host
-  (COPL-179), its repo preflight (COPL-178), and the box showing any of
-  it. The web app shows it (COPL-182): /nudge says the hosts your agent is
+  checks/hosts.check.ts. The daemon checks each board repo can be cloned
+  and pushed from its machine (COPL-178, `preflight::repo_access`), claims
+  no coding task on one it can't push to, and says so in
+  `copland-daemon status`; each result is the report's `RepoCapability`.
+  Not yet: the daemon reporting and naming its host (COPL-179), and the box
+  showing any of it. The web app shows it (COPL-182): /nudge says the hosts your agent is
   live on and warns when it is two at once, an agent's settings page lists
   its hosts with version, last report and capabilities (runtimes not
   ready and repos it can't push to called out), the same warning, and the
