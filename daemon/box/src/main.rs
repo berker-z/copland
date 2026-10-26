@@ -1,7 +1,10 @@
-//! `copland-box`: the Copland daemon with a window. It runs the same agents'
-//! loop as `copland-daemon --headless`, in this process, and draws its state
-//! as the wired scene (COPL-33). `--demo` draws the prototype's simulation
-//! instead, with no config and no server.
+//! `copland-box`: a window on the Copland daemon. It runs no agents itself: it
+//! watches the daemon running its config (`copland-daemon`, usually as a user
+//! service) through that daemon's status socket (COPL-200), draws what it says
+//! as the wired scene (COPL-33), and asks it to stop a run or reload
+//! `daemon.toml` over the same socket. Closing the window leaves the daemon and
+//! its runs going. `--demo` draws the prototype's simulation instead, with no
+//! config and no server.
 
 mod agents;
 mod edit;
@@ -23,21 +26,18 @@ mod write;
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
-use copland_daemon_core::socket::Serve;
-use copland_daemon_core::{Config, Daemon, DaemonState, Lock, Paths, Reload, RunStopper, Status};
+use copland_daemon_core::{Config, Connection, Status, Watcher};
 use gpui::{
     AppContext as _, Application, Bounds, SharedString, WindowBounds, WindowDecorations, WindowKind, WindowOptions, px,
     size,
 };
-use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 
 use crate::agents::{Control, SetupAgain};
 use crate::feed::{Feed, Notices};
@@ -62,7 +62,7 @@ const FALLBACK_FONTS: [&str; 4] = ["DejaVu Sans Mono", "Liberation Mono", "Noto 
 #[derive(Parser)]
 #[command(
     version,
-    about = "The Copland daemon with a window: runs the agents in daemon.toml and draws them as wires and poles"
+    about = "A window on the Copland daemon: draws the agents the daemon running daemon.toml has as wires and poles"
 )]
 struct Args {
     /// The config file [default: $XDG_CONFIG_HOME/copland/daemon.toml]
@@ -178,37 +178,62 @@ fn pick_font(available: &[String]) -> String {
         .unwrap_or_else(|| "monospace".into())
 }
 
-/// The daemon on its own thread and Tokio runtime; GPUI has the main thread.
-struct Running {
-    stop: Option<oneshot::Sender<()>>,
-    thread: Option<JoinHandle<()>>,
-    /// The config's lock (COPL-175), let go once the agents have stopped.
-    _lock: Lock,
+/// What the window watches: the status of the daemon running the config, through its socket
+/// (COPL-200), and with an owner token the owner's feed, which also sends desktop notifications
+/// while `notes` says so. Must be called inside the box's Tokio runtime.
+fn watch(config: &Config, config_path: &Path, notes: Arc<AtomicBool>, setup: SetupAgain) -> Source {
+    let watcher = Arc::new(Watcher::start(config_path, &default_runtime_dir()));
+    let connection = watcher.subscribe();
+    let owner = config.owner.clone();
+    let mut feed = None;
+    let mut clicks = None;
+    let mut feeding = None;
+    if let Some(owner) = owner {
+        let (tx, rx) = watch::channel(Feed {
+            url: owner.url.clone(),
+            ..Default::default()
+        });
+        /* The bell's desktop half, while the box is open: the tray (COPL-172) notifies without it. */
+        let (click_tx, click_rx) = mpsc::unbounded_channel();
+        let notices = Notices {
+            notifier: Notifier::new(notify::memory_path()),
+            desktop: Desktop::start(click_tx),
+            enabled: notes,
+        };
+        feeding = Some(view::Abort(tokio::spawn(feed::run(
+            owner,
+            tx,
+            statuses(connection.clone()),
+            Some(notices),
+        ))));
+        feed = Some(rx);
+        clicks = Some(click_rx);
+    }
+    let control = Control {
+        config: config_path.to_path_buf(),
+        rt: tokio::runtime::Handle::current(),
+        daemon: watcher,
+        setup,
+    };
+    Source::Live {
+        connection,
+        feed,
+        control: Some(control),
+        clicks,
+        _feeding: feeding,
+    }
 }
 
-/// A daemon just started: it, what the window watches, and the ways back to it.
-struct Started {
-    running: Running,
-    /// What the daemon is doing, as its status socket says it.
-    state: watch::Receiver<Status>,
-    /// The owner's view, when the config has an owner token.
-    feed: Option<watch::Receiver<Feed>>,
-    /// True once the daemon has stopped by itself (a signal, or no agent left).
-    finished: watch::Receiver<bool>,
-    rt: tokio::runtime::Handle,
-    reload: mpsc::UnboundedSender<Reload>,
-    stopper: RunStopper,
-    /// Links of desktop notifications that were clicked.
-    clicks: Option<mpsc::UnboundedReceiver<String>>,
-}
-
-/// The daemon's state as its status, which is what the window draws: a task on the daemon's
-/// runtime that says each change again, and ends (closing the status) when the daemon's does.
-fn statuses(mut daemon: watch::Receiver<DaemonState>) -> watch::Receiver<Status> {
-    let (tx, rx) = watch::channel(Status::of(&daemon.borrow_and_update()));
+/// The daemon's status as the feed wants it: what it says while connected, no agents otherwise.
+fn statuses(mut connection: watch::Receiver<Connection>) -> watch::Receiver<Status> {
+    let of = |c: &Connection| match c {
+        Connection::Connected(s) => s.clone(),
+        _ => view::no_daemon(),
+    };
+    let (tx, rx) = watch::channel(of(&connection.borrow_and_update()));
     tokio::spawn(async move {
-        while daemon.changed().await.is_ok() {
-            let now = Status::of(&daemon.borrow_and_update());
+        while connection.changed().await.is_ok() {
+            let now = of(&connection.borrow_and_update());
             tx.send_if_modified(|s| {
                 let changed = *s != now;
                 *s = now;
@@ -219,135 +244,7 @@ fn statuses(mut daemon: watch::Receiver<DaemonState>) -> watch::Receiver<Status>
     rx
 }
 
-impl Running {
-    /// Start the daemon, and with an owner token the owner's feed, which also sends desktop
-    /// notifications while `notes` says so.
-    /// `config_path` is the file `config` came from, which the status socket's reload reads again.
-    fn start(config: Config, config_path: PathBuf, lock: Lock, notes: Arc<AtomicBool>) -> Result<Started> {
-        let owner = config.owner.clone();
-        let feed = owner.as_ref().map(|o| {
-            watch::channel(Feed {
-                url: o.url.clone(),
-                ..Default::default()
-            })
-        });
-        let feed_tx = feed.as_ref().map(|f| f.0.clone());
-        let feed_rx = feed.map(|f| f.1);
-        /* The bell's desktop half: only with a feed to say what needs you. */
-        let (notices, clicks) = match &owner {
-            Some(_) => {
-                let (tx, rx) = mpsc::unbounded_channel();
-                let notices = Notices {
-                    notifier: Notifier::new(notify::memory_path()),
-                    desktop: Desktop::start(tx),
-                    enabled: notes,
-                };
-                (Some(notices), Some(rx))
-            }
-            None => (None, None),
-        };
-        let (finished_tx, finished) = watch::channel(false);
-        let socket = lock.socket();
-        let (state_tx, state_rx) = std::sync::mpsc::channel();
-        let (stop, mut stop_rx) = oneshot::channel::<()>();
-        let thread = std::thread::Builder::new().name("daemon".into()).spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = state_tx.send(Err(anyhow::Error::from(e)));
-                    return;
-                }
-            };
-            runtime.block_on(async move {
-                let paths = Paths {
-                    state_dir: default_state_dir(),
-                    runtime_dir: default_runtime_dir(),
-                };
-                let serve = Serve {
-                    socket,
-                    config: config_path,
-                };
-                let mut daemon = match Daemon::start(config, paths, Some(serve)) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        let _ = state_tx.send(Err(e));
-                        return;
-                    }
-                };
-                let mut reloads = daemon.reloads().expect("taken once, here");
-                let status = statuses(daemon.subscribe());
-                let _ = state_tx.send(Ok((
-                    status.clone(),
-                    tokio::runtime::Handle::current(),
-                    daemon.run_stopper(),
-                    daemon.reload_sender(),
-                )));
-                if let (Some(owner), Some(tx)) = (owner, feed_tx) {
-                    tokio::spawn(feed::run(owner, tx, status, notices));
-                }
-                let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
-                else {
-                    tracing::error!("can't listen for signals");
-                    return;
-                };
-                /* By a signal, the window quits once the agents have stopped; by the window, it already has. */
-                let by_signal = loop {
-                    tokio::select! {
-                        _ = term.recv() => { tracing::info!("SIGTERM: stopping"); break true }
-                        _ = int.recv() => { tracing::info!("SIGINT: stopping"); break true }
-                        _ = &mut stop_rx => { tracing::info!("window closed: stopping"); break false }
-                        /* The agents screen changed daemon.toml, or the socket's reload read it again: run what it says now, here. */
-                        Some(req) = reloads.recv() => req.answer(&mut daemon),
-                        _ = daemon.join() => {
-                            tracing::error!("no agent left to watch");
-                            finished_tx.send_replace(true);
-                            return;
-                        }
-                    }
-                };
-                daemon.shutdown();
-                /* As the headless daemon: a second signal means now. */
-                tokio::select! {
-                    _ = daemon.join() => {}
-                    _ = term.recv() => { tracing::warn!("second signal: exiting without waiting"); std::process::exit(1); }
-                    _ = int.recv() => { tracing::warn!("second signal: exiting without waiting"); std::process::exit(130); }
-                }
-                if by_signal {
-                    finished_tx.send_replace(true);
-                }
-            });
-        })?;
-        let (state, rt, stopper, reload) = state_rx
-            .recv()
-            .context("the daemon's thread ended before it started")??;
-        Ok(Started {
-            running: Self {
-                stop: Some(stop),
-                thread: Some(thread),
-                _lock: lock,
-            },
-            state,
-            feed: feed_rx,
-            finished,
-            rt,
-            reload,
-            stopper,
-            clicks,
-        })
-    }
-
-    /// Stop the agents (runs finish as cancelled) and wait for them.
-    fn stop(mut self) {
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
-        }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-/// Starts the daemon on a config: the window's next source.
+/// Watches the daemon on a config: the window's next source.
 type Launch = Rc<dyn Fn(Config) -> Result<Source>>;
 
 /// Logs to stderr and to the box's own file (`log::path_in`): a box started from a launcher has
@@ -405,86 +302,37 @@ fn main() -> Result<()> {
         tracing::warn!("no theme {}; using {}", prefs.theme, theme::DEFAULT);
     }
 
-    /* The daemon, once there is one: started here, or by setup when it has written the config. */
-    let running: Arc<Mutex<Option<Running>>> = Arc::default();
-    let stop_daemon: Arc<dyn Fn() + Send + Sync> = {
-        let running = running.clone();
-        let watching = Arc::new(AtomicBool::new(false));
-        Arc::new(move || {
-            let r = running.lock().expect("one writer").take();
-            if let Some(r) = r {
-                r.stop();
-            }
-            /* The daemon's runtime listened for SIGTERM and SIGINT, and its handler outlives it:
-            with no daemon (setting up again after signing out), they would do nothing. So
-            something answers them while none runs; a daemon started later answers its own. */
-            if !watching.swap(true, Ordering::Relaxed) {
-                let running = running.clone();
-                let _ = std::thread::Builder::new().name("signals".into()).spawn(move || {
-                    let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
-                        return;
-                    };
-                    rt.block_on(async {
-                        let (Ok(mut term), Ok(mut int)) =
-                            (signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
-                        else {
-                            return;
-                        };
-                        loop {
-                            tokio::select! {
-                                _ = term.recv() => {}
-                                _ = int.recv() => {}
-                            }
-                            if running.lock().expect("one writer").is_none() {
-                                tracing::info!("signal: exiting");
-                                std::process::exit(0);
-                            }
-                        }
-                    });
-                });
-            }
-        })
-    };
+    /* The box's own runtime, for the watcher, the feed and the screens' network calls. */
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("box")
+        .build()?;
+    let _in_rt = rt.enter();
     /* Setup over the same config, for signing out; it needs the launcher, which needs it. */
     let setup_again: Rc<OnceCell<SetupAgain>> = Rc::default();
     let launch: Launch = {
-        let running = running.clone();
         let path = path.clone();
         let notes = prefs.notifications.clone();
         let setup_again = setup_again.clone();
-        let stop_daemon = stop_daemon.clone();
+        let rt = rt.handle().clone();
         Rc::new(move |config: Config| -> Result<Source> {
-            tracing::info!(agents = config.agents.len(), "starting");
+            tracing::info!(agents = config.agents.len(), "watching the daemon for this config");
             if config.owner.is_none() {
                 tracing::info!("no owner_token_file: drawing what the daemon knows (todo and doing)");
             }
-            /* One daemon per config (COPL-175): a copland-daemon or another box on it refuses this. */
-            let lock = Lock::take(&path, &default_runtime_dir(), "copland-box")?;
-            let s = Running::start(config, path.clone(), lock, notes.clone())?;
-            *running.lock().expect("one writer") = Some(s.running);
+            /* Until COPL-205 starts the service from here, a daemon has to be started apart from
+            the box: until one is, the window says it isn't running. */
             let setup_again = setup_again.clone();
-            let control = Control {
-                config: path.clone(),
-                rt: s.rt,
-                reload: s.reload,
-                stopper: s.stopper,
-                stop_daemon: stop_daemon.clone(),
-                setup: Rc::new(move |url, note| {
-                    let again = setup_again.get().expect("set before any window");
-                    let mut w = again(url, note.clone())?;
-                    if let Some(n) = note {
-                        w.note(n);
-                    }
-                    Ok(w)
-                }),
-            };
-            Ok(Source::Live {
-                state: s.state,
-                feed: s.feed,
-                finished: s.finished,
-                control: Some(control),
-                clicks: s.clicks,
-            })
+            let setup: SetupAgain = Rc::new(move |url, note| {
+                let again = setup_again.get().expect("set before any window");
+                let mut w = again(url, note.clone())?;
+                if let Some(n) = note {
+                    w.note(n);
+                }
+                Ok(w)
+            });
+            let _in_rt = rt.enter();
+            Ok(watch(&config, &path, notes.clone(), setup))
         })
     };
     {
@@ -508,20 +356,7 @@ fn main() -> Result<()> {
         match Config::load(&path) {
             Ok(config) => {
                 tracing::info!(config = %path.display(), "read");
-                match launch(config) {
-                    Ok(source) => (Scene::live(tune), source),
-                    /* Already running elsewhere: say so in the window rather than vanish. */
-                    Err(e) if e.is::<copland_daemon_core::lock::Held>() => {
-                        tracing::error!("{e:#}");
-                        /* The status line is short: who has it, not the whole sentence. */
-                        let held = e.downcast_ref::<copland_daemon_core::lock::Held>().expect("checked");
-                        (
-                            Scene::live(tune),
-                            Source::Quiet(format!("already running this config · {}", held.holder)),
-                        )
-                    }
-                    Err(e) => return Err(e),
-                }
+                (Scene::live(tune), launch(config)?)
             }
             Err(e) => {
                 tracing::warn!("{e:#}; copland-box --setup sets it up again, keeping it as a backup");
@@ -580,17 +415,39 @@ fn main() -> Result<()> {
             return;
         }
         hyprland::float_when_mapped(w, h, compact);
+        /* Closing the window closes the box, and only the box: the daemon's runs go on. */
         cx.on_window_closed(|cx| cx.quit()).detach();
     });
-    if let Some(r) = running.lock().expect("one writer").take() {
-        r.stop();
-    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The feed sees the daemon's status while connected, and no agents while it isn't, so a
+    /// daemon going away ends its runs there too.
+    #[tokio::test]
+    async fn the_feed_follows_the_connection() {
+        let mut st = view::no_daemon();
+        st.agents.push(
+            Status::of(&copland_daemon_core::DaemonState {
+                agents: vec![copland_daemon_core::AgentState::new("me/dev", "http://x")],
+                stopping: false,
+            })
+            .agents
+            .remove(0),
+        );
+        let (tx, rx) = watch::channel(Connection::Connecting);
+        let mut status = statuses(rx);
+        assert!(status.borrow().agents.is_empty());
+        tx.send_replace(Connection::Connected(st.clone()));
+        status.changed().await.unwrap();
+        assert_eq!(*status.borrow_and_update(), st);
+        tx.send_replace(Connection::NotRunning);
+        status.changed().await.unwrap();
+        assert!(status.borrow().agents.is_empty());
+    }
 
     #[test]
     fn prefers_jetbrains_mono_then_falls_back() {
