@@ -71,31 +71,46 @@ pub struct Control {
 /// What an agent this machine runs is launched with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Bound {
-    /// One of setup's templates, as written.
+    /// One of setup's templates, as written: its `command` and its `code_command` (COPL-160).
+    /// `writable` and `runtime` don't count, so a path added by hand keeps the name.
     Runtime(Runtime),
-    /// A command of the person's own (widened by hand, or another program): the program.
+    /// The template's `command` with no `code_command`, as setup wrote before COPL-160: it runs,
+    /// but codes nowhere. Choosing the same runtime again gives it the coding template.
+    Narrow(Runtime),
+    /// A `command` or `code_command` of the person's own (widened by hand, or another program):
+    /// the program of the one that isn't a template.
     Own(String),
 }
 
 impl Bound {
     pub fn of(a: &AgentConfig) -> Self {
-        Runtime::ALL
-            .into_iter()
-            .find(|r| r.command() == a.command)
-            .map(Bound::Runtime)
-            .unwrap_or_else(|| {
-                let program = a.command.first().map(String::as_str).unwrap_or("?");
-                Bound::Own(
-                    Path::new(program)
-                        .file_name()
-                        .map_or(program.into(), |f| f.to_string_lossy().into()),
-                )
-            })
+        let program = |argv: &[String]| {
+            let p = argv.first().map(String::as_str).unwrap_or("?");
+            Path::new(p)
+                .file_name()
+                .map_or(p.into(), |f| f.to_string_lossy().into())
+        };
+        let Some(r) = Runtime::ALL.into_iter().find(|r| r.command() == a.command) else {
+            return Bound::Own(program(&a.command));
+        };
+        match &a.code_command {
+            None => Bound::Narrow(r),
+            Some(code) if *code == r.code_command() => Bound::Runtime(r),
+            Some(code) => Bound::Own(program(code)),
+        }
+    }
+
+    /// The runtime setup's template is for, unless the commands are the person's own.
+    fn runtime(&self) -> Option<Runtime> {
+        match self {
+            Bound::Runtime(r) | Bound::Narrow(r) => Some(*r),
+            Bound::Own(_) => None,
+        }
     }
 
     fn label(&self) -> String {
         match self {
-            Bound::Runtime(r) => r.name().to_lowercase(),
+            Bound::Runtime(r) | Bound::Narrow(r) => r.name().to_lowercase(),
             Bound::Own(p) => format!("{p} (own)"),
         }
     }
@@ -408,10 +423,7 @@ impl Agents {
     fn cycle(&mut self, row: &Row, by: isize) {
         let Some(entry) = self.entry(row).cloned() else { return };
         let options = self.choices();
-        let now = self.pending_for(&entry.handle).or(match Bound::of(&entry) {
-            Bound::Runtime(r) => Some(r),
-            Bound::Own(_) => None,
-        });
+        let now = self.pending_for(&entry.handle).or(Bound::of(&entry).runtime());
         let at = now.and_then(|r| options.iter().position(|o| *o == r));
         let n = options.len() as isize;
         let next = options[match at {
@@ -1099,7 +1111,17 @@ impl Agents {
                 Some(Row::Here {
                     bound: Bound::Own(_), ..
                 }) => Some((
-                    "its command is your own: space replaces it with a template".into(),
+                    "its commands are your own: space replaces them with a template".into(),
+                    Role::Faint,
+                )),
+                Some(Row::Here {
+                    bound: Bound::Narrow(r),
+                    ..
+                }) => Some((
+                    format!(
+                        "no code_command, so it codes nowhere: space to {} again adds one",
+                        r.name().to_lowercase()
+                    ),
                     Role::Faint,
                 )),
                 _ => None,
@@ -1283,7 +1305,7 @@ mod tests {
             command: runtime.map_or_else(|| vec!["/usr/bin/my-agent".into()], Runtime::command),
             workdir: "/srv/agents/dev".into(),
             client: "Claude Code".into(),
-            code_command: None,
+            code_command: runtime.map(Runtime::code_command),
             writable: Vec::new(),
             runtime: copland_daemon_core::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
@@ -1308,6 +1330,20 @@ mod tests {
         );
         assert_eq!(Bound::of(&agent("me/a", None)), Bound::Own("my-agent".into()));
         assert_eq!(Bound::Own("claude".into()).label(), "claude (own)");
+        /* As setup writes it now: both templates (COPL-160). A path added to writable by hand
+        is still the template; a widened code_command is the person's own. */
+        let mut a = agent("me/a", Some(Runtime::ClaudeCode));
+        a.writable = vec!["/srv/extra".into()];
+        assert_eq!(Bound::of(&a), Bound::Runtime(Runtime::ClaudeCode));
+        a.code_command = Some(vec!["/opt/bin/claude".into(), "--tools".into()]);
+        assert_eq!(Bound::of(&a), Bound::Own("claude".into()));
+        /* As an older setup wrote it: the narrow command alone. */
+        let old = AgentConfig {
+            code_command: None,
+            ..agent("me/a", Some(Runtime::Codex))
+        };
+        assert_eq!(Bound::of(&old), Bound::Narrow(Runtime::Codex));
+        assert_eq!(Bound::of(&old).label(), "codex");
     }
 
     #[test]
