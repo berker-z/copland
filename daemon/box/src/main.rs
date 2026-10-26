@@ -331,23 +331,13 @@ type Launch = Rc<dyn Fn(Config) -> Result<Source>>;
 /// a stderr nobody reads. Returns why the file couldn't be opened, if it couldn't.
 fn init_logging(file: &Path) -> Option<std::io::Error> {
     use tracing_subscriber::prelude::*;
-    /* GPUI and its renderer log a page at info on every start; the daemon's own lines are what matter here. */
-    let filter = tracing_subscriber::EnvFilter::try_from_env("COPLAND_LOG")
-        .unwrap_or_else(|_| "warn,copland_box=info,copland_daemon_core=info".into());
+    let filter = log::filter(std::env::var("COPLAND_LOG").ok());
     let stderr = tracing_subscriber::fmt::layer()
         .with_target(false)
         .with_writer(std::io::stderr)
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()));
     let (to_file, error) = match log::LogFile::open(file, log::CAP) {
-        Ok(f) => (
-            Some(
-                tracing_subscriber::fmt::layer()
-                    .with_target(false)
-                    .with_ansi(false)
-                    .with_writer(Arc::new(f)),
-            ),
-            None,
-        ),
+        Ok(f) => (Some(log::file_layer(Arc::new(f))), None),
         Err(e) => (None, Some(e)),
     };
     tracing_subscriber::registry()
