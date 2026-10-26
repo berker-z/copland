@@ -8,6 +8,8 @@
 //!   the client hangs up. Requests sent meanwhile are answered in between.
 //! - `{"op":"stop_run","slot":1,"run":"aaaa"}` stops that run as the box's ■ does
 //!   (`RunStopper::stop`) and answers `{"ok":true}`.
+//! - `{"op":"hold","slot":1}` holds that agent on this machine (COPL-186, `Holder`): its loop
+//!   starts no run and claims nothing until `{"op":"release","slot":1}`. Both answer `{"ok":true}`.
 //!
 //! Anything else (an unknown op, a line that isn't JSON, an unknown slot or run) answers
 //! `{"error":"…"}` and keeps the connection. Only the socket's owner can connect: the socket is
@@ -26,7 +28,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 
-use crate::daemon::RunStopper;
+use crate::daemon::{Holder, RunStopper};
 use crate::state::DaemonState;
 use crate::status::Status;
 
@@ -39,6 +41,15 @@ enum Request {
     Status,
     Watch,
     StopRun { slot: u64, run: String },
+    Hold { slot: u64 },
+    Release { slot: u64 },
+}
+
+/// What the socket can change.
+#[derive(Clone)]
+struct Controls {
+    stopper: RunStopper,
+    holder: Holder,
 }
 
 /// The socket being served. Dropping it stops serving, hangs up every client and removes the socket.
@@ -52,7 +63,12 @@ impl Server {
     /// Serve `state` on `path`. A socket already there is taken to be a dead daemon's and replaced:
     /// whoever calls this holds the config's lock, so no live daemon is using it. Must be called
     /// inside a Tokio runtime.
-    pub fn start(path: &Path, state: watch::Receiver<DaemonState>, stopper: RunStopper) -> Result<Self> {
+    pub fn start(
+        path: &Path,
+        state: watch::Receiver<DaemonState>,
+        stopper: RunStopper,
+        holder: Holder,
+    ) -> Result<Self> {
         if let Some(dir) = path.parent() {
             crate::setup::private_dir(dir)?;
         }
@@ -71,7 +87,7 @@ impl Server {
         tracing::info!(socket = %path.display(), "serving status");
         Ok(Self {
             path: path.to_path_buf(),
-            task: tokio::spawn(accept(listener, state, stopper)),
+            task: tokio::spawn(accept(listener, state, Controls { stopper, holder })),
         })
     }
 
@@ -87,7 +103,7 @@ impl Drop for Server {
     }
 }
 
-async fn accept(listener: UnixListener, state: watch::Receiver<DaemonState>, stopper: RunStopper) {
+async fn accept(listener: UnixListener, state: watch::Receiver<DaemonState>, controls: Controls) {
     let uid = unsafe { libc::getuid() };
     /* Aborting this task drops these, which hangs up every client. */
     let mut clients = JoinSet::new();
@@ -96,7 +112,7 @@ async fn accept(listener: UnixListener, state: watch::Receiver<DaemonState>, sto
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => match stream.peer_cred() {
                     Ok(peer) if peer.uid() == uid => {
-                        clients.spawn(serve(stream, state.clone(), stopper.clone()));
+                        clients.spawn(serve(stream, state.clone(), controls.clone()));
                     }
                     Ok(peer) => tracing::warn!(uid = peer.uid(), "status socket: hung up on another user"),
                     Err(e) => tracing::warn!("status socket: can't tell who connected: {e}"),
@@ -150,7 +166,15 @@ fn stop_run(state: &watch::Receiver<DaemonState>, stopper: &RunStopper, slot: u6
     json!({ "ok": true }).to_string()
 }
 
-async fn serve(stream: UnixStream, mut state: watch::Receiver<DaemonState>, stopper: RunStopper) {
+fn hold(holder: &Holder, slot: u64, held: bool) -> String {
+    if holder.set(slot, held) {
+        json!({ "ok": true }).to_string()
+    } else {
+        error(format!("no agent in slot {slot}"))
+    }
+}
+
+async fn serve(stream: UnixStream, mut state: watch::Receiver<DaemonState>, controls: Controls) {
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
     let mut watching = false;
@@ -172,7 +196,9 @@ async fn serve(stream: UnixStream, mut state: watch::Receiver<DaemonState>, stop
                             watching = true;
                             snapshot(&mut state)
                         }
-                        Ok(Request::StopRun { slot, run }) => stop_run(&state, &stopper, slot, &run),
+                        Ok(Request::StopRun { slot, run }) => stop_run(&state, &controls.stopper, slot, &run),
+                        Ok(Request::Hold { slot }) => hold(&controls.holder, slot, true),
+                        Ok(Request::Release { slot }) => hold(&controls.holder, slot, false),
                         Err(e) => error(format!("bad request: {e}")),
                     }
                 }
@@ -257,7 +283,7 @@ mod tests {
         let path = dir.join("copland").join("daemon-test.sock");
         let (state_tx, state) = watch::channel(running());
         let (stop_tx, mut stops) = watch::channel::<StopRequest>(None);
-        let server = Server::start(&path, state, RunStopper(stop_tx)).unwrap();
+        let server = Server::start(&path, state, RunStopper(stop_tx), Holder(state_tx.clone())).unwrap();
         assert_eq!(server.path(), path);
         assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
         assert_eq!(fs::metadata(path.parent().unwrap()).unwrap().mode() & 0o777, 0o700);
@@ -293,6 +319,20 @@ mod tests {
         );
         assert_eq!(*stops.borrow_and_update(), Some((2, "aaaa".to_string())));
 
+        /* Holding and releasing the agent, which only the slot's agent sees. */
+        assert_eq!(c.ask(r#"{"op":"hold","slot":2}"#).await, json!({ "ok": true }));
+        assert!(state_tx.borrow().agents[0].held);
+        assert_eq!(c.ask(r#"{"op":"status"}"#).await["agents"][0]["held"], true);
+        assert!(
+            c.ask(r#"{"op":"hold","slot":9}"#).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("no agent in slot 9")
+        );
+        assert!(c.ask(r#"{"op":"release"}"#).await["error"].is_string());
+        assert_eq!(c.ask(r#"{"op":"release","slot":2}"#).await, json!({ "ok": true }));
+        assert!(!state_tx.borrow().agents[0].held);
+
         /* Watching: a snapshot now, another on a change, and requests still answered meanwhile. */
         let mut w = Client::connect(&path).await;
         assert_eq!(w.ask(r#"{"op":"watch"}"#).await["agents"][0]["state"], "running");
@@ -318,9 +358,9 @@ mod tests {
         /* A socket nobody listens on any more, as a daemon killed with SIGKILL leaves. */
         drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
         assert!(path.exists());
-        let (_tx, state) = watch::channel(running());
+        let (tx, state) = watch::channel(running());
         let (stop_tx, _) = watch::channel::<StopRequest>(None);
-        let server = Server::start(&path, state.clone(), RunStopper(stop_tx.clone())).unwrap();
+        let server = Server::start(&path, state.clone(), RunStopper(stop_tx.clone()), Holder(tx.clone())).unwrap();
         assert_eq!(
             Client::connect(&path).await.ask(r#"{"op":"status"}"#).await["version"],
             1
@@ -328,7 +368,7 @@ mod tests {
         drop(server);
 
         fs::write(&path, "mine").unwrap();
-        let err = Server::start(&path, state, RunStopper(stop_tx)).unwrap_err();
+        let err = Server::start(&path, state, RunStopper(stop_tx), Holder(tx)).unwrap_err();
         assert!(err.to_string().contains("not a socket"), "{err}");
         assert_eq!(fs::read_to_string(&path).unwrap(), "mine");
         let _ = fs::remove_dir_all(&dir);

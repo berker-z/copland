@@ -233,7 +233,17 @@ mod tests {
         /* Asking doesn't take it. */
         assert!(Lock::take(&config, &dir, "copland-daemon").is_err());
         drop(lock);
-        assert_eq!(running(&config, &dir).unwrap(), None);
+        /* Another test spawning a program meanwhile shares the lock until its child's exec: std's
+        spawn walks PATH in a vfork child holding a copy of every descriptor, a long PATH (Nix's)
+        takes a while, and the lock is let go only once the last copy closes. */
+        let gone = std::time::Instant::now();
+        while running(&config, &dir).unwrap().is_some() {
+            assert!(
+                gone.elapsed() < std::time::Duration::from_secs(5),
+                "still held after the drop"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         let again = Lock::take(&config, &dir, "copland-daemon").unwrap();
         /* The new holder's line replaces the old one, not appended to it. */
         assert_eq!(

@@ -152,6 +152,13 @@ pub struct AgentLoop {
     probed: Option<(&'static str, PathBuf, Option<String>)>,
     /// How its runs ask again for their last word while Copland is down.
     last_word: Backoff,
+    /// Whether it was held on this machine (`AgentState::held`) at the last poll, to say it once.
+    held: bool,
+}
+
+/// Whether the agent in `slot` is held on this machine.
+fn held(st: &DaemonState, slot: u64) -> bool {
+    st.agents.iter().any(|a| a.slot == slot && a.held)
 }
 
 /// Whether an error is Copland being down (`ApiError::is_unavailable`), whatever was being done.
@@ -292,6 +299,7 @@ impl AgentLoop {
             missing: Missing::default(),
             probed: None,
             last_word: Backoff::LAST_WORD,
+            held: false,
         })
     }
 
@@ -305,6 +313,11 @@ impl AgentLoop {
                 }
                 None => false,
             });
+    }
+
+    /// Held on this machine (COPL-186): set from the status socket, in the daemon's state.
+    fn is_held(&self) -> bool {
+        held(&self.state.borrow(), self.slot)
     }
 
     fn ctx(&self) -> RunCtx {
@@ -500,6 +513,9 @@ impl AgentLoop {
         let mut retire = self.retire.rx.clone();
         let generation = self.retire.generation;
         let mut link = live.link.clone();
+        /* A hold or a release polls at once, so a release picks up the work waiting. */
+        let mut holding = self.state.subscribe();
+        let (slot, was_held) = (self.slot, self.is_held());
         let since = tokio::time::Instant::now();
         /* A board change can make work ready (a dependency closed, a lead assigned itself a task,
         COPL-86) or wake a task the guard remembers, so it is always worth a poll, spaced out. */
@@ -518,6 +534,7 @@ impl AgentLoop {
                 _ = tokio::time::sleep_until(since + every) => return None,
                 _ = async { let _ = shutdown.wait_for(|stop| *stop).await; } => return None,
                 _ = async { let _ = retire.wait_for(|w| w.generation != generation).await; } => return None,
+                _ = async { let _ = holding.wait_for(|s| held(s, slot) != was_held).await; } => return None,
                 _ = async { tokio::time::sleep_until(board_due.expect("guarded")).await }, if board_due.is_some() => {
                     tracing::debug!("woken by the live socket (a board change)");
                     return None;
@@ -711,7 +728,24 @@ impl AgentLoop {
             tracing::debug!("{} unread item(s) are the agent's own; ignored", plan.own.len());
         }
         self.guard.retain(&plan);
-        self.launch(&plan, runs).await?;
+        /* Held on this machine: the poll goes on so the status stays current, but nothing starts
+        or is claimed, as while Copland is down. Runs going are left alone. */
+        let held = self.is_held();
+        if held != self.held {
+            self.held = held;
+            if held {
+                tracing::info!("held on this machine; starting nothing until released");
+            } else {
+                tracing::info!("released on this machine");
+            }
+        }
+        if held {
+            if !plan.wakes.is_empty() || !plan.messages.is_empty() {
+                tracing::debug!("held: {} task(s) and messages wait", plan.wakes.len());
+            }
+        } else {
+            self.launch(&plan, runs).await?;
+        }
         self.queued(&plan);
         Ok(())
     }
@@ -1438,7 +1472,11 @@ impl RunCtx {
             run: run.to_string(),
             task: task.to_string(),
             outcome: status,
-            failed: left || !matches!(ended.exit, Exit::Code(0) | Exit::ForReview | Exit::Stopped | Exit::Cancelled),
+            failed: left
+                || !matches!(
+                    ended.exit,
+                    Exit::Code(0) | Exit::ForReview | Exit::Stopped | Exit::Cancelled
+                ),
             how: Some(if left {
                 format!("{}, {UNFINISHED}", ended.reason())
             } else {
@@ -1833,6 +1871,8 @@ mod tests {
     /// One agent's loop on a fake Copland at `url`, running `true` as its runtime, in a dir of its own.
     struct Looping {
         state: watch::Receiver<DaemonState>,
+        /// Holds and releases the agent, as the status socket does.
+        holder: crate::daemon::Holder,
         stop: watch::Sender<bool>,
         looping: JoinHandle<WakeGuard>,
         dir: PathBuf,
@@ -1842,13 +1882,19 @@ mod tests {
 
     impl Looping {
         fn start(url: &str, name: &str) -> Self {
+            Self::start_with(url, name, &["true"], false)
+        }
+
+        /// Running `command`, held on this machine from the start when `held`.
+        fn start_with(url: &str, name: &str, command: &[&str], held: bool) -> Self {
             let dir = std::env::temp_dir().join(format!("copland-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
-            let mut a = agent(&["true"], None);
+            let mut a = agent(command, None);
             a.url = url.to_string();
             a.workdir = dir.clone();
             let mut st = AgentState::new("me/dev", url);
             st.slot = 1;
+            st.held = held;
             let (state, watch_state) = watch::channel(DaemonState {
                 agents: vec![st],
                 stopping: false,
@@ -1860,6 +1906,7 @@ mod tests {
                 poll: Duration::from_millis(50),
             });
             let (stop_run_tx, stop_run) = watch::channel(None);
+            let holder = crate::daemon::Holder(state.clone());
             let mut l = AgentLoop::new(
                 1,
                 a,
@@ -1885,6 +1932,7 @@ mod tests {
             };
             Looping {
                 state: watch_state,
+                holder,
                 stop,
                 looping: tokio::spawn(l.run()),
                 dir,
@@ -1915,6 +1963,64 @@ mod tests {
         })
         .await
         .expect("a finish landed")
+    }
+
+    /// COPL-186: a held agent with work waiting polls, says what waits, and starts and claims
+    /// nothing; released, it polls at once and starts the run.
+    #[tokio::test]
+    async fn a_held_agent_starts_nothing_until_released() {
+        let fake = Arc::new(Fake::default());
+        let mut l = Looping::start_with(&fake.start(), "held", &["true"], true);
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            l.state.wait_for(|s| s.agents[0].waiting == ["COPL-1"]),
+        )
+        .await
+        .expect("polled")
+        .unwrap();
+        while fake.count("GET /api/inbox") < 5 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(fake.count("POST /api/runs"), 0, "no run started while held");
+        assert_eq!(fake.count("POST /api/tasks/t1/claim"), 0, "nothing claimed while held");
+        assert!(l.state.borrow().agents[0].runs.is_empty());
+
+        assert!(l.holder.set(1, false));
+        assert!(!l.holder.set(9, false), "no agent in slot 9");
+        assert_eq!(
+            finished(&fake).await["status"],
+            "completed",
+            "released, the run went ahead"
+        );
+        assert_eq!(fake.count("POST /api/tasks/t1/claim"), 1);
+        l.stop().await;
+    }
+
+    /// COPL-186: a run going when the hold comes finishes as it would, and nothing more starts.
+    #[tokio::test]
+    async fn a_hold_leaves_the_run_going_alone() {
+        let fake = Arc::new(Fake::default());
+        let mut l = Looping::start_with(&fake.start(), "hold-running", &["sh", "-c", "sleep 1"], false);
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            l.state.wait_for(|s| !s.agents[0].runs.is_empty()),
+        )
+        .await
+        .expect("a run started")
+        .unwrap();
+        assert!(l.holder.set(1, true));
+        assert_eq!(
+            finished(&fake).await["status"],
+            "completed",
+            "the run finished untouched"
+        );
+        let polls = fake.count("GET /api/inbox");
+        while fake.count("GET /api/inbox") < polls + 3 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(fake.count("POST /api/runs"), 1);
+        assert!(l.state.borrow().agents[0].held);
+        l.stop().await;
     }
 
     /// COPL-165: an assignment on a task that has since closed is refused its claim, and the

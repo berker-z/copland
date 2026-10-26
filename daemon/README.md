@@ -239,6 +239,7 @@ The JSON is a contract. `version` is 1; fields are only ever added, never rename
     "messages": 1,                // messages waiting for the next message run
     "retiring": false,            // a reload changed or removed it; it winds down after its runs
     "unavailable_since": null,    // Copland not answering since then: nothing starts meanwhile
+    "held": false,                // held on this machine (the socket's hold): nothing starts until released
     "runs": [{                    // every run going, oldest first
       "run": "aaaa",              // short id
       "task": "T-1",              // null for a run on messages
@@ -278,7 +279,11 @@ The protocol is newline-delimited JSON: one request per line, one answer per lin
 {"op":"status"}                          // → one Status, as above
 {"op":"watch"}                           // → a Status now, and another on every change, until you hang up
 {"op":"stop_run","slot":1,"run":"aaaa"}  // → {"ok":true}: stops that run as the box's ■ does
+{"op":"hold","slot":1}                   // → {"ok":true}: holds that agent on this machine
+{"op":"release","slot":1}                // → {"ok":true}: releases it
 ```
+
+Holding an agent (COPL-186, `Daemon::holder()`, `Holder::set`) is local and light: while it is held, its loop starts no run and claims nothing, the same as while Copland is unavailable, and runs already going finish as they would. It still polls and keeps its live socket, so its status stays current (`held` is true, `waiting` lists what waits, and the text says "held on this machine"). Releasing it polls at once, so the work waiting starts within one poll. A reload keeps a slot's hold; a restart of the daemon forgets it, since it is never written to `daemon.toml`. It is not Copland's pause: that is the pause button on the agent's settings page (`PATCH /api/agents/:id`), a kill switch that stops the agent's tokens everywhere, which a person sets and the daemon only ever reads. Holding or releasing an agent that is already so answers `{"ok":true}` too.
 
 `slot` and `run` are an agent's `slot` and one of its `runs[].run` in the status. Anything that can't be done (an unknown op, a line that isn't JSON, a slot with no agent, a run that isn't going) answers `{"error":"…"}` and keeps the connection; an answer with `error` is never a status. While watching, requests can still be sent on the same connection, and their answers come in between the snapshots. A request line over 64 KiB is answered with an error and hung up on. Changes in quick succession can come as one snapshot: each is the state as it is then, never a diff. Try it with `socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/copland/daemon-<hash>.sock` and a request.
 
