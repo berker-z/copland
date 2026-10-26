@@ -569,3 +569,9 @@ docs/DESIGN.md under Touch.
   `--check --fix` offers each fix on the terminal and checks again
   (`daemon/core/src/preflight.rs`, a list of results the setup wizard can
   draw too).
+- Setup checks before it starts (COPL-162): after Runtimes, the box's
+  wizard writes daemon.toml, runs the preflight on it and lists each check
+  with the selected one's fix; `f` makes a missing code_dir, `c` copies a
+  login's commands for a terminal, `r` checks again, and Enter starts the
+  daemon whatever they say. Its last line says to connect your own chat to
+  `/mcp` as "you".
