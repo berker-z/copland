@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use copland_daemon_core::config::{MCP_CONFIG, PROMPT};
+use crate::config::{MCP_CONFIG, PROMPT};
 
 /// How long `--version` may take before the runtime counts as broken.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(3);
@@ -201,10 +201,10 @@ impl Runtime {
     }
 
     /// The daemon's name for it (`runtime` in daemon.toml), which picks the sandbox.
-    pub fn kind(self) -> copland_daemon_core::config::Runtime {
+    pub fn kind(self) -> crate::config::Runtime {
         match self {
-            Runtime::ClaudeCode => copland_daemon_core::config::Runtime::ClaudeCode,
-            Runtime::Codex => copland_daemon_core::config::Runtime::Codex,
+            Runtime::ClaudeCode => crate::config::Runtime::ClaudeCode,
+            Runtime::Codex => crate::config::Runtime::Codex,
         }
     }
 }
@@ -325,7 +325,7 @@ mod tests {
     /// wrapper included, by the name it gives its script.
     #[test]
     fn the_daemon_knows_each_template_for_its_runtime() {
-        use copland_daemon_core::config::Runtime as Kind;
+        use crate::config::Runtime as Kind;
         for r in Runtime::ALL {
             assert_eq!(Kind::detect(&r.command()), r.kind(), "{r:?}");
             assert_eq!(Kind::detect(&r.code_command()), r.kind(), "{r:?}");
@@ -379,10 +379,7 @@ mod tests {
     #[test]
     fn the_codex_wrapper_takes_the_secret_out_of_the_mcp_config() {
         /* The script up to `exec`, run by a real shell on the daemon's own MCP JSON. */
-        let json = copland_daemon_core::runner::mcp_config_json(
-            "http://h",
-            &copland_daemon_core::config::Secret::new("cplr_s3cret"),
-        );
+        let json = crate::runner::mcp_config_json("http://h", &crate::config::Secret::new("cplr_s3cret"));
         let dir = std::env::temp_dir().join(format!("copland-codex-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("mcp.json");
@@ -404,7 +401,7 @@ mod tests {
     /// prints what it was given.
     #[test]
     fn the_codex_template_hands_the_daemons_sandbox_on_to_codex() {
-        use copland_daemon_core::sandbox::{Backend, Codex, Writable, codex_forbidden};
+        use crate::sandbox::{Backend, Codex, Writable, codex_forbidden};
         let template = Runtime::Codex.code_command();
         assert_eq!(
             codex_forbidden(&template),
@@ -420,10 +417,7 @@ mod tests {
         let mcp = dir.join("mcp.json");
         std::fs::write(
             &mcp,
-            copland_daemon_core::runner::mcp_config_json(
-                "http://h",
-                &copland_daemon_core::config::Secret::new("cplr_x"),
-            ),
+            crate::runner::mcp_config_json("http://h", &crate::config::Secret::new("cplr_x")),
         )
         .unwrap();
         let filled: Vec<String> = template
