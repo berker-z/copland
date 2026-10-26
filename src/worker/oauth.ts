@@ -19,8 +19,9 @@
    to the app that asked. Redirects must match a registered URI exactly.
    The consent page is where the person sees which app, where it will send
    them afterwards, chooses read-only or read and write, and who the app
-   will be: themselves, one of their agents, or a new agent made right there
-   (docs/AGENT-IDENTITIES.md). The code, and so the tokens, belong to that
+   will be: themselves (checked to begin with, and what a chat they drive
+   should be), one of their agents, or a new agent made right there, for
+   something that works without them (docs/AGENT-IDENTITIES.md). The code, and so the tokens, belong to that
    principal.
    ========================================================================== */
 
@@ -168,7 +169,7 @@ async function findClient(env: Env, clientId: string | null): Promise<Client | n
 
 /* ------------------------------------------------------------- authorize --- */
 
-interface AuthRequest {
+export interface AuthRequest {
   client: Client;
   redirectUri: string;
   state: string | null;
@@ -390,6 +391,7 @@ function page(title: string, body: string, status = 200, formTargets: string[] =
   fieldset { border: 1px solid rgb(var(--divider)); margin: 0 0 12px; padding: 4px 12px; }
   label { display:flex; gap:10px; align-items:flex-start; padding:8px 0; cursor:pointer; }
   label small { display:block; color: rgb(var(--muted)); }
+  fieldset .aside { margin: 4px 0 0; padding-top: 8px; border-top: 1px solid rgb(var(--divider)); font-size: 13px; }
   input[type=radio] { accent-color: rgb(var(--accent)); margin-top: 5px; }
   footer { display:flex; gap:12px; justify-content:flex-end; padding: 12px 20px;
            border-top: 1px solid rgb(var(--divider)); background: rgb(var(--bar) / 0.6); }
@@ -411,7 +413,8 @@ function page(title: string, body: string, status = 200, formTargets: string[] =
   });
 }
 
-function consentPage(
+/** Exported for checks/consent.check.ts. */
+export function consentPage(
   req: AuthRequest,
   user: { handle: string; email: string },
   agents: { id: string; name: string }[],
@@ -440,7 +443,8 @@ ${hidden}
   ${problem ? `<p class="error">${esc(problem.message)}</p>` : ""}
   <p>Connect it as</p>
   <fieldset>
-    ${option("me", "you", `sees what you see and acts as you; history says “${esc(user.handle)} via ${app}”`)}
+    ${option("me", "you", `for an app you talk to yourself (Claude Code, claude.ai, Codex in a terminal): sees what you see and acts as you; history says “${esc(user.handle)} via ${app}”`)}
+    <p class="aside">or as an agent, for something that works without you. A Copland box doesn't need this page: it gets its agents by its own device login.</p>
     ${agents
       .map((a) =>
         option(a.id, `${esc(user.handle)}/${esc(a.name)}`, "your agent: only the boards you gave it, at most an editor"),
