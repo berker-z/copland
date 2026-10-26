@@ -1,123 +1,117 @@
-//! The tray's side of the status socket (COPL-198): watch the daemon running a config, pass on
-//! what the menu asks of it, and when nobody answers, say so and try again every few seconds.
-//! It never starts the daemon.
+//! What the tray shows, kept from the daemon running a config (COPL-198): its status through
+//! `core::watcher::Watcher` (COPL-200), which finds the daemon again after it goes away and never
+//! starts one, and the last thing that went wrong. The menu's requests go to the same `Watcher`.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Arc;
 
-use copland_daemon_core::client::{Answer, Connection, Request};
 use copland_daemon_core::lock;
 use copland_daemon_core::status::Status;
+use copland_daemon_core::watcher::{Connection, Watcher};
 use tokio::sync::{mpsc, watch};
 
-/// How long the tray waits before trying a socket nobody answered on again.
-pub const RETRY: Duration = Duration::from_secs(3);
+/// What the menu asks of the daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Request {
+    Hold { slot: u64 },
+    Release { slot: u64 },
+    StopRun { slot: u64, run: String },
+}
 
-/// What the tray knows: the daemon's last snapshot (None while none answers), and the last thing
-/// that went wrong, until the next request goes through or the connection changes.
+/// What the tray knows: the daemon's last snapshot (None while it isn't running), and the last
+/// thing that went wrong, until the next request goes through or the connection changes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Seen {
     pub status: Option<Status>,
     pub error: Option<String>,
 }
 
-/// Follow the daemon running `config` into `seen` and send it `requests` (holds, releases, stops)
-/// until `requests` closes.
+/// Follow the daemon running `config` into `seen`, and send it `requests`, until `requests` closes.
 pub async fn run(
     config: PathBuf,
     runtime_dir: PathBuf,
-    retry: Duration,
     mut requests: mpsc::UnboundedReceiver<Request>,
     seen: watch::Sender<Seen>,
 ) {
-    let socket = lock::socket_for(&config, &runtime_dir);
+    let watcher = Arc::new(Watcher::start(&config, &runtime_dir));
+    let mut connection = watcher.subscribe();
+    let mut now = connection.borrow_and_update().clone();
+    /* What the last request came back with, until something changes it. */
+    let mut refused: Option<String> = None;
+    /* Requests are answered on tasks of their own, so a slow one holds up no snapshot. */
+    let (answered, mut answers) = mpsc::unbounded_channel();
     loop {
-        let lost = match Connection::open(&socket).await {
-            Ok(Some(conn)) => match follow(conn, &mut requests, &seen).await {
-                Some(lost) => lost,
-                None => return,
+        let shown = match &now {
+            Connection::Connected(s) => Seen {
+                status: Some(s.clone()),
+                error: refused.clone(),
             },
-            Ok(None) => None,
-            Err(e) => Some(format!("{e:#}")),
+            Connection::Unreadable(why) => Seen {
+                status: None,
+                error: refused.clone().or_else(|| Some(why.clone())),
+            },
+            Connection::Connecting | Connection::NotRunning => Seen {
+                status: None,
+                error: refused.clone().or_else(|| old_daemon(&config, &runtime_dir)),
+            },
         };
-        /* A lock held with no socket is a daemon from before it, which `status` calls an error too. */
-        let error = match lock::running(&config, &runtime_dir) {
-            Ok(Some(holder)) if lost.is_none() => Some(format!(
-                "a daemon is running {} ({holder}) but serves no status: restart it",
-                config.display()
-            )),
-            _ => lost,
-        };
-        set(&seen, None, error);
-        let wait = tokio::time::sleep(retry);
-        tokio::pin!(wait);
-        loop {
-            tokio::select! {
-                () = &mut wait => break,
-                request = requests.recv() => match request {
-                    Some(_) => seen.send_modify(|s| s.error = Some("the daemon isn't running".into())),
-                    None => return,
-                },
-            }
-        }
-    }
-}
-
-fn set(seen: &watch::Sender<Seen>, status: Option<Status>, error: Option<String>) {
-    seen.send_if_modified(|s| {
-        let new = Seen { status, error };
-        let changed = *s != new;
-        *s = new;
-        changed
-    });
-}
-
-/// Watch on `conn` until the daemon hangs up, Some(what went wrong, if anything), or `requests`
-/// closes, None.
-async fn follow(
-    mut conn: Connection,
-    requests: &mut mpsc::UnboundedReceiver<Request>,
-    seen: &watch::Sender<Seen>,
-) -> Option<Option<String>> {
-    if let Err(e) = conn.send(&Request::Watch).await {
-        return Some(Some(format!("{e:#}")));
-    }
-    loop {
+        seen.send_if_modified(|s| {
+            let changed = *s != shown;
+            *s = shown;
+            changed
+        });
         tokio::select! {
-            answer = conn.next() => match answer {
-                Ok(Some(Answer::Status(s))) => {
-                    seen.send_if_modified(|seen| {
-                        /* The first snapshot after a reconnect clears what not being connected said. */
-                        let error = if seen.status.is_none() { None } else { seen.error.take() };
-                        let changed = seen.status.as_ref() != Some(&s) || seen.error != error;
-                        seen.status = Some(s);
-                        seen.error = error;
-                        changed
-                    });
+            changed = connection.changed() => {
+                if changed.is_err() {
+                    return;
                 }
-                Ok(Some(Answer::Ok)) => {
-                    seen.send_if_modified(|s| s.error.take().is_some());
+                let next = connection.borrow_and_update().clone();
+                if kind(&next) != kind(&now) {
+                    refused = None;
                 }
-                Ok(Some(Answer::Error(e))) => seen.send_modify(|s| s.error = Some(e)),
-                Ok(None) => return Some(None),
-                Err(e) => return Some(Some(format!("{e:#}"))),
-            },
-            request = requests.recv() => match request {
-                Some(r) => {
-                    if let Err(e) = conn.send(&r).await {
-                        return Some(Some(format!("{e:#}")));
-                    }
-                }
-                None => return None,
-            },
+                now = next;
+            }
+            request = requests.recv() => {
+                let Some(request) = request else { return };
+                let (watcher, answered) = (watcher.clone(), answered.clone());
+                tokio::spawn(async move {
+                    let answer = match &request {
+                        Request::Hold { slot } => watcher.hold(*slot).await,
+                        Request::Release { slot } => watcher.release(*slot).await,
+                        Request::StopRun { slot, run } => watcher.stop_run(*slot, run).await,
+                    };
+                    let _ = answered.send(answer.err().map(|e| format!("{e:#}")));
+                });
+            }
+            Some(answer) = answers.recv() => refused = answer,
         }
     }
+}
+
+/// Which of the tray's three faces a connection shows: running, unreadable or not running.
+fn kind(c: &Connection) -> u8 {
+    match c {
+        Connection::Connected(_) => 0,
+        Connection::Unreadable(_) => 1,
+        Connection::Connecting | Connection::NotRunning => 2,
+    }
+}
+
+/// A daemon from before the status socket holding the config's lock, which `copland-daemon
+/// status` calls an error too.
+fn old_daemon(config: &std::path::Path, runtime_dir: &std::path::Path) -> Option<String> {
+    let holder = lock::running(config, runtime_dir).ok()??;
+    Some(format!(
+        "a daemon is running {} ({holder}) but serves no status: restart it",
+        config.display()
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::time::Duration;
 
     use copland_daemon_core::agent::StopRequest;
     use copland_daemon_core::socket::Server;
@@ -164,7 +158,7 @@ mod tests {
     }
 
     async fn until(seen: &mut watch::Receiver<Seen>, what: impl Fn(&Seen) -> bool) -> Seen {
-        let came = tokio::time::timeout(Duration::from_secs(5), seen.wait_for(|s| what(s)))
+        let came = tokio::time::timeout(Duration::from_secs(10), seen.wait_for(|s| what(s)))
             .await
             .map(|s| s.unwrap().clone());
         came.unwrap_or_else(|_| panic!("never came: {:?}", seen.borrow()))
@@ -177,27 +171,28 @@ mod tests {
         fs::write(&config, "").unwrap();
         let (requests, rx) = mpsc::unbounded_channel();
         let (seen_tx, mut seen) = watch::channel(Seen::default());
-        let watching = tokio::spawn(run(config.clone(), dir.clone(), Duration::from_millis(50), rx, seen_tx));
+        let following = tokio::spawn(run(config.clone(), dir.clone(), rx, seen_tx));
 
-        /* No daemon yet: not running, and a request says so. */
-        requests.send(Request::Hold { slot: 2, held: true }).unwrap();
-        until(&mut seen, |s| s.error.as_deref() == Some("the daemon isn't running")).await;
-        assert_eq!(seen.borrow().status, None);
+        /* No daemon yet: not running, and a request says why it can't be done. */
+        requests.send(Request::Hold { slot: 2 }).unwrap();
+        let s = until(&mut seen, |s| s.error.is_some()).await;
+        assert!(s.error.unwrap().contains("no daemon is serving"));
+        assert_eq!(s.status, None);
 
-        /* It comes up: the tray finds it on a retry and watches. */
+        /* It comes up: found on a retry, watched, and the error is gone with the change. */
         let mut d = serve(&config, &dir);
         let s = until(&mut seen, |s| s.status.is_some()).await;
         assert_eq!(s.error, None);
         assert_eq!(s.status.unwrap().agents[0].runs[0].run, "aaaa");
 
         /* Holding and releasing by slot, and the watch showing it. */
-        requests.send(Request::Hold { slot: 2, held: true }).unwrap();
+        requests.send(Request::Hold { slot: 2 }).unwrap();
         until(&mut seen, |s| s.status.as_ref().is_some_and(|s| s.agents[0].held)).await;
         assert!(d.state.borrow().agents[0].held);
-        requests.send(Request::Hold { slot: 2, held: false }).unwrap();
+        requests.send(Request::Release { slot: 2 }).unwrap();
         until(&mut seen, |s| s.status.as_ref().is_some_and(|s| !s.agents[0].held)).await;
 
-        /* Stopping a run asks its loop to; one that isn't going is the daemon's error, shown. */
+        /* A run that isn't going is the daemon's error, shown; stopping one going clears it. */
         requests
             .send(Request::StopRun {
                 slot: 2,
@@ -221,7 +216,7 @@ mod tests {
         })
         .await;
 
-        /* It goes away: not running, and back when it returns. */
+        /* It goes away: not running, and back when another starts. */
         drop(d.server);
         until(&mut seen, |s| s.status.is_none()).await;
         let d = serve(&config, &dir);
@@ -230,7 +225,7 @@ mod tests {
 
         /* The menu's channel closing ends it. */
         drop(requests);
-        tokio::time::timeout(Duration::from_secs(5), watching)
+        tokio::time::timeout(Duration::from_secs(5), following)
             .await
             .unwrap()
             .unwrap();
@@ -246,12 +241,12 @@ mod tests {
         let _lock = lock::Lock::take(&config, &dir, "copland-daemon").unwrap();
         let (requests, rx) = mpsc::unbounded_channel();
         let (seen_tx, mut seen) = watch::channel(Seen::default());
-        let watching = tokio::spawn(run(config.clone(), dir.clone(), Duration::from_millis(50), rx, seen_tx));
+        let following = tokio::spawn(run(config.clone(), dir.clone(), rx, seen_tx));
         let s = until(&mut seen, |s| s.error.is_some()).await;
         assert!(s.error.unwrap().contains("serves no status"));
         assert_eq!(s.status, None);
         drop(requests);
-        tokio::time::timeout(Duration::from_secs(5), watching)
+        tokio::time::timeout(Duration::from_secs(5), following)
             .await
             .unwrap()
             .unwrap();

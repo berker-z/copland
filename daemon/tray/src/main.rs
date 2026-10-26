@@ -23,11 +23,10 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     use anyhow::Context;
     use clap::Parser;
-    use copland_daemon_core::client::Request;
     use copland_daemon_core::config::{default_config_path, default_runtime_dir};
+    use copland_tray::follow::{self, Request, Seen};
     use copland_tray::sni::Tray;
     use copland_tray::view::Action;
-    use copland_tray::watcher::{self, Seen};
     use ksni::TrayMethods;
     use tokio::sync::{mpsc, watch};
 
@@ -48,13 +47,7 @@ async fn main() -> anyhow::Result<()> {
     let (requests, requests_rx) = mpsc::unbounded_channel();
     let (seen_tx, mut seen) = watch::channel(Seen::default());
     tracing::info!(config = %config.display(), "watching");
-    tokio::spawn(watcher::run(
-        config,
-        default_runtime_dir(),
-        watcher::RETRY,
-        requests_rx,
-        seen_tx,
-    ));
+    tokio::spawn(follow::run(config, default_runtime_dir(), requests_rx, seen_tx));
     loop {
         tokio::select! {
             changed = seen.changed() => {
@@ -69,8 +62,8 @@ async fn main() -> anyhow::Result<()> {
             action = actions.recv() => {
                 let request = match action {
                     None | Some(Action::Quit) => break,
-                    Some(Action::Hold { slot }) => Request::Hold { slot, held: true },
-                    Some(Action::Release { slot }) => Request::Hold { slot, held: false },
+                    Some(Action::Hold { slot }) => Request::Hold { slot },
+                    Some(Action::Release { slot }) => Request::Release { slot },
                     Some(Action::StopRun { slot, run }) => Request::StopRun { slot, run },
                 };
                 let _ = requests.send(request);

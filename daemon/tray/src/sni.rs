@@ -5,9 +5,9 @@ use std::collections::HashMap;
 
 use tokio::sync::mpsc;
 
+use crate::follow::Seen;
 use crate::icons::{self, Pixmap};
 use crate::view::{Action, Entry, Icon, View, view};
-use crate::watcher::Seen;
 
 pub struct Tray {
     view: View,

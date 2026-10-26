@@ -650,8 +650,8 @@ docs/DESIGN.md under Touch.
 - The tray (COPL-198): `copland-tray`, a StatusNotifierItem (`ksni`, no
   GTK) that watches the status socket of the daemon running a config and
   shows its agents as idle, working, needs you or not running, with a line
-  per agent in the tooltip and Hold/Release and Stop run in its menu. It
-  never starts the daemon and retries every 3 seconds while none answers;
-  Quit ends only the tray. Linux only for now; the view and socket loop
+  per agent in the tooltip and Hold/Release and Stop run in its menu, all
+  through COPL-200's `Watcher`. It never starts the daemon, and finds one
+  started later by itself; Quit ends only the tray. Linux only for now; the view and socket loop
   are platform-neutral for the macOS item (COPL-202). Autostart, packaging
   and opening the box from it are COPL-201 (`daemon/tray`).
