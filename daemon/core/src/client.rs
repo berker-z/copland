@@ -119,16 +119,6 @@ impl Asker {
             .with_context(|| format!("reading {}", self.socket.display()))?
             .with_context(|| format!("the daemon at {} hung up without answering", self.socket.display()))
     }
-
-    /// Ask, for an answer that is `{"ok":true,…}` or `{"error":…}`.
-    async fn ask_ok(&mut self, request: &str) -> Result<serde_json::Value> {
-        let answer: serde_json::Value =
-            serde_json::from_str(&self.ask(request).await?).context("the daemon's answer isn't JSON")?;
-        if let Some(e) = answer.get("error") {
-            bail!("the daemon says: {}", e.as_str().unwrap_or(&e.to_string()));
-        }
-        Ok(answer)
-    }
 }
 
 /// Have the daemon running `config` load it again and run what it says now (COPL-197), and say
@@ -138,7 +128,7 @@ pub async fn reload(config: &Path, runtime_dir: &Path, out: &mut (dyn Write + Se
         Ok(a) => a,
         Err(o) => return Ok(o),
     };
-    let answer = daemon.ask_ok(r#"{"op":"reload"}"#).await?;
+    let answer = ok(&daemon.ask(r#"{"op":"reload"}"#).await?)?;
     let reloaded: Reloaded = serde_json::from_value(answer["reloaded"].clone())
         .context("the daemon's answer doesn't say what it reloaded")?;
     out.write_all(reloaded.says(config).as_bytes())
@@ -218,9 +208,7 @@ pub async fn hold(
         );
     };
     let op = if held { "hold" } else { "release" };
-    daemon
-        .ask_ok(&format!(r#"{{"op":"{op}","slot":{}}}"#, agent.slot))
-        .await?;
+    done(&daemon.ask(&format!(r#"{{"op":"{op}","slot":{}}}"#, agent.slot)).await?)?;
     let says = if held {
         format!(
             "@{} held on this machine: it starts nothing until `copland-daemon release {}`; runs going finish\n",
@@ -293,6 +281,21 @@ pub async fn show(socket: &Path, mode: Mode, out: &mut (dyn Write + Send)) -> Re
             return Ok(Outcome::Shown);
         }
     }
+}
+
+/// The answer to a request that changes something: `{"ok":true}`, or `{"error":…}` as an error
+/// saying the socket's text.
+pub(crate) fn done(line: &str) -> Result<()> {
+    ok(line).map(drop)
+}
+
+/// The same, keeping what else `{"ok":true,…}` says.
+fn ok(line: &str) -> Result<serde_json::Value> {
+    let answer: serde_json::Value = serde_json::from_str(line).context("the daemon's answer isn't JSON")?;
+    if let Some(e) = answer.get("error") {
+        bail!("the daemon says: {}", e.as_str().unwrap_or(&e.to_string()));
+    }
+    Ok(answer)
 }
 
 /// One answer from the socket: a `Status`, or `{"error":…}`.
