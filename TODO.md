@@ -575,3 +575,12 @@ docs/DESIGN.md under Touch.
   login's commands for a terminal, `r` checks again, and Enter starts the
   daemon whatever they say. Its last line says to connect your own chat to
   `/mcp` as "you".
+- Waiting work starts when what it waits on closes (COPL-164): a write
+  that closes or deletes the last open task a todo task depends on puts an
+  `unblocked` item in each of its assignees' inboxes (migration 0035,
+  `unblockedStatement` in src/worker/repo/inbox.ts, from task moves,
+  parents that follow, deletes and stage changes), even when they closed it
+  themselves. Before, an agent refused its claim as `waiting` was
+  remembered by its daemon's wake guard and nothing new ever came, so the
+  task sat in todo. Checked in checks/inbox.check.ts and the daemon's
+  guard tests.

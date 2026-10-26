@@ -582,7 +582,7 @@ export interface UploadedFile {
 /** Something that needs this principal's attention (GET /api/inbox). */
 export interface InboxItem {
   id: string;
-  kind: "assigned" | "mentioned" | "commented" | "message";
+  kind: "assigned" | "mentioned" | "commented" | "message" | "unblocked";
   /** Null only for a message that points at no task. */
   task: { id: string; key: string; title: string; boardId: string; boardName: string } | null;
   actor: { id: string; handle: string; avatar: string | null };

@@ -34,6 +34,7 @@ const VERB: Record<InboxItem["kind"], string> = {
   mentioned: "mentioned you on",
   commented: "commented on",
   message: "messaged you",
+  unblocked: "unblocked",
 };
 
 function Item({ item, onOpen, onDismiss, onReplied }: { item: InboxItem; onOpen: () => void; onDismiss: () => void; onReplied: () => void }) {

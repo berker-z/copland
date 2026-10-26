@@ -6,6 +6,8 @@
 //!
 //! - Items the agent wrote itself never wake it. "Itself" is the actor's id
 //!   against the token's own (the handle only when a server sends no id).
+//!   An "unblocked" item (COPL-164) is the exception: the agent closing what
+//!   its next task waited on still frees that task for it.
 //! - Every message (COPL-106) goes to a message run, about a task or not
 //!   (COPL-127): it never joins a task's wake, so no task run handles it.
 //!   One run, in the shared workdir, takes the unread messages no live claim
@@ -23,7 +25,9 @@
 //!   unread items it had and the task's `updatedAt` as the run left it. While
 //!   the task's unread items are all ones it remembers and the task has not
 //!   changed, it does not launch again. A new item, or a change to the task
-//!   by anyone, wakes it.
+//!   by anyone, wakes it. That is why a task the claim refused as "waiting"
+//!   needs its "unblocked" item: the tasks it waited on closing changes
+//!   nothing on the task itself.
 //! - A claim refused because another run holds the task is remembered as
 //!   held: that task wakes again once it has no live claim (its run ended or
 //!   went quiet), and not while it still has one, whatever else changes.
@@ -151,7 +155,8 @@ pub fn plan(me: &Identity, items: &[InboxItem]) -> Plan {
     let mut plan = Plan::default();
     let mut by_task: HashMap<String, Wake> = HashMap::new();
     for item in items.iter().filter(|i| i.read_at.is_none()) {
-        if me.is(item) {
+        /* Its own doing, except freeing a task of its own: that is news to it too (COPL-164). */
+        if me.is(item) && item.kind != "unblocked" {
             plan.own.push(item.id.clone());
             continue;
         }
@@ -384,6 +389,27 @@ mod tests {
     fn own_items_alone_do_not_wake() {
         let p = plan(&me(), &[item("i1", Some("a"), "me/dev", "2026-01-01T00:00:00.000Z")]);
         assert!(p.wakes.is_empty());
+    }
+
+    #[test]
+    fn unblocked_wakes_a_task_its_claim_refused_as_waiting() {
+        /* COPL-164: given a task that waits on another, the claim is refused ("waiting") and remembered. */
+        let given = kind_item("i1", "assigned", Some("a"), "sam", "2026-01-01T00:00:00.000Z");
+        let p = plan(&me(), std::slice::from_ref(&given));
+        assert_eq!(refused(Some("waiting"), &p.wakes[0]), Refused::Skip);
+        let mut g = WakeGuard::default();
+        g.remember(&p.wakes[0], Some("t1".into()), false);
+        /* What it waited on closes, which changes nothing on the task: the same items alone stay put. */
+        let Check::Seen { updated_at, held } = g.check(&p.wakes[0]) else {
+            panic!("seen")
+        };
+        assert!(!WakeGuard::again(&updated_at, held, Some(("t1", false))));
+        /* The unblocked item is new, even when the agent closed what it waited on itself. */
+        let freed = kind_item("i2", "unblocked", Some("a"), "me/dev", "2026-01-02T00:00:00.000Z");
+        let p = plan(&me(), &[given, freed]);
+        assert!(p.own.is_empty());
+        assert_eq!(p.wakes[0].items, ["i1", "i2"]);
+        assert_eq!(g.check(&p.wakes[0]), Check::New);
     }
 
     #[test]
