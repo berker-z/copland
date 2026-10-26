@@ -22,6 +22,10 @@
    closing, being deleted, moving to a blocked stage, or the claimer coming
    off its assignees: every write here ends with releaseClaimsStatement
    for the board.
+
+   A write that closes or deletes a task (or a parent following it) tells
+   the assignees of the tasks it leaves with nothing open to wait on
+   (repo/inbox.ts unblockedStatement), so work that waited starts.
    ========================================================================== */
 
 import {
@@ -50,7 +54,13 @@ import type { Env } from "../env";
 import { badRequest, forbidden, HttpError, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
 import { agentsAmong } from "../repo/agents";
-import { inboxAudience, inboxStatements, type NewInboxItem } from "../repo/inbox";
+import {
+  inboxAudience,
+  inboxStatements,
+  unblockedAudience,
+  unblockedStatement,
+  type NewInboxItem,
+} from "../repo/inbox";
 import { boardAudience, bumpStatement, taskChange, versionOf } from "../repo/boards";
 import { releaseClaimsStatement } from "../repo/runs";
 import { bottomRank, eventStatement, findTask, listStages, progressFor } from "../repo/tasks";
@@ -207,7 +217,7 @@ interface FollowRow {
  *
  * Each move is logged as a task.updated event on the parent, by whoever made
  * the change, with `followed` naming the child it followed, which is what
- * the history shows as automatic.
+ * the history shows as automatic. `closed` lists the parents it closes.
  */
 export async function followStatements(
   db: D1Database,
@@ -217,9 +227,9 @@ export async function followStatements(
   child: { id: string; number: number },
   change: { stageId?: string; parentId?: string | null; rank?: number; created?: boolean; deleted?: boolean },
   parents: Array<string | null>,
-): Promise<{ statements: D1PreparedStatement[]; moved: AlsoMoved[] }> {
+): Promise<{ statements: D1PreparedStatement[]; moved: AlsoMoved[]; closed: string[] }> {
   const starts = [...new Set(parents.filter((p): p is string => !!p))].map((parentId) => ({ parentId, childId: child.id }));
-  if (starts.length === 0) return { statements: [], moved: [] };
+  if (starts.length === 0) return { statements: [], moved: [], closed: [] };
   const { results } = await db
     .prepare(
       `SELECT id, parent_id, stage_id, rank, number, completed_at FROM tasks WHERE board_id = ?1 AND deleted_at IS NULL`,
@@ -240,13 +250,14 @@ export async function followStatements(
     stages,
     starts,
   );
-  if (moves.length === 0) return { statements: [], moved: [] };
+  if (moves.length === 0) return { statements: [], moved: [], closed: [] };
 
   const byId = new Map(rows.map((r) => [r.id, r]));
   const keyOf = (number: number) => `${board.key}-${number}`;
   const now = nowIso();
   const statements: D1PreparedStatement[] = [];
   const moved = new Map<string, AlsoMoved>();
+  const closed = new Set<string>();
   for (const move of moves) {
     const row = byId.get(move.id)!;
     const stage = stages.find((s) => s.id === move.to)!;
@@ -267,13 +278,15 @@ export async function followStatements(
         after: { stageId: move.to, rank, completedAt, followed: keyOf(causeNumber) },
       }),
     );
+    if (completedAt && !row.completed_at) closed.add(move.id);
+    if (!completedAt) closed.delete(move.id);
     row.stage_id = move.to;
     row.rank = rank;
     row.completed_at = completedAt;
     moved.delete(move.id);
     moved.set(move.id, { id: move.id, key: keyOf(row.number), stageId: move.to });
   }
-  return { statements, moved: [...moved.values()] };
+  return { statements, moved: [...moved.values()], closed: [...closed] };
 }
 
 /** A write's response: the task, and the parents that followed it when any did. */
@@ -558,7 +571,9 @@ export async function patchTask(
           },
           [task.parentId, "parentId" in after ? (after.parentId as string | null) : null],
         )
-      : { statements: [], moved: [] };
+      : { statements: [], moved: [], closed: [] };
+  /* What it closes, it and parents alike, can let tasks waiting on them start. */
+  const closed = [...("completedAt" in after && !task.completedAt ? [id] : []), ...follow.closed];
 
   sets.push(`updated_at = ?${values.length + 2}`);
   values.push(nowIso());
@@ -569,8 +584,10 @@ export async function patchTask(
     eventStatement(db, { boardId: board.id, taskId: id, actorId: viewer.user.id, kind: "task.updated", before, after }),
     ...follow.statements,
     ...inboxStatements(db, assigned),
+    ...(closed.length ? [unblockedStatement(db, closed, viewer.user.id)] : []),
     releaseClaimsStatement(db, board.id),
   ]);
+  const unblocked = closed.length ? unblockedAudience(done[done.length - 2]) : [];
 
   /* A new stage or parent names everything above it too, old parent and
      new: their progress can move. Whoever was on it before hears it as well
@@ -584,7 +601,7 @@ export async function patchTask(
   const news = await taskChange(db, board.id, versionOf(done[0]), [id, ...follow.moved.map((m) => m.id)], task.assigneeIds, parents);
   const topics = "stageId" in after ? (["boards"] as const) : [];
   changes.board(await boardAudience(db, board.id), news, ...topics);
-  changes.notify(inboxAudience(assigned), "inbox");
+  changes.notify([...new Set([...inboxAudience(assigned), ...unblocked])], "inbox");
   return json(written(await findTask(db, id), follow.moved));
 }
 
@@ -596,11 +613,13 @@ export async function deleteTask(env: Env, viewer: Viewer, id: string, changes: 
   const follow = await followStatements(db, viewer, board, await listStages(db, board.id), task, { deleted: true }, [
     task.parentId,
   ]);
-  await db.batch([
+  /* An open task gone is one less to wait on: told before its dependencies go with it. */
+  const closed = [...(task.completedAt ? [] : [id]), ...follow.closed];
+  const unblock = closed.length ? [unblockedStatement(db, closed, viewer.user.id)] : [];
+  const done = await db.batch([
     db.prepare(`UPDATE tasks SET deleted_at = ?2 WHERE id = ?1`).bind(id, nowIso()),
     /* Nothing should hang off a task that is gone. */
     db.prepare(`UPDATE tasks SET parent_id = NULL WHERE parent_id = ?1`).bind(id),
-    db.prepare(`DELETE FROM task_dependencies WHERE depends_on_id = ?1 OR task_id = ?1`).bind(id),
     eventStatement(db, {
       boardId: board.id,
       taskId: id,
@@ -609,9 +628,12 @@ export async function deleteTask(env: Env, viewer: Viewer, id: string, changes: 
       before: { title: task.title },
     }),
     ...follow.statements,
+    ...unblock,
+    db.prepare(`DELETE FROM task_dependencies WHERE depends_on_id = ?1 OR task_id = ?1`).bind(id),
     releaseClaimsStatement(db, board.id),
   ]);
   /* No task ids: a task gone (and its children unparented) is read with the whole board. */
   changes.board(await boardAudience(db, board.id), { board: board.id, assignees: task.assigneeIds }, "boards");
+  if (unblock.length) changes.notify(unblockedAudience(done[done.length - 3]), "inbox");
   return json(follow.moved.length ? { ok: true, alsoMoved: follow.moved } : { ok: true });
 }

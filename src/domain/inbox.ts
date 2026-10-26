@@ -2,7 +2,8 @@
    Reading a task reads its inbox items (COPL-138).
    ----------------------------------------------------------------------------
    Opening a task in the browser marks the viewer's own unread items on it
-   read: being given it, a mention on it, a new comment on it. Those are all
+   read: being given it, a mention on it, a new comment on it, its being
+   unblocked. Those are all
    about the task's page, and opening it is reading them. A message is not:
    one about a task is read in its own thread (the inbox, or the box's
    bell), so opening the task leaves it unread.

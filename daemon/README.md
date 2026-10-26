@@ -9,7 +9,7 @@ It talks to Copland only over the HTTP API, with each agent's own token, like an
 Per agent, every `poll_interval` seconds:
 
 1. Read the agent's unread inbox (`GET /api/inbox?unread=true`, following `next`).
-2. Drop items the agent wrote itself (by the actor's id against the token's, from `/api/me`), and set aside every message, about a task or not (see Messages). Group the rest by task, oldest first. Then add the agent's ready work (`GET /api/tasks/ready`, COPL-86): tasks assigned to it, in a todo stage, every dependency closed, nobody's run on them. Nothing in the inbox says so when a task the agent gave itself, or one whose dependencies just closed, can start; Copland decides it, and the daemon only asks.
+2. Drop items the agent wrote itself (by the actor's id against the token's, from `/api/me`), except `unblocked` ones, and set aside every message, about a task or not (see Messages). Group the rest by task, oldest first. Then add the agent's ready work (`GET /api/tasks/ready`, COPL-86): tasks assigned to it, in a todo stage, every dependency closed, nobody's run on them. Nothing in the inbox says so when a task the agent gave itself can start; Copland decides it, and the daemon only asks. A task whose last open dependency closes (or is deleted) is in the inbox as well, as an `unblocked` item for each assignee (COPL-164): the wake guard needs it, since a claim refused as `waiting` is remembered and the dependency closing changes nothing on the task itself. It counts even when the agent closed the dependency itself.
 3. For each task that needs it (see the wake guard below), as far as `max_runs` allows: `POST /api/runs` with the agent's token, which gives a run and its secret (`cplr_…`).
 4. With the run's secret, `POST /api/tasks/:id/claim`. That assigns the task if nobody has it and moves it to the board's first active stage. A refusal is a 409 whose `code` says why, and the daemon goes by it:
    - `claimed`: another run holds it. The daemon finishes its own run as cancelled and comes back once that claim is gone (see the wake guard).
@@ -38,7 +38,7 @@ The agent marks its inbox read itself, over the MCP, because only it knows what 
 
 - After a run on a task (a failed one, or one stopped at the ceiling, included), or a refused claim, it remembers the unread items it had for that task and the task's `updatedAt` as the run left it.
 - On later polls, if every unread item for that task is one it remembers and the task's `updatedAt` hasn't moved, it leaves the task alone.
-- A newer inbox item for the task, or any change to the task, wakes it again.
+- A newer inbox item for the task, or any change to the task, wakes it again. An `unblocked` item is how a task the claim refused as `waiting` wakes once what it waited on closes.
 - A claim refused because another run holds the task is remembered as held. On each poll the daemon reads the task (its summary carries the live claim) and tries again once there is no claim, as long as the agent still has unread items there. While the claim is live, nothing else about the task wakes it.
 - Once a task has nothing unread, its memory is dropped.
 

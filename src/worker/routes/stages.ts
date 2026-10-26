@@ -6,6 +6,10 @@
    another stage to move them to, so no task is ever left without a column.
    The last open stage and the last done stage stay, because the tasks pane
    ticks between them.
+
+   A stage that becomes a closing one, or is deleted into one, closes the
+   tasks in it, and tells the assignees of tasks that waited on them
+   (repo/inbox.ts unblockedStatement), as closing them one by one would.
    ========================================================================== */
 
 import { isClosing } from "@/domain/tasks";
@@ -15,6 +19,7 @@ import type { Env } from "../env";
 import { badRequest, conflict, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
 import { boardAudience } from "../repo/boards";
+import { unblockedAudience, unblockedStatement } from "../repo/inbox";
 import { eventStatement, listLabels, listStages } from "../repo/tasks";
 
 function parseName(raw: unknown, max: number): string {
@@ -34,6 +39,15 @@ function parseCategory(raw: unknown): StageCategory {
     throw badRequest(`\`category\` must be one of ${STAGE_CATEGORIES.join(", ")}`);
   }
   return raw as StageCategory;
+}
+
+/** The open tasks in a stage, which closing it closes. */
+async function openIn(db: D1Database, stageId: string): Promise<string[]> {
+  const { results } = await db
+    .prepare(`SELECT id FROM tasks WHERE stage_id = ?1 AND deleted_at IS NULL AND completed_at IS NULL`)
+    .bind(stageId)
+    .all<{ id: string }>();
+  return results.map((r) => r.id);
 }
 
 async function stageRow(db: D1Database, id: string) {
@@ -79,6 +93,8 @@ export async function patchStage(request: Request, env: Env, viewer: Viewer, id:
   const sets: string[] = [];
   const values: unknown[] = [];
   const extra: D1PreparedStatement[] = [];
+  /* Where the unblocked insert sits in the batch, when there is one. */
+  let unblocked = -1;
   if (body.name !== undefined) {
     sets.push(`name = ?${values.length + 2}`);
     values.push(parseName(body.name, 30));
@@ -97,15 +113,19 @@ export async function patchStage(request: Request, env: Env, viewer: Viewer, id:
     values.push(category);
     /* The tasks in it open or close with the stage. */
     if (isClosing(category) !== isClosing(stage.category)) {
-      extra.push(
-        isClosing(category)
-          ? db.prepare(`UPDATE tasks SET completed_at = ?2 WHERE stage_id = ?1 AND completed_at IS NULL`).bind(id, nowIso())
-          : db.prepare(`UPDATE tasks SET completed_at = NULL WHERE stage_id = ?1`).bind(id),
-      );
+      if (isClosing(category)) {
+        const closed = await openIn(db, id);
+        extra.push(db.prepare(`UPDATE tasks SET completed_at = ?2 WHERE stage_id = ?1 AND completed_at IS NULL`).bind(id, nowIso()));
+        /* extra follows the stage update, so its length is the batch index. */
+        if (closed.length) unblocked = extra.push(unblockedStatement(db, closed, viewer.user.id));
+      } else {
+        extra.push(db.prepare(`UPDATE tasks SET completed_at = NULL WHERE stage_id = ?1`).bind(id));
+      }
     }
   }
   if (sets.length === 0) throw badRequest("Nothing to update");
-  await db.batch([db.prepare(`UPDATE stages SET ${sets.join(", ")} WHERE id = ?1`).bind(id, ...values), ...extra]);
+  const done = await db.batch([db.prepare(`UPDATE stages SET ${sets.join(", ")} WHERE id = ?1`).bind(id, ...values), ...extra]);
+  if (unblocked >= 0) changes.notify(unblockedAudience(done[unblocked]), "inbox");
   /* A new category can close or reopen every task in it: the boards list's counts. */
   const topics = extra.length ? (["boards"] as const) : [];
   changes.board(await boardAudience(db, stage.board_id), { board: stage.board_id }, ...topics);
@@ -148,8 +168,10 @@ export async function deleteStage(env: Env, viewer: Viewer, id: string, url: URL
   const moveTo = url.searchParams.get("moveTo");
   const target = rest.find((s) => s.id === moveTo);
   if ((count?.n ?? 0) > 0 && !target) throw badRequest("This stage has tasks; pass `moveTo` with another stage's id");
+  /* Moved into a closing stage, its open tasks close. */
+  const closed = target && isClosing(target.category) && (count?.n ?? 0) > 0 ? await openIn(db, id) : [];
 
-  await db.batch([
+  const done = await db.batch([
     ...(target
       ? [
           db
@@ -161,11 +183,13 @@ export async function deleteStage(env: Env, viewer: Viewer, id: string, url: URL
             .bind(id, target.id, isClosing(target.category) ? 1 : 0, nowIso()),
         ]
       : []),
+    ...(closed.length ? [unblockedStatement(db, closed, viewer.user.id)] : []),
     db.prepare(`DELETE FROM stages WHERE id = ?1`).bind(id),
     ...rest.map((s, position) => db.prepare(`UPDATE stages SET position = ?2 WHERE id = ?1`).bind(s.id, position)),
   ]);
   /* Its tasks moved, maybe into a closing stage or out of one. */
   changes.board(await boardAudience(db, stage.board_id), { board: stage.board_id }, "boards");
+  if (closed.length) changes.notify(unblockedAudience(done[1]), "inbox");
   return json(await listStages(db, stage.board_id));
 }
 
