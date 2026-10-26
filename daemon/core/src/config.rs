@@ -25,6 +25,9 @@
 //! # "codex", or any other name. Left out, it's read off code_command's program.
 //! runtime = "claude-code"
 //! max_runs = 10                 # optional; runs going at once (coding tasks side by side)
+//! # Optional, off by default: a task waiting on one of the agent's own carries on in its
+//! # worktree and, with Claude Code, its session (chain.rs, COPL-189).
+//! resume_chains = false
 //! ```
 //!
 //! `code_dir = "~/copland"` (top level, optional) is where repos are cloned and tasks'
@@ -135,6 +138,9 @@ pub struct AgentConfig {
     pub code_dir: PathBuf,
     /// Runs going at once, at most. Only coding tasks run side by side; the rest share `workdir`, one at a time.
     pub max_runs: usize,
+    /// A task that waits on one of the agent's own closed tasks, on the same repo, carries on where
+    /// that one left off: in its worktree, and with Claude Code in its session (`chain.rs`, COPL-189).
+    pub resume_chains: bool,
 }
 
 #[derive(Deserialize)]
@@ -172,6 +178,7 @@ struct RawAgent {
     writable: Vec<String>,
     runtime: Option<String>,
     max_runs: Option<usize>,
+    resume_chains: Option<bool>,
 }
 
 /// The runtime an agent's coding runs start (COPL-141): `runtime =` in its config, else read off
@@ -370,6 +377,7 @@ impl Config {
                 runtime,
                 code_dir: code_dir.clone(),
                 max_runs,
+                resume_chains: a.resume_chains.unwrap_or(false),
             });
         }
         let owner = match (raw.owner_token, raw.owner_token_file) {
@@ -533,11 +541,12 @@ mod tests {
         let plain = parse(&base).unwrap();
         let a = &plain.agents[0];
         assert_eq!(a.max_runs, DEFAULT_MAX_RUNS);
+        assert!(!a.resume_chains, "chains start cold unless asked");
         assert!(a.code_command.is_none() && a.writable.is_empty());
         assert_eq!(a.code_dir, expand_home(DEFAULT_CODE_DIR));
         assert_eq!(plain.min_free_gb, DEFAULT_MIN_FREE_GB);
         let coding = parse(&format!(
-            "code_dir=\"/c\"\nmin_free_gb=5\n{base}code_command=[\"y\",\"{{prompt}}\"]\nwritable=[\"/s\"]\nmax_runs=3\n"
+            "code_dir=\"/c\"\nmin_free_gb=5\n{base}code_command=[\"y\",\"{{prompt}}\"]\nwritable=[\"/s\"]\nmax_runs=3\nresume_chains=true\n"
         ))
         .unwrap();
         let a = &coding.agents[0];
@@ -547,6 +556,7 @@ mod tests {
         );
         assert_eq!(a.writable, vec![PathBuf::from("/s")]);
         assert_eq!((a.max_runs, a.code_dir.clone()), (3, PathBuf::from("/c")));
+        assert!(a.resume_chains);
         assert_eq!(coding.min_free_gb, 5);
         assert!(parse(&format!("{base}max_runs=0\n")).is_err());
         assert!(parse(&format!("{base}max_runs=51\n")).is_err());

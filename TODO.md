@@ -112,10 +112,18 @@ docs/DESIGN.md under Touch.
       --output-format json` result, and a fake runtime through the runner;
       no daemon run has reported one to a deployed Copland yet. Codex runs
       send no usage (it reports it only in `codex exec --json`'s events),
-      and nothing yet sets `resumed`: that waits on COPL-188's resume. A run
+      and only a chain's resumed Claude Code run sets `resumed` (COPL-189). A run
       the daemon stops (its review_first PR open five minutes, COPL-193, the
       ceiling, a stop from the box) never prints its result, so it reports
       nothing either.
+- [ ] Chains (COPL-189, `resume_chains`) were tested with git worktrees in
+      `cargo test`, and a fake `claude` through the sandbox for the
+      `--resume` argv, the prompt and `resumed`; no real chain has run yet.
+      Untried: `claude --resume` on a session file copied to the worktree's
+      new project folder (the daemon copies it because Claude Code finds
+      sessions by directory), and whether a resumed chain costs more than a
+      cold one, which is the decision task's to compare. Codex resumes
+      nothing (`--ephemeral`); `codex exec resume` would be its equivalent.
 - [ ] A runtime that calls `finish_run` completed itself, with its task still
       active, isn't caught by the daemon's check for unfinished runs
       (COPL-147): a finished run can't be finished again as failed, so the
