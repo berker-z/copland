@@ -165,6 +165,10 @@ owner_url = "https://copland.example.com"       # only when the agents are on mo
 4. **Runtimes.** It lists `claude` and `codex` as found on PATH with their versions, then asks per agent for one, by number or name (Enter: the first found, Claude Code before Codex, as the box does), and for its workdir (Enter: `~/agents/<name>`). With none found it says what to install and stops.
 5. **Save and check.** It writes `daemon.toml`, keeping one already there as `daemon.toml.bak` (or `.bak.2`, …), makes the workdirs, runs the preflight on it and offers each failing check's fix, as `--check --fix` does. It ends saying to connect your own Claude Code or claude.ai to `<url>/mcp` as "you", and to start the daemon with `copland-daemon`.
 
+### One daemon per config
+
+A config is run by one process at a time: `copland-daemon` and the box (which runs the same loop in itself) both take an exclusive `flock` on `$XDG_RUNTIME_DIR/copland/daemon-<hash>.lock` before starting the agents, the hash a SHA-256 of the config's canonical path, and hold it while they run. A second start on the same config stops there with `a daemon is already running <config> (pid N, copland-daemon); stop it, or give this one a config of its own with --config` and exits non-zero; the box says the same in its window. The kernel lets the lock go when the holder exits or crashes, so there is never a stale one to clean up; the file only holds the holder's pid and binary. Without `XDG_RUNTIME_DIR` (macOS, some sessions) it goes where the MCP configs go, the temp dir. `--check` doesn't take it. `copland_daemon_core::lock::running` says whether a config is being run, and by whom, without taking it (`core/src/lock.rs`).
+
 ### Checking a machine
 
 The preflight (`core/src/preflight.rs`, COPL-161) says whether this machine can run its agents before a run finds out. `copland-daemon --check` and `copland-box --check` (no window) both run it and print one line per check, `✓` ok, `!` worth a look, `✗` failed, with the fix under each that isn't ok; either exits non-zero when one failed. `copland-box --check` starts with the line `log: <path>`, where the box's own log is (see "Its log"). `--check --fix`, on either, then goes through the ones with a fix it can run, shows what it would run and asks y/N on the terminal for each, runs the ones you say yes to with the terminal handed to them (a login can open a browser or ask things), and checks again. Every program a check starts gets ten seconds, and nothing printed holds a secret.
@@ -490,7 +494,7 @@ Run `npm run dev` at the repo root, make an agent and a board in the app (or thr
 
 ## Known gaps
 
-- Two daemons running the same agent work fine against each other (claims keep them off the same task), but each launches its own run on a restart for whatever is unread.
+- Two daemons on different configs that name the same agent work fine against each other (claims keep them off the same task), but each launches its own run on a restart for whatever is unread. Two on one config can't happen: the second refuses to start (One daemon per config, above).
 - No backoff beyond the poll interval for a runtime that keeps failing on new items.
 - A board with several repos: coding runs work in the first one.
 - A launch to answer on someone else's task wakes on plain comments too, once the agent has taken part there. Two agents answering each other in one thread would keep each other going; nothing stops that yet beyond the agent marking its inbox read.
