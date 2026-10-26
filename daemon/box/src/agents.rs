@@ -30,12 +30,12 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::edit;
 use crate::feed::Feed;
-use crate::runtime::{self, Found, Runtime};
 use crate::scene::{Line, Role, Span};
 use crate::setup::{self, Choice, LineInput};
 use crate::view::BoxView;
 use crate::wizard::{Panel, Typed, Wait, key, type_into};
 use crate::write;
+use copland_daemon_core::runtime::{self, Found, Runtime};
 
 /// Agents listed at once; the rest scroll with the selection.
 const ROWS: usize = 3;

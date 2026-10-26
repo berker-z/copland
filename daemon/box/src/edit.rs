@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use copland_daemon_core::Config;
 
-use crate::runtime::Runtime;
 use crate::setup::{self, render_binding};
+use copland_daemon_core::runtime::Runtime;
 
 /// One statement: a table header, a key (to the end of its value, however many lines), or a
 /// comment or blank line. Byte ranges into the text, whole lines with their newline.
@@ -368,7 +368,7 @@ mod tests {
             runtime: Runtime::ClaudeCode,
             workdir: dir.display().to_string(),
         };
-        render_config(&saved, &[choice.clone(), choice])
+        render_config(crate::setup::CLIENT, &saved, &[choice.clone(), choice])
     }
 
     fn parse(text: &str) -> Config {
