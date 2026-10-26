@@ -17,10 +17,10 @@ use copland_daemon_core::api::{Api, ApiError, DevicePoll, DeviceStart};
 use copland_daemon_core::preflight::{self, Action, Check, Status};
 use gpui::{ClipboardItem, Context, KeyDownEvent, Task};
 
-use crate::runtime::{self, Found};
 use crate::scene::{Line, Role, Span};
 use crate::setup::{self, Choice, LineInput, Saved};
 use crate::view::BoxView;
+use copland_daemon_core::runtime::{self, Found};
 
 /// Agents shown at once on the runtimes step; the rest scroll with the selection.
 const AGENT_ROWS: usize = 3;
@@ -401,7 +401,7 @@ impl Wizard {
         agents: &[copland_daemon_core::api::DeviceIdentity],
         cx: &mut Context<BoxView>,
     ) {
-        match setup::save_tokens(&self.config, url, owner, agents) {
+        match setup::save_tokens(&self.config, setup::CLIENT, url, owner, agents) {
             Ok(saved) => {
                 tracing::info!(
                     agents = saved.agents.len(),
@@ -461,7 +461,7 @@ impl Wizard {
                 workdir: setup::default_workdir(&setup::agent_name(&a.handle)),
             })
             .collect();
-        let result = setup::write_config(&self.config, saved, &choices).and_then(|backup| {
+        let result = setup::write_config(&self.config, setup::CLIENT, saved, &choices).and_then(|backup| {
             if let Some(b) = backup {
                 tracing::info!("kept the old config as {}", b.display());
             }
