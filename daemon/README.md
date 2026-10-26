@@ -205,6 +205,8 @@ The preflight (`core/src/preflight.rs`, COPL-161) says whether this machine can 
 
 With no agent that has a `code_command`, nothing clones or commits, so git, github and code_dir only warn when they would fail.
 
+**Each board repo** (COPL-178) is checked by the daemon itself, not by `--check`: whether this machine can clone it and push to it, as a coding run would (`preflight::repo_access`). Clone is `git ls-remote <remote> HEAD`; push is `git push --dry-run` of a throwaway empty commit, made in a temp dir, to `refs/heads/copland-push-check`, which connects as a push does (so a remote that would refuse it, GitHub's 403 for a login without write access, says so) and sends nothing and makes no branch. GitHub and plain git remotes get the same check. Prompts are off as for github above, each git gets ten seconds, and a login in a URL is taken out of what it says. An agent with a `code_command` checks every repo on its boards when its loop starts, and a repo it hasn't checked yet (a board's repos changed) when a task on it comes up, not every poll; a failed one is checked again when a task on it comes up ten minutes or more later, so a fixed login is picked up without a restart. It doesn't claim a task (a worker's) on a repo it can't push to, or lead one on a repo it can't clone: the task stays in todo, unclaimed, for a machine that can, the log says why, and `copland-daemon status` lists the repo under `repos` and in `needs`. Each result is `{ repo, clone, push, detail }`, the host report's `RepoCapability`.
+
 ### Screenshots
 
 A coding run can start Copland's dev server and take screenshots of it in a headless browser, inside the sandbox, to see a UI change before it opens the PR (COPL-120). The daemon needs nothing for it beyond the `writable` above, and `daemon.toml` has no setting for it:
@@ -267,9 +269,15 @@ The JSON is a contract. `version` is 1; fields are only ever added, never rename
       "since": "2026-10-04T23:20:41Z",
       "worktree": "/code/repo/T-1" // null in the agent's workdir, or before it is made
     }],
+    "repos": [{                   // each board repo checked from here (COPL-178); [] without a code_command
+      "repo": "o/r",              // owner/name, or a plain remote without its scheme
+      "clone": true,
+      "push": false,              // false: its coding tasks are left in todo for a machine that can
+      "detail": "clones, but can't push: Permission to o/r.git denied to me." // null when both work
+    }],
     "missing": "bwrap not found on PATH: coding runs can't start", // what this machine lacks; its runs wait
     "needs": [{                   // what needs the owner
-      "why": "missing",           // stopped (not watching), missing (runs can't start) or failed (the last run)
+      "why": "missing",           // stopped (not watching), missing (runs can't start), repo (one it can't push to) or failed (the last run)
       "says": "bwrap not found on PATH: coding runs can't start"
     }],
     "last_error": "…",            // the last thing that went wrong, cleared by the next good poll

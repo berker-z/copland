@@ -62,6 +62,11 @@ pub struct Agent {
     pub out_of_usage_until: Option<String>,
     /// Every run going, oldest first.
     pub runs: Vec<Run>,
+    /// Each board repo checked from this machine (COPL-178): coding tasks on one it can't push to
+    /// are left in todo for a machine that can, and say so in `needs`. Added after version 1
+    /// shipped, so an older daemon's status has none.
+    #[serde(default)]
+    pub repos: Vec<Repo>,
     /// What this machine lacks to start its runs, which wait until it is there.
     pub missing: Option<String>,
     /// What needs the owner to do something about this agent.
@@ -82,6 +87,17 @@ pub struct Run {
     pub since: String,
     /// Where it works, once made; None in the agent's workdir.
     pub worktree: Option<String>,
+}
+
+/// One board repo, as this machine reaches it: what the host report sends as a capability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Repo {
+    /// "owner/name", or a plain remote without its scheme.
+    pub repo: String,
+    pub clone: bool,
+    pub push: bool,
+    /// One line on why not; None when both work.
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,7 +122,8 @@ pub struct LastRun {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Need {
-    /// stopped (the agent isn't watching), missing (its runs can't start) or failed (its last run).
+    /// stopped (the agent isn't watching), missing (its runs can't start), repo (a repo it can't
+    /// push to, whose coding tasks it leaves) or failed (its last run).
     pub why: String,
     pub says: String,
 }
@@ -191,6 +208,13 @@ impl Agent {
                 says: m.clone(),
             });
         }
+        for r in a.repos.iter().filter(|r| !(r.clone && r.push)) {
+            let why = r.detail.as_deref().unwrap_or("its check failed").trim_end_matches('.');
+            needs.push(Need {
+                why: "repo".into(),
+                says: format!("{}: {why}; its coding tasks are left for a machine that can", r.repo),
+            });
+        }
         if let Some(r) = a.last_run.as_ref().filter(|r| r.failed) {
             let how = r.how.as_deref().unwrap_or(&r.outcome);
             needs.push(Need {
@@ -234,6 +258,16 @@ impl Agent {
                         since: rfc3339(r.since),
                         worktree: r.worktree.as_ref().map(|p| p.display().to_string()),
                     }
+                })
+                .collect(),
+            repos: a
+                .repos
+                .iter()
+                .map(|r| Repo {
+                    repo: r.repo.clone(),
+                    clone: r.clone,
+                    push: r.push,
+                    detail: r.detail.clone(),
                 })
                 .collect(),
             missing: a.missing.clone(),
@@ -391,6 +425,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::api::RepoCapability;
     use crate::state::RunSummary;
 
     /// 2026-10-04 23:20:41 UTC.
@@ -418,6 +453,20 @@ mod tests {
         a.run_worktree("aaaa", PathBuf::from("/code/repo/T-1"));
         a.missing = Some("bwrap not found on PATH: coding runs can't start".into());
         a.last_error = a.missing.clone();
+        a.repos = vec![
+            RepoCapability {
+                repo: "o/ok".into(),
+                clone: true,
+                push: true,
+                detail: None,
+            },
+            RepoCapability {
+                repo: "o/ro".into(),
+                clone: true,
+                push: false,
+                detail: Some("clones, but can't push: Permission to o/ro.git denied to me.".into()),
+            },
+        ];
         a.last_run = Some(RunSummary {
             run: "cccc".into(),
             task: "T-9".into(),
@@ -490,9 +539,22 @@ mod tests {
                             "worktree": null
                         }
                     ],
+                    "repos": [
+                        { "repo": "o/ok", "clone": true, "push": true, "detail": null },
+                        {
+                            "repo": "o/ro",
+                            "clone": true,
+                            "push": false,
+                            "detail": "clones, but can't push: Permission to o/ro.git denied to me."
+                        }
+                    ],
                     "missing": "bwrap not found on PATH: coding runs can't start",
                     "needs": [
                         { "why": "missing", "says": "bwrap not found on PATH: coding runs can't start" },
+                        {
+                            "why": "repo",
+                            "says": "o/ro: clones, but can't push: Permission to o/ro.git denied to me; its coding tasks are left for a machine that can"
+                        },
                         { "why": "failed", "says": "T-9 exit 1 after 3.8s" }
                     ],
                     "last_error": "bwrap not found on PATH: coding runs can't start",
@@ -525,7 +587,9 @@ mod tests {
         assert_eq!(serde_json::from_value::<Status>(v.clone()).unwrap(), s);
         /* A daemon from before `held` says nothing of it: not held. */
         v["agents"][0].as_object_mut().unwrap().remove("held");
-        assert!(!serde_json::from_value::<Status>(v).unwrap().agents[0].held);
+        v["agents"][0].as_object_mut().unwrap().remove("repos");
+        let old = serde_json::from_value::<Status>(v).unwrap();
+        assert!(!old.agents[0].held && old.agents[0].repos.is_empty());
     }
 
     #[test]
@@ -648,6 +712,7 @@ mod tests {
              ● messages: run bbbb since 23:20 UTC\n  \
              4 unread · todo T-2 · 1 message waiting\n  \
              × bwrap not found on PATH: coding runs can't start\n  \
+             × o/ro: clones, but can't push: Permission to o/ro.git denied to me; its coding tasks are left for a machine that can\n  \
              × T-9 exit 1 after 3.8s\n  \
              last run cccc on T-9: failed, exit 1 after 3.8s, ended 23:21 UTC\n    \
              log /state/runs/cccc.log\n\
