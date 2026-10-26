@@ -8,7 +8,8 @@
    it) and blocked; done ones only inside the window; backlog, cancelled,
    deleted, old done, other people's and their agents' tasks, and boards sam
    isn't on never show; a task with two of sam's agents shows once, as the
-   claimer's.
+   claimer's. Each agent says where it runs (COPL-183): its reported hosts,
+   which are live, and live on two at once; a live task its run's host.
    ========================================================================== */
 
 import { d1, sqlite } from "./worker.ts";
@@ -62,14 +63,23 @@ task("sams", "todo", ["sam"]);
 task("kims bots", "todo", ["bot"]);
 task("elsewhere", "todo", ["dev"], { board: "b2" });
 db.exec(`
-  INSERT INTO runs (id, user_id, token_id, token_hash, client, status, started_at, last_seen_at) VALUES ('r1', 'ops', 'tok', 'hr', 'claude-code', 'running', '${ago(HOUR)}', '${ago(0)}');
+  INSERT INTO runs (id, user_id, token_id, token_hash, client, status, started_at, last_seen_at, host) VALUES ('r1', 'ops', 'tok', 'hr', 'claude-code', 'running', '${ago(HOUR)}', '${ago(0)}', 'laptop');
+  INSERT INTO agent_hosts (user_id, hostname, version, capabilities, first_reported_at, last_reported_at) VALUES
+    ('ops', 'laptop', '0.3.0', '{"runtimes":[],"repos":[]}', '${ago(2 * HOUR)}', '${ago(HOUR)}'),
+    ('ops', 'server', '0.3.0', '{"runtimes":[],"repos":[]}', '${ago(2 * HOUR)}', '${ago(0)}'),
+    ('dev', 'old-box', '0.2.0', '{"runtimes":[],"repos":[]}', '${ago(48 * HOUR)}', '${ago(48 * HOUR)}');
   INSERT INTO task_claims (task_id, run_id, user_id, claimed_at, claimed_until) VALUES ('claimed', 'r1', 'ops', '${ago(HOUR)}', '${ago(-HOUR)}');
 `);
 
 const sam = {
   user: { id: "sam", kind: "person", email: "sam@x.test", handle: "sam", avatar: null, isAdmin: false, ownerId: null },
 } as Viewer;
-const env = { DB: d1(db) } as unknown as Parameters<typeof getWired>[0];
+/* ops's daemon is live on laptop and server at once, both through its token; dev's on nothing. */
+const sockets: Record<string, { tokenId: string; host: string | null }[]> = {
+  ops: [{ tokenId: "tok", host: "laptop" }, { tokenId: "tok", host: "server" }],
+};
+const LIVE = { idFromName: (name: string) => name, get: (id: string) => ({ listening: async () => sockets[id] ?? [] }) };
+const env = { DB: d1(db), LIVE } as unknown as Parameters<typeof getWired>[0];
 const wired = (await (await getWired(env, sam)).json()) as Wired;
 const keys = (list: Wired["todo"]) => list.map((w) => w.title).join(",");
 const all = [...wired.todo, ...wired.doing, ...wired.blocked, ...wired.done];
@@ -81,6 +91,12 @@ t("an active task no run holds is doing, not live", keys(wired.doing) === "claim
 t("a blocked task is on blocked", keys(wired.blocked) === "stuck");
 t("done inside the window is on done", keys(wired.done) === "recent" && wired.doneCount === 1);
 t("a task with two of sam's agents shows once, as the claimer's", all.filter((w) => w.title === "claimed").length === 1 && wired.doing[0].agentId === "ops");
+const [dev, ops] = wired.agents;
+t("an agent lists its hosts, the latest first, with which are live", JSON.stringify(ops?.hosts) === JSON.stringify([{ hostname: "server", live: true }, { hostname: "laptop", live: true }]));
+t("live on two hosts at once is flagged", ops?.liveOnTwoHosts === true);
+t("a host it reported but isn't live on is not live, and one host is no warning", JSON.stringify(dev?.hosts) === JSON.stringify([{ hostname: "old-box", live: false }]) && !dev.liveOnTwoHosts);
+t("a live task says its run's host", wired.doing[0]?.host === "laptop");
+t("a task no run holds says no host", wired.doing[1]?.host === null && wired.todo[0]?.host === null);
 for (const hidden of ["parked", "old", "dropped", "gone", "sams", "kims bots", "elsewhere"]) {
   t(`"${hidden}" does not show`, !all.some((w) => w.title === hidden));
 }

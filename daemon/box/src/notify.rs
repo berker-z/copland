@@ -444,6 +444,7 @@ mod tests {
             agent_id: "a1".into(),
             since: None,
             live: false,
+            host: None,
         }
     }
 
@@ -477,6 +478,8 @@ mod tests {
                         handle: "me/dev".into(),
                         name: "dev".into(),
                         paused: false,
+                        hosts: Vec::new(),
+                        live_on_two_hosts: false,
                     }],
                     todo: vec![],
                     doing: vec![],
