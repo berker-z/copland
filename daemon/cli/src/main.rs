@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     /* One daemon per config (COPL-175): held until the process ends. */
-    let _lock = Lock::take(&path, &default_runtime_dir(), "copland-daemon")?;
+    let lock = Lock::take(&path, &default_runtime_dir(), "copland-daemon")?;
     tracing::info!(config = %path.display(), agents = config.agents.len(), poll = ?config.poll_interval, "starting");
 
     let mut daemon = Daemon::start(
@@ -93,6 +93,7 @@ async fn main() -> Result<()> {
             state_dir: default_state_dir(),
             runtime_dir: default_runtime_dir(),
         },
+        Some(lock.socket()),
     )?;
     let mut term = signal(SignalKind::terminate())?;
     let mut int = signal(SignalKind::interrupt())?;

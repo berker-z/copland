@@ -10,6 +10,7 @@
 //! next loop for an agent starts only once the last one has ended, an agent
 //! never has two loops, or two runs, at once.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,6 +24,7 @@ use crate::api::Api;
 use crate::config::{AgentConfig, Config};
 use crate::guard::WakeGuard;
 use crate::reload::{self, Plan};
+use crate::socket::Server;
 use crate::state::{AgentState, DaemonState, Phase};
 
 /// One agent as the daemon runs it.
@@ -46,6 +48,8 @@ pub struct Daemon {
     poll: Duration,
     paths: Arc<Paths>,
     next_slot: u64,
+    /// The status socket, served while this lives (COPL-184).
+    socket: Option<Server>,
 }
 
 /// Stops one run of this daemon by hand: the agent's loop sends its runtime's process group
@@ -53,7 +57,7 @@ pub struct Daemon {
 /// task's items in its wake guard, as after any run, so it doesn't start again on them. Safe to
 /// call from any thread; asking for a run that has already ended does nothing.
 #[derive(Clone)]
-pub struct RunStopper(watch::Sender<StopRequest>);
+pub struct RunStopper(pub(crate) watch::Sender<StopRequest>);
 
 impl RunStopper {
     /// Stop `run` (the short id `Phase::Running` shows) of the agent in `slot` (`AgentState::slot`).
@@ -71,8 +75,9 @@ pub struct Reloaded {
 }
 
 impl Daemon {
-    /// Start every agent's loop. Must be called inside a Tokio runtime.
-    pub fn start(config: Config, paths: Paths) -> Result<Self> {
+    /// Start every agent's loop, and serve the status socket at `socket` (`Lock::socket`) until
+    /// the daemon is dropped. Must be called inside a Tokio runtime.
+    pub fn start(config: Config, paths: Paths, socket: Option<PathBuf>) -> Result<Self> {
         for agent in &config.agents {
             Api::new(&agent.url)?;
         }
@@ -90,7 +95,11 @@ impl Daemon {
             poll: config.poll_interval,
             paths: Arc::new(paths),
             next_slot: 1,
+            socket: None,
         };
+        if let Some(path) = socket {
+            daemon.socket = Some(Server::start(&path, daemon.subscribe(), daemon.run_stopper())?);
+        }
         for agent in config.agents {
             let slot = daemon.spawn(agent, None);
             daemon.slots.push(slot);
@@ -368,8 +377,10 @@ mod tests {
         let mut d = Daemon::start(
             config(vec![agent("me/dev", "claude"), agent("me/old", "claude")]),
             paths,
+            Some(dir.join("daemon.sock")),
         )
         .unwrap();
+        assert!(dir.join("daemon.sock").exists());
         let mut st = d.subscribe();
         assert_eq!(
             handles(&st.borrow()),
@@ -408,6 +419,9 @@ mod tests {
             .await
             .expect("stopped");
         assert!(d.reload(config(vec![agent("me/dev", "claude")])).is_err());
+        /* The socket goes with the daemon. */
+        drop(d);
+        assert!(!dir.join("daemon.sock").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
