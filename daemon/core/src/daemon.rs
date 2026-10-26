@@ -379,6 +379,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
+            resume_chains: false,
         }
     }
 
