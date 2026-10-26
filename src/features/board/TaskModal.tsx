@@ -21,7 +21,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link, useMatch } from "react-router";
 import { Check, Link2, Pencil } from "lucide-react";
 import { Avatar, peopleFirst } from "@/ui/Avatar";
-import { LEVELS, PRIORITIES, type BoardDetail, type Task } from "@/domain/types";
+import { spentLine, tokenBreakdown } from "@/domain/runs";
+import { LEVELS, PRIORITIES, type BoardDetail, type Spent, type Task } from "@/domain/types";
 import { taskPath } from "@/domain/tasks";
 import { useTaskOverlap } from "@/lib/queries";
 import { useDeleteTask, useUpdateTask, type TaskPatch } from "@/lib/tasks";
@@ -210,6 +211,16 @@ export function TaskModal({ detail, taskId, onClose, onEdit }: TaskModalProps) {
   );
 }
 
+function SpentRow({ spent }: { spent: Spent }) {
+  return (
+    <Row label="spent" text>
+      <span className="text-ink" title={`${tokenBreakdown(spent)}; ${spent.turns} turns, ${Math.round(spent.durationMs / 60000)} min`}>
+        {spentLine(spent)}
+      </span>
+    </Row>
+  );
+}
+
 /* Reading: what is set, as text. */
 function TaskView({ detail, task }: { detail: BoardDetail; task: Task }) {
   const stage = detail.stages.find((s) => s.id === task.stageId);
@@ -286,6 +297,9 @@ function TaskView({ detail, task }: { detail: BoardDetail; task: Task }) {
           </span>
         </Row>
       )}
+
+      {/* What its runs cost (COPL-71): a parent's whole subtree, itself included; a task's own runs. */}
+      {(count?.spent ?? task.spent) && <SpentRow spent={(count?.spent ?? task.spent)!} />}
 
       {task.parentId && (
         <Row label="parent" text>

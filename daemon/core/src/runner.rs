@@ -17,12 +17,17 @@ use crate::api::{Api, Backoff, Run};
 use crate::config::{AgentConfig, Secret, fill_command};
 use crate::guard::Message;
 use crate::sandbox::{self, Writable};
+use crate::usage::{self, Usage};
 use crate::workspace::{self, Changes, Workspace};
 
 /// How often a live runtime's run is kept alive. The lease is ten minutes.
 pub const KEEPALIVE: Duration = Duration::from_secs(120);
 /// How long a runtime gets between SIGTERM and SIGKILL.
 pub const GRACE: Duration = Duration::from_secs(10);
+
+/// How long the runtime's stdout is still read once it has exited: whatever it left running can
+/// hold the pipe open, and its result line came before it exited.
+const DRAIN: Duration = Duration::from_secs(5);
 
 /// How long a runtime may run before the daemon stops it and fails the run. Fixed, on purpose.
 pub const CEILING: Duration = Duration::from_secs(2 * 60 * 60);
@@ -232,13 +237,14 @@ pub const REASON_MAX: usize = 160;
 /// its setup, not the task.
 pub const FAST: Duration = Duration::from_secs(10);
 
-/// How a runtime's run went (COPL-136): its exit, how long it ran, and whether it wrote
-/// anything to the log after the daemon's header.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// How a runtime's run went (COPL-136): its exit, how long it ran, whether it wrote anything to
+/// the log after the daemon's header, and what it cost when it said (COPL-71).
+#[derive(Debug, Clone, PartialEq)]
 pub struct Ended {
     pub exit: Exit,
     pub took: Duration,
     pub silent: bool,
+    pub usage: Option<Usage>,
 }
 
 impl Ended {
@@ -419,13 +425,15 @@ async fn run_until(
     let log = log_path(launch.state_dir, launch.run_id);
     let started = std::time::Instant::now();
     let mut header = None;
-    let exit = supervise(launch, shutdown, cancel, limits, &mut header).await;
+    let mut usage = None;
+    let exit = supervise(launch, shutdown, cancel, limits, &mut header, &mut usage).await;
     /* Silent: nothing after the header, or no header at all (it never got that far). */
     let silent = header.is_none_or(|len| fs::metadata(&log).map_or(true, |m| m.len() <= len));
     let ended = Ended {
         exit,
         took: started.elapsed(),
         silent,
+        usage,
     };
     let footer = (|| -> Result<()> {
         private_dir(log.parent().expect("log path has a parent"))?;
@@ -439,13 +447,15 @@ async fn run_until(
 }
 
 /// Start the runtime and wait for it, as `run` says. `header` is set to the log's length once
-/// the daemon's header is in it, so what the runtime wrote after can be told from nothing.
+/// the daemon's header is in it, so what the runtime wrote after can be told from nothing, and
+/// `usage` to what its result line said it cost (`copy_stdout`).
 async fn supervise(
     launch: Launch<'_>,
     mut shutdown: watch::Receiver<bool>,
     cancel: impl std::future::Future<Output = ()>,
     limits: Limits,
     header: &mut Option<u64>,
+    usage: &mut Option<Usage>,
 ) -> Exit {
     let ceiling = limits.ceiling;
     let Launch {
@@ -538,7 +548,7 @@ async fn supervise(
         argv
     );
     *header = log_file.metadata().ok().map(|m| m.len());
-    let stderr = match log_file.try_clone() {
+    let stdout_log = match log_file.try_clone() {
         Ok(f) => f,
         Err(e) => return Exit::SpawnFailed(e.to_string()),
     };
@@ -548,8 +558,8 @@ async fn supervise(
         .args(&argv[1..])
         .current_dir(&cwd)
         .stdin(Stdio::null())
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(stderr))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(log_file))
         /* Its own process group: a Ctrl-C at the terminal reaches the daemon, not the
         runtime, and stopping it reaches whatever the runtime started too. */
         .process_group(0)
@@ -587,6 +597,10 @@ async fn supervise(
     };
     let pid = child.id();
     tracing::info!(run = %short(run_id), task = task_key, pid, log = %log.display(), "runtime started");
+    let copier = child
+        .stdout
+        .take()
+        .map(|out| tokio::spawn(copy_stdout(out, stdout_log)));
 
     tokio::pin!(cancel);
     let deadline = Instant::now() + ceiling;
@@ -668,6 +682,17 @@ async fn supervise(
             unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
         }
     }
+    if let Some(copier) = copier {
+        let abort = copier.abort_handle();
+        match timeout(DRAIN, copier).await {
+            Ok(Ok(u)) => *usage = u,
+            Ok(Err(e)) => tracing::warn!(run = %short(run_id), "reading the runtime's output: {e}"),
+            Err(_) => {
+                tracing::info!(run = %short(run_id), "something the runtime started still holds its output; no longer reading it");
+                abort.abort();
+            }
+        }
+    }
     /* The runtime is done, the run not yet finished: the last word on what the work changed. */
     if let Some(ws) = reported.filter(|_| alive) {
         reporter
@@ -675,6 +700,35 @@ async fn supervise(
             .await;
     }
     exit
+}
+
+/// The runtime's stdout into the run log as it comes, a line at a time: its result line
+/// (`usage::read_line`) as the text it stands for and a `# usage:` line, everything else as it
+/// is. Returns the usage the result line said, when there was one.
+async fn copy_stdout(out: tokio::process::ChildStdout, mut log: File) -> Option<Usage> {
+    use tokio::io::AsyncBufReadExt;
+    let mut reader = tokio::io::BufReader::new(out);
+    let mut line = Vec::new();
+    let mut usage = None;
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let written = match std::str::from_utf8(&line).ok().and_then(usage::read_line) {
+            Some(r) => {
+                let w = writeln!(log, "{}\n# usage: {}", r.text.trim_end(), r.usage.line());
+                usage = Some(r.usage);
+                w
+            }
+            None => log.write_all(&line),
+        };
+        if let Err(e) = written {
+            tracing::warn!("writing the runtime's output to its log: {e}");
+        }
+    }
+    usage
 }
 
 /// SIGTERM to the runtime's process group, then SIGKILL after the grace period.
@@ -1313,7 +1367,11 @@ mod tests {
             let _ = fs::remove_dir_all(&scratch);
             assert_eq!(ended.exit, want, "case {i}");
             if want == Exit::ForReview {
-                assert!(started.elapsed() < Duration::from_millis(1500), "took {:?}", started.elapsed());
+                assert!(
+                    started.elapsed() < Duration::from_millis(1500),
+                    "took {:?}",
+                    started.elapsed()
+                );
                 assert!(ended.reason().starts_with("stopped with its PR open for review after "));
             }
         }
@@ -1512,6 +1570,39 @@ mod tests {
         assert_eq!(ended.hint("sh"), None);
     }
 
+    /// Claude Code's JSON result (COPL-71): the run log gets its text and a usage line in its place,
+    /// what came before it as it was, and the run's ending carries the usage for its finish.
+    #[tokio::test]
+    async fn a_result_line_becomes_its_text_and_its_usage() {
+        let result = r#"{"type":"result","subtype":"success","result":"Done: opened the PR.\nAll green.","total_cost_usd":1.25,"num_turns":12,"duration_ms":242000,"usage":{"input_tokens":10,"output_tokens":2000,"cache_read_input_tokens":800000,"cache_creation_input_tokens":40000}}"#;
+        let script = format!("echo working; printf '%s\\n' '{result}'; echo after >&2");
+        let (ended, log) = ran(&["sh", "-c", &script], "usage").await;
+        assert_eq!(ended.exit, Exit::Code(0));
+        let usage = ended.usage.expect("usage");
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cache_read_tokens,
+                usage.cache_write_tokens
+            ),
+            (10, 2000, 800_000, 40_000)
+        );
+        assert_eq!((usage.cost_usd, usage.turns), (Some(1.25), Some(12)));
+        assert!(log.contains("working\n"), "{log}");
+        assert!(
+            log.contains("Done: opened the PR.\nAll green.\n# usage: $1.25 · 842k tokens (in 10, out 2k, cache read 800k, cache write 40k) · 12 turns · 4m 2s\n"),
+            "{log}"
+        );
+        assert!(!log.contains("\"type\":\"result\""), "{log}");
+        assert!(log.contains("after\n"), "{log}");
+
+        /* A runtime that prints no result has no usage, and its output is as it was. */
+        let (ended, log) = ran(&["sh", "-c", "printf 'no newline at the end'"], "plain").await;
+        assert_eq!(ended.usage, None);
+        assert!(log.contains("no newline at the end"), "{log}");
+    }
+
     /// A runtime that can't be started: the error is the log's last line and the reason.
     #[tokio::test]
     async fn a_spawn_failure_says_why() {
@@ -1539,6 +1630,7 @@ mod tests {
             exit,
             took: Duration::from_millis(3800),
             silent: true,
+            usage: None,
         };
         assert_eq!(ended(Exit::Code(1)).reason(), "exit 1 after 3.8s");
         assert_eq!(ended(Exit::Signal(9)).reason(), "signal 9 after 3.8s");

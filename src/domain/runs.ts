@@ -17,6 +17,8 @@
    lease so the tasks they held go back (COPL-97).
    ========================================================================== */
 
+import type { RunUsage, Spent } from "./types";
+
 export const RUN_KINDS = ["supervised", "interactive"] as const;
 export type RunKind = (typeof RUN_KINDS)[number];
 
@@ -49,6 +51,75 @@ export function runReason(value: unknown): string | null | undefined {
   const line = value.replace(/\s+/g, " ").trim();
   if (line.length > RUN_REASON_MAX) return undefined;
   return line || null;
+}
+
+/** The most a usage count may be: far past any run, well inside a safe integer. */
+export const USAGE_MAX = 1e12;
+
+/**
+ * A finish's `usage` (COPL-71) as it is stored, null when there is none, or
+ * undefined when it can't be one. Token counts are whole numbers from 0 to
+ * USAGE_MAX, all four required; costUsd, turns and durationMs are optional
+ * and null when left out; resumed is false unless said.
+ */
+export function runUsage(value: unknown): RunUsage | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) return undefined;
+  const v = value as Record<string, unknown>;
+  const count = (x: unknown) => typeof x === "number" && Number.isInteger(x) && x >= 0 && x <= USAGE_MAX;
+  const optional = (x: unknown, ok: (x: unknown) => boolean) => x === undefined || x === null || ok(x);
+  const known = new Set(["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "costUsd", "turns", "durationMs", "resumed"]);
+  if (Object.keys(v).some((k) => !known.has(k))) return undefined;
+  if (![v.inputTokens, v.outputTokens, v.cacheReadTokens, v.cacheWriteTokens].every(count)) return undefined;
+  const dollars = (x: unknown) => typeof x === "number" && Number.isFinite(x) && x >= 0 && x <= 1e6;
+  if (!optional(v.costUsd, dollars) || !optional(v.turns, count) || !optional(v.durationMs, count)) return undefined;
+  if (!optional(v.resumed, (x) => typeof x === "boolean")) return undefined;
+  return {
+    inputTokens: v.inputTokens as number,
+    outputTokens: v.outputTokens as number,
+    cacheReadTokens: v.cacheReadTokens as number,
+    cacheWriteTokens: v.cacheWriteTokens as number,
+    costUsd: (v.costUsd as number | null | undefined) ?? null,
+    turns: (v.turns as number | null | undefined) ?? null,
+    durationMs: (v.durationMs as number | null | undefined) ?? null,
+    resumed: v.resumed === true,
+  };
+}
+
+/** Every token a run's model read or wrote: in, out, and both ways through the cache. */
+export const tokensOf = (u: Pick<RunUsage, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens">) =>
+  u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWriteTokens;
+
+/** "1.2M", "48k", "312": a token count the way the app says it. */
+export function tokenCount(n: number): string {
+  const short = (x: number) => (x >= 10 ? String(Math.round(x)) : String(Math.round(x * 10) / 10));
+  if (n >= 999_500) return `${short(n / 1e6)}M`;
+  if (n >= 1e3) return `${short(n / 1e3)}k`;
+  return String(n);
+}
+
+/** "$0.84", "$12", "<$0.01": a cost the way the app says it. */
+export function dollars(usd: number): string {
+  if (usd > 0 && usd < 0.01) return "<$0.01";
+  return `$${usd.toFixed(usd >= 10 ? 0 : 2)}`;
+}
+
+/** "in 12k, out 3.1k, cache read 1.2M, cache write 40k": where the tokens went, for a tooltip. */
+export const tokenBreakdown = (u: Pick<RunUsage, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens">) =>
+  `in ${tokenCount(u.inputTokens)}, out ${tokenCount(u.outputTokens)}, cache read ${tokenCount(u.cacheReadTokens)}, cache write ${tokenCount(u.cacheWriteTokens)}`;
+
+/** "$0.84 · 1.3M tokens · 23 turns · resumed": one run's usage in a line (settings). */
+export function usageLine(u: RunUsage): string {
+  const parts = [u.costUsd === null ? null : dollars(u.costUsd), `${tokenCount(tokensOf(u))} tokens`];
+  if (u.turns !== null) parts.push(`${u.turns} turn${u.turns === 1 ? "" : "s"}`);
+  if (u.resumed) parts.push("resumed");
+  return parts.filter(Boolean).join(" · ");
+}
+
+/** "$3.20 · 4.8M tokens · 3 runs": what a task's runs cost, in a line (the task modal). */
+export function spentLine(s: Spent): string {
+  const runs = `${s.runs} run${s.runs === 1 ? "" : "s"}${s.resumed ? `, ${s.resumed} resumed` : ""}`;
+  return [dollars(s.costUsd), `${tokenCount(tokensOf(s))} tokens`, runs].join(" · ");
 }
 
 /** "stale" is never stored: it is a running run past its lease. */
