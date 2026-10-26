@@ -1,7 +1,8 @@
 //! Setup in the window (COPL-47), for a box started without a usable config or
 //! with `--setup`: the Copland address, approving this machine in the browser
-//! (a device code), the runtimes found on PATH, then daemon.toml written and the
-//! daemon started in place, without a restart.
+//! (a device code), the runtimes found on PATH, then daemon.toml written, the
+//! preflight run on it (COPL-162), and the daemon started in place, without a
+//! restart.
 //!
 //! The steps are plain state here; `Panel` is what one of them says, which the
 //! view draws under the idle poles. Network calls and runtime detection run on
@@ -13,7 +14,8 @@ use std::time::{Duration, Instant};
 
 use copland_daemon_core::Config;
 use copland_daemon_core::api::{Api, ApiError, DevicePoll, DeviceStart};
-use gpui::{Context, KeyDownEvent, Task};
+use copland_daemon_core::preflight::{self, Action, Check, Status};
+use gpui::{ClipboardItem, Context, KeyDownEvent, Task};
 
 use crate::runtime::{self, Found};
 use crate::scene::{Line, Role, Span};
@@ -22,6 +24,8 @@ use crate::view::BoxView;
 
 /// Agents shown at once on the runtimes step; the rest scroll with the selection.
 const AGENT_ROWS: usize = 3;
+/// Checks shown at once on the check step; the rest scroll with the selection.
+const CHECK_ROWS: usize = 3;
 /// RFC 8628's step when the server says to slow down.
 const SLOW_DOWN: u64 = 5;
 
@@ -101,6 +105,17 @@ pub enum Step {
         picks: Vec<usize>,
         selected: usize,
         error: Option<String>,
+    },
+    /// daemon.toml is written; the preflight on it, before the daemon starts. `checks` is None
+    /// while they run. Starting goes ahead whatever they say: a box that does no code work
+    /// needs no GitHub login.
+    Check {
+        config: Config,
+        url: String,
+        checks: Option<Vec<Check>>,
+        selected: usize,
+        /// What the last key did (copied, made), or why starting failed.
+        note: Option<(String, Role)>,
     },
 }
 
@@ -422,8 +437,8 @@ impl Wizard {
         );
     }
 
-    /// Write daemon.toml and hand the view its running daemon.
-    fn save(&mut self) -> Option<crate::view::Source> {
+    /// Write daemon.toml and go on to checking it.
+    fn save(&mut self, cx: &mut Context<BoxView>) {
         let Step::Runtimes {
             saved,
             found: Some(found),
@@ -432,10 +447,10 @@ impl Wizard {
             ..
         } = &mut self.step
         else {
-            return None;
+            return;
         };
         if found.is_empty() {
-            return None;
+            return;
         }
         let choices: Vec<Choice> = saved
             .agents
@@ -457,14 +472,78 @@ impl Wizard {
             Ok(c) => c,
             Err(e) => {
                 *error = Some(format!("{e:#}"));
-                return None;
+                return;
             }
         };
+        self.step = Step::Check {
+            config,
+            url: saved.url.clone(),
+            checks: None,
+            selected: 0,
+            note: None,
+        };
+        self.check(cx);
+    }
+
+    /// Run the preflight on the written config, again on `r`.
+    fn check(&mut self, cx: &mut Context<BoxView>) {
+        let Step::Check { config, checks, .. } = &mut self.step else {
+            return;
+        };
+        *checks = None;
+        let config = config.clone();
+        self.job(
+            async move { preflight::run(&config).await },
+            |w, list, _| {
+                if let Step::Check { checks, selected, .. } = &mut w.step {
+                    tracing::info!(
+                        "preflight: {} of {} ok",
+                        list.iter().filter(|c| c.status == Status::Ok).count(),
+                        list.len()
+                    );
+                    *selected = (*selected).min(list.len().saturating_sub(1));
+                    *checks = Some(list);
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Make the directories the selected check's fix makes, when that is all it does (the
+    /// others want a terminal), and check again.
+    fn fix(&mut self, cx: &mut Context<BoxView>) {
+        let Step::Check {
+            checks: Some(checks),
+            selected,
+            note,
+            ..
+        } = &mut self.step
+        else {
+            return;
+        };
+        let Some(dirs) = checks.get(*selected).and_then(local_fix) else {
+            return;
+        };
+        for d in &dirs {
+            if let Err(e) = std::fs::create_dir_all(d) {
+                *note = Some((format!("× making {}: {e}", setup::tilde(d)), Role::Red));
+                return;
+            }
+        }
+        *note = None;
+        self.check(cx);
+    }
+
+    /// Start the daemon on the written config: the view's next source.
+    fn launch(&mut self) -> Option<crate::view::Source> {
+        let Step::Check { config, note, .. } = &mut self.step else {
+            return None;
+        };
         let launch = self.launch.take()?;
-        match launch(config) {
+        match launch(config.clone()) {
             Ok(source) => Some(source),
             Err(e) => {
-                *error = Some(format!("starting the daemon: {e:#}"));
+                *note = Some((format!("× starting the daemon: {e:#}"), Role::Red));
                 None
             }
         }
@@ -530,7 +609,33 @@ impl Wizard {
                     "space" | "tab" | "right" if kinds > 1 => picks[*selected] = (picks[*selected] + 1) % kinds,
                     "left" if kinds > 1 => picks[*selected] = (picks[*selected] + kinds - 1) % kinds,
                     "r" => self.detect(cx),
-                    "enter" if kinds > 0 && n > 0 => return self.save(),
+                    "enter" if kinds > 0 && n > 0 => self.save(cx),
+                    _ => return None,
+                }
+            }
+            Step::Check {
+                checks, selected, note, ..
+            } => {
+                let n = checks.as_ref().map_or(0, Vec::len);
+                let on = checks.as_ref().and_then(|c| c.get(*selected));
+                match name {
+                    "up" | "k" if n > 0 => *selected = (*selected + n - 1) % n,
+                    "down" | "j" if n > 0 => *selected = (*selected + 1) % n,
+                    "r" if checks.is_some() => {
+                        *note = None;
+                        self.check(cx);
+                    }
+                    "f" if on.and_then(local_fix).is_some() => self.fix(cx),
+                    "c" if on.and_then(fix_commands).is_some() => {
+                        let text = on.and_then(fix_commands).unwrap_or_default();
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        *note = Some(("copied: paste it in a terminal, then r".into(), Role::Green));
+                    }
+                    "enter" => {
+                        let source = self.launch();
+                        cx.notify();
+                        return source;
+                    }
                     _ => return None,
                 }
             }
@@ -553,6 +658,7 @@ impl Wizard {
                 ..
             } | Step::Address { busy: true, .. }
                 | Step::Runtimes { found: None, .. }
+                | Step::Check { checks: None, .. }
         )
     }
 
@@ -750,14 +856,150 @@ impl Wizard {
                     clicks: Vec::new(),
                 }
             }
+            Step::Check {
+                url,
+                checks,
+                selected,
+                note,
+                ..
+            } => {
+                let mut lines = Vec::new();
+                let mut keys = Vec::new();
+                match checks {
+                    None => {
+                        lines.push(head("checking this machine before the agents start"));
+                        lines.push(faint(format!("runtimes, git, github, code_dir, tokens{}", self.dots())));
+                    }
+                    Some(checks) => {
+                        let bad = checks.iter().filter(|c| c.status != Status::Ok).count();
+                        lines.push(Line(
+                            match bad {
+                                0 => vec![
+                                    Span::new("ready", Role::Green),
+                                    Span::new(format!(" · all {} checks pass", checks.len()), Role::Muted),
+                                ],
+                                _ => vec![
+                                    Span::new(
+                                        format!("{bad} of {} to look at", checks.len()),
+                                        if preflight::worst(checks) == Status::Fail {
+                                            Role::Red
+                                        } else {
+                                            Role::Yellow
+                                        },
+                                    ),
+                                    Span::new(" · starting goes ahead anyway", Role::Muted),
+                                ],
+                            },
+                            None,
+                        ));
+                        let width = checks.iter().map(|c| c.name.chars().count()).max().unwrap_or(0);
+                        let first = selected
+                            .saturating_sub(CHECK_ROWS - 1)
+                            .min(checks.len().saturating_sub(CHECK_ROWS));
+                        for (i, c) in checks.iter().enumerate().skip(first).take(CHECK_ROWS) {
+                            let on = i == *selected;
+                            lines.push(Line(
+                                vec![
+                                    Span::new(if on { "› " } else { "  " }, Role::Blue),
+                                    Span::new(format!("{} ", c.status.mark()), mark_role(c.status)),
+                                    Span::new(
+                                        format!("{:<width$}  ", c.name),
+                                        if on { Role::Ink } else { Role::Muted },
+                                    ),
+                                    Span::new(c.detail.clone(), if on { Role::Muted } else { Role::Faint }),
+                                ],
+                                None,
+                            ));
+                        }
+                        let on = checks.get(*selected);
+                        let fix = on.filter(|c| c.status != Status::Ok).and_then(|c| c.fix.as_ref());
+                        match (note, fix) {
+                            (Some((n, role)), _) => lines.push(Line::one(n.clone(), *role)),
+                            (None, Some(f)) => lines.push(Line(
+                                {
+                                    let mut s = vec![Span::new(format!("fix: {}", f.description), Role::Yellow)];
+                                    if let Some(cmd) = on.and_then(fix_commands) {
+                                        s.push(Span::new(format!(" · $ {cmd}"), Role::Muted));
+                                    }
+                                    s
+                                },
+                                None,
+                            )),
+                            (None, None) => lines.push(faint(String::new())),
+                        }
+                        keys.push(key("enter", "start"));
+                        if checks.len() > 1 {
+                            keys.push(key("↑↓", "check"));
+                        }
+                        if on.and_then(local_fix).is_some() {
+                            keys.push(key("f", "fix it"));
+                        } else if on.and_then(fix_commands).is_some() {
+                            keys.push(key("c", "copy the fix"));
+                        }
+                        keys.push(key("r", "check again"));
+                    }
+                }
+                lines.push(Line(
+                    vec![
+                        Span::new("your own claude code or claude.ai: ", Role::Faint),
+                        Span::new(format!("connect {url}/mcp"), Role::Muted),
+                        Span::new(" and pick ", Role::Faint),
+                        Span::new("you", Role::Ink),
+                        Span::new(" when it asks who", Role::Faint),
+                    ],
+                    None,
+                ));
+                keys.push(quit);
+                Panel {
+                    lines,
+                    input: None,
+                    code: None,
+                    keys,
+                    clicks: Vec::new(),
+                }
+            }
         }
     }
+}
+
+fn mark_role(s: Status) -> Role {
+    match s {
+        Status::Ok => Role::Green,
+        Status::Warn => Role::Yellow,
+        Status::Fail => Role::Red,
+    }
+}
+
+/// The directories a check's fix makes, when that is all it does: the one kind of fix the
+/// window runs itself. A login or a git identity asks things, so it wants a terminal.
+fn local_fix(c: &Check) -> Option<Vec<std::path::PathBuf>> {
+    let fix = c.fix.as_ref().filter(|f| f.runnable() && c.status != Status::Ok)?;
+    fix.actions
+        .iter()
+        .map(|a| match a {
+            Action::CreateDir(d) => Some(d.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// What a check's fix runs, as commands to paste in a terminal, one after another.
+fn fix_commands(c: &Check) -> Option<String> {
+    let fix = c.fix.as_ref().filter(|f| f.runnable() && c.status != Status::Ok)?;
+    Some(
+        fix.actions
+            .iter()
+            .map(Action::describe)
+            .collect::<Vec<_>>()
+            .join(" && "),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::setup::SavedAgent;
+    use copland_daemon_core::preflight::Fix;
 
     fn wizard(step: Step) -> Wizard {
         let mut w = Wizard::new(
@@ -837,5 +1079,125 @@ mod tests {
         let all: Vec<String> = none.panel().lines.iter().map(text).collect();
         assert!(all[1].starts_with("no runtime on PATH"));
         assert!(all[2].contains("npm i -g @anthropic-ai/claude-code"));
+    }
+
+    fn check_step(checks: Option<Vec<Check>>, selected: usize) -> Step {
+        let config = Config::parse(
+            "[[agent]]\nhandle = \"me/dev\"\nurl = \"https://c.example\"\ntoken_file = \"/c/dev.token\"\nworkdir = \"/tmp\"\ncommand = [\"true\"]\n",
+            |_| Ok("cpl_x".into()),
+        )
+        .unwrap();
+        Step::Check {
+            config,
+            url: "https://c.example".into(),
+            checks,
+            selected,
+            note: None,
+        }
+    }
+
+    fn sample() -> Vec<Check> {
+        vec![
+            Check {
+                name: "claude-code".into(),
+                status: Status::Ok,
+                detail: "logged in".into(),
+                fix: None,
+            },
+            Check {
+                name: "github".into(),
+                status: Status::Warn,
+                detail: "no github.com login".into(),
+                fix: Some(Fix {
+                    description: "log in with gh".into(),
+                    actions: vec![
+                        Action::Run(vec!["gh".into(), "auth".into(), "login".into()]),
+                        Action::Run(vec!["gh".into(), "auth".into(), "setup-git".into()]),
+                    ],
+                }),
+            },
+            Check {
+                name: "code_dir".into(),
+                status: Status::Fail,
+                detail: "~/code isn't there".into(),
+                fix: Some(Fix {
+                    description: "make it".into(),
+                    actions: vec![Action::CreateDir("/tmp/copland-wizard-test/code".into())],
+                }),
+            },
+            Check {
+                name: "token @me/dev".into(),
+                status: Status::Ok,
+                detail: "read and write".into(),
+                fix: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn the_check_step_says_it_is_checking_and_how_to_connect_your_chat() {
+        let w = wizard(check_step(None, 0));
+        assert!(w.animating());
+        let p = w.panel();
+        let all: Vec<String> = p.lines.iter().map(text).collect();
+        assert!(all[1].starts_with("runtimes, git, github, code_dir, tokens"), "{all:?}");
+        assert_eq!(
+            all.last().unwrap(),
+            "your own claude code or claude.ai: connect https://c.example/mcp and pick you when it asks who"
+        );
+        assert!(p.keys.iter().all(|k| !text(k).starts_with("enter")));
+    }
+
+    #[test]
+    fn the_check_step_lists_each_check_with_the_selected_ones_fix() {
+        let w = wizard(check_step(Some(sample()), 1));
+        assert!(!w.animating());
+        let p = w.panel();
+        let all: Vec<String> = p.lines.iter().map(text).collect();
+        assert_eq!(all[0], "2 of 4 to look at · starting goes ahead anyway");
+        assert_eq!(all[1], "  ✓ claude-code    logged in");
+        assert_eq!(all[2], "› ! github         no github.com login");
+        assert_eq!(all[3], "  ✗ code_dir       ~/code isn't there");
+        assert_eq!(all[4], "fix: log in with gh · $ gh auth login && gh auth setup-git");
+        assert_eq!(all.len(), 6, "three rows at once: {all:?}");
+        let keys: Vec<String> = p.keys.iter().map(text).collect();
+        assert_eq!(keys[0], "enter  start");
+        assert!(keys.contains(&"c  copy the fix".to_string()), "{keys:?}");
+        assert!(!keys.iter().any(|k| k.starts_with("f ")));
+
+        /* The window makes a directory itself; the rows scroll to the selection. */
+        let w = wizard(check_step(Some(sample()), 3));
+        let p = w.panel();
+        let all: Vec<String> = p.lines.iter().map(text).collect();
+        assert_eq!(all[1], "  ! github         no github.com login");
+        assert_eq!(all[3], "› ✓ token @me/dev  read and write");
+        assert_eq!(all[4], "");
+        let w = wizard(check_step(Some(sample()), 2));
+        let keys: Vec<String> = w.panel().keys.iter().map(text).collect();
+        assert!(keys.contains(&"f  fix it".to_string()), "{keys:?}");
+    }
+
+    #[test]
+    fn all_passing_says_ready() {
+        let ok: Vec<Check> = sample().into_iter().filter(|c| c.status == Status::Ok).collect();
+        let all: Vec<String> = wizard(check_step(Some(ok), 0)).panel().lines.iter().map(text).collect();
+        assert_eq!(all[0], "ready · all 2 checks pass");
+    }
+
+    #[test]
+    fn only_a_fix_that_makes_directories_runs_in_the_window() {
+        let s = sample();
+        assert_eq!(local_fix(&s[1]), None);
+        assert_eq!(local_fix(&s[2]), Some(vec!["/tmp/copland-wizard-test/code".into()]));
+        assert_eq!(
+            fix_commands(&s[2]).as_deref(),
+            Some("mkdir -p /tmp/copland-wizard-test/code")
+        );
+        assert_eq!(fix_commands(&s[0]), None);
+        /* A fix on a check that passes is nothing to offer. */
+        let mut passed = s[2].clone();
+        passed.status = Status::Ok;
+        assert_eq!(local_fix(&passed), None);
+        assert_eq!(fix_commands(&passed), None);
     }
 }
