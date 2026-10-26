@@ -1,0 +1,32 @@
+[package]
+name = "copland-tray"
+description = "A tray icon for the Copland daemon: what its agents are doing, from its status socket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "copland-tray"
+path = "src/main.rs"
+
+[dependencies]
+copland-daemon-core.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+# Decodes the checked-in icons (daemon/release/tray) at startup. Exact, and the version GPUI
+# already brings, so the workspace carries one png.
+png = "=0.18.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The StatusNotifierItem over D-Bus, pure Rust, no GTK. Exact (AGENTS.md). On async-io, not its
+# default tokio: the two are exclusive in ksni, and async-io asks of zbus 5 exactly the features
+# the box's `zbus =5.13.2` has, so the workspace keeps one zbus, built one way.
+ksni = { version = "=0.3.7", default-features = false, features = ["async-io"] }
+
+[dev-dependencies]
+serde_json.workspace = true

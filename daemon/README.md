@@ -319,13 +319,26 @@ copland-daemon status --config ~/work.toml
 
 Exit codes, for all three: 0 when shown or done (or a watch whose reader went away); 3 when no daemon is running the config (no socket, or one a killed daemon left), with a line on stderr saying how to start one, and the same when the daemon stops during `--watch`; 1 for anything else, including a daemon from before the socket holding the config's lock.
 
+### `copland-tray`
+
+The daemon in your bar's tray (COPL-198, `daemon/tray`): a StatusNotifierItem over D-Bus, so it shows in waybar's tray, KDE's, and GNOME's with the AppIndicator extension. It is a small binary of its own, not the box, and needs nothing GPUI does. It watches the status socket of the daemon running a config (`--config`, the default config's when left out, as `copland-daemon status` finds it), and never starts one: with no socket, or when the daemon goes away, it shows *not running* and tries again every 3 seconds.
+
+```sh
+copland-tray                       # the daemon running the default config
+copland-tray --config ~/work.toml
+```
+
+Its icon is one of the four in `release/tray` (see "Cutting a release"): `needs` when any agent has something in `needs`, else `working` when any has a run going, else `idle` (held alone is idle), and `stopped` while no daemon answers. Its tooltip has a line per agent, the name part of its handle with what it is doing (`dev · working on COPL-166`, the task of its oldest run, `and 1 more` when it has others), `held` when it is held, and the first thing it needs; and `stopping` while the daemon shuts down. Its menu, on a left or right click, has for each agent Hold or Release it on this machine (the socket's `hold` and `release` by slot) and Stop for each run going (`stop_run`), then Quit tray, which ends the tray and leaves the daemon running. What the daemon refuses, or why it can't be reached (a daemon from before the socket holding the config's lock, say), is the tooltip's last line and the menu's first, disabled, until the next request goes through or the connection changes.
+
+`view.rs` turns a status into the icon, tooltip and menu as plain values and `watcher.rs` is the socket loop, on `core::client::Connection`; both are platform-neutral, for the macOS item (COPL-202). `sni.rs` draws them with `ksni` (pure Rust, no GTK), on its async-io runtime rather than its default tokio, which keeps zbus at the box's version and features. It is Linux only for now: elsewhere the binary says so and exits 1. Starting it with your session, and opening the box from it, are COPL-201.
+
 ## Building
 
-It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. `box` is `copland-box`, the same loop with a GPUI window (below). `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, waiting tasks, messages waiting for a run, last run) as a `tokio::sync::watch` receiver, which the headless binary ignores and the box draws. `Daemon::reload(config)` changes the agents it runs in place (see "The agents screen"); only the box calls it, and the headless daemon still reads its config once, at start. The workspace's `default-members` are `core` and `cli`, so plain `cargo` here builds and checks the headless daemon only, with no GPUI anywhere in its graph.
+It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. `tray` is `copland-tray` (above), and `box` is `copland-box`, the same loop with a GPUI window (below). `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, waiting tasks, messages waiting for a run, last run) as a `tokio::sync::watch` receiver, which the headless binary ignores and the box draws. `Daemon::reload(config)` changes the agents it runs in place (see "The agents screen"); only the box calls it, and the headless daemon still reads its config once, at start. The workspace's `default-members` are `core`, `cli` and `tray`, so plain `cargo` here builds and checks the headless daemon and the tray, with no GPUI anywhere in their graph.
 
 ```sh
 cd daemon
-cargo build --release      # target/release/copland-daemon
+cargo build --release      # target/release/copland-daemon and copland-tray
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check

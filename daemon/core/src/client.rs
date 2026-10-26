@@ -1,6 +1,7 @@
 //! `copland-daemon status` (COPL-185): the status socket (COPL-184) read from a terminal or a
 //! script. One snapshot as text or JSON, or every change until interrupted. `copland-daemon hold`
-//! and `release` (COPL-186) hold an agent on this machine through it, and let it go.
+//! and `release` (COPL-186) hold an agent on this machine through it, and let it go. `Connection`
+//! is the socket for a client that keeps it open, as the tray does (COPL-198).
 //!
 //! "Not running" is an answer, not an error: `Outcome::NotRunning`, which the command exits 3
 //! on (`NOT_RUNNING`), so a script can tell it from something going wrong (exit 1).
@@ -9,8 +10,9 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::net::UnixStream;
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 use crate::lock;
 use crate::status::Status;
@@ -92,27 +94,14 @@ pub async fn hold(
     out: &mut (dyn Write + Send),
 ) -> Result<Outcome> {
     let socket = lock::socket_for(config, runtime_dir);
-    let stream = match UnixStream::connect(&socket).await {
-        Ok(s) => s,
-        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
-            return not_running(config, runtime_dir, socket);
-        }
-        Err(e) => return Err(e).with_context(|| format!("connecting to {}", socket.display())),
+    let Some(mut conn) = Connection::open(&socket).await? else {
+        return not_running(config, runtime_dir, socket);
     };
-    let (read, mut write) = stream.into_split();
-    let mut lines = BufReader::new(read).lines();
-    let mut ask = async |request: String| -> Result<String> {
-        write
-            .write_all(format!("{request}\n").as_bytes())
-            .await
-            .with_context(|| format!("asking {}", socket.display()))?;
-        lines
-            .next_line()
-            .await
-            .with_context(|| format!("reading {}", socket.display()))?
-            .with_context(|| format!("the daemon at {} hung up without answering", socket.display()))
+    conn.send(&Request::Status).await?;
+    let status = match conn.answer().await? {
+        Answer::Status(s) => s,
+        other => bail!("the daemon at {} answered {other:?} to a status", socket.display()),
     };
-    let status = parse(&ask(r#"{"op":"status"}"#.into()).await?)?;
     let wanted = handle.trim_start_matches('@');
     let Some(agent) = status
         .agents
@@ -130,12 +119,9 @@ pub async fn hold(
             }
         );
     };
-    let op = if held { "hold" } else { "release" };
-    let answer: serde_json::Value =
-        serde_json::from_str(&ask(format!(r#"{{"op":"{op}","slot":{}}}"#, agent.slot)).await?)
-            .context("the daemon's answer isn't JSON")?;
-    if let Some(e) = answer.get("error") {
-        bail!("the daemon says: {}", e.as_str().unwrap_or(&e.to_string()));
+    conn.send(&Request::Hold { slot: agent.slot, held }).await?;
+    if let Answer::Error(e) = conn.answer().await? {
+        bail!("the daemon says: {e}");
     }
     let says = if held {
         format!(
@@ -147,6 +133,115 @@ pub async fn hold(
     };
     out.write_all(says.as_bytes()).context("writing the answer")?;
     Ok(Outcome::Shown)
+}
+
+/// A request to the status socket (`socket.rs` has the protocol).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Request {
+    Status,
+    Watch,
+    /// Hold (`held`) or release the agent in `slot`.
+    Hold {
+        slot: u64,
+        held: bool,
+    },
+    StopRun {
+        slot: u64,
+        run: String,
+    },
+}
+
+impl Request {
+    fn line(&self) -> String {
+        let value = match self {
+            Request::Status => serde_json::json!({ "op": "status" }),
+            Request::Watch => serde_json::json!({ "op": "watch" }),
+            Request::Hold { slot, held: true } => serde_json::json!({ "op": "hold", "slot": slot }),
+            Request::Hold { slot, held: false } => serde_json::json!({ "op": "release", "slot": slot }),
+            Request::StopRun { slot, run } => serde_json::json!({ "op": "stop_run", "slot": slot, "run": run }),
+        };
+        format!("{value}\n")
+    }
+}
+
+/// One line from the socket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answer {
+    /// A snapshot: the answer to `status`, and every line of a `watch`.
+    Status(Status),
+    /// `{"ok":true}`: a hold, release or stop_run done.
+    Ok,
+    /// `{"error":…}`: what the daemon said was wrong with a request.
+    Error(String),
+}
+
+impl Answer {
+    fn parse(line: &str) -> Result<Self> {
+        let value: serde_json::Value = serde_json::from_str(line).context("the daemon's answer isn't JSON")?;
+        if let Some(e) = value.get("error") {
+            return Ok(Answer::Error(e.as_str().map_or_else(|| e.to_string(), str::to_string)));
+        }
+        if value.get("ok").is_some() {
+            return Ok(Answer::Ok);
+        }
+        Ok(Answer::Status(
+            serde_json::from_value(value).context("the daemon's answer isn't a status")?,
+        ))
+    }
+}
+
+/// A connection to the status socket kept open, for a client that asks more than once or
+/// watches while it asks (`hold`, and the tray, COPL-198). Answers come in the order the requests
+/// went, with a watch's snapshots among them.
+pub struct Connection {
+    socket: PathBuf,
+    lines: Lines<BufReader<OwnedReadHalf>>,
+    write: OwnedWriteHalf,
+}
+
+impl Connection {
+    /// Connect to `socket`; None when nobody serves it (no socket, or one a killed daemon left).
+    pub async fn open(socket: &Path) -> Result<Option<Self>> {
+        let stream = match UnixStream::connect(socket).await {
+            Ok(s) => s,
+            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("connecting to {}", socket.display())),
+        };
+        let (read, write) = stream.into_split();
+        Ok(Some(Self {
+            socket: socket.to_path_buf(),
+            lines: BufReader::new(read).lines(),
+            write,
+        }))
+    }
+
+    pub async fn send(&mut self, request: &Request) -> Result<()> {
+        self.write
+            .write_all(request.line().as_bytes())
+            .await
+            .with_context(|| format!("asking {}", self.socket.display()))
+    }
+
+    /// The next line the daemon sends; None once it has hung up. Cancel-safe, so it can wait in a
+    /// `select!` beside something else.
+    pub async fn next(&mut self) -> Result<Option<Answer>> {
+        match self
+            .lines
+            .next_line()
+            .await
+            .with_context(|| format!("reading {}", self.socket.display()))?
+        {
+            Some(line) => Answer::parse(&line).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// The next line, when the daemon hanging up first is an error.
+    async fn answer(&mut self) -> Result<Answer> {
+        self.next()
+            .await?
+            .with_context(|| format!("the daemon at {} hung up without answering", self.socket.display()))
+    }
 }
 
 /// Show what the daemon serving `socket` says, on `out`.
@@ -211,13 +306,13 @@ pub async fn show(socket: &Path, mode: Mode, out: &mut (dyn Write + Send)) -> Re
     }
 }
 
-/// One answer from the socket: a `Status`, or `{"error":…}`.
+/// One answer from the socket that should be a `Status`.
 fn parse(line: &str) -> Result<Status> {
-    let value: serde_json::Value = serde_json::from_str(line).context("the daemon's answer isn't JSON")?;
-    if let Some(e) = value.get("error") {
-        bail!("the daemon says: {}", e.as_str().unwrap_or(&e.to_string()));
+    match Answer::parse(line)? {
+        Answer::Status(s) => Ok(s),
+        Answer::Error(e) => bail!("the daemon says: {e}"),
+        Answer::Ok => bail!("the daemon's answer isn't a status"),
     }
-    serde_json::from_value(value).context("the daemon's answer isn't a status")
 }
 
 #[cfg(test)]

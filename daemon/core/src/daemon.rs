@@ -60,6 +60,12 @@ pub struct Daemon {
 pub struct RunStopper(pub(crate) watch::Sender<StopRequest>);
 
 impl RunStopper {
+    /// One that asks whoever watches `requests`: a `socket::Server` that isn't a `Daemon`'s, as a
+    /// test of a socket client serves.
+    pub fn new(requests: watch::Sender<StopRequest>) -> Self {
+        Self(requests)
+    }
+
     /// Stop `run` (the short id `Phase::Running` shows) of the agent in `slot` (`AgentState::slot`).
     pub fn stop(&self, slot: u64, run: &str) {
         self.0.send_replace(Some((slot, run.to_string())));
@@ -74,6 +80,12 @@ impl RunStopper {
 pub struct Holder(pub(crate) watch::Sender<DaemonState>);
 
 impl Holder {
+    /// One that holds agents in `state`: a `socket::Server` that isn't a `Daemon`'s, as a test of a
+    /// socket client serves.
+    pub fn new(state: watch::Sender<DaemonState>) -> Self {
+        Self(state)
+    }
+
     /// Hold (`held`) or release the agent in `slot` (`AgentState::slot`). False when no agent is in it.
     pub fn set(&self, slot: u64, held: bool) -> bool {
         let mut found = false;
