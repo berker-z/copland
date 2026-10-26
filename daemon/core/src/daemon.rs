@@ -87,14 +87,19 @@ impl Holder {
     }
 
     /// Hold (`held`) or release the agent in `slot` (`AgentState::slot`). False when no agent is in it.
+    /// A release also ends a hold for being out of usage (COPL-195): whoever releases it says to try now.
     pub fn set(&self, slot: u64, held: bool) -> bool {
         let mut found = false;
         self.0
             .send_if_modified(|s| match s.agents.iter_mut().find(|a| a.slot == slot) {
                 Some(a) => {
                     found = true;
-                    let changed = a.held != held;
+                    let mut changed = a.held != held;
                     a.held = held;
+                    if !held && a.out_of_usage.is_some() {
+                        a.out_of_usage = None;
+                        changed = true;
+                    }
                     changed
                 }
                 None => false,

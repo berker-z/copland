@@ -157,10 +157,22 @@ fn line(a: &Agent) -> String {
     if a.held {
         parts.push("held".into());
     }
+    /* Not a need: the account's usage comes back by itself at the reset (COPL-195). */
+    if let Some(t) = &a.out_of_usage_until {
+        parts.push(format!("out of usage until {}", clock(t)));
+    }
     if let Some(n) = a.needs.first() {
         parts.push(format!("needs you: {}", n.says));
     }
     parts.join(" · ")
+}
+
+/// "2026-10-26T17:10:00Z" → "17:10 UTC", as the status's text says it.
+fn clock(rfc: &str) -> String {
+    match rfc.get(11..16) {
+        Some(hm) => format!("{hm} UTC"),
+        None => rfc.to_string(),
+    }
 }
 
 fn entries(a: &Agent, menu: &mut Vec<Entry>) {
@@ -206,6 +218,7 @@ mod tests {
             retiring: false,
             unavailable_since: None,
             held: false,
+            out_of_usage_until: None,
             runs: vec![],
             missing: None,
             needs: vec![],
@@ -333,6 +346,15 @@ mod tests {
                 "ops · idle · needs you: COPL-9 exit 1 after 3.8s"
             ]
         );
+    }
+
+    #[test]
+    fn out_of_usage_says_until_when_and_is_not_a_need() {
+        let mut a = agent(1, "berker-z/dev");
+        a.out_of_usage_until = Some("2026-10-26T17:10:00Z".into());
+        let v = view(Some(&status(vec![a])), None);
+        assert_eq!(v.icon, Icon::Idle);
+        assert_eq!(v.tooltip, ["dev · idle · out of usage until 17:10 UTC"]);
     }
 
     #[test]

@@ -19,7 +19,7 @@
 //! what they are (`s` on the live view, the pause in Copland), not messages.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use copland_daemon_core::api::{Api, DeviceIdentity, DevicePoll, DeviceStart, WiredAgent};
@@ -127,6 +127,9 @@ pub enum Doing {
     Error(String),
     /// Watching, after a run that went wrong (COPL-136): said until the next run.
     Failed(Failed),
+    /// Starting nothing on this machine: out of usage until a reset (COPL-195), or held by hand
+    /// (COPL-186). What it says.
+    Held(String),
     Stopped,
 }
 
@@ -234,6 +237,10 @@ pub fn rows(configured: &[AgentConfig], st: &DaemonState, wired: Option<&[WiredA
                     None => Doing::Stopped,
                 },
                 (_, _) if s.last_error.is_some() => Doing::Error(s.last_error.clone().unwrap_or_default()),
+                (Phase::Idle, _) if s.holds(SystemTime::now()) => Doing::Held(
+                    s.out_of_usage_line(SystemTime::now())
+                        .unwrap_or_else(|| "held on this machine".to_string()),
+                ),
                 (Phase::Starting, _) => Doing::Starting,
                 (Phase::Idle, _) => Failed::of(s).map_or(Doing::Watching, Doing::Failed),
             },
@@ -1051,6 +1058,7 @@ impl Agents {
                         Doing::AfterRun => ("● changes after this run".to_string(), Role::Yellow),
                         Doing::Error(e) => (format!("× {e}"), Role::Red),
                         Doing::Failed(f) => (format!("× {} {}", f.task, f.how), Role::Red),
+                        Doing::Held(why) => (format!("‖ {why}"), Role::Yellow),
                         Doing::Stopped => ("stopped".to_string(), Role::Faint),
                     };
                     spans.push(Span::new(what, role));
@@ -1471,6 +1479,39 @@ mod tests {
                 doing: Doing::Error(e),
                 ..
             } if e == "Copland unavailable since 23:20 UTC"
+        ));
+    }
+
+    /// COPL-195: out of usage says until when, not the run that ran out; held by hand says so.
+    #[test]
+    fn out_of_usage_says_until_when() {
+        let configured = [agent("me/dev", Some(Runtime::Codex))];
+        let mut dev = AgentState::new("me/dev", "http://x");
+        dev.phase = Phase::Idle;
+        let until = SystemTime::now() + Duration::from_secs(3600);
+        dev.out_of_usage = Some(until);
+        let mut st = DaemonState {
+            agents: vec![dev],
+            stopping: false,
+        };
+        let said = format!("out of usage until {}", copland_daemon_core::state::clock(until));
+        assert!(matches!(
+            &rows(&configured, &st, None)[0],
+            Row::Here { doing: Doing::Held(w), .. } if *w == said
+        ));
+        st.agents[0].out_of_usage = None;
+        st.agents[0].held = true;
+        assert!(matches!(
+            &rows(&configured, &st, None)[0],
+            Row::Here { doing: Doing::Held(w), .. } if w == "held on this machine"
+        ));
+        st.agents[0].held = false;
+        assert!(matches!(
+            &rows(&configured, &st, None)[0],
+            Row::Here {
+                doing: Doing::Watching,
+                ..
+            }
         ));
     }
 
