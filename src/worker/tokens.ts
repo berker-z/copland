@@ -124,7 +124,7 @@ function toUserRow(row: UserColumns): UserRow {
   };
 }
 
-function toToken(row: TokenRow): ApiToken {
+function toToken(row: TokenRow & { as_handle?: string | null }): ApiToken {
   return {
     id: row.id,
     kind: row.kind,
@@ -134,6 +134,7 @@ function toToken(row: TokenRow): ApiToken {
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
     expiresAt: row.expires_at,
+    as: row.as_handle ?? null,
   };
 }
 
@@ -282,18 +283,38 @@ export async function createPersonalToken(
   return { secret, token };
 }
 
+/* Still works, or can still refresh. */
+const LIVE_TOKEN = `t.revoked_at IS NULL
+  AND (t.expires_at IS NULL OR t.expires_at > ?2 OR (t.refresh_expires_at IS NOT NULL AND t.refresh_expires_at > ?2))`;
+
 /** Everything this user has handed out that still works (or can still refresh). */
 export async function listTokens(db: D1Database, userId: string): Promise<ApiToken[]> {
   const { results } = await db
-    .prepare(
-      `SELECT ${TOKEN_COLUMNS} FROM api_tokens t
-        WHERE t.user_id = ?1 AND t.revoked_at IS NULL
-          AND (t.expires_at IS NULL OR t.expires_at > ?2
-               OR (t.refresh_expires_at IS NOT NULL AND t.refresh_expires_at > ?2))
-        ORDER BY t.created_at DESC`,
-    )
+    .prepare(`SELECT ${TOKEN_COLUMNS} FROM api_tokens t WHERE t.user_id = ?1 AND ${LIVE_TOKEN} ORDER BY t.created_at DESC`)
     .bind(userId, nowIso())
     .all<TokenRow>();
+  return results.map(toToken);
+}
+
+/**
+ * Settings › access: everything of mine, and the apps connected as my live
+ * agents, each with the agent's handle in `as`. An agent's personal tokens
+ * (its own, and the ones a box's device login made for it) stay on its page:
+ * they are made there, by whoever runs it, while an OAuth connection is made
+ * from a chat client's consent page, where someone would look for it here.
+ * Two index lookups (api_tokens_user, users_owner), not a scan.
+ */
+export async function listAccessTokens(db: D1Database, ownerId: string): Promise<ApiToken[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT ${TOKEN_COLUMNS}, NULL AS as_handle FROM api_tokens t WHERE t.user_id = ?1 AND ${LIVE_TOKEN}
+       UNION ALL
+       SELECT ${TOKEN_COLUMNS}, u.handle AS as_handle FROM users u JOIN api_tokens t ON t.user_id = u.id
+        WHERE u.owner_id = ?1 AND u.kind = 'agent' AND u.disabled_at IS NULL AND t.kind = 'oauth' AND ${LIVE_TOKEN}
+       ORDER BY created_at DESC`,
+    )
+    .bind(ownerId, nowIso())
+    .all<TokenRow & { as_handle: string | null }>();
   return results.map(toToken);
 }
 

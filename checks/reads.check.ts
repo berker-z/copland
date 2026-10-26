@@ -33,6 +33,7 @@ const { getInbox } = await import("../src/worker/routes/inbox.ts");
 const { getWired } = await import("../src/worker/routes/wired.ts");
 const { getMyWork, getReady } = await import("../src/worker/routes/work.ts");
 const { getRecipients } = await import("../src/worker/routes/messages.ts");
+const { getTokens } = await import("../src/worker/routes/tokens.ts");
 
 /** How far a flat route's two seeds may differ: rows, or a share of the smaller. */
 const MARGIN = { rows: 2, share: 0.05 };
@@ -61,7 +62,12 @@ function seed(db: DatabaseSync, scale: number) {
     INSERT INTO users (id, email, handle, kind, owner_id) VALUES
       ('dev', 'dev@agents.invalid', 'sam/dev', 'agent', 'sam'), ('bot', 'bot@agents.invalid', 'kim/bot', 'agent', 'kim');
     INSERT INTO agents (user_id, name, work_from) VALUES ('dev', 'dev', 'owner'), ('bot', 'bot', 'members');
-    INSERT INTO api_tokens (id, user_id, kind, name, scope, token_hash) VALUES ('tok-dev', 'dev', 'personal', 'box', 'write', 'h-dev');
+    INSERT INTO api_tokens (id, user_id, kind, name, scope, token_hash) VALUES
+      ('tok-dev', 'dev', 'personal', 'box', 'write', 'h-dev'), ('tok-sam', 'sam', 'personal', 'laptop', 'read', 'h-sam');
+    INSERT INTO api_tokens (id, user_id, kind, name, scope, token_hash, expires_at, refresh_expires_at) VALUES
+      ('app-sam', 'sam', 'oauth', 'Claude', 'write', 'h-app-sam', '2999-01-01T00:00:00.000Z', '2999-01-01T00:00:00.000Z'),
+      ('app-dev', 'dev', 'oauth', 'Claude', 'write', 'h-app-dev', '2999-01-01T00:00:00.000Z', '2999-01-01T00:00:00.000Z'),
+      ('app-bot', 'bot', 'oauth', 'Claude', 'write', 'h-app-bot', '2999-01-01T00:00:00.000Z', '2999-01-01T00:00:00.000Z');
     INSERT INTO boards (id, key, name, is_inbox, has_planning, created_by) VALUES
       ('big', 'BIG', 'big', 0, 1, 'sam'), ('side', 'SIDE', 'side', 0, 0, 'kim'),
       ('isam', 'SAM', 'inbox', 1, 0, 'sam'), ('ikim', 'KIM', 'inbox', 1, 0, 'kim');
@@ -358,6 +364,7 @@ const ROUTES: Record<string, (env: Env, live: string, skip: () => void) => Promi
   "GET /api/tasks/ready": (env) => getReady(env, dev),
   "GET /api/tasks/mine": (env) => getMyWork(env, sam),
   "GET /api/messages/recipients": (env) => getRecipients(env, sam),
+  "GET /api/tokens": (env) => getTokens(env, sam),
   "live: one task edit, heard": taskEditHeard,
   "inbox: one task opened": openedFromInbox,
 };

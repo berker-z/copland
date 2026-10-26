@@ -7,8 +7,9 @@
    Personal, like the vault: writes notify only the owner's other tabs.
 
    A token can also be made for one of your agents (`agentId`), and then it
-   is that agent. GET lists only your own; an agent's are in GET /api/agents.
-   Revoking takes either.
+   is that agent. GET lists your own and the apps connected as your agents,
+   each saying which agent (`as`); an agent's personal tokens are only in
+   GET /api/agents, which lists all of an agent's. Revoking takes either.
 
    The one exception to "only from a browser": DELETE /api/tokens/self, where
    the token a request came with revokes itself and nothing else. It is how a
@@ -22,7 +23,7 @@ import type { Env } from "../env";
 import { badRequest, forbidden, json, notFound, readJson } from "../http";
 import { personOf } from "../access";
 import type { Changes } from "../live";
-import { createPersonalToken, listTokens, revokeOwnToken, revokeToken } from "../tokens";
+import { createPersonalToken, listAccessTokens, revokeOwnToken, revokeToken } from "../tokens";
 
 /** How long a new personal token lasts; null is "until revoked". */
 const DAYS = [30, 90, 365, null] as const;
@@ -46,10 +47,10 @@ async function principalFor(db: D1Database, viewer: Viewer, agentId: unknown): P
   return agentId;
 }
 
-/** GET /api/tokens: mine, personal and connected apps alike. */
+/** GET /api/tokens: mine, personal and connected apps alike, and the apps connected as my agents. */
 export async function getTokens(env: Env, viewer: Viewer): Promise<Response> {
   requireBrowser(viewer);
-  return json(await listTokens(env.DB, viewer.user.id));
+  return json(await listAccessTokens(env.DB, viewer.user.id));
 }
 
 /** POST /api/tokens { name, scope, days, agentId? }: the secret is in this response and nowhere else, ever. */
@@ -78,7 +79,7 @@ export async function deleteToken(env: Env, viewer: Viewer, id: string, changes:
   requireBrowser(viewer);
   if (!(await revokeToken(env.DB, viewer.user.id, id))) throw notFound("No such token");
   changes.notify([viewer.user.id], "tokens", "agents");
-  return json(await listTokens(env.DB, viewer.user.id));
+  return json(await listAccessTokens(env.DB, viewer.user.id));
 }
 
 /**
