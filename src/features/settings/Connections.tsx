@@ -109,7 +109,9 @@ function TokenRow({
             {token.scope === "read" ? "read only" : "read + write"}
           </span>
           {" · "}
-          {token.lastUsedAt ? `used ${token.lastUsedAt.slice(0, 10)}` : "never used"}
+          <span className="whitespace-nowrap">
+            {token.lastUsedAt ? `used ${token.lastUsedAt.slice(0, 10)}` : "never used"}
+          </span>
           {token.kind === "personal" && ` · ${token.expiresAt ? `until ${token.expiresAt.slice(0, 10)}` : "no expiry"}`}
         </span>
       </span>
