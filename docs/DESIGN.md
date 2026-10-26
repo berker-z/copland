@@ -396,16 +396,20 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   own screen and a page opens with a back arrow in the title. A page is a
   `Section` (title, one-line purpose) with `Group`s inside. Panes open
   settings at the page they need (`initial`).
-- Settings › assistants: copyable values (the MCP URL, a command, a new
-  token's secret) are a `bg-raised border-faint` line with the value in
+- Settings › access and an agent's page: copyable values (the MCP URL, a
+  command, a new token's secret) are a `bg-raised border-faint` line with the value in
   `text-yellow` and a copy icon. A token's secret shows once in the same
   green-bordered box as a new invite link. Token rows show scope in
   `text-blue` (read only) or `text-yellow` (read + write); revoke asks once
-  more in `text-red`.
+  more in `text-red`. On settings › access a connected app's line starts with
+  who it acts as: `as you` muted, or `as @owner/name` with the agent's handle
+  in `text-ink`, since your agents' apps are listed there beside yours.
 - The OAuth consent page (`src/worker/oauth.ts`) is served by the Worker and
   cannot load the app's stylesheet. It is one pane in the modal's shape
   (hairline border, rule under the title, footer on `bar`), with the nord
-  theme's role values copied in under the same variable names.
+  theme's role values copied in under the same variable names. Its agent
+  choices sit under an `aside` line (smaller, `muted`, a `divider` rule above)
+  that says what an agent is for, below "you".
 - `/device` (`src/features/device/DeviceScreen.tsx`) is the app's own
   route, under the statusline, so it has the app's theme. One centred pane
   with the login screen's header (`connect_a_box` in `text-blue` on a rule).

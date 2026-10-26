@@ -32,6 +32,9 @@ export const BUDGETS: Record<string, Budget> = {
   "GET /api/tasks/ready": { rows: 43, flat: true },
   "GET /api/tasks/mine": { rows: 5731, flat: false },
   "GET /api/messages/recipients": { rows: 15, flat: true },
+  /* Settings › access (COPL-159): yours, and the apps connected as your
+     agents; 4 rows before it listed the agents' apps. */
+  "GET /api/tokens": { rows: 9, flat: true },
   /* What a listening tab reads after one task edit (COPL-151): until then,
      GET /api/boards/:id and GET /api/boards, 778 rows on the larger seed
      (12213 before COPL-150). */

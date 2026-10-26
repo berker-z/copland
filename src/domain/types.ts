@@ -453,6 +453,12 @@ export interface ApiToken {
   lastUsedAt: string | null;
   /** Null: a personal token without an expiry. */
   expiresAt: string | null;
+  /**
+   * Who it acts as when that is not whoever the list is for: on settings ›
+   * access, one of your agents' handles ("sam/codex") for an app connected
+   * as that agent. Null for your own, and on an agent's page.
+   */
+  as: string | null;
 }
 
 /** One of my agents, as settings › agents shows it (GET /api/agents). */
