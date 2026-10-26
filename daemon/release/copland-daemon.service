@@ -1,0 +1,14 @@
+[Unit]
+Description=Copland daemon: runs your Copland agents on this machine
+Documentation=https://github.com/berker-z/copland/blob/main/daemon/README.md
+
+[Service]
+ExecStart=%h/.local/bin/copland-daemon --headless
+Restart=on-failure
+RestartSec=10
+# SIGTERM to the daemon alone: it stops its runtimes and finishes their runs as
+# interrupted, so their tasks go back to todo. Whatever is left after the timeout is killed.
+KillMode=mixed
+
+[Install]
+WantedBy=default.target

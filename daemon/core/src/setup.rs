@@ -237,10 +237,20 @@ pub fn render_config(client: &str, saved: &Saved, choices: &[Choice]) -> String 
     out.push_str(&format!(
         "# Written by {client} --setup. Edit it freely: the daemon reads it at start.\n"
     ));
-    out.push_str(&format!(
-        "# The box's agents screen (a) changes agents in place, and {client} --setup\n"
-    ));
-    out.push_str("# writes it again; either keeps the version before as daemon.toml.bak (.bak.2, ...).\n\n");
+    /* What else changes it depends on who wrote it: only the box has an agents screen (COPL-180). */
+    if client == "copland-box" {
+        out.push_str(&format!(
+            "# The box's agents screen (a) changes agents in place, and {client} --setup\n"
+        ));
+        out.push_str("# writes it again; either keeps the version before as daemon.toml.bak (.bak.2, ...).\n\n");
+    } else {
+        out.push_str(&format!(
+            "# {client} --setup writes it again, keeping the version before as daemon.toml.bak\n"
+        ));
+        out.push_str(&format!(
+            "# (.bak.2, ...). {client} --install-service runs it as a service (systemd or launchd).\n\n"
+        ));
+    }
     out.push_str(&format!(
         "# Your own token (@{}), for the box's view of all your agents' work.\n",
         saved.owner
@@ -473,12 +483,42 @@ mod tests {
         assert!(!text.contains("not decided"));
         /* The notes name the program that wrote them. */
         assert!(text.starts_with("# Written by copland-box --setup."));
+        assert!(text.contains("# The box's agents screen (a) changes agents in place"));
         let owner = c.owner.unwrap();
         assert_eq!(
             (owner.url.as_str(), owner.token.expose()),
             ("http://localhost:5173", "cpl_owner")
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn notes_only_what_the_client_that_wrote_it_can_do() {
+        let saved = Saved {
+            url: "http://x".into(),
+            owner: "me".into(),
+            owner_token_file: "/c/me.token".into(),
+            agents: vec![SavedAgent {
+                handle: "me/dev".into(),
+                token_file: "/c/dev.token".into(),
+            }],
+        };
+        let choice = Choice {
+            runtime: Runtime::ClaudeCode,
+            workdir: "~/agents/dev".into(),
+        };
+        let boxed = render_config("copland-box", &saved, std::slice::from_ref(&choice));
+        assert!(boxed.contains("# The box's agents screen (a) changes agents in place, and copland-box --setup\n"));
+        assert!(!boxed.contains("--install-service"));
+        /* A daemon set up on a terminal has no box: no agents screen to point at (COPL-180). */
+        let headless = render_config("copland-daemon", &saved, &[choice]);
+        assert!(headless.starts_with("# Written by copland-daemon --setup."));
+        assert!(!headless.contains("box's agents screen"));
+        assert!(
+            headless
+                .contains("# copland-daemon --setup writes it again, keeping the version before as daemon.toml.bak\n")
+        );
+        assert!(headless.contains("copland-daemon --install-service runs it as a service"));
     }
 
     #[test]

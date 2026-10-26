@@ -1,6 +1,8 @@
 //! `copland-daemon --headless`: run the agents in daemon.toml until stopped.
-//! `--setup` writes daemon.toml on a terminal, `--check` checks this machine.
+//! `--setup` writes daemon.toml on a terminal, `--check` checks this machine,
+//! `--install-service` runs it as a systemd or launchd service.
 
+mod service;
 mod setup;
 
 use std::path::PathBuf;
@@ -41,6 +43,14 @@ struct Args {
     /// With --setup: your Copland's address, instead of being asked for it.
     #[arg(long, value_name = "ADDRESS", requires = "setup")]
     url: Option<String>,
+    /// Run the daemon as a service of yours, on this binary and this config: a systemd user unit
+    /// on Linux, a launchd agent on macOS. Written, enabled and started; it starts again at login
+    /// (or boot, with lingering) and after a failure. Needs the config, so --setup first.
+    #[arg(long, conflicts_with_all = ["check", "setup", "uninstall_service"])]
+    install_service: bool,
+    /// Stop, disable and remove the service --install-service wrote.
+    #[arg(long, conflicts_with_all = ["check", "setup"])]
+    uninstall_service: bool,
 }
 
 #[derive(Subcommand)]
@@ -82,6 +92,12 @@ async fn main() -> Result<()> {
     }
     if args.setup {
         return setup::run(&path, args.url.as_deref()).await;
+    }
+    if args.install_service {
+        return service::install(&path);
+    }
+    if args.uninstall_service {
+        return service::uninstall();
     }
     if !path.exists() {
         anyhow::bail!(

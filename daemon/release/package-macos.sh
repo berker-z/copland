@@ -38,6 +38,8 @@ ditto -c -k --keepParent "$stage/Copland.app" "$out/$name.zip"
 mkdir -p "$stage/$name"
 install -m755 "$bin/copland-box" "$bin/copland-daemon" "$stage/$name/"
 sed "s/@VERSION@/$version/g" "$here/INSTALL-macos.txt" >"$stage/$name/INSTALL"
+# The launchd agent for the headless daemon, a template: --install-service fills it in.
+install -m644 "$here/dev.berkerz.copland.daemon.plist" "$stage/$name/"
 install -m644 "$repo/LICENSE" "$stage/$name/LICENSE"
 tar -C "$stage" -czf "$out/$name.tar.gz" "$name"
 

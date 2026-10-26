@@ -94,7 +94,10 @@ pub async fn run(config: &Path, url: Option<&str>) -> Result<()> {
             "{failed} check(s) still fail; `{CLIENT} --check --fix` offers the fixes again."
         )?;
     }
-    writeln!(out, "Start the daemon with `{CLIENT}`.")?;
+    writeln!(
+        out,
+        "Start the daemon with `{CLIENT}`, or run it as a service with `{CLIENT} --install-service`."
+    )?;
     Ok(())
 }
 
