@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use copland_daemon_core::Status;
+use copland_daemon_core::{Connection, Status};
 use gpui::{
     Bounds, Context, FocusHandle, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, Rgba, SharedString, StyledText,
     Task, Window, canvas, div, fill, point, prelude::*, px, size,
@@ -73,23 +73,56 @@ const BELL: [&str; 7] = [
 pub enum Source {
     /// The prototype's simulation.
     Demo,
-    /// The daemon running in this process, as its status says.
+    /// The daemon running the config, as its status socket says (COPL-200): connected, or
+    /// not running yet, which a daemon started later turns into connected by itself.
     Live {
-        state: watch::Receiver<Status>,
+        connection: watch::Receiver<Connection>,
         /// The owner's view from `/api/wired`, when the config has an owner token.
         feed: Option<watch::Receiver<Feed>>,
-        /// True once the daemon has stopped by itself (a signal, or no agent left).
-        finished: watch::Receiver<bool>,
         /// For the menu and the agents screen: the config file and the way to the running daemon.
         control: Option<Control>,
         /// Links of desktop notifications that were clicked, to open.
         clicks: Option<mpsc::UnboundedReceiver<String>>,
+        /// The feed's task, which ends with the source (signing out).
+        _feeding: Option<Abort>,
     },
     /// Nothing to watch, and why.
     Quiet(String),
     /// Setting the box up: no usable config yet, or `--setup`. Becomes `Live` once it is written.
     Setup(Box<Wizard>),
 }
+
+/// A task on the box's runtime that ends when this is dropped.
+pub struct Abort(pub tokio::task::JoinHandle<()>);
+
+impl Drop for Abort {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// What the window draws while no daemon is connected: no agents.
+pub fn no_daemon() -> Status {
+    Status {
+        version: copland_daemon_core::status::VERSION,
+        stopping: false,
+        agents: Vec::new(),
+    }
+}
+
+/// What the status line says while the daemon isn't there, or None while it is.
+pub fn not_connected(c: &Connection) -> Option<String> {
+    match c {
+        Connection::Connected(_) => None,
+        Connection::Connecting => Some("looking for the daemon…".into()),
+        Connection::NotRunning => Some(NOT_RUNNING.into()),
+        Connection::Unreadable(why) => Some(why.clone()),
+    }
+}
+
+/// The daemon isn't running this config, and how to start one: the box picks it up once it is.
+pub const NOT_RUNNING: &str =
+    "the daemon isn't running this config · copland-daemon --install-service, or systemctl --user start copland-daemon";
 
 /// A run of this box's that "stop this run" has been pressed for once.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,8 +224,12 @@ impl BoxView {
     /// The daemon's status and the owner's feed as they are now, in live mode.
     fn live(&self) -> Option<(Status, Option<Feed>)> {
         match &self.source {
-            Source::Live { state, feed, .. } => {
-                Some((state.borrow().clone(), feed.as_ref().map(|f| f.borrow().clone())))
+            Source::Live { connection, feed, .. } => {
+                let st = match &*connection.borrow() {
+                    Connection::Connected(s) => s.clone(),
+                    _ => no_daemon(),
+                };
+                Some((st, feed.as_ref().map(|f| f.borrow().clone())))
             }
             _ => None,
         }
@@ -250,9 +287,18 @@ impl BoxView {
                 quiet: Some(why.clone()),
                 ..Default::default()
             }),
-            Source::Live { state, feed, .. } => {
+            Source::Live { connection, feed, .. } => {
+                let st = match &*connection.borrow() {
+                    Connection::Connected(s) => s.clone(),
+                    c => {
+                        return Some(Board {
+                            quiet: not_connected(c),
+                            ..Default::default()
+                        });
+                    }
+                };
                 let feed = feed.as_ref().map(|f| f.borrow().clone());
-                let mut b = board_from(&state.borrow(), feed.as_ref(), now, SystemTime::now());
+                let mut b = board_from(&st, feed.as_ref(), now, SystemTime::now());
                 filter_board(&mut b, &self.prefs);
                 Some(b)
             }
@@ -457,10 +503,10 @@ impl BoxView {
             "m" | "≡" if control.is_some() => self.open_menu(Tab::Agents, cx),
             "b" if control.is_some() => self.open_menu(Tab::Needs, cx),
             "a" if control.is_some() => self.open_menu(Tab::Agents, cx),
-            "s" | "tab" if !runs.is_empty() => self.arm(name, None, &runs),
+            "s" | "tab" if !runs.is_empty() => self.arm(name, None, &runs, cx),
             n if n.starts_with("stop:") && !runs.is_empty() => {
                 let key = n.trim_start_matches("stop:").to_string();
-                self.arm("s", Some(key), &runs);
+                self.arm("s", Some(key), &runs, cx);
             }
             "n" => self.scene.add(),
             "a" => self.scene.answer(),
@@ -473,7 +519,7 @@ impl BoxView {
 
     /// "stop this run": the first press picks a run (`key`'s, or the first; tab the next), the
     /// second, within a few seconds, stops it.
-    fn arm(&mut self, name: &str, key: Option<String>, runs: &[RunHere]) {
+    fn arm(&mut self, name: &str, key: Option<String>, runs: &[RunHere], cx: &mut Context<Self>) {
         let pick = |i: usize| {
             let r = &runs[i % runs.len()];
             Armed {
@@ -492,18 +538,38 @@ impl BoxView {
             (Some(a), _) if a.at.elapsed() < ARMED && (wanted.is_none() || wanted == at(a)) && at(a).is_some() => {
                 let a = a.clone();
                 if let Some(c) = self.control() {
-                    c.stopper.stop(a.slot, &a.run);
                     tracing::info!(task = %a.key, run = %a.run, "stopping the run from the box");
                     self.flash = Some((
                         format!("stopping {}'s run · it finishes as cancelled", a.key),
                         Role::Yellow,
                         Instant::now(),
                     ));
+                    self.stop_run(c, a, cx);
                 }
                 self.armed = None;
             }
             _ => self.armed = Some(pick(wanted.unwrap_or(0))),
         }
+    }
+
+    /// Ask the daemon to stop `a`'s run, and say so if it can't.
+    fn stop_run(&mut self, c: Control, a: Armed, cx: &mut Context<Self>) {
+        let daemon = c.daemon.clone();
+        let (slot, run) = (a.slot, a.run.clone());
+        let asked = c.rt.spawn(async move { daemon.stop_run(slot, &run).await });
+        cx.spawn(async move |this, cx| {
+            let Ok(Err(e)) = asked.await else { return };
+            tracing::error!(task = %a.key, run = %a.run, "stopping the run: {e:#}");
+            let _ = this.update(cx, |view, cx| {
+                view.flash = Some((
+                    format!("× {}'s run: {}", a.key, e.root_cause()),
+                    Role::Red,
+                    Instant::now(),
+                ));
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn open_menu(&mut self, tab: Tab, cx: &mut Context<Self>) {
@@ -539,8 +605,9 @@ impl BoxView {
         }
     }
 
-    /// Sign out: stop the daemon, revoke the box's tokens, delete them and the config, and set
-    /// the box up again in this window.
+    /// Sign out: revoke the box's tokens, delete them and the config, and set the box up again
+    /// in this window. The daemon running the config is left alone here; what becomes of it is
+    /// COPL-205's to decide (stop the service, say), before `menu::sign_out` below.
     fn sign_out(&mut self, cx: &mut Context<Self>) {
         let Some(control) = self.control() else { return };
         if let Some(m) = self.menu.as_mut() {
@@ -548,9 +615,8 @@ impl BoxView {
         }
         let url = self.feed_now().map(|f| f.url);
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let (stop, config) = (control.stop_daemon.clone(), control.config.clone());
+        let config = control.config.clone();
         let spawned = std::thread::Builder::new().name("sign-out".into()).spawn(move || {
-            stop();
             let _ = tx.send(crate::menu::sign_out(&config, &crate::notify::memory_path()));
         });
         if let Err(e) = spawned {
@@ -645,15 +711,13 @@ pub fn budgets(l: &Layout, spacing: f32, cell: f32, zoom: f32) -> [f32; 4] {
 fn watch_source(source: &mut Source, cx: &mut Context<BoxView>) -> Vec<Task<()>> {
     let mut watchers = Vec::new();
     if let Source::Live {
-        state,
+        connection,
         feed,
-        finished,
         clicks,
         ..
     } = source
     {
-        watchers.push(quit_when_finished(finished.clone(), cx));
-        watchers.push(redraw_on(state.clone(), cx));
+        watchers.push(redraw_on(connection.clone(), cx));
         if let Some(feed) = feed {
             watchers.push(redraw_on(feed.clone(), cx));
         }
@@ -669,27 +733,6 @@ fn watch_source(source: &mut Source, cx: &mut Context<BoxView>) -> Vec<Task<()>>
         }
     }
     watchers
-}
-
-/// Whether the daemon stopped by itself: true once it says so, false if its thread ended without.
-async fn stopped_by_itself(mut finished: watch::Receiver<bool>) -> bool {
-    finished.wait_for(|f| *f).await.is_ok()
-}
-
-/// Quit once the daemon has stopped by itself, unless it was stopped to sign out. Not from
-/// render: a window the compositor isn't showing (another workspace) gets no frames, and
-/// SIGTERM would stop the daemon and leave the process up (COPL-101).
-fn quit_when_finished(finished: watch::Receiver<bool>, cx: &mut Context<BoxView>) -> Task<()> {
-    cx.spawn(async move |this, cx| {
-        if !stopped_by_itself(finished).await {
-            return;
-        }
-        let _ = this.update(cx, |view, cx| {
-            if !view.menu.as_ref().is_some_and(|m| m.signing_out) {
-                cx.quit();
-            }
-        });
-    })
 }
 
 /// Notify the view whenever `rx` changes, until its sender is gone.
@@ -1316,27 +1359,19 @@ mod tests {
     use copland_daemon_core::api::{Wired, WiredAgent, WiredTask};
     use copland_daemon_core::{AgentState, DaemonState, Phase};
 
-    /// The window's quit waits on the daemon's word alone, with no redraw to notice it
-    /// (COPL-101), and a daemon thread that ends without saying so doesn't quit it.
+    /// The box draws the daemon only while connected; otherwise it says why, and with no
+    /// daemon running the config, how to start one.
     #[test]
-    fn quits_on_the_daemons_word_not_on_a_frame() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let (tx, rx) = watch::channel(false);
-        let waiting = std::thread::spawn(move || rt.block_on(stopped_by_itself(rx)));
-        std::thread::sleep(Duration::from_millis(20));
-        tx.send_replace(true);
-        assert!(waiting.join().unwrap());
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let (tx, rx) = watch::channel(false);
-        drop(tx);
-        assert!(!rt.block_on(stopped_by_itself(rx)));
+    fn says_how_to_start_a_daemon_that_isnt_running() {
+        assert_eq!(not_connected(&Connection::Connected(no_daemon())), None);
+        let said = not_connected(&Connection::NotRunning).unwrap();
+        assert!(said.contains("copland-daemon --install-service"), "{said}");
+        assert!(said.contains("systemctl --user start copland-daemon"), "{said}");
+        assert_eq!(
+            not_connected(&Connection::Unreadable("version 2".into())).as_deref(),
+            Some("version 2")
+        );
+        assert!(not_connected(&Connection::Connecting).is_some());
     }
 
     /// The lists against `src/features/wired/WiredPane.tsx`: its number constants and its

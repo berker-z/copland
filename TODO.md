@@ -107,6 +107,12 @@ docs/DESIGN.md under Touch.
       action, compact on a compositor other than Hyprland, the autostart
       entry actually starting the box at a real login, and macOS, which sends
       no notifications yet (`box/src/notify.rs`).
+- [ ] The box as a client of the daemon (COPL-204) is tested as units and
+      through `Watcher`'s own socket tests; its window wasn't opened (the
+      run's sandbox has no GPU). Not yet: the box drawing a running
+      `copland-daemon`, "isn't running" until one starts and then picking it
+      up, ■ and the agents screen's save going through the socket, and
+      closing the box with a run going, which should leave the run alone.
 - [ ] What runs cost (COPL-71) was checked against the routes in
       `checks/usage.check.ts`, the parser against a real `claude -p
       --output-format json` result, and a fake runtime through the runner;
