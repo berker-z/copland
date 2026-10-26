@@ -13,6 +13,18 @@ They are not signed or notarized, so macOS refuses them until the
 quarantine flag is removed as above (only needed when a browser downloaded
 the archive). Check them against SHA256SUMS on the release page first.
 
+To run the headless daemon without the window, at every login:
+
+  copland-daemon --setup              # approve it in Copland, pick runtimes
+  copland-daemon --install-service    # a launchd agent, loaded and started
+
+That writes ~/Library/LaunchAgents/dev.berkerz.copland.daemon.plist for
+this binary and config, with your shell's PATH so the runtimes are found,
+and logs to ~/Library/Logs/copland-daemon.log.
+dev.berkerz.copland.daemon.plist here is the same agent as a template
+(@DAEMON@ and @LOG@ are absolute paths), to install by hand instead.
+`copland-daemon --uninstall-service` stops and removes it.
+
 Built on macOS 14 for macOS 11 and later. Not yet tried on real hardware.
 
 Coding runs are sandboxed with Seatbelt (/usr/bin/sandbox-exec), which

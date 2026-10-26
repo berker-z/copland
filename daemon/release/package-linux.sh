@@ -17,6 +17,8 @@ root=$stage/$name
 install -Dm755 "$bin/copland-box" "$root/bin/copland-box"
 install -Dm755 "$bin/copland-daemon" "$root/bin/copland-daemon"
 install -Dm644 "$here/copland-box.desktop" "$root/share/applications/copland-box.desktop"
+# The headless daemon as a systemd user service, for ~/.local/bin (daemon/README.md, Server mode).
+install -Dm644 "$here/copland-daemon.service" "$root/share/systemd/user/copland-daemon.service"
 
 # The same icon set as the flake's package: the SVG and 32 to 256 pixels.
 icons=$root/share/icons/hicolor

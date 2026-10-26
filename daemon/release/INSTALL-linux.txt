@@ -2,7 +2,8 @@ Copland box @VERSION@, Linux @ARCH@
 
   bin/copland-box      the daemon with a window (GPUI)
   bin/copland-daemon   the same daemon, headless
-  share/               the launcher entry and the icon
+  share/               the launcher entry, the icon and the daemon's
+                       systemd user unit
 
 The layout matches ~/.local, so installing for yourself is one copy:
 
@@ -18,6 +19,19 @@ session's PATH, change Exec= in the desktop file to the full path.
 Then start `copland-box`. Without a config it sets itself up in its window:
 type your Copland's address and approve the box in the browser.
 `copland-box --demo` shows the scene without a server.
+
+On a machine with no display, run the headless daemon as a service:
+
+  copland-daemon --setup              # approve it in Copland, pick runtimes
+  copland-daemon --install-service    # a systemd user unit, enabled and started
+  journalctl --user -u copland-daemon -f
+
+--install-service writes ~/.config/systemd/user/copland-daemon.service for
+this binary and config, with your shell's PATH so the runtimes are found.
+On a server you aren't logged in to, `sudo loginctl enable-linger $USER`
+keeps it running. share/systemd/user/copland-daemon.service is the same
+unit for ~/.local/bin, to install by hand instead.
+`copland-daemon --uninstall-service` stops and removes it.
 
 What it needs:
 
