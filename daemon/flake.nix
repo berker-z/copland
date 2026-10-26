@@ -121,8 +121,13 @@
               # X11 class, which is how compositors and docks match the window
               # to it. The icon is the web app's favicon, the Copland mark on
               # its tile, at the sizes release/package-linux.sh renders too.
+              # The headless daemon as a systemd user unit, the tarball's with
+              # this package's binary in ExecStart (daemon/README.md, Server mode).
               postInstall = ''
                 install -Dm644 ${./release/copland-box.desktop} $out/share/applications/copland-box.desktop
+                install -Dm644 ${./release/copland-daemon.service} $out/share/systemd/user/copland-daemon.service
+                substituteInPlace $out/share/systemd/user/copland-daemon.service \
+                  --replace-fail '%h/.local/bin/copland-daemon' "$out/bin/copland-daemon"
                 icons=$out/share/icons/hicolor
                 install -Dm644 ${../public/favicon.svg} $icons/scalable/apps/copland-box.svg
                 for n in 32 48 64 128 256; do
