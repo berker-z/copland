@@ -2,7 +2,7 @@
    Runs and claims (migrations/0015_runs_claims.sql, 0018_interactive_runs.sql,
    docs/AGENT-IDENTITIES.md).
    ----------------------------------------------------------------------------
-     POST   /api/runs               { client? } → { run, secret }
+     POST   /api/runs               { client?, host? } → { run, secret }
      GET    /api/runs/current       { run: { id, short, kind } | null }: this credential's run
      POST   /api/runs/current/news  { run, items }: what came in on its claimed tasks since it was last told
      GET    /api/runs/:id           the run, with what it has claimed
@@ -69,6 +69,7 @@
    ========================================================================== */
 
 import { clientLabel } from "@/domain/clients";
+import { parseHostname } from "@/domain/hosts";
 import {
   RUN_ENDINGS,
   RUN_REASON_MAX,
@@ -158,7 +159,11 @@ export async function postRunNews(env: Env, viewer: Viewer): Promise<Response> {
   return json({ run: { id, short: shortRunId(id), kind: run.kind }, items: results } satisfies RunNews);
 }
 
-/** POST /api/runs { client? }: a new run of the token's principal, and its secret, once. */
+/**
+ * POST /api/runs { client?, host? }: a new run of the token's principal, and
+ * its secret, once. `host` is the machine its launcher starts it on
+ * (COPL-135), a hostname as PUT /api/hosts/self takes it, shown on the run.
+ */
 export async function postRun(request: Request, env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
   const access = viewer.access;
   if (!access) throw forbidden("A run is started with an API token, not from the app");
@@ -168,10 +173,14 @@ export async function postRun(request: Request, env: Env, viewer: Viewer, change
     throw badRequest("`client` must be a string of at most 60 characters");
   }
   const client = typeof body.client === "string" && body.client.trim() ? body.client.trim() : null;
+  const host = body.host === undefined || body.host === null ? null : parseHostname(body.host);
+  if (host === null && body.host !== undefined && body.host !== null) {
+    throw badRequest("`host` must be a hostname: 1 to 253 of letters, digits, `.`, `-` and `_`, starting with a letter or digit");
+  }
   const { secret, hash } = await mint(RUN_PREFIX);
   const id = crypto.randomUUID();
-  await env.DB.prepare(`INSERT INTO runs (id, user_id, token_id, token_hash, client) VALUES (?1, ?2, ?3, ?4, ?5)`)
-    .bind(id, viewer.user.id, access.tokenId, hash, client)
+  await env.DB.prepare(`INSERT INTO runs (id, user_id, token_id, token_hash, client, host) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`)
+    .bind(id, viewer.user.id, access.tokenId, hash, client, host)
     .run();
   /* An agent's runs show on its owner's settings page. */
   if (viewer.agent) changes.notify([personOf(viewer)], "agents");

@@ -33,10 +33,14 @@
    or answered a ping within the daemon's own silence limit. A ping wakes
    nothing, but the runtime records when it answered one
    (getWebSocketAutoResponseTimestamp), so this costs one call to the hub.
+   A daemon names its host on the upgrade (HOST_HEADER, COPL-135), which
+   the socket keeps, so the hub also says which hosts an agent is live on,
+   and one live on two at once is exact rather than guessed.
    ========================================================================== */
 
 import { DurableObject } from "cloudflare:workers";
-import { listeningTokens, type BoardChange, type LiveEvent, type LiveTopic } from "@/domain/live";
+import { HOST_HEADER, parseHostname } from "@/domain/hosts";
+import { listeningSockets, type BoardChange, type Listening, type LiveEvent, type LiveTopic } from "@/domain/live";
 import type { Viewer } from "@/domain/types";
 import type { Env } from "./env";
 import { forbidden } from "./http";
@@ -52,6 +56,8 @@ const CREDENTIAL_GONE = 4001;
 interface Attachment {
   /** The API token the socket was opened with; absent for a browser tab. */
   tokenId?: string;
+  /** The host its daemon named (HOST_HEADER); absent when it named none. */
+  host?: string;
   /** When it was opened (ms); absent on a socket opened before COPL-126. */
   openedAt?: number;
 }
@@ -67,7 +73,8 @@ export class LiveHub extends DurableObject<Env> {
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server);
     const tokenId = request.headers.get(TOKEN_HEADER);
-    server.serializeAttachment({ ...(tokenId ? { tokenId } : {}), openedAt: Date.now() } satisfies Attachment);
+    const host = tokenId ? parseHostname(request.headers.get(HOST_HEADER)) : null;
+    server.serializeAttachment({ ...(tokenId ? { tokenId } : {}), ...(host ? { host } : {}), openedAt: Date.now() } satisfies Attachment);
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -91,19 +98,21 @@ export class LiveHub extends DurableObject<Env> {
 
   /**
    * Called over RPC: the tokens with a socket here heard from lately, so a
-   * daemon that is still connected (listeningTokens). Whether each token
-   * still works is the caller's to check (liveTokenIds), as broadcast does.
+   * daemon that is still connected, and the host each named
+   * (listeningSockets). Whether each token still works is the caller's to
+   * check (liveTokenIds), as broadcast does.
    */
-  async listening(): Promise<string[]> {
+  async listening(): Promise<Listening[]> {
     const sockets = this.ctx.getWebSockets().map((socket) => {
       const attachment = (socket.deserializeAttachment() as Attachment | null) ?? {};
       return {
         ...(attachment.tokenId ? { tokenId: attachment.tokenId } : {}),
+        ...(attachment.host ? { host: attachment.host } : {}),
         openedAt: attachment.openedAt ?? 0,
         pongAt: this.ctx.getWebSocketAutoResponseTimestamp(socket)?.getTime() ?? null,
       };
     });
-    return listeningTokens(sockets, Date.now());
+    return listeningSockets(sockets, Date.now());
   }
 
   /* Tabs only ever send the ping, which the auto-response takes. */
@@ -142,22 +151,24 @@ export async function connectLive(request: Request, env: Env, url: URL, viewer: 
 }
 
 /**
- * Which of these principals have a daemon connected right now (COPL-126):
- * a socket in their own hub, opened with one of their tokens, heard from
- * within the daemon's silence limit (LiveHub.listening), and that token
- * still good (liveTokenIds: not revoked or expired, the agent not paused,
- * its owner not disabled). A socket lands in the hub of the token's
- * principal, so an agent's hub holds only its own tokens: the box listens
- * for its owner, and the daemon for each agent with that agent's token
- * (daemon/core/src/agent.rs). One RPC per principal; a hub that fails to
- * answer counts as not connected.
+ * Which of these principals have a daemon connected right now (COPL-126),
+ * and from which hosts (COPL-135): a socket in their own hub, opened with
+ * one of their tokens, heard from within the daemon's silence limit
+ * (LiveHub.listening), and that token still good (liveTokenIds: not revoked
+ * or expired, the agent not paused, its owner not disabled). A socket lands
+ * in the hub of the token's principal, so an agent's hub holds only its own
+ * tokens: the box listens for its owner, and the daemon for each agent with
+ * that agent's token (daemon/core/src/agent.rs). A principal is in the map
+ * when it is connected at all, with the hosts its sockets named (null for
+ * one that named none). One RPC per principal; a hub that fails to answer
+ * counts as not connected.
  */
-export async function connectedPrincipals(env: Env, userIds: string[]): Promise<Set<string>> {
+export async function liveHosts(env: Env, userIds: string[]): Promise<Map<string, (string | null)[]>> {
   const heard = await Promise.all(
     userIds.map((id) =>
       hub(env, id)
         .listening()
-        .then((tokens) => tokens.map((tokenId) => ({ id, tokenId })))
+        .then((sockets) => sockets.map((s) => ({ id, ...s })))
         .catch((error: unknown) => {
           console.warn("live listening failed", error);
           return [];
@@ -166,7 +177,13 @@ export async function connectedPrincipals(env: Env, userIds: string[]): Promise<
   );
   const pairs = heard.flat();
   const live = await liveTokenIds(env.DB, [...new Set(pairs.map((p) => p.tokenId))]);
-  return new Set(pairs.filter((p) => live.has(p.tokenId)).map((p) => p.id));
+  const out = new Map<string, (string | null)[]>();
+  for (const p of pairs.filter((p) => live.has(p.tokenId))) {
+    const hosts = out.get(p.id) ?? [];
+    if (!hosts.includes(p.host)) hosts.push(p.host);
+    out.set(p.id, hosts);
+  }
+  return out;
 }
 
 /** Two notes about the same board in one request, as one: tasks and assignees joined, a version only when both agree. */

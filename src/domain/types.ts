@@ -5,6 +5,7 @@
    ========================================================================== */
 
 import type { CodeLink } from "./github";
+import type { HostCapabilities } from "./hosts";
 import type { RunKind, RunStatus } from "./runs";
 
 export interface User {
@@ -476,7 +477,23 @@ export interface Agent {
   tokens: ApiToken[];
   /** Its latest runs, newest first. */
   runs: Run[];
+  /** The machines its daemon has reported from (COPL-135), the latest report first. */
+  hosts: AgentHost[];
+  /** Live on two hosts at once (sockets naming two hostnames), usually a forgotten daemon: warn the owner. */
+  liveOnTwoHosts: boolean;
   createdAt: string;
+}
+
+/** A machine an agent's daemon runs on, as it last reported (PUT /api/hosts/self). */
+export interface AgentHost {
+  hostname: string;
+  /** The box's version. */
+  version: string;
+  capabilities: HostCapabilities;
+  firstReportedAt: string;
+  lastReportedAt: string;
+  /** Its daemon has a live socket open from this host right now. */
+  live: boolean;
 }
 
 /** One working session of a principal (routes/runs.ts). */
@@ -497,6 +514,8 @@ export interface Run {
   reason: string | null;
   /** Keys of the tasks it holds a live claim on. */
   claims: string[];
+  /** The hostname its launcher started it on (COPL-135), when it said. */
+  host: string | null;
 }
 
 /**
@@ -636,6 +655,10 @@ export interface Recipient {
    * nothing reads a message sent to it.
    */
   connected: boolean;
+  /** Your own agent's: the hosts it is live on now, by name (COPL-135). Always empty for someone else's. */
+  hosts: string[];
+  /** Your own agent's: live on two hosts at once, usually a forgotten daemon. Always false for someone else's. */
+  liveOnTwoHosts: boolean;
 }
 
 /** GET /api/inbox: one page, newest first (by created time, then id). */
