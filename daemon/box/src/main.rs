@@ -31,7 +31,7 @@ use std::thread::JoinHandle;
 use anyhow::{Context as _, Result};
 use clap::Parser;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
-use copland_daemon_core::{Config, Daemon, DaemonState, Paths, RunStopper};
+use copland_daemon_core::{Config, Daemon, DaemonState, Lock, Paths, RunStopper};
 use gpui::{
     AppContext as _, Application, Bounds, SharedString, WindowBounds, WindowDecorations, WindowKind, WindowOptions, px,
     size,
@@ -182,6 +182,8 @@ fn pick_font(available: &[String]) -> String {
 struct Running {
     stop: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
+    /// The config's lock (COPL-175), let go once the agents have stopped.
+    _lock: Lock,
 }
 
 /// A daemon just started: it, what the window watches, and the ways back to it.
@@ -202,7 +204,7 @@ struct Started {
 impl Running {
     /// Start the daemon, and with an owner token the owner's feed, which also sends desktop
     /// notifications while `notes` says so.
-    fn start(config: Config, notes: Arc<AtomicBool>) -> Result<Started> {
+    fn start(config: Config, lock: Lock, notes: Arc<AtomicBool>) -> Result<Started> {
         let owner = config.owner.clone();
         let feed = owner.as_ref().map(|o| {
             watch::channel(Feed {
@@ -302,6 +304,7 @@ impl Running {
             running: Self {
                 stop: Some(stop),
                 thread: Some(thread),
+                _lock: lock,
             },
             state,
             feed: feed_rx,
@@ -435,7 +438,9 @@ fn main() -> Result<()> {
             if config.owner.is_none() {
                 tracing::info!("no owner_token_file: drawing what the daemon knows (todo and doing)");
             }
-            let s = Running::start(config, notes.clone())?;
+            /* One daemon per config (COPL-175): a copland-daemon or another box on it refuses this. */
+            let lock = Lock::take(&path, &default_runtime_dir(), "copland-box")?;
+            let s = Running::start(config, lock, notes.clone())?;
             *running.lock().expect("one writer") = Some(s.running);
             let setup_again = setup_again.clone();
             let control = Control {
@@ -483,7 +488,20 @@ fn main() -> Result<()> {
         match Config::load(&path) {
             Ok(config) => {
                 tracing::info!(config = %path.display(), "read");
-                (Scene::live(tune), launch(config)?)
+                match launch(config) {
+                    Ok(source) => (Scene::live(tune), source),
+                    /* Already running elsewhere: say so in the window rather than vanish. */
+                    Err(e) if e.is::<copland_daemon_core::lock::Held>() => {
+                        tracing::error!("{e:#}");
+                        /* The status line is short: who has it, not the whole sentence. */
+                        let held = e.downcast_ref::<copland_daemon_core::lock::Held>().expect("checked");
+                        (
+                            Scene::live(tune),
+                            Source::Quiet(format!("already running this config · {}", held.holder)),
+                        )
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             Err(e) => {
                 tracing::warn!("{e:#}; copland-box --setup sets it up again, keeping it as a backup");
