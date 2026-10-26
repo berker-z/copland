@@ -622,3 +622,10 @@ docs/DESIGN.md under Touch.
   ready and repos it can't push to called out), the same warning, and the
   host each run started on. A card's claim doesn't say the host, since
   every board member sees it.
+- Worktrees share build output (COPL-187): a worker's run gets
+  `CARGO_TARGET_DIR=code_dir/build/<repo>`, writable in its sandbox, so a
+  repo's worktrees build into one target dir instead of 6 to 7 GB each
+  (measured against sccache, which saved no disk: numbers in
+  daemon/README.md). It goes with the repo's last worktree. The preflight
+  has a disk check: a warning under `min_free_gb` (20 GB) free on
+  `code_dir`'s filesystem, naming the biggest things under it.

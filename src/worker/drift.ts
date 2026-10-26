@@ -16,16 +16,19 @@
    pending while the branch is behind main, or while the overlap hasn't been
    re-checked against this very main (revalidate, routes/github.ts); green
    otherwise. Branch protection requires it, so no runtime can merge past it.
-   An overlap of DRIFT_REVIEW files or more also makes the task review first,
-   as the person who connected the repo, "via GitHub": its author doesn't
-   merge it.
+   An overlap of DRIFT_HEAVY files or more not yet re-checked also puts a
+   comment on the task (domain/github.ts driftNotice), as the person who
+   connected the repo, "via GitHub", once per overlap: it reaches the task's
+   assignees, which wakes an agent's daemon to bring main in, re-check and
+   merge. It never makes the task review first: only a person chooses that
+   (COPL-194).
 
    Measured when the PR opens or moves, when the default branch moves (every
    open PR on that repo), and when someone revalidates. Runs after the
    webhook has answered (waitUntil), with its own live-update batch.
    ========================================================================== */
 
-import { DRIFT_REVIEW, driftState, driftStatus, overlapOf, type Drift } from "@/domain/github";
+import { driftNotice, driftState, driftStatus, overlapOf, type Drift } from "@/domain/github";
 import { taskPath } from "@/domain/tasks";
 import type { Viewer } from "@/domain/types";
 import type { Env } from "./env";
@@ -36,7 +39,7 @@ import { boardAudience, bumped, taskChange } from "./repo/boards";
 import { findUserById, rowToUser } from "./repo/users";
 import { asVia } from "./tokens";
 import { postComment } from "./routes/comments";
-import { patchTask, taskFor } from "./routes/tasks";
+import { taskFor } from "./routes/tasks";
 
 export const DRIFT_CONTEXT = "copland/drift";
 
@@ -48,15 +51,16 @@ interface PullRow {
   connected_by: string;
   base_sha: string | null;
   revalidated_main: string | null;
-  review_first: number;
+  drift: string | null;
+  completed_at: string | null;
 }
 
 /** A PR's rows: one per task it names, on every board its repo is connected to. */
-async function pullRows(db: D1Database, repo: string, number: number): Promise<PullRow[]> {
+export async function pullRows(db: D1Database, repo: string, number: number): Promise<PullRow[]> {
   const { results } = await db
     .prepare(
       `SELECT c.id, c.task_id, b.key || '-' || t.number AS task_key, t.board_id, r.connected_by,
-              c.base_sha, c.revalidated_main, t.review_first
+              c.base_sha, c.revalidated_main, c.drift, t.completed_at
          FROM task_code c
          JOIN board_repos r ON r.id = c.repo_id
          JOIN tasks t ON t.id = c.task_id AND t.deleted_at IS NULL
@@ -78,8 +82,8 @@ export interface PullRef {
 }
 
 /**
- * Measure a PR's drift, keep it on its rows, post copland/drift, and make its
- * tasks review first when the overlap is large. Null when Copland can't say:
+ * Measure a PR's drift, keep it on its rows, post copland/drift, and tell its
+ * tasks' assignees when the overlap grows large. Null when Copland can't say:
  * no task names the PR, or the App isn't installed on the repo.
  */
 export async function measureDrift(env: Env, ctx: ExecutionContext, pr: PullRef, origin: string): Promise<Drift | null> {
@@ -115,7 +119,7 @@ export async function measureDrift(env: Env, ctx: ExecutionContext, pr: PullRef,
   }
 
   const changes = new Changes();
-  if (drift.overlap.length >= DRIFT_REVIEW) await escalate(env, rows, changes);
+  await noticeDrift(env, rows, drift, changes);
   /* The PR's tasks show its drift; bumped after the write, which a board read between only reads twice. */
   for (const board of new Set(rows.map((r) => r.board_id))) {
     const tasks = rows.filter((r) => r.board_id === board).map((r) => r.task_id);
@@ -125,15 +129,17 @@ export async function measureDrift(env: Env, ctx: ExecutionContext, pr: PullRef,
   return drift;
 }
 
-/** Make the PR's tasks review first, as whoever connected the repo, "via GitHub". */
-async function escalate(env: Env, rows: PullRow[], changes: Changes): Promise<void> {
-  for (const row of rows.filter((r) => !r.review_first)) {
+/** Comment on the PR's open tasks when the overlap is heavy and new, as whoever connected the repo, "via GitHub". */
+export async function noticeDrift(env: Env, rows: PullRow[], drift: Drift, changes: Changes): Promise<void> {
+  for (const row of rows.filter((r) => !r.completed_at)) {
+    const text = driftNotice(row.drift ? (JSON.parse(row.drift) as Drift) : null, drift);
+    if (!text) continue;
     const person = await findUserById(env.DB, row.connected_by);
     if (!person || person.disabled_at) continue;
     const viewer: Viewer = { user: rowToUser(person) };
-    const flag = new Request("https://copland.invalid/", { method: "PATCH", body: JSON.stringify({ reviewFirst: true }) });
+    const comment = new Request("https://copland.invalid/", { method: "POST", body: JSON.stringify({ text }) });
     try {
-      await asVia("GitHub", () => patchTask(flag, env, viewer, row.task_id, changes));
+      await asVia("GitHub", () => postComment(comment, env, viewer, row.task_id, changes));
     } catch (error) {
       if (!(error instanceof HttpError)) throw error;
     }

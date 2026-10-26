@@ -492,15 +492,25 @@ async fn supervise(
     };
 
     let text = prompt(handle, task_key, brief, workspace, messages);
+    /* A worker's build output, shared with the repo's other worktrees; there before the sandbox binds it. */
+    let build = match (workspace, &agent.code_command) {
+        (Some(ws), Some(_)) if !ws.read_only => match workspace::build_dir(&agent.code_dir, &ws.repo)
+            .and_then(|dir| std::fs::create_dir_all(&dir).map(|()| dir).map_err(Into::into))
+        {
+            Ok(dir) => Some(dir),
+            Err(e) => return Exit::SpawnFailed(format!("the shared build dir: {e:#}")),
+        },
+        _ => None,
+    };
     /* A coding task: its own command, in its worktree, inside the sandbox. */
     let (argv, cwd, sandboxed) = match (workspace, &agent.code_command) {
         (Some(ws), Some(code)) => {
             let backend = sandbox::of(agent);
-            /* A lead reads the repo; a worker writes its worktree, and its commits land in the clone's .git. */
-            let dirs = if ws.read_only {
-                Vec::new()
-            } else {
-                vec![ws.clone.join(".git"), ws.dir.clone()]
+            /* A lead reads the repo; a worker writes its worktree, its commits land in the clone's .git,
+            and what it builds in the repo's shared build dir (COPL-187). */
+            let dirs = match &build {
+                Some(build) => vec![ws.clone.join(".git"), ws.dir.clone(), build.clone()],
+                None => Vec::new(),
             };
             /* Seatbelt: a temp dir of the run's own, its TMPDIR, gone with the run (bubblewrap's is a tmpfs). */
             let tmp = backend
@@ -577,6 +587,9 @@ async fn supervise(
                     "fast-forward"
                 },
             );
+    }
+    if let Some(build) = &build {
+        command.env("CARGO_TARGET_DIR", build);
     }
     let mut child = match command.spawn() {
         Ok(c) => c,
@@ -1454,6 +1467,75 @@ mod tests {
         let log = fs::read_to_string(log_path(&scratch, run_id)).unwrap_or_default();
         let _ = fs::remove_dir_all(&scratch);
         (ended, log)
+    }
+
+    /// A worker's coding run builds into the repo's shared build dir (COPL-187): it is made, named
+    /// in `CARGO_TARGET_DIR` and writable inside the sandbox. Skipped where the sandbox doesn't work.
+    #[tokio::test]
+    async fn a_worker_builds_into_the_repos_shared_dir() {
+        /* Not under /tmp: bubblewrap gives every run an empty /tmp of its own. */
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target")
+            .join(format!("copland-build-{}", std::process::id()));
+        let ws = worktree(&root.join("work"));
+        let code_dir = root.join("code");
+        let agent = AgentConfig {
+            url: "http://127.0.0.1:9".into(),
+            handle: "me/dev".into(),
+            token: Secret::new("cpl_x"),
+            command: vec!["false".into()],
+            workdir: std::env::temp_dir(),
+            client: "test".into(),
+            code_command: Some(
+                ["sh", "-c", "echo built > \"$CARGO_TARGET_DIR/out\""]
+                    .map(String::from)
+                    .to_vec(),
+            ),
+            writable: Vec::new(),
+            runtime: crate::config::Runtime::ClaudeCode,
+            code_dir: code_dir.clone(),
+            max_runs: 10,
+        };
+        if let Err(said) = sandbox::of(&agent).probe() {
+            eprintln!("the sandbox doesn't work here; skipping: {said}");
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        let api = Api::new(&agent.url).unwrap();
+        let (_tx, shutdown) = watch::channel(false);
+        let scratch = root.join("state");
+        let ended = run_until(
+            Launch {
+                api: &api,
+                agent: &agent,
+                handle: "me/dev",
+                run_id: "00000000-0000-0000-0000-000000000003",
+                secret: &Secret::new("cplr_x"),
+                task_id: "t-1",
+                task_key: "COPL-9",
+                brief: Brief::Work,
+                messages: &[],
+                state_dir: &scratch,
+                runtime_dir: &scratch,
+                workspace: Some(&ws),
+                /* Nothing answers at that url: give up on the last files report at once. */
+                last_word: Backoff {
+                    first: Duration::from_millis(1),
+                    most: Duration::from_millis(1),
+                    give_up: Duration::ZERO,
+                },
+            },
+            shutdown,
+            std::future::pending(),
+            Limits::RUN,
+        )
+        .await;
+        let built = fs::read_to_string(code_dir.join("build/o/r/out"));
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ended.exit, Exit::Code(0));
+        assert_eq!(built.unwrap(), "built\n");
     }
 
     /// A runtime that dies at once, saying nothing: the log's last line says how, and so does
