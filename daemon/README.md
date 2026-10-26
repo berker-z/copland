@@ -327,13 +327,26 @@ Exit codes, for all three: 0 when shown or done (or a watch whose reader went aw
 
 A program that lives alongside the daemon (the tray, COPL-172) uses `Watcher` (`core/src/watcher.rs`, COPL-200) rather than the terminal's client. `Watcher::start(config, runtime_dir)` finds the socket as `status` does, sends `watch` and keeps a `tokio::sync::watch::Receiver<Connection>` (`subscribe`) up to date: `Connecting` until the first try says something, `Connected(Status)` with the latest snapshot, `NotRunning` when no daemon serves the socket, a dead one's is left behind, it hangs up or it is stopping, and `Unreadable(why)` when what answers can't be read (a `version` other than 1, an answer that isn't a status, a socket it can't connect to), so nothing of it is drawn. Fields it doesn't know are ignored. When the daemon goes away it tries again every second and picks up one started later by itself; receivers are woken only when the value changes. `stop_run(slot, run)`, `hold(slot)` and `release(slot)` each send their request on a connection of their own, which keeps the answer apart from the snapshots, and answer `Err` with the socket's `error` text, or with no daemon serving the socket, or after five seconds without an answer. Dropping the watcher stops it.
 
+### `copland-tray`
+
+The daemon in your bar's tray (COPL-198, `daemon/tray`): a StatusNotifierItem over D-Bus, so it shows in waybar's tray, KDE's, and GNOME's with the AppIndicator extension. It is a small binary of its own, not the box, and needs nothing GPUI does. It watches the status socket of the daemon running a config (`--config`, the default config's when left out, as `copland-daemon status` finds it), and never starts one: with no socket, when the daemon goes away and while it is stopping, it shows *not running*, and `Watcher` (above) picks up a daemon started later by itself.
+
+```sh
+copland-tray                       # the daemon running the default config
+copland-tray --config ~/work.toml
+```
+
+Its icon is one of the four in `release/tray` (see "Cutting a release"): `needs` when any agent has something in `needs`, else `working` when any has a run going, else `idle` (held alone is idle), and `stopped` while no daemon is running. Its tooltip has a line per agent, the name part of its handle with what it is doing (`dev · working on COPL-166`, the task of its oldest run, `and 1 more` when it has others), `held` when it is held, `out of usage until 17:10 UTC` while its runtime's account is (COPL-195; not a need, so the icon stays as it was), and the first thing it needs. Its menu, on a left or right click, has for each agent Hold or Release it on this machine (`Watcher::hold` and `release`, by slot) and Stop for each run going (`Watcher::stop_run`), then Quit tray, which ends the tray and leaves the daemon running. What the daemon refuses, why its answer can't be read (`Unreadable`), or that a daemon from before the socket holds the config's lock, is the tooltip's last line and the menu's first, disabled, until the next request goes through or the connection changes.
+
+`view.rs` turns a status into the icon, tooltip and menu as plain values, and `follow.rs` keeps what the tray shows from the `Watcher` and passes the menu's requests to it; both are platform-neutral, for the macOS item (COPL-202). `sni.rs` draws them with `ksni` (pure Rust, no GTK), on its async-io runtime rather than its default tokio, which keeps zbus at the box's version and features. It is Linux only for now: elsewhere the binary says so and exits 1. Starting it with your session, and opening the box from it, are COPL-201.
+
 ## Building
 
-It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. `box` is `copland-box`, the same loop with a GPUI window (below). `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, waiting tasks, messages waiting for a run, last run) as a `tokio::sync::watch` receiver, which the status socket serves and the box draws, both as a `Status` (see "Status"). `Daemon::reload(config)` changes the agents it runs in place (see "The agents screen"); only the box calls it, and the headless daemon still reads its config once, at start. The workspace's `default-members` are `core` and `cli`, so plain `cargo` here builds and checks the headless daemon only, with no GPUI anywhere in its graph.
+It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. `tray` is `copland-tray` (above), and `box` is `copland-box`, the same loop with a GPUI window (below). `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, waiting tasks, messages waiting for a run, last run) as a `tokio::sync::watch` receiver, which the status socket serves and the box draws, both as a `Status` (see "Status"). `Daemon::reload(config)` changes the agents it runs in place (see "The agents screen"); only the box calls it, and the headless daemon still reads its config once, at start. The workspace's `default-members` are `core`, `cli` and `tray`, so plain `cargo` here builds and checks the headless daemon and the tray, with no GPUI anywhere in their graph.
 
 ```sh
 cd daemon
-cargo build --release      # target/release/copland-daemon
+cargo build --release      # target/release/copland-daemon and copland-tray
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
