@@ -52,6 +52,10 @@ pub struct Agent {
     pub retiring: bool,
     /// Since when Copland hasn't answered: nothing starts until it does.
     pub unavailable_since: Option<String>,
+    /// Held on this machine (the socket's `hold`): nothing starts until it is released. Not
+    /// Copland's pause. Added after version 1 shipped, so an older daemon's status has none.
+    #[serde(default)]
+    pub held: bool,
     /// Every run going, oldest first.
     pub runs: Vec<Run>,
     /// What this machine lacks to start its runs, which wait until it is there.
@@ -198,6 +202,7 @@ impl Agent {
             messages: a.messages,
             retiring: a.retiring,
             unavailable_since: a.unavailable.map(rfc3339),
+            held: a.held,
             runs: a
                 .runs
                 .iter()
@@ -254,6 +259,9 @@ impl Agent {
             about.insert(0, format!("configured as {}", self.configured));
         }
         out.push_str(&format!("  {}\n", about.join(" · ")));
+        if self.held {
+            out.push_str("  ‖ held on this machine: starts nothing until released\n");
+        }
         if let Some(t) = &self.unavailable_since {
             out.push_str(&format!("  × Copland unavailable since {}\n", clock(t)));
         }
@@ -351,6 +359,7 @@ mod tests {
         a.unread = 4;
         a.waiting = vec!["T-1".into(), "T-2".into()];
         a.messages = 1;
+        a.held = true;
         a.run_started("aaaa", "T-1");
         a.run_started("bbbb", MESSAGES);
         for r in &mut a.runs {
@@ -413,6 +422,7 @@ mod tests {
                     "messages": 1,
                     "retiring": false,
                     "unavailable_since": null,
+                    "held": true,
                     "runs": [
                         {
                             "run": "aaaa",
@@ -461,7 +471,10 @@ mod tests {
         let mut v = serde_json::to_value(&s).unwrap();
         v["agents"][0]["paused"] = serde_json::json!(true);
         v["later"] = serde_json::json!("x");
-        assert_eq!(serde_json::from_value::<Status>(v).unwrap(), s);
+        assert_eq!(serde_json::from_value::<Status>(v.clone()).unwrap(), s);
+        /* A daemon from before `held` says nothing of it: not held. */
+        v["agents"][0].as_object_mut().unwrap().remove("held");
+        assert!(!serde_json::from_value::<Status>(v).unwrap().agents[0].held);
     }
 
     #[test]
@@ -517,6 +530,7 @@ mod tests {
             Status::of(&st).render(),
             "@me/dev  ● T-1, messages\n  \
              https://copland.example · live connected\n  \
+             ‖ held on this machine: starts nothing until released\n  \
              ● T-1: run aaaa since 23:20 UTC in /code/repo/T-1\n  \
              ● messages: run bbbb since 23:20 UTC\n  \
              4 unread · todo T-2 · 1 message waiting\n  \
