@@ -11,6 +11,12 @@
 //! all, paused ones too, with your read-only token. Without an owner token
 //! the screen shows only the agents this machine runs.
 //!
+//! Each says where it runs (COPL-183), "dev · laptop": the hosts it is live
+//! on now, else the one it last reported from, else, for one this machine
+//! runs, this machine. One live on two hosts at once gets the web app's
+//! warning (`twoHostsWarning` in `src/domain/hosts.ts`), here in full and in
+//! the live view's status line in short.
+//!
 //! `m` messages the selected agent (COPL-109): one line, sent with
 //! `POST /api/messages` as you. That needs your read-and-write token
 //! (`write.rs`), so the first `m` asks for it through a device login of its
@@ -24,6 +30,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::Result;
 use copland_daemon_core::api::{Api, DeviceIdentity, DevicePoll, DeviceStart, WiredAgent};
 use copland_daemon_core::config::AgentConfig;
+use copland_daemon_core::setup::host_name;
 use copland_daemon_core::{Config, Status, Watcher, status};
 use gpui::{Context, KeyDownEvent, Task};
 
@@ -149,6 +156,67 @@ impl Failed {
     }
 }
 
+/// Where an agent runs, as `/api/wired` says (COPL-183).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Hosts {
+    /// The hosts it is live on now, by name, sorted.
+    pub live: Vec<String>,
+    /// The one it reported from last, live or not.
+    pub last: Option<String>,
+    /// Live on two hosts at once and not paused: warned about.
+    pub two: bool,
+}
+
+impl Hosts {
+    fn of(w: &WiredAgent) -> Self {
+        let mut live: Vec<String> = w.live_hosts().into_iter().map(str::to_string).collect();
+        live.sort();
+        Self {
+            live,
+            last: w.hosts.first().map(|h| h.hostname.clone()),
+            two: w.live_on_two_hosts && !w.paused,
+        }
+    }
+
+    /// What follows its name: where it is live (muted), else where it last reported, else
+    /// `here`, the machine it runs on when it is this one (faint).
+    fn label(&self, here: Option<&str>) -> Option<(String, Role)> {
+        if !self.live.is_empty() {
+            return Some((self.live.join(", "), Role::Muted));
+        }
+        self.last.as_deref().or(here).map(|h| (h.to_string(), Role::Faint))
+    }
+}
+
+/// Hostnames as a sentence names them: "laptop", "laptop and server", "a, b and c"
+/// (`hostList` in `src/domain/hosts.ts`).
+pub fn host_list(hosts: &[String]) -> String {
+    match hosts {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// Where an agent live on two hosts at once is live, naming the ones it knows (one live but
+/// never reported has no name to give).
+pub fn where_live(w: &WiredAgent) -> String {
+    let live = Hosts::of(w).live;
+    if live.len() > 1 {
+        host_list(&live)
+    } else {
+        "two hosts".into()
+    }
+}
+
+/// What the web app says when an agent is live on two hosts at once (`twoHostsWarning`).
+pub fn two_hosts_warning(w: &WiredAgent) -> String {
+    format!(
+        "Live on {} at once: usually a forgotten daemon. Stop the one you don't mean to run.",
+        where_live(w)
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     /// In daemon.toml.
@@ -159,6 +227,7 @@ pub enum Row {
         workdir: String,
         doing: Doing,
         paused: bool,
+        hosts: Hosts,
     },
     /// One of yours this machine doesn't run.
     Away {
@@ -166,6 +235,7 @@ pub enum Row {
         paused: bool,
         /// Removed here, and still finishing a run.
         leaving: bool,
+        hosts: Hosts,
     },
 }
 
@@ -173,6 +243,15 @@ impl Row {
     pub fn handle(&self) -> &str {
         match self {
             Row::Here { handle, .. } | Row::Away { handle, .. } => handle,
+        }
+    }
+
+    /// Where it runs, for the column after its name: this machine, `here`, counts for one in
+    /// daemon.toml.
+    fn host(&self, here: Option<&str>) -> Option<(String, Role)> {
+        match self {
+            Row::Here { hosts, .. } => hosts.label(here),
+            Row::Away { hosts, .. } => hosts.label(None),
         }
     }
 }
@@ -243,6 +322,7 @@ pub fn rows(configured: &[AgentConfig], st: &Status, wired: Option<&[WiredAgent]
             workdir: setup::tilde(&a.workdir),
             doing,
             paused: theirs.is_some_and(|t| t.paused),
+            hosts: theirs.map(Hosts::of).unwrap_or_default(),
         });
     }
     for w in wired.unwrap_or_default() {
@@ -257,6 +337,7 @@ pub fn rows(configured: &[AgentConfig], st: &Status, wired: Option<&[WiredAgent]
             handle: w.handle.clone(),
             paused: w.paused,
             leaving,
+            hosts: Hosts::of(w),
         });
     }
     out
@@ -1018,16 +1099,33 @@ impl Agents {
             .max()
             .unwrap_or(0)
             .min(14);
+        let here = host_name(&self.host);
         let first = selected.saturating_sub(ROWS - 1).min(n.saturating_sub(ROWS));
-        for (i, r) in list.iter().enumerate().skip(first).take(ROWS) {
+        let shown: Vec<(usize, &Row)> = list.iter().enumerate().skip(first).take(ROWS).collect();
+        let host_width = shown
+            .iter()
+            .filter_map(|(_, r)| r.host(here.as_deref()))
+            .map(|(h, _)| h.chars().count())
+            .max()
+            .map(|w| w.min(16));
+        for &(i, r) in &shown {
             let on = i == selected;
             let mut spans = vec![
                 Span::new(if on { "› " } else { "  " }, Role::Blue),
                 Span::new(
-                    format!("{:<width$}  ", clip(name(r.handle()), width)),
+                    format!("{:<width$}", clip(name(r.handle()), width)),
                     if on { Role::Ink } else { Role::Muted },
                 ),
             ];
+            /* "dev · laptop": where it runs, in a column of its own. */
+            match (host_width, r.host(here.as_deref())) {
+                (Some(hw), Some((h, role))) => {
+                    spans.push(Span::new(" · ", Role::Faint));
+                    spans.push(Span::new(format!("{:<hw$}  ", clip(&h, hw)), role));
+                }
+                (Some(hw), None) => spans.push(Span::new(" ".repeat(hw + 5), Role::Faint)),
+                (None, _) => spans.push(Span::new("  ", Role::Faint)),
+            }
             match r {
                 Row::Here {
                     handle,
@@ -1074,6 +1172,17 @@ impl Agents {
             }
             lines.push(Line(spans, None));
             clicks.push(Some(format!("row:{i}")));
+        }
+        /* Live on two hosts at once: usually a forgotten daemon, the agent scrolled away or not. */
+        for w in wired.unwrap_or_default().iter().filter(|w| Hosts::of(w).two) {
+            lines.push(Line(
+                vec![
+                    Span::new(format!("{} ", name(&w.handle)), Role::Yellow),
+                    Span::new(two_hosts_warning(w), Role::Yellow),
+                ],
+                None,
+            ));
+            clicks.push(None);
         }
 
         let row = list.get(selected);
@@ -1348,7 +1457,63 @@ mod tests {
             handle: handle.into(),
             name: name(handle).into(),
             paused,
+            hosts: Vec::new(),
+            live_on_two_hosts: false,
         }
+    }
+
+    fn host(name: &str, live: bool) -> copland_daemon_core::api::WiredHost {
+        copland_daemon_core::api::WiredHost {
+            hostname: name.into(),
+            live,
+        }
+    }
+
+    #[test]
+    fn says_where_each_agent_runs() {
+        let mut w = wired_agent("u1", "me/dev", false);
+        /* Nothing reported: one this machine runs is here, one it doesn't is nowhere yet. */
+        assert_eq!(
+            Hosts::of(&w).label(Some("laptop")),
+            Some(("laptop".into(), Role::Faint))
+        );
+        assert_eq!(Hosts::of(&w).label(None), None);
+        /* Reported, not live now: where it was last. */
+        w.hosts = vec![host("server", false), host("laptop", false)];
+        assert_eq!(
+            Hosts::of(&w).label(Some("laptop")),
+            Some(("server".into(), Role::Faint))
+        );
+        /* Live: where it is, the live ones only. */
+        w.hosts = vec![host("server", true), host("old", false), host("laptop", true)];
+        w.live_on_two_hosts = true;
+        let h = Hosts::of(&w);
+        assert_eq!(h.label(None), Some(("laptop, server".into(), Role::Muted)));
+        assert!(h.two);
+        assert_eq!(
+            two_hosts_warning(&w),
+            "Live on laptop and server at once: usually a forgotten daemon. Stop the one you don't mean to run."
+        );
+        /* Paused, it is warned about nowhere, as in Copland. */
+        w.paused = true;
+        assert!(!Hosts::of(&w).two);
+        /* Live on a second host that never reported: no name to give it. */
+        w.hosts = vec![host("laptop", true)];
+        assert_eq!(where_live(&w), "two hosts");
+    }
+
+    #[test]
+    fn names_hosts_and_warns_as_the_web_app_does() {
+        let s = |v: &[&str]| v.iter().map(|h| h.to_string()).collect::<Vec<_>>();
+        assert_eq!(host_list(&s(&[])), "");
+        assert_eq!(host_list(&s(&["a"])), "a");
+        assert_eq!(host_list(&s(&["a", "b"])), "a and b");
+        assert_eq!(host_list(&s(&["a", "b", "c"])), "a, b and c");
+        let ts = crate::webts::read("src/domain/hosts.ts");
+        assert!(ts.contains(r#"const where = hosts.length > 1 ? hostList(hosts) : "two hosts";"#));
+        assert!(ts.contains(
+            "return `Live on ${where} at once: usually a forgotten daemon. Stop the one you don't mean to run.`;"
+        ));
     }
 
     #[test]
@@ -1407,7 +1572,8 @@ mod tests {
             Row::Away {
                 handle: "me/review".into(),
                 paused: true,
-                leaving: false
+                leaving: false,
+                hosts: Hosts::default(),
             }
         );
 
@@ -1588,7 +1754,8 @@ mod tests {
             [Row::Away {
                 handle: "me/dev".into(),
                 paused: false,
-                leaving: true
+                leaving: true,
+                hosts: Hosts::default(),
             }]
         );
     }

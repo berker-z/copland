@@ -13,7 +13,11 @@
      done     in a done-category stage, completed within DONE_WINDOW_HOURS,
               newest first, at most DONE_LIMIT (doneCount has them all)
 
-   Backlog and cancelled never show. It writes nothing, so it notifies
+   Backlog and cancelled never show. Each agent comes with where it runs
+   (COPL-183, for the box): the hosts its daemon reported, the latest
+   first, which are live now, and whether it is live on two at once
+   (agentHosts in hosts.ts); a live task says the host its run started on.
+   It writes nothing, so it notifies
    nobody; the pane refetches on the board topic, which every task move,
    claim and run ending already sends to everyone on the board, the owner
    included. A claim that lapses sends nothing, so the pane also polls.
@@ -24,6 +28,7 @@ import { boardsFor } from "../access";
 import type { Env } from "../env";
 import { json } from "../http";
 import { LIVE_CLAIM } from "../repo/runs";
+import { agentHosts } from "./hosts";
 
 export const DONE_WINDOW_HOURS = 24;
 export const DONE_LIMIT = 20;
@@ -38,6 +43,8 @@ interface Row {
   updated_at: string;
   agent_id: string;
   claimed_at: string | null;
+  /** The live claim's run's host, when its launcher named one. */
+  host: string | null;
   stage_position: number;
   rank: number;
 }
@@ -53,8 +60,16 @@ export async function getWired(env: Env, viewer: Viewer): Promise<Response> {
     .bind(me)
     .all<{ id: string; handle: string; name: string; paused_at: string | null }>();
 
+  const hosts = agents.length > 0 ? await agentHosts(env, me, agents.map((a) => a.id)) : new Map<string, never>();
   const wired: Wired = {
-    agents: agents.map((a) => ({ id: a.id, handle: a.handle, name: a.name, paused: a.paused_at !== null })),
+    agents: agents.map((a) => ({
+      id: a.id,
+      handle: a.handle,
+      name: a.name,
+      paused: a.paused_at !== null,
+      hosts: (hosts.get(a.id)?.hosts ?? []).map((h) => ({ hostname: h.hostname, live: h.live })),
+      liveOnTwoHosts: hosts.get(a.id)?.liveOnTwoHosts ?? false,
+    })),
     todo: [],
     doing: [],
     blocked: [],
@@ -83,7 +98,8 @@ export async function getWired(env: Env, viewer: Viewer): Promise<Response> {
          SELECT id FROM tasks WHERE ${onBoards} AND completed_at >= ?2)
        SELECT t.id, t.board_id, b.key || '-' || t.number AS key, t.title, s.category, t.completed_at, t.updated_at,
               s.position AS stage_position, t.rank, u.id AS agent_id,
-              CASE WHEN c.user_id = u.id AND ${LIVE_CLAIM} THEN c.claimed_at END AS claimed_at
+              CASE WHEN c.user_id = u.id AND ${LIVE_CLAIM} THEN c.claimed_at END AS claimed_at,
+              CASE WHEN c.user_id = u.id AND ${LIVE_CLAIM} THEN r.host END AS host
          FROM w
          CROSS JOIN tasks t ON t.id = w.id
          CROSS JOIN task_assignees ta ON ta.task_id = t.id
@@ -115,6 +131,7 @@ export async function getWired(env: Env, viewer: Viewer): Promise<Response> {
       agentId: row.agent_id,
       since,
       live,
+      host: live ? row.host : null,
     });
     if (row.category === "blocked") wired.blocked.push(task(row.updated_at));
     else if (row.claimed_at) doing.push(task(row.claimed_at, true));
