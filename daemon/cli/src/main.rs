@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Parser;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
-use copland_daemon_core::{Config, Daemon, Paths};
+use copland_daemon_core::{Config, Daemon, Lock, Paths};
 use tokio::signal::unix::{SignalKind, signal};
 
 #[derive(Parser)]
@@ -83,6 +83,8 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
+    /* One daemon per config (COPL-175): held until the process ends. */
+    let _lock = Lock::take(&path, &default_runtime_dir(), "copland-daemon")?;
     tracing::info!(config = %path.display(), agents = config.agents.len(), poll = ?config.poll_interval, "starting");
 
     let mut daemon = Daemon::start(
