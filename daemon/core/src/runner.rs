@@ -6,7 +6,7 @@ use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 use tokio::process::Command;
@@ -16,6 +16,7 @@ use tokio::time::{Instant, interval_at, timeout};
 use crate::api::{Api, Backoff, Run};
 use crate::config::{AgentConfig, Secret, fill_command};
 use crate::guard::Message;
+use crate::limit::{self, OutOfUsage};
 use crate::sandbox::{self, Writable};
 use crate::usage::{self, Usage};
 use crate::workspace::{self, Changes, Workspace};
@@ -245,16 +246,21 @@ pub struct Ended {
     pub took: Duration,
     pub silent: bool,
     pub usage: Option<Usage>,
+    /// It exited saying its account is out of usage (COPL-195): the account's trouble, not the task's.
+    pub out_of_usage: Option<OutOfUsage>,
 }
 
 impl Ended {
     /// How it ended in a line: the run log's footer, the reason sent to Copland, the box's word.
     /// "exit 1 after 3.8s"; a runtime that never started says why instead.
     pub fn reason(&self) -> String {
-        let line = match &self.exit {
+        let mut line = match &self.exit {
             Exit::SpawnFailed(_) => self.exit.to_string(),
             exit => format!("{exit} after {}", took(self.took)),
         };
+        if let Some(o) = &self.out_of_usage {
+            line = format!("out of usage, {line}: {}", o.said);
+        }
         clip(&line.split_whitespace().collect::<Vec<_>>().join(" "), REASON_MAX)
     }
 
@@ -429,11 +435,17 @@ async fn run_until(
     let exit = supervise(launch, shutdown, cancel, limits, &mut header, &mut usage).await;
     /* Silent: nothing after the header, or no header at all (it never got that far). */
     let silent = header.is_none_or(|len| fs::metadata(&log).map_or(true, |m| m.len() <= len));
+    /* A runtime that died saying it is out of usage said so last: read the end of what it wrote. */
+    let out_of_usage = match (&exit, header) {
+        (Exit::Code(c), Some(from)) if *c != 0 => limit::read(&tail(&log, from), SystemTime::now()),
+        _ => None,
+    };
     let ended = Ended {
         exit,
         took: started.elapsed(),
         silent,
         usage,
+        out_of_usage,
     };
     let footer = (|| -> Result<()> {
         private_dir(log.parent().expect("log path has a parent"))?;
@@ -444,6 +456,22 @@ async fn run_until(
         tracing::warn!(log = %log.display(), "writing the run log's last line: {e:#}");
     }
     ended
+}
+
+/// The last of what the runtime wrote to its log after the daemon's header (at `from`), at most
+/// `TAIL` bytes of it: enough for its last lines.
+fn tail(log: &Path, from: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 16 * 1024;
+    let read = || -> std::io::Result<String> {
+        let mut f = File::open(log)?;
+        let len = f.metadata()?.len();
+        f.seek(SeekFrom::Start(from.max(len.saturating_sub(TAIL))))?;
+        let mut bytes = Vec::new();
+        f.read_to_end(&mut bytes)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    };
+    read().unwrap_or_default()
 }
 
 /// Start the runtime and wait for it, as `run` says. `header` is set to the log's length once
@@ -1603,6 +1631,51 @@ mod tests {
         assert!(log.contains("no newline at the end"), "{log}");
     }
 
+    /// COPL-195: a runtime that exits saying its account is out of usage, as Claude Code's JSON
+    /// result or plain on stderr, ends out of usage, and the reason says so. One that says it and
+    /// exits 0, or says it long before its last word, doesn't.
+    #[tokio::test]
+    async fn a_runtime_out_of_usage_says_so() {
+        let result = r#"{"type":"result","subtype":"success","is_error":true,"result":"You've hit your session limit · resets 8:10pm (Europe/Istanbul)","usage":{"input_tokens":0,"output_tokens":0}}"#;
+        let script = format!("cat <<'EOF'\n{result}\nEOF\nexit 1");
+        let (ended, log) = ran(&["sh", "-c", &script], "limit-json").await;
+        let o = ended.out_of_usage.clone().expect("out of usage");
+        assert_eq!(
+            o.said,
+            "You've hit your session limit · resets 8:10pm (Europe/Istanbul)"
+        );
+        assert!(o.resets.is_some());
+        assert!(
+            ended.reason().starts_with("out of usage, exit 1 after "),
+            "{}",
+            ended.reason()
+        );
+        assert!(
+            log.ends_with(&format!("# copland-daemon: {}\n", ended.reason())),
+            "{log}"
+        );
+
+        let (ended, _) = ran(
+            &["sh", "-c", "echo 'Error: You have hit your usage limit.' >&2; exit 1"],
+            "limit-stderr",
+        )
+        .await;
+        assert_eq!(ended.out_of_usage.map(|o| o.resets), Some(None));
+
+        let (ended, _) = ran(&["sh", "-c", "echo 'You have hit your usage limit'"], "limit-ok").await;
+        assert_eq!(ended.out_of_usage, None, "exit 0 is no limit");
+        let (ended, _) = ran(
+            &[
+                "sh",
+                "-c",
+                "echo 'usage limit'; for i in 1 2 3 4 5 6 7 8 9; do echo work; done; exit 1",
+            ],
+            "limit-early",
+        )
+        .await;
+        assert_eq!(ended.out_of_usage, None, "not its last word");
+    }
+
     /// A runtime that can't be started: the error is the log's last line and the reason.
     #[tokio::test]
     async fn a_spawn_failure_says_why() {
@@ -1631,6 +1704,7 @@ mod tests {
             took: Duration::from_millis(3800),
             silent: true,
             usage: None,
+            out_of_usage: None,
         };
         assert_eq!(ended(Exit::Code(1)).reason(), "exit 1 after 3.8s");
         assert_eq!(ended(Exit::Signal(9)).reason(), "signal 9 after 3.8s");
