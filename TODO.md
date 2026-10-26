@@ -606,8 +606,13 @@ docs/DESIGN.md under Touch.
   `liveOnTwoHosts`, and the nudge pane's recipients say where your own
   agents are live (`liveHosts` in live.ts). Checked in
   checks/hosts.check.ts. Not yet: the daemon reporting and naming its host
-  (COPL-179), its repo preflight (COPL-178), and the web app and the box
-  showing any of it
+  (COPL-179), its repo preflight (COPL-178), and the box showing any of
+  it. The web app shows it (COPL-182): /nudge says the hosts your agent is
+  live on and warns when it is two at once, an agent's settings page lists
+  its hosts with version, last report and capabilities (runtimes not
+  ready and repos it can't push to called out), the same warning, and the
+  host each run started on. A card's claim doesn't say the host, since
+  every board member sees it.
 - Worktrees share build output (COPL-187): a worker's run gets
   `CARGO_TARGET_DIR=code_dir/build/<repo>`, writable in its sandbox, so a
   repo's worktrees build into one target dir instead of 6 to 7 GB each
