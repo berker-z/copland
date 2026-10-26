@@ -28,6 +28,7 @@ use crate::api::{Api, ApiError, Backoff, BoardRepos, Ending, InboxItem, Me};
 use crate::chain;
 use crate::config::AgentConfig;
 use crate::guard::{Check, Identity, Message, Plan, Refused, Wake, WakeGuard, add_ready, plan, refused};
+use crate::limit::{self, OutOfUsage};
 use crate::live::{self, FALLBACK_POLL, Heard, Link};
 use crate::runner::{self, Brief, Ended, Exit, Launch, MESSAGES};
 use crate::sandbox;
@@ -154,13 +155,28 @@ pub struct AgentLoop {
     probed: Option<(&'static str, PathBuf, Option<String>)>,
     /// How its runs ask again for their last word while Copland is down.
     last_word: Backoff,
-    /// Whether it was held on this machine (`AgentState::held`) at the last poll, to say it once.
+    /// Whether it was held on this machine (`AgentState::holds`) at the last poll, to say it once.
     held: bool,
+    /// How long it is held the next time its runtime is out of usage without saying until when
+    /// (COPL-195): `limit::FIRST`, doubled each time up to `limit::MOST`, and back to the first once
+    /// a runtime runs without running out.
+    usage_wait: Duration,
 }
 
-/// Whether the agent in `slot` is held on this machine.
+/// Whether the agent in `slot` is held on this machine: by hand, or out of usage (COPL-195).
 fn held(st: &DaemonState, slot: u64) -> bool {
-    st.agents.iter().any(|a| a.slot == slot && a.held)
+    let now = SystemTime::now();
+    st.agents.iter().any(|a| a.slot == slot && a.holds(now))
+}
+
+/// How a run ends, by how its runtime did: as `ending_of` says, but interrupted when the runtime
+/// is out of usage (COPL-195), which is its account's trouble, not the task's.
+fn ended_as(ended: &Ended) -> Ending {
+    if ended.out_of_usage.is_some() {
+        Ending::Interrupted
+    } else {
+        ending_of(&ended.exit)
+    }
 }
 
 /// Whether an error is Copland being down (`ApiError::is_unavailable`), whatever was being done.
@@ -302,6 +318,7 @@ impl AgentLoop {
             probed: None,
             last_word: Backoff::LAST_WORD,
             held: false,
+            usage_wait: limit::FIRST,
         })
     }
 
@@ -351,6 +368,11 @@ impl AgentLoop {
                     tracing::warn!("{e}");
                     self.update(|s| s.last_error = Some(e));
                 }
+                match d.runtime {
+                    Runtime::NotLaunched => {}
+                    Runtime::Ran => self.usage_wait = limit::FIRST,
+                    Runtime::OutOfUsage(o) => self.out_of_usage(&o),
+                }
             }
             Err(e) => {
                 if let Some(task) = self.spawned.remove(&e.id()) {
@@ -359,6 +381,38 @@ impl AgentLoop {
                 tracing::error!("a run ended without saying how: {e}");
             }
         }
+    }
+
+    /// Its runtime said it is out of usage (COPL-195): hold the agent until the reset it said, or
+    /// for the back-off when it said none. Runs going on the same account run out too and say the
+    /// same: a later reset moves the hold on, and the back-off grows only once a hold has passed.
+    fn out_of_usage(&mut self, o: &OutOfUsage) {
+        let now = SystemTime::now();
+        let current = self
+            .state
+            .borrow()
+            .agents
+            .iter()
+            .find(|a| a.slot == self.slot)
+            .and_then(|a| a.until(now));
+        let until = match (o.resets, current) {
+            (Some(at), _) => at,
+            (None, Some(current)) => current,
+            (None, None) => {
+                let until = now + self.usage_wait;
+                self.usage_wait = (self.usage_wait * 2).min(limit::MOST);
+                until
+            }
+        };
+        let until = current.map_or(until, |c| c.max(until));
+        if current != Some(until) {
+            tracing::warn!(
+                "the runtime is out of usage ({}); starting nothing until {}",
+                o.said,
+                crate::state::clock(until)
+            );
+        }
+        self.update(|s| s.out_of_usage = Some(until));
     }
 
     /// Shutting down, or this loop's binding has been replaced: start nothing new.
@@ -520,6 +574,17 @@ impl AgentLoop {
         let mut holding = self.state.subscribe();
         let (slot, was_held) = (self.slot, self.is_held());
         let since = tokio::time::Instant::now();
+        /* Out of usage (COPL-195): the reset polls at once, which picks the work up again. */
+        let resets = self
+            .state
+            .borrow()
+            .agents
+            .iter()
+            .find(|a| a.slot == slot)
+            .and_then(|a| {
+                let now = SystemTime::now();
+                a.until(now).and_then(|t| t.duration_since(now).ok()).map(|d| since + d)
+            });
         /* A board change can make work ready (a dependency closed, a lead assigned itself a task,
         COPL-86) or wake a task the guard remembers, so it is always worth a poll, spaced out. */
         let board = true;
@@ -538,6 +603,10 @@ impl AgentLoop {
                 _ = async { let _ = shutdown.wait_for(|stop| *stop).await; } => return None,
                 _ = async { let _ = retire.wait_for(|w| w.generation != generation).await; } => return None,
                 _ = async { let _ = holding.wait_for(|s| held(s, slot) != was_held).await; } => return None,
+                _ = async { tokio::time::sleep_until(resets.expect("guarded")).await }, if resets.is_some() => {
+                    tracing::info!("its usage has reset; starting again");
+                    return None;
+                }
                 _ = async { tokio::time::sleep_until(board_due.expect("guarded")).await }, if board_due.is_some() => {
                     tracing::debug!("woken by the live socket (a board change)");
                     return None;
@@ -748,13 +817,30 @@ impl AgentLoop {
         self.guard.retain(&plan);
         /* Held on this machine: the poll goes on so the status stays current, but nothing starts
         or is claimed, as while Copland is down. Runs going are left alone. */
+        let now = SystemTime::now();
+        let passed = self
+            .state
+            .borrow()
+            .agents
+            .iter()
+            .any(|a| a.slot == self.slot && a.out_of_usage.is_some() && a.until(now).is_none());
+        if passed {
+            self.update(|s| s.out_of_usage = None);
+        }
         let held = self.is_held();
         if held != self.held {
             self.held = held;
-            if held {
-                tracing::info!("held on this machine; starting nothing until released");
-            } else {
-                tracing::info!("released on this machine");
+            let usage = self
+                .state
+                .borrow()
+                .agents
+                .iter()
+                .find(|a| a.slot == self.slot)
+                .and_then(|a| a.out_of_usage_line(now));
+            match (held, usage) {
+                (true, Some(line)) => tracing::info!("{line}; starting nothing until then"),
+                (true, None) => tracing::info!("held on this machine; starting nothing until released"),
+                (false, _) => tracing::info!("released on this machine"),
             }
         }
         if held {
@@ -1071,6 +1157,24 @@ struct Done {
     claimed: Vec<Message>,
     /// What went wrong, for the agent's error line.
     error: Option<String>,
+    /// How its runtime went, as far as its account's usage goes (COPL-195).
+    runtime: Runtime,
+}
+
+/// Whether a run launched its runtime, and whether that was out of usage.
+enum Runtime {
+    NotLaunched,
+    Ran,
+    OutOfUsage(OutOfUsage),
+}
+
+impl Runtime {
+    fn of(ended: &Ended) -> Self {
+        match &ended.out_of_usage {
+            Some(o) => Runtime::OutOfUsage(o.clone()),
+            None => Runtime::Ran,
+        }
+    }
 }
 
 impl Done {
@@ -1080,6 +1184,7 @@ impl Done {
             remember: None,
             claimed: Vec::new(),
             error: Some(error),
+            runtime: Runtime::NotLaunched,
         }
     }
 
@@ -1089,6 +1194,7 @@ impl Done {
             remember: Some((updated_at, held)),
             claimed: Vec::new(),
             error: None,
+            runtime: Runtime::NotLaunched,
         }
     }
 }
@@ -1279,7 +1385,7 @@ impl RunCtx {
             stop_requested(self.stop_run.clone(), self.slot, short.clone()),
         )
         .await;
-        let (mut ending, mut how) = (ending_of(&ended.exit), ended.reason());
+        let (mut ending, mut how) = (ended_as(&ended), ended.reason());
         let mut left = false;
         let lead = workspace.as_ref().is_some_and(|ws| ws.read_only);
         if brief == Brief::Work && ending == Ending::Completed && !lead {
@@ -1329,7 +1435,19 @@ impl RunCtx {
         let updated = self.updated_at(&wake.task_id).await;
         self.ran(&run_id, &short, &key, status, &ended, &runtime, left);
         self.update(|s| s.run_ended(&short));
-        Done::ran(wake, updated, false)
+        let runtime = Runtime::of(&ended);
+        if let Runtime::OutOfUsage(_) = runtime {
+            /* Not remembered: its items are still unread, and the run after the reset takes them. */
+            return Done {
+                remember: None,
+                runtime,
+                ..Done::ran(wake, None, false)
+            };
+        }
+        Done {
+            runtime,
+            ..Done::ran(wake, updated, false)
+        }
     }
 
     /// The session a chain's next task resumes (COPL-189): the one the run on the task before it
@@ -1486,7 +1604,7 @@ impl RunCtx {
         drop(started);
         let how = ended.reason();
         let status = self
-            .finish(&run_id, ending_of(&ended.exit), Some(&how), ended.usage.as_ref())
+            .finish(&run_id, ended_as(&ended), Some(&how), ended.usage.as_ref())
             .await;
         tracing::info!(run = %short, messages = n, "runtime {how}; run {status}");
         self.ran(
@@ -1499,9 +1617,16 @@ impl RunCtx {
             false,
         );
         self.update(|s| s.run_ended(&short));
-        /* Remembered whatever the ending, so a message the run left unread doesn't launch another. */
+        /* Remembered whatever the ending, so a message the run left unread doesn't launch another;
+        but for a runtime out of usage, whose messages wait for the run after the reset. */
+        let runtime = Runtime::of(&ended);
+        let claimed = match runtime {
+            Runtime::OutOfUsage(_) => Vec::new(),
+            _ => claimed,
+        };
         Done {
             claimed,
+            runtime,
             ..Done::ran(wake, None, false)
         }
     }
@@ -1596,10 +1721,11 @@ impl RunCtx {
             task: task.to_string(),
             outcome: status,
             failed: left
-                || !matches!(
-                    ended.exit,
-                    Exit::Code(0) | Exit::ForReview | Exit::Stopped | Exit::Cancelled
-                ),
+                || (ended.out_of_usage.is_none()
+                    && !matches!(
+                        ended.exit,
+                        Exit::Code(0) | Exit::ForReview | Exit::Stopped | Exit::Cancelled
+                    )),
             how: Some(if left {
                 format!("{}, {UNFINISHED}", ended.reason())
             } else {
@@ -2087,6 +2213,104 @@ mod tests {
         })
         .await
         .expect("a finish landed")
+    }
+
+    /// COPL-195: a runtime out of usage finishes its run as interrupted (no strike), not as a
+    /// failure, and holds the agent: nothing more starts while the item waits, unread. Said no
+    /// reset, it is held for the back-off, doubled the next time; released by hand, it tries again.
+    #[tokio::test]
+    async fn a_runtime_out_of_usage_holds_the_agent() {
+        let fake = Arc::new(Fake::default());
+        let command = ["sh", "-c", "echo 'Claude AI usage limit reached' >&2; exit 1"];
+        let mut l = Looping::start_with(&fake.start(), "out-of-usage", &command, false);
+        let said = finished(&fake).await;
+        assert_eq!(
+            (said["status"].as_str(), said["interrupted"].as_bool()),
+            (Some("cancelled"), Some(true))
+        );
+        assert!(
+            said["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("out of usage, exit 1 after "),
+            "{said}"
+        );
+        let until = |l: &Looping| {
+            l.state.borrow().agents[0]
+                .out_of_usage
+                .map(|t| t.duration_since(SystemTime::now()).unwrap_or_default())
+        };
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            l.state.wait_for(|s| s.agents[0].out_of_usage.is_some()),
+        )
+        .await
+        .expect("held")
+        .unwrap();
+        let first = until(&l).unwrap();
+        assert!(
+            first > limit::FIRST - Duration::from_secs(60) && first <= limit::FIRST,
+            "{first:?}"
+        );
+        let last = l.state.borrow().agents[0].last_run.clone().unwrap();
+        assert!(!last.failed, "out of usage is not a failure: {last:?}");
+        let polls = fake.count("GET /api/inbox");
+        while fake.count("GET /api/inbox") < polls + 3 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            fake.count("POST /api/runs"),
+            1,
+            "nothing more started while out of usage"
+        );
+        assert!(!l.state.borrow().agents[0].held, "not a hold by hand");
+
+        *fake.finished.lock().unwrap() = None;
+        assert!(l.holder.set(1, false));
+        assert_eq!(finished(&fake).await["interrupted"], true, "released, it tried again");
+        assert_eq!(fake.count("POST /api/runs"), 2);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while until(&l).is_none_or(|d| d <= limit::FIRST) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("held again, for longer");
+        let second = until(&l).unwrap();
+        assert!(
+            second > limit::FIRST * 2 - Duration::from_secs(60) && second <= limit::FIRST * 2,
+            "{second:?}"
+        );
+        l.stop().await;
+    }
+
+    /// COPL-195: the reset the runtime said wakes the agent, which picks the work up by itself.
+    #[tokio::test]
+    async fn the_reset_picks_the_work_up_again() {
+        let fake = Arc::new(Fake::default());
+        let command = [
+            "sh",
+            "-c",
+            "echo \"Claude AI usage limit reached|$(( $(date +%s) + 2 ))\" >&2; exit 1",
+        ];
+        let mut l = Looping::start_with(&fake.start(), "usage-reset", &command, false);
+        assert_eq!(finished(&fake).await["interrupted"], true);
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            l.state.wait_for(|s| s.agents[0].out_of_usage.is_some()),
+        )
+        .await
+        .expect("held")
+        .unwrap();
+        assert_eq!(fake.count("POST /api/runs"), 1, "nothing before the reset");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fake.count("POST /api/runs") < 2 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("started again at the reset");
+        l.stop().await;
     }
 
     /// COPL-186: a held agent with work waiting polls, says what waits, and starts and claims

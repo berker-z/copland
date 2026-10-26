@@ -56,6 +56,10 @@ pub struct Agent {
     /// Copland's pause. Added after version 1 shipped, so an older daemon's status has none.
     #[serde(default)]
     pub held: bool,
+    /// Until when its runtime's account is out of usage (COPL-195), while it is: nothing starts
+    /// until then. Added after version 1 shipped, so an older daemon's status has none.
+    #[serde(default)]
+    pub out_of_usage_until: Option<String>,
     /// Every run going, oldest first.
     pub runs: Vec<Run>,
     /// What this machine lacks to start its runs, which wait until it is there.
@@ -217,6 +221,7 @@ impl Agent {
             retiring: a.retiring,
             unavailable_since: a.unavailable.map(rfc3339),
             held: a.held,
+            out_of_usage_until: a.until(SystemTime::now()).map(rfc3339),
             runs: a
                 .runs
                 .iter()
@@ -269,6 +274,14 @@ impl Agent {
             .map(|t| format!("Copland unavailable since {}", clock(t)))
     }
 
+    /// "out of usage until 17:10 UTC", as `AgentState::out_of_usage_line` says it, when the status
+    /// has it. Whether the reset has passed since is the reader's to see.
+    pub fn out_of_usage_line(&self) -> Option<String> {
+        self.out_of_usage_until
+            .as_deref()
+            .map(|t| format!("out of usage until {}", clock(t)))
+    }
+
     fn render(&self, out: &mut String) {
         let doing = match (self.state.as_str(), self.retiring) {
             ("running", true) => "● changes after this run".to_string(),
@@ -292,6 +305,12 @@ impl Agent {
         out.push_str(&format!("  {}\n", about.join(" · ")));
         if self.held {
             out.push_str("  ‖ held on this machine: starts nothing until released\n");
+        }
+        if let Some(t) = &self.out_of_usage_until {
+            out.push_str(&format!(
+                "  ‖ out of usage until {}: starts nothing until then\n",
+                clock(t)
+            ));
         }
         if let Some(t) = &self.unavailable_since {
             out.push_str(&format!("  × Copland unavailable since {}\n", clock(t)));
@@ -454,6 +473,7 @@ mod tests {
                     "retiring": false,
                     "unavailable_since": null,
                     "held": true,
+                    "out_of_usage_until": null,
                     "runs": [
                         {
                             "run": "aaaa",
@@ -572,6 +592,42 @@ mod tests {
              × the token for @me/dev is read-only\n  \
              last run dddd on T-4: skipped (cancelled): closed, ended 23:20 UTC\n"
         );
+    }
+
+    /// COPL-195: until when the runtime is out of usage, while it is, in the JSON and the text.
+    #[test]
+    fn says_until_when_it_is_out_of_usage() {
+        let mut a = AgentState::new("me/dev", "http://x");
+        a.phase = Phase::Idle;
+        let until = SystemTime::now() + Duration::from_secs(3600);
+        a.out_of_usage = Some(until);
+        let mut st = DaemonState {
+            agents: vec![a],
+            stopping: false,
+        };
+        let s = Status::of(&st);
+        assert_eq!(s.agents[0].out_of_usage_until, Some(rfc3339(until)));
+        assert_eq!(
+            s.agents[0].out_of_usage_line(),
+            st.agents[0].out_of_usage_line(SystemTime::now())
+        );
+        assert!(!s.agents[0].held, "not a hold by hand");
+        let line = format!(
+            "  ‖ out of usage until {}: starts nothing until then\n",
+            crate::state::clock(until)
+        );
+        assert!(s.render().contains(&line), "{}", s.render());
+        /* An older daemon's status says nothing of it. */
+        let mut v = serde_json::to_value(&s).unwrap();
+        v["agents"][0].as_object_mut().unwrap().remove("out_of_usage_until");
+        assert_eq!(
+            serde_json::from_value::<Status>(v).unwrap().agents[0].out_of_usage_until,
+            None
+        );
+        /* Once the reset has passed, it is no longer said. */
+        st.agents[0].out_of_usage = Some(SystemTime::now() - Duration::from_secs(1));
+        assert_eq!(Status::of(&st).agents[0].out_of_usage_until, None);
+        assert!(!Status::of(&st).render().contains("out of usage"));
     }
 
     #[test]
