@@ -3,7 +3,6 @@
 //! `--install-service` runs it as a systemd or launchd service, `status` asks the one running,
 //! `hold` and `release` hold one of its agents on this machine and let it go.
 
-mod service;
 mod setup;
 
 use std::path::PathBuf;
@@ -12,6 +11,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use copland_daemon_core::client;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
+use copland_daemon_core::service::{self, Log, Note, Uninstalled};
 use copland_daemon_core::{Config, Daemon, Lock, Paths};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -114,10 +114,14 @@ async fn main() -> Result<()> {
         return setup::run(&path, args.url.as_deref()).await;
     }
     if args.install_service {
-        return service::install(&path);
+        return install_service(&path);
     }
     if args.uninstall_service {
-        return service::uninstall();
+        match service::uninstall()? {
+            Uninstalled::NotInstalled { file } => println!("No service installed ({} isn't there).", file.display()),
+            Uninstalled::Removed { name, file } => println!("Stopped {name} and removed {}.", file.display()),
+        }
+        return Ok(());
     }
     if !path.exists() {
         anyhow::bail!(
@@ -175,5 +179,32 @@ async fn main() -> Result<()> {
         _ = term.recv() => { tracing::warn!("second signal: exiting without waiting"); std::process::exit(1); }
         _ = int.recv() => { tracing::warn!("second signal: exiting without waiting"); std::process::exit(130); }
     }
+    Ok(())
+}
+
+/// `--install-service` on this binary, saying what it did (COPL-199: the work is core's).
+fn install_service(config: &std::path::Path) -> Result<()> {
+    let program = std::env::current_exe().context("finding this binary")?;
+    let done = service::install(config, &program)?;
+    let (linger, early): (Vec<_>, Vec<_>) = done.notes.iter().partition(|n| matches!(n, Note::NoLinger { .. }));
+    for note in early {
+        println!("{note}");
+    }
+    println!("Wrote {}.", done.file.display());
+    match &done.log {
+        Log::File(log) => println!(
+            "Started {}; it starts again at every login. Its log is {}.",
+            done.name,
+            log.display()
+        ),
+        Log::Journal => {
+            println!("Started {}; it starts again with your user's session.", done.name);
+            println!("Its log: journalctl --user -u copland-daemon -f");
+        }
+    }
+    for note in linger {
+        println!("{note}");
+    }
+    println!("Stop and remove it with `copland-daemon --uninstall-service`.");
     Ok(())
 }
