@@ -11,6 +11,9 @@ use crate::view::{Action, Entry, Icon, View, view};
 
 pub struct Tray {
     view: View,
+    seen: Seen,
+    /// Why opening the box failed, until the next thing seen.
+    failed: Option<String>,
     icons: HashMap<Icon, Vec<ksni::Icon>>,
     actions: mpsc::UnboundedSender<Action>,
 }
@@ -24,13 +27,28 @@ impl Tray {
             .collect();
         Self {
             view: view(None, None),
+            seen: Seen::default(),
+            failed: None,
             icons,
             actions,
         }
     }
 
     pub fn show(&mut self, seen: &Seen) {
-        self.view = view(seen.status.as_ref(), seen.error.as_deref());
+        self.seen = seen.clone();
+        self.failed = None;
+        self.draw();
+    }
+
+    /// Say why the box didn't open, in place of the daemon's last error, until `show` again.
+    pub fn fail(&mut self, why: String) {
+        self.failed = Some(why);
+        self.draw();
+    }
+
+    fn draw(&mut self) {
+        let error = self.failed.as_deref().or(self.seen.error.as_deref());
+        self.view = view(self.seen.status.as_ref(), error);
     }
 }
 
@@ -53,7 +71,8 @@ fn escape(text: &str) -> String {
 }
 
 impl ksni::Tray for Tray {
-    /* The menu on a left click too: the tray has nothing else to open (COPL-201 opens the box). */
+    /* The menu on a left click too, where "Open the box" is first: a click that opened the box
+    straight away would leave no way to the menu on hosts that show it only on a left click. */
     const MENU_ON_ACTIVATE: bool = true;
 
     fn id(&self) -> String {
@@ -132,8 +151,14 @@ mod tests {
         assert!(quit.enabled);
         (quit.activate)(&mut tray);
         assert_eq!(rx.try_recv().unwrap(), Action::Quit);
-        let Some(ksni::MenuItem::Standard(note)) = menu.first() else {
-            panic!("a note first");
+        let Some(ksni::MenuItem::Standard(open)) = menu.first() else {
+            panic!("Open the box first");
+        };
+        assert_eq!(open.label, "Open the box");
+        (open.activate)(&mut tray);
+        assert_eq!(rx.try_recv().unwrap(), Action::OpenBox);
+        let Some(ksni::MenuItem::Standard(note)) = menu.get(2) else {
+            panic!("a note after it");
         };
         assert!(!note.enabled);
         tray.show(&Seen {
@@ -141,5 +166,10 @@ mod tests {
             error: Some("x".into()),
         });
         assert_eq!(tray.tool_tip().description, "not running\n× x");
+        /* A box that didn't open is said until the next thing seen. */
+        tray.fail("no copland-box".into());
+        assert_eq!(tray.tool_tip().description, "not running\n× no copland-box");
+        tray.show(&Seen::default());
+        assert_eq!(tray.tool_tip().description, "not running");
     }
 }

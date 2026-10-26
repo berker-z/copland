@@ -1,133 +1,49 @@
 //! What the menu's settings and about panels do outside daemon.toml (COPL-65):
-//! starting the box at login through an XDG autostart entry, and asking GitHub
-//! whether a newer box has been released.
+//! starting the box, and the tray (COPL-201), at login through XDG autostart entries, and asking
+//! GitHub whether a newer box has been released.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::APP_ID;
 
 /* ---------- start at login ---------- */
 
-/// `$XDG_CONFIG_HOME/autostart` (`~/.config/autostart`), from the environment it is given.
-pub fn autostart_dir(xdg_config_home: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
-    match xdg_config_home.filter(|p| p.is_absolute()) {
-        Some(c) => Some(c.join("autostart")),
-        None => home.map(|h| h.join(".config").join("autostart")),
-    }
-}
+/* Writing autostart entries is core's (`autostart`), shared with the tray's entry and setup. */
+pub use copland_daemon_core::autostart::Exec;
+use copland_daemon_core::autostart::{self, TRAY};
 
 /// The autostart entry this box would write or remove, for this process's environment.
 pub fn autostart_file() -> Option<PathBuf> {
-    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    autostart_dir(xdg.as_deref(), home.as_deref()).map(|d| d.join(format!("{APP_ID}.desktop")))
+    autostart::file(APP_ID)
 }
 
-/// What the entry runs, and anything worth saying about it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Exec {
-    pub program: String,
-    /// Set when the program is a path that the next upgrade will leave behind.
-    pub caveat: Option<String>,
+/// The tray's autostart entry, which the menu's "tray at login" writes or removes.
+pub fn tray_autostart_file() -> Option<PathBuf> {
+    autostart::file(TRAY)
 }
 
-/// The program to start at login. `copland-box` on PATH first, as found there, not resolved:
-/// a Nix profile's `bin/copland-box` is a link that moves to each new build, where the store
-/// path it points at stays the old one. Without it, this binary, said plainly when it is a
-/// store path (a later build won't be the one that starts) or a build tree.
+/// The box to start at login: on PATH, else this binary (see `autostart::exec`).
 pub fn exec(path_var: Option<&str>, current: Option<&Path>) -> Exec {
-    let on_path = path_var.into_iter().flat_map(|p| p.split(':')).find_map(|dir| {
-        let c = Path::new(dir).join(APP_ID);
-        (!dir.is_empty() && Path::new(dir).is_absolute() && is_executable(&c)).then_some(c)
-    });
-    if let Some(p) = on_path {
-        return Exec {
-            program: p.display().to_string(),
-            caveat: None,
-        };
-    }
-    let Some(cur) = current else {
-        return Exec {
-            program: APP_ID.into(),
-            caveat: Some("not on PATH; the entry runs copland-box by name".into()),
-        };
-    };
-    let s = cur.display().to_string();
-    let caveat = if s.starts_with("/nix/store/") {
-        Some("this exact build, from the Nix store: install it in a profile to follow upgrades".into())
-    } else if s.contains("/target/") {
-        Some("a build from target/: install the box to start the real one".into())
-    } else {
-        None
-    };
-    Exec { program: s, caveat }
+    autostart::exec(APP_ID, path_var, current)
 }
 
-fn is_executable(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+/// The tray to start at login: on PATH, else the one beside this box.
+pub fn tray_exec(path_var: Option<&str>, current: Option<&Path>) -> Exec {
+    autostart::exec(TRAY, path_var, autostart::beside(current, TRAY).as_deref())
 }
 
-/// One argument of `Exec=`, quoted when it must be (the desktop entry spec's rules).
-fn quote(arg: &str) -> String {
-    let plain = !arg.is_empty()
-        && arg
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "/._-+=:,@".contains(c));
-    if plain {
-        return arg.to_string();
-    }
-    let mut out = String::from("\"");
-    for c in arg.chars() {
-        if matches!(c, '"' | '`' | '$' | '\\') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out.push('"');
-    /* `%` is a field code in Exec, so a literal one is doubled. */
-    out.replace('%', "%%")
-}
-
-/// The autostart entry: the program, and `--config` when the box was started with one that
-/// isn't the default.
-pub fn autostart_entry(program: &str, config: Option<&Path>) -> String {
-    let mut exec = quote(program);
-    if let Some(c) = config {
-        exec.push_str(" --config ");
-        exec.push_str(&quote(&c.display().to_string()));
-    }
-    format!(
-        "[Desktop Entry]\n\
-         Type=Application\n\
-         Name=Copland\n\
-         Comment=Your Copland agents, on this machine\n\
-         Exec={exec}\n\
-         Icon={APP_ID}\n\
-         Terminal=false\n\
-         X-GNOME-Autostart-enabled=true\n\
-         # Written by copland-box (menu › settings › start at login); that switch removes it.\n"
-    )
-}
-
-/// Write the entry at `file`, or remove it. Gives what it runs, and its caveat.
+/// Write the box's entry at `file`, or remove it.
 pub fn set_autostart(file: &Path, on: bool, config: Option<&Path>, exec: &Exec) -> Result<()> {
-    if !on {
-        return match std::fs::remove_file(file) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                Err(e).with_context(|| format!("removing {}", file.display()))
-            }
-            _ => Ok(()),
-        };
-    }
-    if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
-    }
-    std::fs::write(file, autostart_entry(&exec.program, config)).with_context(|| format!("writing {}", file.display()))
+    autostart::set(file, on, &autostart::BOX, config, exec)
+}
+
+/// Write the tray's entry at `file`, or remove it.
+pub fn set_tray_autostart(file: &Path, on: bool, config: Option<&Path>, exec: &Exec) -> Result<()> {
+    autostart::set(file, on, &autostart::TRAY_ENTRY, config, exec)
 }
 
 /* ---------- newer releases ---------- */
@@ -280,70 +196,43 @@ mod tests {
     }
 
     #[test]
-    fn finds_where_the_autostart_entry_goes_and_what_it_runs() {
-        assert_eq!(
-            autostart_dir(Some(Path::new("/x/conf")), Some(Path::new("/home/me"))),
-            Some(PathBuf::from("/x/conf/autostart"))
-        );
-        assert_eq!(
-            autostart_dir(Some(Path::new("relative")), Some(Path::new("/home/me"))),
-            Some(PathBuf::from("/home/me/.config/autostart"))
-        );
-        assert_eq!(autostart_dir(None, None), None);
-
+    fn writes_the_box_and_the_tray_entries() {
         let dir = std::env::temp_dir().join(format!("copland-autostart-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let bin = dir.join("profile/bin");
+        let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let path = format!("/nonexistent:{}", bin.display());
-        /* Not on PATH: this binary, with what's odd about it. */
-        let e = exec(
-            Some(&path),
-            Some(Path::new("/nix/store/abc-copland-box/bin/copland-box")),
-        );
-        assert_eq!(e.program, "/nix/store/abc-copland-box/bin/copland-box");
-        assert!(e.caveat.unwrap().contains("Nix store"));
-        assert!(
-            exec(None, Some(Path::new("/src/daemon/target/release/copland-box")))
-                .caveat
-                .is_some()
-        );
-        assert!(
-            exec(None, Some(Path::new("/usr/local/bin/copland-box")))
-                .caveat
-                .is_none()
-        );
-        /* On PATH (a profile's link): that, unresolved. */
         {
             use std::os::unix::fs::PermissionsExt as _;
-            let b = bin.join(APP_ID);
-            std::fs::write(&b, "#!/bin/sh\n").unwrap();
-            std::fs::set_permissions(&b, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let t = bin.join(TRAY);
+            std::fs::write(&t, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&t, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let e = exec(Some(&path), Some(Path::new("/nix/store/abc/bin/copland-box")));
-        assert_eq!(
-            e,
-            Exec {
-                program: bin.join(APP_ID).display().to_string(),
-                caveat: None
-            }
-        );
+        let me = bin.join(APP_ID);
+        let e = exec(None, Some(&me));
+        assert_eq!(e.program, me.display().to_string());
+        /* The tray beside this box, when PATH has none. */
+        let t = tray_exec(Some("/nonexistent"), Some(&me));
+        assert_eq!((t.program, t.caveat), (bin.join(TRAY).display().to_string(), None));
+        assert_eq!(tray_exec(None, Some(Path::new("/nowhere/copland-box"))).program, TRAY);
 
-        /* Written and removed, under a scratch directory only. */
         let file = dir.join("autostart").join(format!("{APP_ID}.desktop"));
         set_autostart(&file, true, Some(Path::new("/tmp/my conf/daemon.toml")), &e).unwrap();
         let text = std::fs::read_to_string(&file).unwrap();
-        assert!(text.starts_with("[Desktop Entry]\nType=Application\n"));
+        assert!(text.starts_with("[Desktop Entry]\nType=Application\nName=Copland\n"));
         assert!(text.contains(&format!(
             "Exec={} --config \"/tmp/my conf/daemon.toml\"\n",
-            bin.join(APP_ID).display()
+            me.display()
         )));
         set_autostart(&file, false, None, &e).unwrap();
         assert!(!file.exists());
-        /* Removing what isn't there is fine. */
-        set_autostart(&file, false, None, &e).unwrap();
+
+        let tray = dir.join("autostart").join(format!("{TRAY}.desktop"));
+        set_tray_autostart(&tray, true, None, &tray_exec(None, Some(&me))).unwrap();
+        let text = std::fs::read_to_string(&tray).unwrap();
+        assert!(text.contains(&format!("Exec={}\n", bin.join(TRAY).display())));
+        assert!(text.contains("tray at login"));
+        set_tray_autostart(&tray, false, None, &e).unwrap();
+        assert!(!tray.exists());
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(quote("a$b"), "\"a\\$b\"");
-        assert_eq!(quote("50%"), "\"50%%\"");
     }
 }

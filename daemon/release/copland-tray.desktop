@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Copland tray
+GenericName=Agent tray
+Comment=What your Copland agents are doing, in the system tray
+Exec=copland-tray
+Icon=copland-box
+Categories=Utility;Development;
+StartupNotify=false

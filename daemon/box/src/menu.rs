@@ -8,14 +8,14 @@
 //! - **boards**: which boards' tickets the box shows (`boards = [...]`, all by default). Display
 //!   only: the agents still wake for anything on any board.
 //! - **settings**: theme (one of the seven, or "copland", your own theme there), motion,
-//!   desktop notifications, start at login, compact.
+//!   desktop notifications, start at login, tray at login (COPL-201), compact.
 //! - **session**: who the box is signed in as, and on which Copland; signing out.
 //! - **about**: this version, and whether a newer box has been released.
 //!
 //! Every panel takes keys and clicks alike: a line's click is a key its handler already takes.
 //! Settings and boards apply at once and are written to daemon.toml when the menu closes,
-//! once, through `edit.rs` (comments kept, the old file kept as a backup). Start at login is a
-//! file of its own and is written as it is switched.
+//! once, through `edit.rs` (comments kept, the old file kept as a backup). Start at login and tray
+//! at login are files of their own and are written as they are switched.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -204,6 +204,9 @@ enum Release {
     Failed(String),
 }
 
+/// Writes or removes an autostart entry: the box's or the tray's.
+type SetEntry = fn(&Path, bool, Option<&Path>, &prefs::Exec) -> Result<()>;
+
 pub struct Menu {
     pub tab: Tab,
     control: Control,
@@ -220,14 +223,17 @@ pub struct Menu {
     /// What the autostart switch writes or removes, and runs.
     autostart: Option<PathBuf>,
     exec: prefs::Exec,
+    /// The same for the tray's switch.
+    tray_autostart: Option<PathBuf>,
+    tray_exec: prefs::Exec,
 }
 
 impl Menu {
     pub fn open(control: Control, tab: Tab, cx: &mut Context<BoxView>) -> Self {
-        let exec = prefs::exec(
-            std::env::var("PATH").ok().as_deref(),
-            std::env::current_exe().ok().as_deref(),
-        );
+        let path = std::env::var("PATH").ok();
+        let current = std::env::current_exe().ok();
+        let exec = prefs::exec(path.as_deref(), current.as_deref());
+        let tray_exec = prefs::tray_exec(path.as_deref(), current.as_deref());
         let mut m = Self {
             tab: Tab::Needs,
             control,
@@ -240,6 +246,8 @@ impl Menu {
             job: None,
             autostart: prefs::autostart_file(),
             exec,
+            tray_autostart: prefs::tray_autostart_file(),
+            tray_exec,
         };
         m.go(tab, cx);
         m
@@ -419,7 +427,7 @@ impl Menu {
                 }
             }
             Tab::Settings => {
-                let n = 5;
+                let n = 6;
                 let by = match name {
                     "left" | "h" => -1,
                     "space" | "enter" | "right" | "l" => 1,
@@ -518,21 +526,25 @@ impl Menu {
                 prefs.notifications.store(on, Ordering::Relaxed);
                 prefs.touch("notifications");
             }
-            3 => {
-                let Some(file) = self.autostart.clone() else {
+            3 | 4 => {
+                let (file, exec, set): (_, _, SetEntry) = if i == 3 {
+                    (&self.autostart, &self.exec, prefs::set_autostart)
+                } else {
+                    (&self.tray_autostart, &self.tray_exec, prefs::set_tray_autostart)
+                };
+                let Some(file) = file.clone() else {
                     self.message = Some(("× no HOME, so nowhere to put the entry".into(), Role::Red));
                     return Act::Handled;
                 };
                 let on = !file.exists();
-                let config = (self.control.config != copland_daemon_core::config::default_config_path())
-                    .then_some(self.control.config.as_path());
-                self.message = Some(match prefs::set_autostart(&file, on, config, &self.exec) {
+                let config = copland_daemon_core::autostart::non_default(&self.control.config);
+                self.message = Some(match set(&file, on, config, exec) {
                     Ok(()) if on => (format!("wrote {}", setup::tilde(&file)), Role::Green),
                     Ok(()) => (format!("removed {}", setup::tilde(&file)), Role::Green),
                     Err(e) => (format!("× {e:#}"), Role::Red),
                 });
             }
-            4 => {
+            5 => {
                 prefs.compact = !prefs.compact;
                 prefs.touch("compact");
                 return Act::Resize;
@@ -696,12 +708,13 @@ impl Menu {
     fn settings_panel(&self, prefs: &Prefs, sel: usize) -> Panel {
         let notes = prefs.notifications.load(Ordering::Relaxed);
         let autostart = self.autostart.as_ref().is_some_and(|f| f.exists());
+        let tray = self.tray_autostart.as_ref().is_some_and(|f| f.exists());
         let theme = if prefs.theme == FOLLOW {
             "copland (your theme there)".to_string()
         } else {
             prefs.theme.clone()
         };
-        let rows: [(&str, String, &str); 5] = [
+        let rows: [(&str, String, &str); 6] = [
             ("theme", theme, "one of copland's seven, or the one you use in copland"),
             (
                 "motion",
@@ -717,6 +730,11 @@ impl Menu {
                 "start at login",
                 on_off(autostart).into(),
                 "an autostart entry in ~/.config/autostart",
+            ),
+            (
+                "tray at login",
+                on_off(tray).into(),
+                "copland-tray's autostart entry: the daemon in your bar's tray",
             ),
             (
                 "compact",
@@ -750,10 +768,13 @@ impl Menu {
         }
         if self.message.is_none() {
             let mut hint = rows[sel.min(rows.len() - 1)].2.to_string();
-            if sel == 3 {
-                hint = match &self.exec.caveat {
-                    Some(c) => format!("runs {} · {c}", self.exec.program),
-                    None => format!("runs {}", self.exec.program),
+            if let Some(exec) = [(3, &self.exec), (4, &self.tray_exec)]
+                .into_iter()
+                .find_map(|(row, e)| (row == sel).then_some(e))
+            {
+                hint = match &exec.caveat {
+                    Some(c) => format!("runs {} · {c}", exec.program),
+                    None => format!("runs {}", exec.program),
                 };
             }
             lines.push(Line::one(hint, Role::Faint));

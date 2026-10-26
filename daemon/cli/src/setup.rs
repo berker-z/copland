@@ -1,7 +1,8 @@
 //! `copland-daemon --setup`: the box's setup on a terminal (COPL-177), with plain
 //! prompts on stdin and stdout. The address, approving this machine in the
-//! browser (a device code), a runtime and a workdir per agent, then daemon.toml
-//! written and the preflight run on it, offering the fixes it can run. The
+//! browser (a device code), a runtime and a workdir per agent, whether to start
+//! the tray at login (COPL-201), then daemon.toml written and the preflight run
+//! on it, offering the fixes it can run. The
 //! parts are core's (`copland_daemon_core::setup`), the same the box's wizard
 //! drives, so the config and the resume note are the box's too.
 
@@ -11,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
 use copland_daemon_core::api::{Api, ApiError, DevicePoll};
+use copland_daemon_core::autostart::{self, Exec, TRAY};
 use copland_daemon_core::runtime::{self, Found};
 use copland_daemon_core::setup::{self, Choice, Saved};
 use copland_daemon_core::{Config, preflight};
@@ -75,12 +77,27 @@ pub async fn run(config: &Path, url: Option<&str>) -> Result<()> {
         );
     }
     let choices = choose(&mut input, &mut out, &saved, &found)?;
+    /* Only where there is a tray to start: it ships beside the daemon on Linux. */
+    let tray = match (cfg!(target_os = "linux"), autostart::find(TRAY), autostart::file(TRAY)) {
+        (true, Some(_), Some(file)) => {
+            let graphical = autostart::graphical(
+                std::env::var("DISPLAY").ok().as_deref(),
+                std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
+            );
+            Some((ask_tray(&mut input, &mut out, graphical)?, file))
+        }
+        _ => None,
+    };
     drop(input);
 
     if let Some(b) = setup::write_config(config, CLIENT, &saved, &choices)? {
         writeln!(out, "Kept the old config as {}.", b.display())?;
     }
     writeln!(out, "Wrote {}.\n", config.display())?;
+    if let Some((on, file)) = tray {
+        let said = tray_at_login(&file, on, config, &autostart::here(TRAY))?;
+        writeln!(out, "{said}")?;
+    }
     let config = Config::load(config).context("reading back the config just written")?;
     let failed = check(&config, true).await?;
     writeln!(
@@ -276,6 +293,40 @@ pub fn choose(input: &mut impl BufRead, out: &mut impl Write, saved: &Saved, fou
     Ok(choices)
 }
 
+/// Whether to start the tray at login. Enter takes yes in a graphical session and no without
+/// one (a server, over ssh), where a tray has nowhere to show.
+pub fn ask_tray(input: &mut impl BufRead, out: &mut impl Write, graphical: bool) -> Result<bool> {
+    let prompt = if graphical {
+        format!("\nStart {TRAY} (the daemon in your bar's tray) at login? [Y/n] ")
+    } else {
+        format!("\nNo display here. Start {TRAY} (the daemon in a desktop's tray) at login anyway? [y/N] ")
+    };
+    loop {
+        match ask(input, out, &prompt)?.to_ascii_lowercase().as_str() {
+            "" => return Ok(graphical),
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => writeln!(out, "  y or n")?,
+        }
+    }
+}
+
+/// Write the tray's autostart entry at `file` for `config` (named only when it isn't the
+/// default), or remove it. What it did, to print.
+pub fn tray_at_login(file: &Path, on: bool, config: &Path, exec: &Exec) -> Result<String> {
+    autostart::set(file, on, &autostart::TRAY_ENTRY, autostart::non_default(config), exec)?;
+    Ok(if on {
+        format!(
+            "Wrote {}: {} starts at login{}.",
+            file.display(),
+            exec.program,
+            exec.caveat.as_deref().map(|c| format!(" ({c})")).unwrap_or_default()
+        )
+    } else {
+        format!("{TRAY} won't start at login.")
+    })
+}
+
 /// A runtime answer: empty for the first found, its number in the list, or its name or program
 /// ("codex", "Claude Code", "claude"), case aside.
 pub fn pick_runtime(answer: &str, found: &[Found]) -> Result<runtime::Runtime> {
@@ -400,6 +451,39 @@ mod tests {
         assert!(shown.contains("\"nope\" isn't one found here: claude, codex"));
         /* Input running out stops setup rather than taking defaults for nobody. */
         assert!(choose(&mut io::Cursor::new("\n"), &mut Vec::new(), &saved, &both).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn asks_about_the_tray_with_a_default_for_the_session() {
+        let mut out = Vec::new();
+        assert!(ask_tray(&mut io::Cursor::new("\n"), &mut out, true).unwrap());
+        assert!(String::from_utf8(out).unwrap().contains("[Y/n]"));
+        let mut out = Vec::new();
+        assert!(!ask_tray(&mut io::Cursor::new("\n"), &mut out, false).unwrap());
+        assert!(String::from_utf8(out).unwrap().contains("No display here"));
+        assert!(ask_tray(&mut io::Cursor::new("maybe\nY\n"), &mut Vec::new(), false).unwrap());
+        assert!(!ask_tray(&mut io::Cursor::new("no\n"), &mut Vec::new(), true).unwrap());
+        assert!(ask_tray(&mut io::Cursor::new(""), &mut Vec::new(), true).is_err());
+
+        let dir = scratch("tray");
+        let file = dir.join("autostart").join(format!("{TRAY}.desktop"));
+        let exec = Exec {
+            program: "/opt/bin/copland-tray".into(),
+            caveat: None,
+        };
+        let said = tray_at_login(&file, true, &dir.join("daemon.toml"), &exec).unwrap();
+        assert!(said.contains("/opt/bin/copland-tray starts at login"), "{said}");
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains(&format!(
+            "Exec=/opt/bin/copland-tray --config {}\n",
+            dir.join("daemon.toml").display()
+        )));
+        assert_eq!(
+            tray_at_login(&file, false, &dir.join("daemon.toml"), &exec).unwrap(),
+            "copland-tray won't start at login."
+        );
+        assert!(!file.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

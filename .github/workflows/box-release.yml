@@ -1,5 +1,5 @@
-# Builds the box (copland-box and copland-daemon) for Linux x86_64 and
-# aarch64 and macOS Apple Silicon, pushes the Nix package to Cachix, and
+# Builds the box (copland-box, copland-daemon and, on Linux, copland-tray)
+# for Linux x86_64 and aarch64 and macOS Apple Silicon, pushes the Nix package to Cachix, and
 # publishes a GitHub release with all of it (COPL-56). The packaging is in
 # daemon/release/, scripts that run the same on a laptop.
 #
@@ -123,15 +123,16 @@ jobs:
 
       - name: Build
         working-directory: daemon
-        run: cargo build --release --locked -p copland-box -p copland-daemon
+        run: cargo build --release --locked -p copland-box -p copland-daemon -p copland-tray
 
       - name: Check the binaries
         working-directory: daemon/target/release
         run: |
           test "$(./copland-daemon --version)" = "copland-daemon $VERSION"
           test "$(./copland-box --version)" = "copland-box $VERSION"
+          test "$(./copland-tray --version)" = "copland-tray $VERSION"
           echo "copland-box links:"; readelf -d copland-box | grep NEEDED
-          echo "glibc floor: $(../../release/glibc-floor.sh copland-box copland-daemon)"
+          echo "glibc floor: $(../../release/glibc-floor.sh copland-box copland-daemon copland-tray)"
 
       - name: Package
         run: |
@@ -264,6 +265,7 @@ jobs:
       - name: Check the binaries
         run: |
           test "$(nix run ./daemon#daemon -- --version)" = "copland-daemon $VERSION"
+          test "$(nix run ./daemon#tray -- --version)" = "copland-tray $VERSION"
           test "$(nix run ./daemon -- --version)" = "copland-box $VERSION"
 
   publish:
