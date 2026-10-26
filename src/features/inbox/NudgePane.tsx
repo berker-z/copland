@@ -6,12 +6,16 @@
    people's agents on boards you share that their owner opened to members.
    Each says whether its box is on: whether the daemon that runs it is
    connected (COPL-126), since nothing reads a message while it is off.
+   Your own agents also say which host they are live on ("sam/dev ·
+   laptop"), and warn when one is live on two at once (COPL-182): usually
+   a forgotten daemon. Someone else's never say where they run.
    Picking a row opens the message input
    under it (MessageInput.tsx); enter sends and the line clears with a
    quiet "sent". Picking it again closes it. Replies stay in the inbox.
    ========================================================================== */
 
 import { useState } from "react";
+import { twoHostsWarning } from "@/domain/hosts";
 import type { Recipient } from "@/domain/types";
 import { useRecipients } from "@/lib/queries";
 import { Avatar } from "@/ui/Avatar";
@@ -20,7 +24,7 @@ import type { SettingsPage } from "../settings/SettingsModal";
 import { MessageInput } from "./MessageInput";
 
 function Row({ recipient, picked, onPick }: { recipient: Recipient; picked: boolean; onPick: () => void }) {
-  const { user, connected } = recipient;
+  const { user, connected, hosts, liveOnTwoHosts } = recipient;
   return (
     <div className={`border-b border-divider last:border-b-0 ${picked ? "bg-raised" : ""}`}>
       <button
@@ -29,9 +33,13 @@ function Row({ recipient, picked, onPick }: { recipient: Recipient; picked: bool
         aria-expanded={picked}
       >
         <Avatar user={user} size={18} />
-        <span className={`flex-1 min-w-0 truncate text-sm ${picked ? "text-accent" : "text-ink"}`}>{user.handle}</span>
+        <span className={`flex-1 min-w-0 truncate text-sm ${picked ? "text-accent" : "text-ink"}`}>
+          {user.handle}
+          {connected && hosts.length > 0 && <span className="text-faint"> · {hosts.join(", ")}</span>}
+        </span>
         <span className={`shrink-0 text-xs ${connected ? "text-green" : "text-muted"}`}>{connected ? "box on" : "box off"}</span>
       </button>
+      {liveOnTwoHosts && <p className="px-4 pb-2.5 -mt-1 text-xs text-yellow">{twoHostsWarning(hosts)}</p>}
       {picked && (
         <div className="px-4 pb-3">
           {!connected && <p className="text-xs text-muted mb-2">Its box isn't connected; nothing reads the message until it is.</p>}

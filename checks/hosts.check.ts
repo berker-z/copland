@@ -15,7 +15,7 @@
 
 import { d1, sqlite } from "./worker.ts";
 import type { Agent, Recipient, Viewer } from "../src/domain/types.ts";
-import { MAX_HOSTS, MAX_REPOS, parseHostReport } from "../src/domain/hosts.ts";
+import { hostList, MAX_HOSTS, MAX_REPOS, parseHostReport, twoHostsWarning } from "../src/domain/hosts.ts";
 
 const { putOwnHost } = await import("../src/worker/routes/hosts.ts");
 const { getAgents } = await import("../src/worker/routes/agents.ts");
@@ -186,6 +186,11 @@ const samDev = (await recipients(sam)).find((r) => r.user.id === "dev");
 t("the owner's pane says the hosts their agent is live on, and warns", samDev?.hosts.join(",") === "laptop,server" && samDev.liveOnTwoHosts === true && samDev.connected);
 const kimDev = (await recipients(kim)).find((r) => r.user.id === "dev");
 t("someone else's pane says it is connected, never where", kimDev?.connected === true && kimDev.hosts.length === 0 && kimDev.liveOnTwoHosts === false);
+
+/* What the web app says (COPL-182): the warning names the hosts it knows. */
+t("hosts read as a sentence", hostList([]) === "" && hostList(["laptop"]) === "laptop" && hostList(["laptop", "server"]) === "laptop and server" && hostList(["a", "b", "c"]) === "a, b and c");
+t("the warning names both hosts", twoHostsWarning(["laptop", "server"]).startsWith("Live on laptop and server at once: usually a forgotten daemon."));
+t("with a host it can't name, it still warns", twoHostsWarning(["laptop"]).startsWith("Live on two hosts at once"));
 
 let failed = 0;
 for (const [name, pass] of cases) {
