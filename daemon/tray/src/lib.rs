@@ -4,7 +4,7 @@
 
 pub mod follow;
 pub mod icons;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod open;
 #[cfg(target_os = "linux")]
 pub mod sni;
