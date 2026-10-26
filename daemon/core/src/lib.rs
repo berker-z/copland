@@ -19,6 +19,7 @@ pub mod reload;
 pub mod runner;
 pub mod sandbox;
 pub mod state;
+pub mod status;
 pub mod workspace;
 
 pub use agent::Paths;
@@ -27,3 +28,4 @@ pub use daemon::{Daemon, Reloaded, RunStopper};
 pub use live::Link;
 pub use lock::Lock;
 pub use state::{AgentState, DaemonState, Phase};
+pub use status::Status;

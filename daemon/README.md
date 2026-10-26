@@ -200,6 +200,59 @@ shot 390,844 /tmp/board-390.png /b/DEMO
 
 The local database starts empty: the first request makes the dev user, and a board to look at comes from the API (`POST /api/boards`, then `POST /api/boards/:id/tasks`, with `curl` and a JSON body). `--virtual-time-budget` lets the page fetch and render before the shot is taken. 390 is a phone's width, where the board turns into its swipeable mobile layout.
 
+## Status
+
+What the daemon is doing, outside its own process (COPL-170): `Status::of(&DaemonState)` (`core/src/status.rs`, COPL-181) is the same state the box draws, as JSON, and `Status::render` says it for a person, one block per agent in the box's words. Nothing serves it yet; the status socket and `copland-daemon status` come next.
+
+The JSON is a contract. `version` is 1; fields are only ever added, never renamed, removed or given another meaning, so a client ignores fields it doesn't know, and a field it needs that is missing means an older daemon. Times are RFC 3339 in UTC, to the second (`2026-10-04T23:20:41Z`); a field with nothing to say is `null`, a list with nothing in it `[]`. The tests in `status.rs` pin every name below.
+
+```jsonc
+{
+  "version": 1,
+  "stopping": false,              // shutdown has begun
+  "agents": [{                    // one per configured agent, in daemon.toml's order
+    "slot": 0,                    // which of the daemon's agents, stable across reloads
+    "configured": "me/dev",       // the handle as daemon.toml has it
+    "handle": "me/dev",           // as the server says, once it has
+    "user_id": "u-1",             // null until the server has said
+    "url": "https://copland.example",
+    "state": "running",           // starting, watching, running or stopped
+    "live": "connected",          // the live socket: connecting, connected or reconnecting
+    "last_poll": "2026-10-04T23:21:41Z",
+    "unread": 4,                  // unread inbox items at the last poll
+    "waiting": ["T-2"],           // tasks with unread items no run is on, oldest first
+    "messages": 1,                // messages waiting for the next message run
+    "retiring": false,            // a reload changed or removed it; it winds down after its runs
+    "unavailable_since": null,    // Copland not answering since then: nothing starts meanwhile
+    "runs": [{                    // every run going, oldest first
+      "run": "aaaa",              // short id
+      "task": "T-1",              // null for a run on messages
+      "kind": "task",             // task or messages
+      "since": "2026-10-04T23:20:41Z",
+      "worktree": "/code/repo/T-1" // null in the agent's workdir, or before it is made
+    }],
+    "missing": "bwrap not found on PATH: coding runs can't start", // what this machine lacks; its runs wait
+    "needs": [{                   // what needs the owner
+      "why": "missing",           // stopped (not watching), missing (runs can't start) or failed (the last run)
+      "says": "bwrap not found on PATH: coding runs can't start"
+    }],
+    "last_error": "…",            // the last thing that went wrong, cleared by the next good poll
+    "last_run": {
+      "run": "cccc", "task": "T-9", "kind": "task",
+      "outcome": "failed",        // completed, failed, cancelled, or "skipped (…): …" when the claim was refused
+      "failed": true,             // its runtime died or never started, or the run couldn't get going
+      "skipped": false,           // nothing launched; outcome says why
+      "how": "exit 1 after 3.8s", // how its runtime ended, once launched
+      "hint": null,               // the plain word for a runtime that died at once with nothing to say
+      "log": "/home/me/.local/state/copland/runs/….log",
+      "ended": "2026-10-04T23:21:11Z"
+    }
+  }]
+}
+```
+
+`DaemonState` carries what this needs: each run's worktree (`ActiveRun::worktree`, set once the workspace is made) and what the machine lacks (`AgentState::missing`, also said in `last_error` after a good poll, which is where the box draws it).
+
 ## Building
 
 It's a Cargo workspace: `core` is a library with the loop, and `cli` is the `copland-daemon` binary. `box` is `copland-box`, the same loop with a GPUI window (below). `Daemon::subscribe()` hands out the daemon's state (each agent's phase, last poll, unread count, waiting tasks, messages waiting for a run, last run) as a `tokio::sync::watch` receiver, which the headless binary ignores and the box draws. `Daemon::reload(config)` changes the agents it runs in place (see "The agents screen"); only the box calls it, and the headless daemon still reads its config once, at start. The workspace's `default-members` are `core` and `cli`, so plain `cargo` here builds and checks the headless daemon only, with no GPUI anywhere in its graph.

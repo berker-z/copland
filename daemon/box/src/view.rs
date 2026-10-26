@@ -1458,6 +1458,7 @@ mod tests {
                 run: run.clone(),
                 task: task.clone(),
                 since: *since,
+                worktree: None,
             });
         }
         a.phase = phase;
