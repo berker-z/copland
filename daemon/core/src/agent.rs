@@ -1129,6 +1129,16 @@ impl RunCtx {
                     let held = why == Refused::Hold;
                     if held {
                         tracing::info!(run = %short, task = %key, "another run holds it; coming back when that run ends: {e}");
+                    } else if why == Refused::Dismiss && !wake.items.is_empty() {
+                        /* Closed, and nothing there to answer: read, so no start wakes for it again (COPL-165). */
+                        match self.api.mark_read(&self.agent.token, &wake.items).await {
+                            Ok(()) => {
+                                tracing::info!(run = %short, task = %key, items = wake.items.len(), "claim refused ({e}); nothing to answer, marked read")
+                            }
+                            Err(r) => {
+                                tracing::warn!(run = %short, task = %key, "claim refused ({e}); marking its items read failed: {r}")
+                            }
+                        }
                     } else {
                         tracing::info!(run = %short, task = %key, "claim refused, skipping: {e}");
                     }
@@ -1646,6 +1656,12 @@ mod tests {
         calls: std::sync::Mutex<Vec<String>>,
         /// What the finish that landed said.
         finished: std::sync::Mutex<Option<serde_json::Value>>,
+        /// The task is closed: its claim is refused with a 409 `closed` (COPL-165).
+        closed: AtomicBool,
+        /// The kind of the one inbox item, "assigned" when unset.
+        kind: std::sync::Mutex<Option<String>>,
+        /// The ids each `POST /api/inbox/read` named.
+        marked: std::sync::Mutex<Vec<serde_json::Value>>,
     }
 
     impl Fake {
@@ -1713,8 +1729,26 @@ mod tests {
             let run = |status: &str| format!(r#"{{"id":"run-1","short":"run1","status":"{status}","claims":[]}}"#);
             match call {
                 "GET /api/me" => (200, r#"{"user":{"id":"u-dev","kind":"agent","handle":"me/dev"},"access":{"scope":"write","via":"test","runId":null}}"#.into()),
-                "GET /api/inbox" => (200, r#"{"unread":1,"items":[{"id":"i1","kind":"assigned","task":{"id":"t1","key":"COPL-1","title":"one"},"actor":{"id":"u-me","handle":"me"},"via":null,"createdAt":"2026-10-04T23:00:00Z","readAt":null}],"next":null}"#.into()),
+                "GET /api/inbox" => {
+                    let kind = self.kind.lock().unwrap().clone().unwrap_or_else(|| "assigned".into());
+                    let unread = if self.marked.lock().unwrap().is_empty() { 1 } else { 0 };
+                    let items = if unread == 0 {
+                        String::new()
+                    } else {
+                        format!(r#"{{"id":"i1","kind":"{kind}","task":{{"id":"t1","key":"COPL-1","title":"one"}},"actor":{{"id":"u-me","handle":"me"}},"via":null,"createdAt":"2026-10-04T23:00:00Z","readAt":null}}"#)
+                    };
+                    (200, format!(r#"{{"unread":{unread},"items":[{items}],"next":null}}"#))
+                }
+                "POST /api/inbox/read" => {
+                    let said: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    self.marked.lock().unwrap().push(said["ids"].clone());
+                    (200, r#"{"unread":0}"#.into())
+                }
                 "GET /api/tasks/ready" => (200, r#"{"tasks":[]}"#.into()),
+                "POST /api/tasks/t1/claim" if self.closed.load(Ordering::SeqCst) => (
+                    409,
+                    r#"{"error":"conflict","code":"closed","message":"COPL-1 is closed"}"#.into(),
+                ),
                 "GET /api/tasks/t1" | "POST /api/tasks/t1/claim" => (200, task.into()),
                 "POST /api/runs" => (200, format!(r#"{{"run":{},"secret":"cplr_run"}}"#, run("running"))),
                 "GET /api/runs/run-1" => (200, run("running")),
@@ -1744,49 +1778,8 @@ mod tests {
         let fake = Arc::new(Fake::default());
         fake.down.store(true, Ordering::SeqCst);
         let url = fake.start();
-        let dir = std::env::temp_dir().join(format!("copland-outage-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut a = agent(&["true"], None);
-        a.url = url.clone();
-        a.workdir = dir.clone();
-
-        let mut st = AgentState::new("me/dev", &url);
-        st.slot = 1;
-        let (state, mut watch_state) = watch::channel(DaemonState {
-            agents: vec![st],
-            stopping: false,
-        });
-        let (stop_tx, shutdown) = watch::channel(false);
-        let (_wanted_tx, wanted) = watch::channel(Wanted {
-            generation: 0,
-            agent: Some(a.clone()),
-            poll: Duration::from_millis(50),
-        });
-        let (_stop_run_tx, stop_run) = watch::channel(None);
-        let mut l = AgentLoop::new(
-            1,
-            a,
-            Duration::from_millis(50),
-            Arc::new(Paths {
-                state_dir: dir.clone(),
-                runtime_dir: dir.clone(),
-            }),
-            state,
-            shutdown,
-            Retire {
-                rx: wanted,
-                generation: 0,
-            },
-            stop_run,
-            WakeGuard::default(),
-        )
-        .unwrap();
-        l.last_word = Backoff {
-            first: Duration::from_millis(20),
-            most: Duration::from_millis(50),
-            give_up: Duration::from_secs(30),
-        };
-        let looping = tokio::spawn(l.run());
+        let mut l = Looping::start(&url, "outage");
+        let watch_state = &mut l.state;
         let wait = |st: &mut watch::Receiver<DaemonState>, f: fn(&AgentState) -> bool| {
             let mut st = st.clone();
             async move {
@@ -1799,7 +1792,7 @@ mod tests {
         };
 
         /* Down: said on the agent's line, and several polls later nothing has started or been claimed. */
-        wait(&mut watch_state, |a| a.unavailable.is_some()).await;
+        wait(watch_state, |a| a.unavailable.is_some()).await;
         let line = watch_state.borrow().agents[0].last_error.clone().unwrap_or_default();
         assert!(
             line.starts_with("Copland unavailable since ") && line.ends_with(" UTC"),
@@ -1814,7 +1807,7 @@ mod tests {
         /* Back, but its finish still meets three 503s: the run goes ahead, and its finish lands after. */
         fake.finish_down.store(3, Ordering::SeqCst);
         fake.down.store(false, Ordering::SeqCst);
-        wait(&mut watch_state, |a| a.unavailable.is_none()).await;
+        wait(watch_state, |a| a.unavailable.is_none()).await;
         tokio::time::timeout(Duration::from_secs(10), async {
             while fake.finished.lock().unwrap().is_none() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1831,13 +1824,136 @@ mod tests {
         );
         assert_eq!(fake.count("POST /api/runs"), 1);
         assert_eq!(watch_state.borrow().agents[0].last_error, None);
+        l.stop().await;
+    }
 
-        stop_tx.send_replace(true);
-        tokio::time::timeout(Duration::from_secs(10), looping)
-            .await
-            .expect("stopped")
+    /// One agent's loop on a fake Copland at `url`, running `true` as its runtime, in a dir of its own.
+    struct Looping {
+        state: watch::Receiver<DaemonState>,
+        stop: watch::Sender<bool>,
+        looping: JoinHandle<WakeGuard>,
+        dir: PathBuf,
+        _wanted: watch::Sender<Wanted>,
+        _stop_run: watch::Sender<StopRequest>,
+    }
+
+    impl Looping {
+        fn start(url: &str, name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("copland-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut a = agent(&["true"], None);
+            a.url = url.to_string();
+            a.workdir = dir.clone();
+            let mut st = AgentState::new("me/dev", url);
+            st.slot = 1;
+            let (state, watch_state) = watch::channel(DaemonState {
+                agents: vec![st],
+                stopping: false,
+            });
+            let (stop, shutdown) = watch::channel(false);
+            let (wanted_tx, wanted) = watch::channel(Wanted {
+                generation: 0,
+                agent: Some(a.clone()),
+                poll: Duration::from_millis(50),
+            });
+            let (stop_run_tx, stop_run) = watch::channel(None);
+            let mut l = AgentLoop::new(
+                1,
+                a,
+                Duration::from_millis(50),
+                Arc::new(Paths {
+                    state_dir: dir.clone(),
+                    runtime_dir: dir.clone(),
+                }),
+                state,
+                shutdown,
+                Retire {
+                    rx: wanted,
+                    generation: 0,
+                },
+                stop_run,
+                WakeGuard::default(),
+            )
             .unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
+            l.last_word = Backoff {
+                first: Duration::from_millis(20),
+                most: Duration::from_millis(50),
+                give_up: Duration::from_secs(30),
+            };
+            Looping {
+                state: watch_state,
+                stop,
+                looping: tokio::spawn(l.run()),
+                dir,
+                _wanted: wanted_tx,
+                _stop_run: stop_run_tx,
+            }
+        }
+
+        async fn stop(self) {
+            self.stop.send_replace(true);
+            tokio::time::timeout(Duration::from_secs(10), self.looping)
+                .await
+                .expect("stopped")
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Until the fake heard a finish, then what it said.
+    async fn finished(fake: &Fake) -> serde_json::Value {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(f) = fake.finished.lock().unwrap().clone() {
+                    return f;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("a finish landed")
+    }
+
+    /// COPL-165: an assignment on a task that has since closed is refused its claim, and the
+    /// daemon marks it read, so no later start (whose guard remembers nothing) wakes for it again.
+    #[tokio::test]
+    async fn a_closed_task_with_nothing_to_answer_is_marked_read() {
+        let fake = Arc::new(Fake::default());
+        fake.closed.store(true, Ordering::SeqCst);
+        let l = Looping::start(&fake.start(), "closed-assigned");
+        assert_eq!(
+            finished(&fake).await["status"],
+            "cancelled",
+            "no runtime, the run skipped"
+        );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fake.marked.lock().unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("marked read");
+        assert_eq!(*fake.marked.lock().unwrap(), [serde_json::json!(["i1"])]);
+        /* Read now: later polls start nothing more. */
+        while fake.count("GET /api/inbox") < 5 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(fake.count("POST /api/runs"), 1);
+        assert_eq!(fake.count("POST /api/tasks/t1/claim"), 1);
+        l.stop().await;
+    }
+
+    /// A mention on a closed task still gets a run that answers without a claim, and the daemon
+    /// leaves its item for that run to mark read.
+    #[tokio::test]
+    async fn a_mention_on_a_closed_task_is_answered_not_marked_read() {
+        let fake = Arc::new(Fake::default());
+        fake.closed.store(true, Ordering::SeqCst);
+        *fake.kind.lock().unwrap() = Some("mentioned".into());
+        let l = Looping::start(&fake.start(), "closed-mentioned");
+        assert_eq!(finished(&fake).await["status"], "completed", "the runtime ran");
+        assert_eq!(fake.count("POST /api/inbox/read"), 0);
+        l.stop().await;
     }
 
     #[tokio::test]
