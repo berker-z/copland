@@ -1,11 +1,14 @@
 //! `copland-daemon --headless`: run the agents in daemon.toml until stopped.
+//! `--setup` writes daemon.toml on a terminal, `--check` checks this machine.
+
+mod setup;
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
-use copland_daemon_core::{Config, Daemon, Paths, preflight};
+use copland_daemon_core::{Config, Daemon, Paths};
 use tokio::signal::unix::{SignalKind, signal};
 
 #[derive(Parser)]
@@ -22,8 +25,19 @@ struct Args {
     config: Option<PathBuf>,
     /// Read the config, check it, run the preflight checks (runtimes logged in, git, GitHub,
     /// code_dir, each token with its instance), and exit non-zero when one fails.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "setup")]
     check: bool,
+    /// With --check: offer each failing check's fix on the terminal (y/N), run the ones you say
+    /// yes to, then check again.
+    #[arg(long, requires = "check")]
+    fix: bool,
+    /// Set this machine up on the terminal: approve it in Copland, pick a runtime and workdir per
+    /// agent, write the config (keeping one already there as a backup) and check it.
+    #[arg(long)]
+    setup: bool,
+    /// With --setup: your Copland's address, instead of being asked for it.
+    #[arg(long, value_name = "ADDRESS", requires = "setup")]
+    url: Option<String>,
 }
 
 #[tokio::main]
@@ -37,9 +51,12 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let _ = args.headless;
     let path = args.config.unwrap_or_else(default_config_path);
+    if args.setup {
+        return setup::run(&path, args.url.as_deref()).await;
+    }
     if !path.exists() {
         anyhow::bail!(
-            "no config at {}: `copland-box --setup` makes one (approve this machine in Copland, pick runtimes), \
+            "no config at {}: `copland-daemon --setup` makes one (approve this machine in Copland, pick runtimes), \
              or write it by hand as daemon/README.md says",
             path.display()
         );
@@ -53,11 +70,16 @@ async fn main() -> Result<()> {
             println!("@{} at {}: {:?} in {}", a.handle, a.url, a.command, a.workdir.display());
         }
         println!();
-        let checks = preflight::run(&config).await;
-        print!("{}", preflight::render(&checks));
-        let failed = preflight::failures(&checks);
+        let failed = setup::check(&config, args.fix).await?;
         if failed > 0 {
-            anyhow::bail!("{failed} check(s) failed; `copland-box --check --fix` offers the fixes it can run");
+            anyhow::bail!(
+                "{failed} check(s) failed{}",
+                if args.fix {
+                    ""
+                } else {
+                    "; `copland-daemon --check --fix` offers the fixes it can run"
+                }
+            );
         }
         return Ok(());
     }
