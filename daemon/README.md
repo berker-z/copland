@@ -150,7 +150,19 @@ owner_url = "https://copland.example.com"       # only when the agents are on mo
 
 `owner_write_token_file` (or `owner_write_token` inline) is a second token of yours, read and write, for what the box writes as you: a message to one of your agents and your inbox marked read (COPL-109). It comes with `owner_token_file` or not at all, and is for the same Copland. You don't make it by hand: the first time you message an agent from the agents screen, the box asks for it with a device login of its own (below), keeps it in `me.write.token` beside the config (0600) and adds the key. The read-only token stays what it reads with; only someone who wants to write from the box holds a write token on disk, and it can do anything you can. One Copland refuses is forgotten (the key and the file go), so the next message asks again.
 
-`copland-daemon --check` reads the config, checks it, asks each instance who the token is and prints what it would run. It fails on a token it can't use: a read-only one (runs and claims are writes), or a run's secret (`cplr_…`) given in place of the agent's own token. The daemon checks the same at startup, through `/api/me`'s `access`, and stops watching that agent with an error; when no agent is left it exits. `COPLAND_LOG=debug` shows each poll's decisions and keepalives.
+`copland-daemon --check` reads the config, checks it, prints what each agent would run, and runs the preflight checks below; it exits non-zero when one fails. Among them it asks each instance who the token is and fails on a token it can't use: a read-only one (runs and claims are writes), or a run's secret (`cplr_…`) given in place of the agent's own token. The daemon checks the same at startup, through `/api/me`'s `access`, and stops watching that agent with an error; when no agent is left it exits. `COPLAND_LOG=debug` shows each poll's decisions and keepalives.
+
+### Checking a machine
+
+The preflight (`core/src/preflight.rs`, COPL-161) says whether this machine can run its agents before a run finds out. `copland-daemon --check` and `copland-box --check` (no window) both run it and print one line per check, `✓` ok, `!` worth a look, `✗` failed, with the fix under each that isn't ok; either exits non-zero when one failed. `copland-box --check --fix` then goes through the ones with a fix it can run, shows what it would run and asks y/N on the terminal for each, runs the ones you say yes to with the terminal handed to them (a login can open a browser or ask things), and checks again. Every program a check starts gets ten seconds, and nothing printed holds a secret.
+
+- **The runtimes**, once each however many agents use one: `command`'s, and `code_command`'s. Claude Code's `claude` must be on PATH and `claude auth status` say `"loggedIn": true` (exit 0); Codex's `codex` on PATH and `codex login status` exit 0. Fix: `claude auth login` or `codex login`; for a missing one, how to install it. A runtime Copland doesn't know is only looked for on PATH.
+- **git**: on PATH, with `user.name` and `user.email` in the global or system config, which every commit a coding run makes needs. Fix: asks for them and sets them with `git config --global`.
+- **github**: git can reach GitHub over https without asking. It asks git's credential helper for a github.com login the way a push would (`git credential fill`, with `GIT_TERMINAL_PROMPT=0`, no askpass and `credential.interactive=false`), so what it says is what a run's push gets; only the username is shown. `gh auth status` alone wouldn't do: gh can be logged in with git not using it, and another helper (libsecret, osxkeychain) can hold the login without gh. Fix, with gh on PATH: `gh auth login --hostname github.com --git-protocol https` and `gh auth setup-git`; without it, where to get gh.
+- **code_dir**: there, a directory, writable, and a git worktree can be made in it: a throwaway repo with one empty commit (an identity of its own, no signing, no hooks) and a worktree of it, in a `.copland-check-…` directory inside, removed after. One that isn't there yet but can be made only warns. Fix: makes it.
+- **token @agent**: each agent's token, asked who it is (`whoami`, as above). Fix: none to run; `copland-box --setup` approves this machine again.
+
+With no agent that has a `code_command`, nothing clones or commits, so git, github and code_dir only warn when they would fail.
 
 ### Screenshots
 
@@ -319,6 +331,7 @@ From a checkout:
 nix run ./daemon                      # the box (same as ./daemon#box)
 nix run ./daemon -- --demo            # arguments go after --
 nix run ./daemon#daemon -- --check    # the headless daemon
+nix run ./daemon -- --check --fix     # check this machine, offer the fixes (no window)
 nix build ./daemon                    # ./result/bin/copland-box and copland-daemon
 nix profile install ./daemon          # on PATH for good, with the launcher entry
 ```
