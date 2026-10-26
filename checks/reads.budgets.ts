@@ -31,7 +31,9 @@ export const BUDGETS: Record<string, Budget> = {
   "GET /api/boards/:id/closed": { rows: 3116, flat: true },
   "GET /api/tasks/:id": { rows: 26, flat: true },
   "GET /api/inbox": { rows: 241, flat: true },
-  "GET /api/wired": { rows: 139, flat: true },
+  /* Where each agent runs (COPL-183, for the box): its reported hosts, one
+     read over the owner's agents; 139 before. */
+  "GET /api/wired": { rows: 141, flat: true },
   "GET /api/tasks/ready": { rows: 43, flat: true },
   "GET /api/tasks/mine": { rows: 5731, flat: false },
   "GET /api/messages/recipients": { rows: 15, flat: true },

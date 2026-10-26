@@ -233,11 +233,22 @@ export interface WiredTask {
   since: string | null;
   /** doing only: a run of the agent holds a live claim on it right now. */
   live: boolean;
+  /** A live one's: the host its run started on (COPL-135), when its launcher named one. */
+  host: string | null;
 }
 
 /** GET /api/wired: what the signed-in person's agents have on, by pole (routes/wired.ts). */
 export interface Wired {
-  agents: { id: string; handle: string; name: string; paused: boolean }[];
+  agents: {
+    id: string;
+    handle: string;
+    name: string;
+    paused: boolean;
+    /** The hosts its daemon reported (COPL-135), the latest report first, and which are live now. */
+    hosts: { hostname: string; live: boolean }[];
+    /** Live on two hosts at once, usually a forgotten daemon (AgentHost, Agent.liveOnTwoHosts). */
+    liveOnTwoHosts: boolean;
+  }[];
   todo: WiredTask[];
   /** Live claims first (oldest claim first), then active tasks no run holds. */
   doing: WiredTask[];

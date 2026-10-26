@@ -386,15 +386,44 @@ pub struct WiredTask {
     /// doing only: a run of the agent holds a live claim on it right now.
     #[serde(default)]
     pub live: bool,
+    /// A live one's: the host its run started on (COPL-135), when its launcher named one.
+    #[serde(default)]
+    pub host: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WiredAgent {
     pub id: String,
     pub handle: String,
     pub name: String,
     #[serde(default)]
     pub paused: bool,
+    /// The hosts its daemon reported (COPL-135), the latest report first, and which are live now.
+    #[serde(default)]
+    pub hosts: Vec<WiredHost>,
+    /// Live on two hosts at once: usually a forgotten daemon, so the owner is warned.
+    #[serde(default)]
+    pub live_on_two_hosts: bool,
+}
+
+/// A machine an agent's daemon reported from, as `/api/wired` names it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WiredHost {
+    pub hostname: String,
+    #[serde(default)]
+    pub live: bool,
+}
+
+impl WiredAgent {
+    /// The hosts it is live on now, by name.
+    pub fn live_hosts(&self) -> Vec<&str> {
+        self.hosts
+            .iter()
+            .filter(|h| h.live)
+            .map(|h| h.hostname.as_str())
+            .collect()
+    }
 }
 
 /// GET /api/wired: what the signed-in person's agents have on, by pole. A person's own read;
@@ -1013,6 +1042,24 @@ mod tests {
             start_run_body("copland-daemon", None),
             json!({ "client": "copland-daemon" })
         );
+    }
+
+    #[test]
+    fn the_wired_feed_says_where_each_agent_runs() {
+        let a: WiredAgent = serde_json::from_str(
+            r#"{"id":"a","handle":"sam/dev","name":"dev","paused":false,
+                "hosts":[{"hostname":"server","live":true},{"hostname":"laptop","live":false}],"liveOnTwoHosts":true}"#,
+        )
+        .unwrap();
+        assert_eq!(a.live_hosts(), ["server"]);
+        assert!(a.live_on_two_hosts);
+        let old: WiredAgent = serde_json::from_str(r#"{"id":"a","handle":"sam/dev","name":"dev"}"#).unwrap();
+        assert!(old.hosts.is_empty() && !old.live_on_two_hosts);
+        let t: WiredTask = serde_json::from_str(
+            r#"{"id":"t","boardId":"b","key":"COPL-1","title":"x","agentId":"a","since":null,"live":true,"host":"laptop"}"#,
+        )
+        .unwrap();
+        assert_eq!(t.host.as_deref(), Some("laptop"));
     }
 
     #[test]

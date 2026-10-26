@@ -342,6 +342,8 @@ pub struct Item {
     pub wire: W,
     pub t: f32,
     pub agent: Option<String>,
+    /// Doing: the host its run started on, when known.
+    pub host: Option<String>,
     pub slot: Option<usize>,
     /// When the run started working on it, in scene seconds.
     pub started: f64,
@@ -373,6 +375,7 @@ impl Item {
             wire: W::In1,
             t: 0.0,
             agent: None,
+            host: None,
             slot: None,
             started: 0.0,
             started_known: false,
@@ -466,6 +469,8 @@ pub struct Doing {
     pub started: Option<f64>,
     /// A run holds it. Otherwise it is only in an active stage: drawn dimmer, no timer, no current.
     pub live: bool,
+    /// The host its run started on (COPL-183), when it is known.
+    pub host: Option<String>,
 }
 
 /// What the scene is told in live mode: where each task is, by key.
@@ -903,6 +908,7 @@ impl Scene {
             let it = &mut self.items[ix];
             it.order = n;
             it.agent = Some(d.agent.clone());
+            it.host = d.host.clone().filter(|_| d.live);
             it.idle = !d.live;
             it.started_known = d.started.is_some();
             if let Some(s) = d.started {
@@ -936,6 +942,7 @@ impl Scene {
             let it = &mut self.items[ix];
             it.order = n;
             it.agent = Some(agent.clone());
+            it.host = None;
             it.idle = false;
             if it.state == State::Blocked {
                 it.qt = Some(rest);
@@ -1305,7 +1312,7 @@ impl Scene {
 
     /// The four lists, one under each pole: todo, doing, blocked, done. `chars` is how many
     /// characters fit each one; a list shows the longest form of its lines that all of them
-    /// fit (doing drops the timer, then the agent; blocked the agent, then the mark; done the
+    /// fit (doing drops its run's host, then the timer, then the agent; blocked the agent, then the mark; done the
     /// mark), the shortest when none does.
     pub fn columns(&self, chars: [usize; 4]) -> [Column; 4] {
         let now = self.now;
@@ -1346,7 +1353,16 @@ impl Scene {
                 let elapsed = i.elapsed(now);
                 let mut full = with_agent.clone();
                 full.0.push(Span::new(format!(" {elapsed}"), Role::Muted));
-                vec![full, with_agent, bare]
+                /* Where its run is, as "dev · laptop" (COPL-183): the first thing a narrow list drops. */
+                match &i.host {
+                    Some(h) => {
+                        let mut hosted = with_agent.clone();
+                        hosted.0.push(Span::new(format!(" · {h}"), Role::Faint));
+                        hosted.0.push(Span::new(format!(" {elapsed}"), Role::Muted));
+                        vec![hosted, full, with_agent, bare]
+                    }
+                    None => vec![full, with_agent, bare],
+                }
             })
             .collect();
         let blocked: Vec<Vec<Line>> = sorted(&|i: &Item| i.is_blocked())
@@ -1865,6 +1881,7 @@ mod tests {
             agent: "dev".into(),
             started: live.then_some(0.5),
             live,
+            host: None,
         }
     }
 
@@ -2050,6 +2067,27 @@ mod tests {
         assert_eq!(text(&narrow[1]), "COPL-12 dev");
         assert_eq!(text(&narrow[2]), "▲ COPL-13");
         assert_eq!(text(&s.columns([3; 4])[1]), "COPL-12");
+    }
+
+    #[test]
+    fn a_runs_host_shows_after_its_agent_and_goes_first() {
+        let mut s = Scene::live(Tune::default());
+        let hosted = |key: &str, live: bool| Doing {
+            host: Some("laptop".into()),
+            ..doing(key, live)
+        };
+        s.sync(&Board {
+            doing: vec![hosted("COPL-12", true), hosted("COPL-14", false)],
+            ready: true,
+            ..Default::default()
+        });
+        s.step(1.0);
+        let text = |c: &Column, n: usize| c.lines[n].0.iter().map(|s| s.text.as_str()).collect::<String>();
+        let wide = s.columns(WIDE);
+        assert_eq!(text(&wide[1], 0), "COPL-12 dev · laptop 0m00");
+        /* No run holds it: no run, so no host. */
+        assert_eq!(text(&wide[1], 1), "COPL-14 dev");
+        assert_eq!(text(&s.columns([10, 18, 10, 10])[1], 0), "COPL-12 dev 0m00");
     }
 
     #[test]

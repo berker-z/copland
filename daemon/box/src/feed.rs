@@ -454,6 +454,7 @@ mod tests {
             agent_id: "dev".into(),
             since: None,
             live: false,
+            host: None,
         };
         let wired = Wired {
             agents: vec![WiredAgent {
@@ -461,6 +462,8 @@ mod tests {
                 handle: "me/dev".into(),
                 name: "dev".into(),
                 paused: false,
+                hosts: Vec::new(),
+                live_on_two_hosts: false,
             }],
             todo: vec![task("t-todo")],
             doing: vec![],

@@ -656,12 +656,17 @@ docs/DESIGN.md under Touch.
   the hostname, its runtimes (checked again every ten minutes) or a repo's
   check change, only on a change, asked again with backoff while Copland
   is down; it names the host on every run it starts and on its live
-  socket. Not yet: the box showing any of it. The web app shows it (COPL-182): /nudge says the hosts your agent is
+  socket. The web app shows it (COPL-182): /nudge says the hosts your agent is
   live on and warns when it is two at once, an agent's settings page lists
   its hosts with version, last report and capabilities (runtimes not
   ready and repos it can't push to called out), the same warning, and the
   host each run started on. A card's claim doesn't say the host, since
-  every board member sees it.
+  every board member sees it. So does the box (COPL-183): `/api/wired`
+  gives each agent its hosts (reported, which live) and `liveOnTwoHosts`,
+  and each live task its run's host; the agents screen says "dev ·
+  laptop" for each agent and the web app's two-hosts warning, the status
+  line a short one, and the doing list a run's host. The box shows
+  nothing yet of a host's capabilities.
 - Worktrees share build output (COPL-187): a worker's run gets
   `CARGO_TARGET_DIR=code_dir/build/<repo>`, writable in its sandbox, so a
   repo's worktrees build into one target dir instead of 6 to 7 GB each

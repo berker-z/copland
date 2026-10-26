@@ -184,6 +184,8 @@ pub struct BoxView {
     offer: Offer,
     /// The ask in flight, which a new source drops.
     asking: Option<Task<()>>,
+    /// This machine's name as Copland keeps a host's: the host of the daemon's own runs.
+    here: Option<String>,
 }
 
 impl BoxView {
@@ -205,6 +207,7 @@ impl BoxView {
             shown_compact,
             offer: Offer::new(None),
             asking: None,
+            here: crate::setup::host(),
         };
         if let Some(w) = view.wizard() {
             w.begin(cx);
@@ -400,7 +403,7 @@ impl BoxView {
                     }
                 };
                 let feed = feed.as_ref().map(|f| f.borrow().clone());
-                let mut b = board_from(&st, feed.as_ref(), now, SystemTime::now());
+                let mut b = board_from(&st, feed.as_ref(), self.here.as_deref(), now, SystemTime::now());
                 filter_board(&mut b, &self.prefs);
                 Some(b)
             }
@@ -916,8 +919,9 @@ pub fn filter_board(b: &mut Board, prefs: &Prefs) {
 
 /// What the scene is told: the owner's view from `/api/wired` when there is one, with the
 /// daemon's own runs over it (a run it just started shows before the next read), else what
-/// the daemon alone knows. `now` is scene seconds at `wall`.
-pub fn board_from(st: &Status, feed: Option<&Feed>, now: f64, wall: SystemTime) -> Board {
+/// the daemon alone knows. `here` is this machine's host, the one the daemon's own runs are on.
+/// `now` is scene seconds at `wall`.
+pub fn board_from(st: &Status, feed: Option<&Feed>, here: Option<&str>, now: f64, wall: SystemTime) -> Board {
     let name = |handle: &str| handle.rsplit('/').next().unwrap_or(handle).to_string();
     let at = |t: SystemTime| match wall.duration_since(t) {
         Ok(ago) => now - ago.as_secs_f64(),
@@ -966,6 +970,7 @@ pub fn board_from(st: &Status, feed: Option<&Feed>, now: f64, wall: SystemTime) 
                     agent: agent(&t.agent_id),
                     started: if t.live { since(&t.since) } else { None },
                     live: t.live,
+                    host: t.host.clone(),
                 })
                 .collect();
             board.blocked = w.blocked.iter().map(|t| (t.key.clone(), agent(&t.agent_id))).collect();
@@ -979,6 +984,12 @@ pub fn board_from(st: &Status, feed: Option<&Feed>, now: f64, wall: SystemTime) 
             board.done_window = w.done_window_hours as f64 * 3600.0;
             if let Some(e) = &f.error {
                 board.note = Some((format!("× {e}"), Role::Red));
+            } else if let Some(a) = w.agents.iter().find(|a| a.live_on_two_hosts && !a.paused) {
+                /* Usually a forgotten daemon (COPL-183): the agents screen says it in full. */
+                board.note = Some((
+                    format!("{} live on {} at once", a.name, crate::agents::where_live(a)),
+                    Role::Yellow,
+                ));
             }
         }
         None => {
@@ -1020,12 +1031,14 @@ pub fn board_from(st: &Status, feed: Option<&Feed>, now: f64, wall: SystemTime) 
             Some(d) => {
                 d.live = true;
                 d.started = Some(at(since));
+                d.host = here.map(str::to_string);
             }
             None => board.doing.push(Doing {
                 key: task.clone(),
                 agent: name(&a.handle),
                 started: Some(at(since)),
                 live: true,
+                host: here.map(str::to_string),
             }),
         }
         link(&a.url, task);
@@ -1602,6 +1615,7 @@ mod tests {
             agent_id: "a1".into(),
             since: since.map(str::to_string),
             live,
+            host: None,
         }
     }
 
@@ -1639,10 +1653,15 @@ mod tests {
                 handle: "me/dev".into(),
                 name: "dev".into(),
                 paused: false,
+                hosts: Vec::new(),
+                live_on_two_hosts: false,
             }],
             todo: vec![task("T-1", None, false), task("T-2", None, false)],
             doing: vec![
-                task("T-3", Some("2026-10-02T11:58:00Z"), true),
+                WiredTask {
+                    host: Some("server".into()),
+                    ..task("T-3", Some("2026-10-02T11:58:00Z"), true)
+                },
                 task("T-4", None, false),
             ],
             blocked: vec![task("T-5", None, false)],
@@ -1667,8 +1686,8 @@ mod tests {
             },
             &["T-9"],
         );
-        let b = board_from(&st, Some(&feed), 100.0, wall);
-        assert_eq!(board_from(&sent(&st), Some(&feed), 100.0, wall), b);
+        let b = board_from(&st, Some(&feed), Some("laptop"), 100.0, wall);
+        assert_eq!(board_from(&sent(&st), Some(&feed), Some("laptop"), 100.0, wall), b);
         assert!(b.ready);
         assert_eq!(b.todo, ["T-2"]);
         assert_eq!(
@@ -1679,6 +1698,11 @@ mod tests {
         assert_eq!(b.doing[0].agent, "dev");
         assert!(!b.doing[1].live && b.doing[1].started.is_none());
         assert_eq!(b.doing[2].started, Some(95.0));
+        /* Each run's host: the server's word for its runs, this machine for the daemon's own. */
+        assert_eq!(
+            b.doing.iter().map(|d| d.host.as_deref()).collect::<Vec<_>>(),
+            [Some("server"), None, Some("laptop")]
+        );
         assert_eq!(b.blocked, [("T-5".to_string(), "dev".to_string())]);
         assert_eq!(b.done, Some(vec![("T-6".to_string(), 100.0 - 3600.0)]));
         assert_eq!(b.done_count, Some(7));
@@ -1687,11 +1711,56 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_live_on_two_hosts_is_warned_about_in_the_status_line() {
+        let wall = SystemTime::now();
+        let host = |name: &str, live: bool| copland_daemon_core::api::WiredHost {
+            hostname: name.into(),
+            live,
+        };
+        let agent = |paused: bool| WiredAgent {
+            id: "a1".into(),
+            handle: "me/dev".into(),
+            name: "dev".into(),
+            paused,
+            hosts: vec![host("server", true), host("old", false), host("laptop", true)],
+            live_on_two_hosts: true,
+        };
+        let feed = |agent: WiredAgent| Feed {
+            url: "http://x".into(),
+            wired: Some((
+                Wired {
+                    agents: vec![agent],
+                    todo: vec![],
+                    doing: vec![],
+                    blocked: vec![],
+                    done: vec![],
+                    done_count: 0,
+                    done_window_hours: 24,
+                },
+                wall,
+            )),
+            ..Default::default()
+        };
+        let st = daemon(Phase::Idle, &[]);
+        let b = board_from(&st, Some(&feed(agent(false))), None, 0.0, wall);
+        assert_eq!(
+            b.note,
+            Some(("dev live on laptop and server at once".into(), Role::Yellow))
+        );
+        /* Paused, it starts nothing anywhere: no warning, as on its page in Copland. */
+        assert!(
+            board_from(&st, Some(&feed(agent(true))), None, 0.0, wall)
+                .note
+                .is_none()
+        );
+    }
+
+    #[test]
     fn without_an_owner_token_it_is_the_daemon_alone_and_says_how_to_see_more() {
         let wall = SystemTime::now();
         let st = daemon(Phase::Idle, &["T-9", "T-8"]);
-        let b = board_from(&st, None, 0.0, wall);
-        assert_eq!(board_from(&sent(&st), None, 0.0, wall), b);
+        let b = board_from(&st, None, None, 0.0, wall);
+        assert_eq!(board_from(&sent(&st), None, None, 0.0, wall), b);
         assert_eq!(b.todo, ["T-9", "T-8"]);
         assert!(b.done.is_none());
         assert!(b.note.unwrap().0.contains("owner_token_file"));
@@ -1701,7 +1770,7 @@ mod tests {
             url: "http://x".into(),
             ..Default::default()
         };
-        let b = board_from(&st, Some(&feed), 0.0, wall);
+        let b = board_from(&st, Some(&feed), None, 0.0, wall);
         assert!(!b.ready);
     }
 }
