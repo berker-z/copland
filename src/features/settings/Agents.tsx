@@ -6,13 +6,17 @@
    you open it: which boards it is on and at what role (never above yours or
    editor), who may give it work, and which of your own data it may read.
    The Worker enforces all of it; this only shows the choices that make sense.
+   It also shows where the agent runs (COPL-182): the hosts its daemon
+   reported, which are live now, what each can do, a warning when it is live
+   on two at once, and the host each run started on.
    ========================================================================== */
 
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { HANDLE_MAX, handleProblem, normalizeHandle } from "@/domain/handle";
+import { twoHostsWarning } from "@/domain/hosts";
 import type { RunStatus } from "@/domain/runs";
-import { AGENT_GRANTS, type Agent, type AgentGrant, type BoardRole, type Me } from "@/domain/types";
+import { AGENT_GRANTS, type Agent, type AgentGrant, type AgentHost, type BoardRole, type Me } from "@/domain/types";
 import { send } from "@/lib/api";
 import { uploadAvatar } from "@/lib/avatar";
 import { refresh } from "@/lib/live";
@@ -261,6 +265,66 @@ function AccessGroups({ agent }: { agent: Agent }) {
   );
 }
 
+/** One host: its name, live or when it last reported, its version, then what it can and can't do there. */
+function HostRow({ host }: { host: AgentHost }) {
+  const { runtimes, repos } = host.capabilities;
+  const blocked = repos.filter((r) => !r.clone || !r.push);
+  const fine = repos.filter((r) => r.clone && r.push);
+  return (
+    <li className="py-1.5 border-b border-divider last:border-b-0">
+      <div className="flex flex-wrap gap-x-2">
+        <span className="text-ink">{host.hostname}</span>
+        {host.live ? <span className="text-green">live</span> : <span className="text-faint">reported {when(host.lastReportedAt)}</span>}
+        <span className="flex-1" />
+        <span className="text-faint">version {host.version}</span>
+      </div>
+      <p className="text-xs text-muted">
+        {runtimes.length === 0
+          ? "no runtimes"
+          : runtimes.map((r, i) => (
+              <span key={r.name}>
+                {i > 0 && ", "}
+                {r.onPath && r.loggedIn ? (
+                  r.name
+                ) : (
+                  <span className="text-yellow">
+                    {r.name} ({r.onPath ? "not logged in" : "not on PATH"})
+                  </span>
+                )}
+              </span>
+            ))}
+        {fine.length > 0 && <> · pushes to {fine.map((r) => r.repo).join(", ")}</>}
+      </p>
+      {blocked.map((r) => (
+        <p key={r.repo} className="text-xs text-yellow break-words">
+          can&apos;t {r.clone ? "push to" : "clone"} {r.repo}
+          {r.detail && <span className="text-muted">: {r.detail}</span>}
+        </p>
+      ))}
+    </li>
+  );
+}
+
+/** The machines its daemon reported from (PUT /api/hosts/self), the latest first. Live on two at once is warned about at the top of the page. */
+function HostsGroup({ agent }: { agent: Agent }) {
+  return (
+    <Group title="hosts">
+      {agent.hosts.length === 0 ? (
+        <p className="text-xs text-muted">
+          None yet. Its daemon reports the machine it runs on when it starts: the name, its version, the runtimes it can start
+          and the repos it can push to. One agent per machine: to work somewhere else, make another agent.
+        </p>
+      ) : (
+        <ul className="text-sm">
+          {agent.hosts.map((h) => (
+            <HostRow key={h.hostname} host={h} />
+          ))}
+        </ul>
+      )}
+    </Group>
+  );
+}
+
 const RUN_CLASS: Record<RunStatus, string> = {
   running: "text-ink",
   stale: "text-yellow",
@@ -286,6 +350,7 @@ function RunsGroup({ agent }: { agent: Agent }) {
               {r.reason && <span className="text-muted">{r.reason}</span>}
               <span className="text-faint">{r.kind}</span>
               {r.client && <span className="text-muted">{r.client}</span>}
+              {r.host && <span className="text-muted">at {r.host}</span>}
               {r.claims.length > 0 && <span className="text-muted">on {r.claims.join(", ")}</span>}
               <span className="flex-1" />
               <span className="text-faint">
@@ -344,7 +409,9 @@ export function AgentSection({ me, agent, onDeleted }: { me: Me; agent: Agent; o
     <Section
       title={agent.user.handle}
       hint={
-        agent.pausedAt ? (
+        agent.liveOnTwoHosts && !agent.pausedAt ? (
+          <span className="text-yellow">{twoHostsWarning(agent.hosts.filter((h) => h.live).map((h) => h.hostname).sort())}</span>
+        ) : agent.pausedAt ? (
           <span className="text-yellow">Paused since {agent.pausedAt.slice(0, 10)}: nothing it holds works until you resume it.</span>
         ) : (
           <>Your agent. It acts under its own name, with what you open below and never more than you.</>
@@ -365,6 +432,7 @@ export function AgentSection({ me, agent, onDeleted }: { me: Me; agent: Agent; o
       <AccessGroups agent={agent} />
       <ConnectSteps as={agent.user.handle} />
       <Tokens tokens={agent.tokens} isPending={false} agentId={agent.user.id} />
+      <HostsGroup agent={agent} />
       <RunsGroup agent={agent} />
       <DangerGroup agent={agent} onDeleted={onDeleted} />
     </Section>
