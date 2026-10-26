@@ -8,7 +8,13 @@
 //! ```text
 //! ~/copland/repos/berker-z/copland     the clone
 //! ~/copland/work/COPL-79               the task's worktree, on copl-79-<slug>
+//! ~/copland/build/berker-z/copland     the repo's build output, shared by its worktrees
 //! ```
+//!
+//! A worker's run gets the repo's build dir as `CARGO_TARGET_DIR` (COPL-187), so its worktrees
+//! share one copy of what they compile instead of 6 GB each. Branches with the same dependencies
+//! reuse each other's; the price is that cargo builds one at a time there (its build lock) and
+//! that switching branches recompiles what differs. It goes with the repo's last worktree.
 //!
 //! A new worktree starts from the head of the repo's default branch as it is
 //! right then, the task's base. A later run finds the worktree and carries on;
@@ -59,6 +65,15 @@ pub fn paths(code_dir: &Path, repo: &str, key: &str) -> Result<(PathBuf, PathBuf
         bail!("{key:?} is not a task key");
     }
     Ok((code_dir.join("repos").join(repo), code_dir.join("work").join(key)))
+}
+
+/// Where a repo's worktrees share their build output: `CARGO_TARGET_DIR` for a worker's run.
+/// `repo` is checked as `paths` checks it.
+pub fn build_dir(code_dir: &Path, repo: &str) -> Result<PathBuf> {
+    if !valid_repo(repo) {
+        bail!("{repo:?} is not a repo name");
+    }
+    Ok(code_dir.join("build").join(repo))
 }
 
 /// "owner/name" with GitHub's characters, and neither part a dot path.
@@ -284,7 +299,8 @@ pub async fn view(code_dir: &Path, remote: &str, repo: &str, key: &str) -> Resul
 }
 
 /// Remove the task's worktree and its local branch once the task is closed. The remote branch is GitHub's
-/// to delete (on merge). Nothing to do when there is none.
+/// to delete (on merge). Nothing to do when there is none. The repo's shared build output (`build_dir`)
+/// holds no task's alone, so it goes only with the repo's last worktree.
 pub async fn remove(code_dir: &Path, repo: &str, key: &str) -> Result<bool> {
     let (clone, dir) = paths(code_dir, repo, key)?;
     if !dir.exists() {
@@ -301,6 +317,14 @@ pub async fn remove(code_dir: &Path, repo: &str, key: &str) -> Result<bool> {
     }
     if let Some(branch) = branch {
         let _ = git(&clone, &["branch", "-D", &branch]).await;
+    }
+    if !worktrees(code_dir).iter().any(|(_, r)| r == repo) {
+        let build = build_dir(code_dir, repo)?;
+        if build.exists() {
+            tokio::fs::remove_dir_all(&build)
+                .await
+                .with_context(|| format!("removing {}", build.display()))?;
+        }
     }
     Ok(true)
 }
@@ -574,9 +598,14 @@ mod tests {
         assert_eq!(other.clone, first.clone);
         assert_ne!(other.dir, first.dir);
 
-        /* Removed, then wanted again: back on the same branch, commit and all. */
+        /* Removed, then wanted again: back on the same branch, commit and all. The shared build
+        output stays while another worktree of the repo is there. */
+        let build = build_dir(&code, "o/r").unwrap();
+        assert_eq!(build, code.join("build/o/r"));
+        std::fs::create_dir_all(build.join("debug")).unwrap();
         assert!(remove(&code, "o/r", "COPL-6").await.unwrap());
         assert!(!other.dir.exists());
+        assert!(build.join("debug").exists());
         assert!(!remove(&code, "o/r", "COPL-6").await.unwrap());
         /* The sweep's list: worktrees only, by key, with the repo each belongs to. */
         std::fs::create_dir_all(code.join("work/notes")).unwrap();
@@ -588,6 +617,10 @@ mod tests {
         assert!(!back.fresh);
         assert_eq!(back.branch, "copl-5-do-the-thing");
         assert_eq!(git(&back.dir, &["log", "-1", "--format=%s"]).await.unwrap(), "work");
+        /* The repo's last worktree takes its build output with it. */
+        assert!(remove(&code, "o/r", "COPL-5").await.unwrap());
+        assert!(!build.exists());
+        assert!(build_dir(&code, "../x").is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 
