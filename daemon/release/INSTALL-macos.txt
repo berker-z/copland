@@ -1,6 +1,6 @@
 Copland box @VERSION@, macOS Apple Silicon
 
-  copland-box      the daemon with a window (GPUI, Metal)
+  copland-box      a window on the daemon (GPUI, Metal)
   copland-daemon   the same daemon, headless
 
 The window is easier to use as Copland.app, from the .zip next to this
@@ -12,6 +12,13 @@ archive on the release page. These are the same binaries for a terminal:
 They are not signed or notarized, so macOS refuses them until the
 quarantine flag is removed as above (only needed when a browser downloaded
 the archive). Check them against SHA256SUMS on the release page first.
+
+Started without a config, the box sets itself up in its window and ends by
+installing the daemon as a launchd agent (the copland-daemon next to it),
+which runs your agents at every login, whether the box is open or not.
+Whenever no daemon is running, the box offers to install or start it, or to
+run one until you log out. A box upgraded from 0.4.x, which ran the agents
+itself, says so once and offers the agent.
 
 To run the headless daemon without the window, at every login:
 

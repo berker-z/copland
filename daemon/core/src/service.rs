@@ -7,8 +7,9 @@
 //! together.
 //!
 //! For a program that isn't the daemon (the box): `installed` says whether a service is there,
-//! `start` starts an installed one, `daemon_binary` finds the `copland-daemon` shipped with it,
-//! and `spawn_session` starts one for this session only, detached from its caller.
+//! `start` starts an installed one (`restart` again, on a new config), `daemon_binary` finds the
+//! `copland-daemon` shipped with it, `spawn_session` starts one for this session only, detached
+//! from its caller, and `stop_daemon` stops whichever runs a config (signing out, COPL-205).
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
@@ -397,6 +398,88 @@ pub fn start() -> Result<()> {
     }
 }
 
+/// Start the installed service again, so it reads its config anew (setup has just written
+/// one): `systemctl --user restart`, `launchctl kickstart -k`. Starts it when it is stopped.
+pub fn restart() -> Result<()> {
+    if installed().is_none() {
+        bail!("no service installed: `copland-daemon --install-service` installs one");
+    }
+    if cfg!(target_os = "macos") {
+        let domain = format!("gui/{}", uid()?);
+        if run("launchctl", &["kickstart", "-k", &format!("{domain}/{LABEL}")]).is_err() {
+            run("launchctl", &["bootstrap", &domain, &display(&plist_path())?])?;
+        }
+        Ok(())
+    } else {
+        run("systemctl", &["--user", "restart", UNIT])
+    }
+}
+
+/// Stop the installed service without removing it (`systemctl --user stop`, `launchctl
+/// bootout`): it starts again at the next login, or with `start`. Nothing to do without one.
+pub fn stop() -> Result<()> {
+    if installed().is_none() {
+        return Ok(());
+    }
+    if cfg!(target_os = "macos") {
+        /* Not loaded (booted out already) is stopped too. */
+        let _ = run("launchctl", &["bootout", &format!("gui/{}/{LABEL}", uid()?)]);
+        Ok(())
+    } else {
+        run("systemctl", &["--user", "stop", UNIT])
+    }
+}
+
+/// How long `stop_daemon` waits for a daemon it sent SIGTERM to: its runs get ten seconds
+/// before they are killed, then it finishes them.
+pub const STOP_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Stop whatever daemon runs `config` (signing out, before its tokens go): the service when
+/// one is installed, then any other daemon still holding the config's lock (one started for the
+/// session, or on a terminal) with SIGTERM, waiting until it lets go. Says whether one ran.
+pub fn stop_daemon(config: &Path) -> Result<bool> {
+    let was = installed().is_some() && running_now(config)?;
+    stop()?;
+    Ok(stop_holder(config, &default_runtime_dir(), STOP_TIMEOUT)? || was)
+}
+
+fn running_now(config: &Path) -> Result<bool> {
+    let config = fs::canonicalize(config).unwrap_or_else(|_| config.to_path_buf());
+    Ok(lock::running(&config, &default_runtime_dir())?.is_some())
+}
+
+/// SIGTERM to the daemon holding `config`'s lock, then wait up to `timeout` for the lock to go.
+fn stop_holder(config: &Path, runtime_dir: &Path, timeout: Duration) -> Result<bool> {
+    let config = fs::canonicalize(config).unwrap_or_else(|_| config.to_path_buf());
+    let Some(holder) = lock::running(&config, runtime_dir)? else {
+        return Ok(false);
+    };
+    let Some(pid) = holder.pid else {
+        bail!(
+            "a daemon is running {} but its pid is unknown: stop it yourself",
+            config.display()
+        );
+    };
+    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == -1 {
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::ESRCH) {
+            return Err(e).with_context(|| format!("stopping the daemon ({holder})"));
+        }
+    }
+    let started = Instant::now();
+    while lock::running(&config, runtime_dir)?.is_some() {
+        if started.elapsed() >= timeout {
+            bail!(
+                "the daemon running {} ({holder}) didn't stop within {}s",
+                config.display(),
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(true)
+}
+
 /// The daemon's binary name.
 pub const DAEMON: &str = "copland-daemon";
 
@@ -754,6 +837,13 @@ mod tests {
                     let _ = stream.write_all(b"{}\n");
                 }
             }
+            "hold" => {
+                let _held = lock::Lock::take(&config, &default_runtime_dir(), "stub").unwrap();
+                eprintln!("holding");
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
             "fail" => {
                 eprintln!("starting");
                 eprintln!("Error: agent @me/dev: the token is read-only");
@@ -852,6 +942,37 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("a daemon is already running"), "{err}");
         assert!(!dir.join("daemon.log").exists(), "nothing started");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_daemon_holding_the_config_is_stopped() {
+        let dir = scratch("stop");
+        let (config, runtime) = (dir.join("daemon.toml"), dir.join("run"));
+        fs::write(&config, "").unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        /* Nothing running: nothing stopped. */
+        assert!(!stop_holder(&config, &runtime, Duration::from_secs(1)).unwrap());
+        let program = stub(&dir, "hold");
+        let config = fs::canonicalize(&config).unwrap();
+        let mut child = Command::new(&program)
+            .args(["--headless", "--config"])
+            .arg(&config)
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        while lock::running(&config, &runtime).unwrap().is_none() {
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the stub never took the lock"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(stop_holder(&config, &runtime, Duration::from_secs(20)).unwrap());
+        assert!(lock::running(&config, &runtime).unwrap().is_none());
+        assert!(!child.wait().unwrap().success(), "ended by the signal");
         fs::remove_dir_all(&dir).unwrap();
     }
 }

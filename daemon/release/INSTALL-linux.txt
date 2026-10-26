@@ -1,6 +1,6 @@
 Copland box @VERSION@, Linux @ARCH@
 
-  bin/copland-box      the daemon with a window (GPUI)
+  bin/copland-box      a window on the daemon (GPUI)
   bin/copland-daemon   the same daemon, headless
   share/               the launcher entry, the icon and the daemon's
                        systemd user unit
@@ -17,8 +17,15 @@ runs `copland-box` from PATH; if ~/.local/bin isn't on your desktop
 session's PATH, change Exec= in the desktop file to the full path.
 
 Then start `copland-box`. Without a config it sets itself up in its window:
-type your Copland's address and approve the box in the browser.
+type your Copland's address and approve the box in the browser. Setup ends
+by installing the daemon as a systemd user service (the copland-daemon next
+to the box), which runs your agents from then on, at every login, whether
+the box is open or not. Whenever no daemon is running, the box offers to
+install or start the service, or to run one until you log out.
 `copland-box --demo` shows the scene without a server.
+
+Upgrading from 0.4.x, where the box ran the agents itself and closing it
+stopped them: the first start says so once and offers the service.
 
 On a machine with no display, run the headless daemon as a service:
 

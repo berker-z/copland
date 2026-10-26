@@ -2,7 +2,8 @@
 //! with `--setup`: the Copland address, approving this machine in the browser
 //! (a device code), the runtimes found on PATH, then daemon.toml written, the
 //! preflight run on it (COPL-162), and the live view in place, watching for the
-//! daemon on the new config. Starting that daemon from here is COPL-205's.
+//! daemon on the new config, which the view starts (installs the service, or
+//! starts the installed one again: `offer.rs`, COPL-205).
 //!
 //! The steps are plain state here; `Panel` is what one of them says, which the
 //! view draws under the idle poles. Network calls and runtime detection run on

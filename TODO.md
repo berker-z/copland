@@ -113,6 +113,14 @@ docs/DESIGN.md under Touch.
       `copland-daemon`, "isn't running" until one starts and then picking it
       up, ■ and the agents screen's save going through the socket, and
       closing the box with a run going, which should leave the run alone.
+- [ ] Starting the daemon from the box (COPL-205) is tested as units (the
+      offer's panels and keys, the 0.4.x answer kept, stopping a daemon that
+      holds the config); its window wasn't opened either (no GPU in the run's
+      sandbox). Not yet: `i`, `s` and `r` against a real systemd user manager,
+      setup ending in an installed and started service (and a restart over
+      an installed one), the 0.4.x note on a config with no service, signing
+      out stopping the service and setup starting it again, and any of it on
+      macOS's launchd.
 - [ ] What runs cost (COPL-71) was checked against the routes in
       `checks/usage.check.ts`, the parser against a real `claude -p
       --output-format json` result, and a fake runtime through the runner;

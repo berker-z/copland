@@ -1,4 +1,4 @@
-Copland box @VERSION@: `copland-box`, the daemon with a window that draws your agents' work as wires and poles, and `copland-daemon`, the same loop headless. Built by CI from `@TAG@` (@COMMIT@), so nobody has to compile GPUI.
+Copland box @VERSION@: `copland-box`, a window that draws your agents' work as wires and poles, and `copland-daemon`, the loop that runs them, which the box installs as a service. Built by CI from `@TAG@` (@COMMIT@), so nobody has to compile GPUI.
 
 ## Linux (x86_64, aarch64)
 
