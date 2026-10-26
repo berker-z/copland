@@ -147,6 +147,12 @@ impl Lock {
     }
 }
 
+/// Where the daemon running `config` serves its status, as `Lock::socket` says, for a client
+/// that doesn't hold the lock (`copland-daemon status`, COPL-185).
+pub fn socket_for(config: &Path, runtime_dir: &Path) -> PathBuf {
+    path_for(config, runtime_dir).with_extension("sock")
+}
+
 /// Whether a daemon is running this config, and who, without taking its lock. It tests with a
 /// shared lock for an instant, so a daemon starting in that instant can be refused; it says so.
 pub fn running(config: &Path, runtime_dir: &Path) -> Result<Option<Holder>> {
@@ -183,6 +189,7 @@ mod tests {
         assert!(first.path().starts_with(dir.join("copland")));
         assert_eq!(first.socket(), first.path().with_extension("sock"));
         assert!(first.socket().to_string_lossy().ends_with(".sock"));
+        assert_eq!(socket_for(&config, &dir), first.socket());
         let err = Lock::take(&config, &dir, "copland-box").unwrap_err();
         let held = err.downcast_ref::<Held>().expect("refused as held");
         assert_eq!(

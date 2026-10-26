@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod api;
 pub mod chain;
+pub mod client;
 pub mod config;
 pub mod daemon;
 pub mod guard;
