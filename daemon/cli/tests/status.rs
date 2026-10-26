@@ -1,5 +1,5 @@
-//! `copland-daemon status` with no daemon running the config exits 3 (COPL-185); the modes
-//! themselves are tested against a served socket in core's `client`.
+//! `copland-daemon status`, `hold` and `release` with no daemon running the config exit 3
+//! (COPL-185, COPL-186); the rest is tested against a served socket in core's `client`.
 
 use std::process::Command;
 
@@ -10,7 +10,13 @@ fn status_with_no_daemon_exits_3() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let config = dir.join("daemon.toml");
-    for args in [&["status"][..], &["status", "--json"], &["status", "--watch", "--json"]] {
+    for args in [
+        &["status"][..],
+        &["status", "--json"],
+        &["status", "--watch", "--json"],
+        &["hold", "me/dev"],
+        &["release", "@me/dev"],
+    ] {
         let out = Command::new(env!("CARGO_BIN_EXE_copland-daemon"))
             .args(args)
             .arg("--config")

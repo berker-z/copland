@@ -1,6 +1,7 @@
 //! `copland-daemon --headless`: run the agents in daemon.toml until stopped.
 //! `--setup` writes daemon.toml on a terminal, `--check` checks this machine,
-//! `--install-service` runs it as a systemd or launchd service, `status` asks the one running.
+//! `--install-service` runs it as a systemd or launchd service, `status` asks the one running,
+//! `hold` and `release` hold one of its agents on this machine and let it go.
 
 mod service;
 mod setup;
@@ -65,6 +66,18 @@ enum Command {
         #[arg(long)]
         watch: bool,
     },
+    /// Hold an agent of the daemon running this config on this machine: it starts no run and
+    /// claims nothing until released; runs going finish. Not Copland's pause, and forgotten when
+    /// the daemon restarts. Exits 3 when no daemon is running the config.
+    Hold {
+        /// The agent's handle, as Copland or daemon.toml has it (me/dev or @me/dev).
+        handle: String,
+    },
+    /// Release an agent held with `hold`: it polls at once and starts what waits.
+    Release {
+        /// The agent's handle, as Copland or daemon.toml has it.
+        handle: String,
+    },
 }
 
 #[tokio::main]
@@ -79,11 +92,18 @@ async fn main() -> Result<()> {
     let _ = args.headless;
     let named = args.config.is_some();
     let path = args.config.unwrap_or_else(default_config_path);
-    if let Some(Command::Status { json, watch }) = args.command {
+    if let Some(command) = args.command {
         /* COPL-185: the client lives in core's `client`. */
-        let clear = watch && !json && std::io::IsTerminal::is_terminal(&std::io::stdout());
-        let mode = client::Mode { json, watch, clear };
-        let shown = client::status(&path, &default_runtime_dir(), mode, &mut std::io::stdout()).await?;
+        let (runtime_dir, out) = (default_runtime_dir(), &mut std::io::stdout());
+        let shown = match command {
+            Command::Status { json, watch } => {
+                let clear = watch && !json && std::io::IsTerminal::is_terminal(&std::io::stdout());
+                let mode = client::Mode { json, watch, clear };
+                client::status(&path, &runtime_dir, mode, out).await?
+            }
+            Command::Hold { handle } => client::hold(&path, &runtime_dir, &handle, true, out).await?,
+            Command::Release { handle } => client::hold(&path, &runtime_dir, &handle, false, out).await?,
+        };
         if let Some(says) = shown.says(&path, named) {
             eprintln!("{says}");
             std::process::exit(client::NOT_RUNNING);

@@ -315,7 +315,9 @@ copland-daemon status --config ~/work.toml
 
 `--watch` clears the screen before each snapshot on a terminal, and separates them with a `---` line otherwise. `--json` writes each line as the socket sends it, so fields a newer daemon adds come through.
 
-Exit codes: 0 when shown (or a watch whose reader went away); 3 when no daemon is running the config (no socket, or one a killed daemon left), with a line on stderr saying how to start one, and the same when the daemon stops during `--watch`; 1 for anything else, including a daemon from before the socket holding the config's lock.
+`copland-daemon hold <handle>` and `copland-daemon release <handle>` (COPL-186) hold an agent on this machine and let it go, through the socket's `hold` and `release` (above). The handle is the agent's, as Copland says it or as `daemon.toml` has it, with or without the @; the line they print says what they did, and an agent the daemon doesn't run is an error naming the ones it does.
+
+Exit codes, for all three: 0 when shown or done (or a watch whose reader went away); 3 when no daemon is running the config (no socket, or one a killed daemon left), with a line on stderr saying how to start one, and the same when the daemon stops during `--watch`; 1 for anything else, including a daemon from before the socket holding the config's lock.
 
 ## Building
 
