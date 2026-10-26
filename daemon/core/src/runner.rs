@@ -13,7 +13,7 @@ use tokio::process::Command;
 use tokio::sync::watch;
 use tokio::time::{Instant, interval_at, timeout};
 
-use crate::api::{Api, Backoff};
+use crate::api::{Api, Backoff, Run};
 use crate::config::{AgentConfig, Secret, fill_command};
 use crate::guard::Message;
 use crate::sandbox::{self, Writable};
@@ -585,7 +585,7 @@ async fn supervise(
     /* The runtime is done, the run not yet finished: the last word on what the work changed. */
     if let Some(ws) = reported.filter(|_| alive) {
         reporter
-            .report_last(api, secret, task_id, ws, last_word, &shutdown)
+            .report_last(api, secret, run_id, task_id, ws, last_word, &shutdown)
             .await;
     }
     exit
@@ -631,16 +631,32 @@ impl Reporter {
     }
 
     /// The last report, once the runtime is done: asked again while Copland is down (COPL-148),
-    /// since nothing reports after it.
+    /// since nothing reports after it. Not sent when the run no longer holds the task's claim
+    /// (COPL-173): a merged PR closed the task, or the runtime let it go or finished its run, and
+    /// Copland would only refuse it.
+    #[allow(clippy::too_many_arguments)]
     pub async fn report_last(
         &mut self,
         api: &Api,
         secret: &Secret,
+        run_id: &str,
         task_id: &str,
         ws: &Workspace,
         backoff: Backoff,
         shutdown: &watch::Receiver<bool>,
     ) {
+        match api.run(secret, run_id).await {
+            Ok(run) if !holds(&run, &ws.key) => {
+                tracing::debug!(task = %ws.key, "the run no longer holds the task; no last files report");
+                self.stopped = true;
+            }
+            Err(e) if e.is_refusal() => {
+                tracing::debug!(task = %ws.key, "the run's credential no longer works ({e}); no last files report");
+                self.stopped = true;
+            }
+            /* Held, or Copland can't say right now: the report itself is asked again while it's down. */
+            _ => {}
+        }
         self.send(api, secret, task_id, ws, Some((backoff, shutdown))).await
     }
 
@@ -689,6 +705,11 @@ impl Reporter {
             Err(e) => tracing::warn!(task = %ws.key, "reporting changed files failed: {e}"),
         }
     }
+}
+
+/// Whether the run holds a live claim on the task with this key (`Run::claims` are keys).
+fn holds(run: &Run, key: &str) -> bool {
+    run.claims.iter().any(|k| k.eq_ignore_ascii_case(key))
 }
 
 /// "8f31", the way Copland shows a run.
@@ -912,17 +933,15 @@ mod tests {
         assert!(r.due(changes(&["c"])).is_none());
     }
 
-    /// A report that can't reach Copland is kept for the next tick: not recorded as sent, not stopped.
-    #[tokio::test]
-    async fn a_failed_report_is_tried_again() {
-        let dir = std::env::temp_dir().join(format!("copland-report-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+    /// A worktree on `dir` with one commit and one untracked file, new.txt.
+    fn worktree(dir: &Path) -> Workspace {
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
         let git = |args: &[&str]| {
             let out = std::process::Command::new("git")
                 .args(["-c", "user.email=t@t", "-c", "user.name=t"])
                 .args(args)
-                .current_dir(&dir)
+                .current_dir(dir)
                 .output()
                 .unwrap();
             assert!(out.status.success(), "git {args:?}");
@@ -931,24 +950,122 @@ mod tests {
         git(&["init", "--quiet", "-b", "main"]);
         git(&["commit", "--quiet", "--allow-empty", "-m", "first"]);
         fs::write(dir.join("new.txt"), "1").unwrap();
-        let ws = Workspace {
+        Workspace {
             repo: "o/r".into(),
             key: "COPL-9".into(),
-            dir: dir.clone(),
-            clone: dir.clone(),
+            dir: dir.to_path_buf(),
+            clone: dir.to_path_buf(),
             branch: "main".into(),
             base: git(&["rev-parse", "HEAD"]),
             target: "origin/main".into(),
             fresh: false,
             read_only: false,
             pull_requests: true,
-        };
+        }
+    }
+
+    /// A report that can't reach Copland is kept for the next tick: not recorded as sent, not stopped.
+    #[tokio::test]
+    async fn a_failed_report_is_tried_again() {
+        let dir = std::env::temp_dir().join(format!("copland-report-{}", std::process::id()));
+        let ws = worktree(&dir);
         let api = Api::new("http://127.0.0.1:9").unwrap();
         let mut r = Reporter::default();
         r.report(&api, &Secret::new("cplr_x"), "t-1", &ws).await;
         assert!(r.last.is_none() && !r.stopped);
         /* What it would have sent: the untracked file, against the commit (no origin/main here). */
         assert_eq!(workspace::changed_files(&ws).await.unwrap().files, vec!["new.txt"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A Copland that answers `GET /api/runs/run-1` with `run` (status and body) and every files
+    /// report with 200, and keeps the calls it got.
+    fn fake_copland(run: (u16, &'static str)) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = calls.clone();
+        std::thread::spawn(move || {
+            for mut conn in listener.incoming().flatten() {
+                let mut reader = BufReader::new(conn.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let call = line.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+                let mut length = 0;
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':') {
+                        if k.eq_ignore_ascii_case("content-length") {
+                            length = v.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let _ = reader.read_exact(&mut vec![0; length]);
+                let (status, answer) = match call.as_str() {
+                    "GET /api/runs/run-1" => run,
+                    _ => (200, r#"{"count":1,"truncated":false}"#),
+                };
+                seen.lock().unwrap().push(call);
+                let _ = write!(
+                    conn,
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
+                    answer.len()
+                );
+            }
+        });
+        (url, calls)
+    }
+
+    /// The last report goes only while the run still holds the task (COPL-173): once a merged PR
+    /// closed it, or the run's secret stopped working, Copland would refuse it, so it isn't sent.
+    #[tokio::test]
+    async fn the_last_report_needs_the_claim() {
+        let dir = std::env::temp_dir().join(format!("copland-last-report-{}", std::process::id()));
+        let ws = worktree(&dir);
+        let (_tx, shutdown) = watch::channel(false);
+        let cases: [((u16, &'static str), bool); 4] = [
+            (
+                (
+                    200,
+                    r#"{"id":"run-1","short":"run1","status":"running","claims":["COPL-9"]}"#,
+                ),
+                true,
+            ),
+            (
+                (200, r#"{"id":"run-1","short":"run1","status":"running","claims":[]}"#),
+                false,
+            ),
+            (
+                (
+                    200,
+                    r#"{"id":"run-1","short":"run1","status":"running","claims":["COPL-90"]}"#,
+                ),
+                false,
+            ),
+            ((401, r#"{"error":"unauthorized","message":"no such token"}"#), false),
+        ];
+        for (run, sent) in cases {
+            let (url, calls) = fake_copland(run);
+            let api = Api::new(&url).unwrap();
+            let mut r = Reporter::default();
+            r.report_last(
+                &api,
+                &Secret::new("cplr_x"),
+                "run-1",
+                "t-1",
+                &ws,
+                Backoff::LAST_WORD,
+                &shutdown,
+            )
+            .await;
+            let reported = calls.lock().unwrap().iter().any(|c| c == "PUT /api/tasks/t-1/files");
+            assert_eq!(reported, sent, "{run:?}");
+            assert_eq!(r.last.is_some(), sent);
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
