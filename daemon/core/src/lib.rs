@@ -14,6 +14,7 @@ pub mod client;
 pub mod config;
 pub mod daemon;
 pub mod guard;
+pub mod limit;
 pub mod live;
 pub mod lock;
 pub mod preflight;
