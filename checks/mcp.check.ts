@@ -118,16 +118,38 @@ const para = (title: string) => mcp.match(new RegExp(`^- \\*\\*${title}\\.\\*\\*
 const code = para("Code");
 const leading = para("Leading");
 t(
-  "the guide's Code section makes work people see review_first, with screenshots at desktop and 390px on comment_on_task",
-  /changes what people see[^.]*is review_first/.test(code) &&
+  "the guide's Code section asks for screenshots of work people see at desktop and 390px on comment_on_task",
+  /changes what people see[^.]*review_first or not/.test(code) &&
     /desktop width and at 390px/.test(code) &&
     code.includes("comment_on_task's images") &&
     /If you can't take them, say so/.test(code) &&
     code.includes("daemon/README.md"),
 );
+
+/* review_first is a person's call (COPL-192): the guide never has an agent set it or infer it. */
 t(
-  "the guide's Leading section marks children people see review_first",
-  /changes what people see is review_first/.test(leading) && leading.includes("create_task review_first"),
+  "the guide's Code section says only a person sets review_first, and that a task without it is merged, UI included",
+  code.includes("Only a person sets review_first: never set or clear it yourself") &&
+    code.includes("never treat a task as review_first because of what it changes") &&
+    /A task without it is yours to integrate once CI is green, work people see included/.test(code) &&
+    !/review_first even when nobody set it|set it yourself/.test(code),
+);
+t(
+  "on a task a person marked review_first, the agent opens the PR, comments and ends its run, without waiting or merging main in",
+  /If a person set review_first, stop before integrating: push your branch \(on a board with GitHub, open the PR\), comment on the task, and end your run/.test(code) &&
+    code.includes("Don't stay waiting for the review, and don't keep merging main into the PR"),
+);
+t(
+  "the guide's Leading section never marks children review_first",
+  leading.includes("Never mark a child review_first") &&
+    !/is review_first from the start|create_task review_first/.test(leading),
+);
+const reviewArg = mcp.match(/const REVIEW_FIRST = \{[\s\S]*?\} as const;/)?.[0] ?? "";
+t(
+  "create_task and update_task share a review_first argument that says an agent's call is refused",
+  reviewArg.includes("Only a person sets or clears it: from an agent the whole call is refused") &&
+    toolSource.get("create_task")?.includes("review_first: REVIEW_FIRST") === true &&
+    toolSource.get("update_task")?.includes("review_first: REVIEW_FIRST") === true,
 );
 
 /* Comments that come in while a run works (COPL-139): read the thread again before integrating, and the hook brings them. */
@@ -140,6 +162,19 @@ t(
 t(
   "the guide's runs text says the heartbeat hook brings new comments on the run's claimed tasks",
   /Given its event, that hook also brings you, at your next step, the comments and mentions that came in on the tasks your run has claimed/.test(para("Runs and claims")),
+);
+
+/* Notes for other tasks (COPL-191): they go on that task, since no run reads the threads of the tasks it waited on. */
+t(
+  "the guide's Code section puts what a later or sibling task has to act on on that task, creating it if need be",
+  /a later or sibling task has to act on goes on that task, not only in your own thread/.test(code) &&
+    /a comment on it \(with an @mention of its assignee when that is someone else\), or into its brief if you lead it/.test(code) &&
+    /when that task doesn't exist yet, create it/.test(code) &&
+    /never the threads of the tasks it waited on/.test(code),
+);
+t(
+  "the guide's Leading section puts what a child has to act on in that child's brief",
+  /What you learn that a child has to act on goes into that child's brief[^.]*not only in the parent's thread/.test(leading),
 );
 
 /* create_task's board (COPL-125): a person may leave it out, an agent names it. */
