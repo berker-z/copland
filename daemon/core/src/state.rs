@@ -52,6 +52,9 @@ pub struct AgentState {
     /// while set, the loop starts no run and claims nothing, and the box says so. Runs going are
     /// left alone. Cleared by the next good poll.
     pub unavailable: Option<SystemTime>,
+    /// What this machine lacks to start the agent's runs (`agent::Missing::message`), None when
+    /// nothing is missing. Also said in `last_error` after a good poll, which is what the box draws.
+    pub missing: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +77,8 @@ pub struct ActiveRun {
     pub run: String,
     pub task: String,
     pub since: SystemTime,
+    /// Where it works, once its worktree (or a lead's view of the repo) is made; None in `workdir`.
+    pub worktree: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,8 +106,16 @@ impl AgentState {
             run: run.to_string(),
             task: task.to_string(),
             since: SystemTime::now(),
+            worktree: None,
         });
         self.sync_phase();
+    }
+
+    /// A run going has its worktree.
+    pub fn run_worktree(&mut self, run: &str, dir: PathBuf) {
+        if let Some(r) = self.runs.iter_mut().find(|r| r.run == run) {
+            r.worktree = Some(dir);
+        }
     }
 
     /// A run ended, however it did.
@@ -150,6 +163,7 @@ impl AgentState {
             retiring: false,
             live: Link::Connecting,
             unavailable: None,
+            missing: None,
         }
     }
 }
