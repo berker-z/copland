@@ -6,7 +6,8 @@
 //! tests.
 //!
 //! The whole filesystem is visible but read-only. Writable: the task's
-//! worktree, the clone's `.git` (where the worktree's commits land), a temp
+//! worktree, the clone's `.git` (where the worktree's commits land), the
+//! repo's shared build dir (`CARGO_TARGET_DIR`, COPL-187), a temp
 //! dir of the run's own (a fresh empty /tmp under bubblewrap, `TMPDIR` under
 //! Seatbelt), and the paths the agent's config lists under `writable` (a
 //! runtime's own state, like `~/.claude`, and caches). Anything it edits, with
@@ -40,7 +41,8 @@ pub use seatbelt::{SANDBOX_EXEC, Seatbelt, profile};
 /// What a sandboxed run may write, and where it starts. The one description every backend gets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Writable {
-    /// Writable, and there: a coding run's worktree and its clone's `.git`; none for a run that
+    /// Writable, and there: a coding run's worktree, its clone's `.git` and the repo's shared build
+    /// dir; none for a run that
     /// only reads the repo (a lead planning, COPL-87).
     pub dirs: Vec<PathBuf>,
     /// From the agent's config. Missing ones are skipped.

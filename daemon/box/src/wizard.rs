@@ -868,7 +868,10 @@ impl Wizard {
                 match checks {
                     None => {
                         lines.push(head("checking this machine before the agents start"));
-                        lines.push(faint(format!("runtimes, git, github, code_dir, tokens{}", self.dots())));
+                        lines.push(faint(format!(
+                            "runtimes, git, github, code_dir, disk, tokens{}",
+                            self.dots()
+                        )));
                     }
                     Some(checks) => {
                         let bad = checks.iter().filter(|c| c.status != Status::Ok).count();
@@ -1140,7 +1143,10 @@ mod tests {
         assert!(w.animating());
         let p = w.panel();
         let all: Vec<String> = p.lines.iter().map(text).collect();
-        assert!(all[1].starts_with("runtimes, git, github, code_dir, tokens"), "{all:?}");
+        assert!(
+            all[1].starts_with("runtimes, git, github, code_dir, disk, tokens"),
+            "{all:?}"
+        );
         assert_eq!(
             all.last().unwrap(),
             "your own claude code or claude.ai: connect https://c.example/mcp and pick you when it asks who"
