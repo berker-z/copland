@@ -27,6 +27,7 @@ pub mod socket;
 pub mod state;
 pub mod status;
 pub mod usage;
+pub mod watcher;
 pub mod workspace;
 
 pub use agent::Paths;
@@ -36,3 +37,4 @@ pub use live::Link;
 pub use lock::Lock;
 pub use state::{AgentState, DaemonState, Phase};
 pub use status::Status;
+pub use watcher::{Connection, Watcher};
