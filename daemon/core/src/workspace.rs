@@ -23,6 +23,11 @@
 //! work in it: the daemon hands it the directory and the branch, and the
 //! guide on Copland's side says how coding work is finished.
 //!
+//! A chain (COPL-189, `chain.rs`): a task that waits on one of the same agent's
+//! closed tasks, with `resume_chains` on, gets that task's worktree instead of a
+//! new one (`continue_from`), on a branch of its own from the default branch as
+//! it is now, with the build output the last task left there still warm.
+//!
 //! It is all plain `git` (worktrees need 2.5). Cloning goes over https, so
 //! pushing from the worktree uses whatever credential helper the machine has
 //! (`gh auth setup-git`, for one).
@@ -54,6 +59,8 @@ pub struct Workspace {
     /// Integrated through pull requests (a GitHub repo); false for a plain git remote (COPL-95),
     /// where the work lands by fast-forwarding the default branch.
     pub pull_requests: bool,
+    /// The task whose worktree this was (COPL-189): a chain's next task carries on in it.
+    pub after: Option<String>,
 }
 
 /// Where a repo's clone and a task's worktree live under the code directory.
@@ -117,7 +124,7 @@ pub fn git_dir_name(name: &str) -> String {
 }
 
 /// "COPL-79": letters and digits, a dash, a number.
-fn valid_key(key: &str) -> bool {
+pub(crate) fn valid_key(key: &str) -> bool {
     match key.split_once('-') {
         Some((board, n)) => {
             !board.is_empty()
@@ -192,6 +199,7 @@ pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title
             fresh: false,
             read_only: false,
             pull_requests: true,
+            after: None,
         });
     }
     /* A stale entry for a worktree whose directory is gone would refuse the add. */
@@ -237,6 +245,7 @@ pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title
             fresh: false,
             read_only: false,
             pull_requests: true,
+            after: None,
         });
     }
 
@@ -258,7 +267,62 @@ pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title
         fresh: true,
         read_only: false,
         pull_requests: true,
+        after: None,
     })
+}
+
+/// Hand `from`'s worktree on to `key` (COPL-189): the next task of a chain carries on where the
+/// last one left off, so what that one built is still there. None, with nothing touched, when
+/// `key` has a worktree or a branch of its own already (a later run of it finds those), or `from`
+/// has no worktree of this repo. Otherwise `from`'s worktree loses whatever it left uncommitted
+/// (its work is merged; its ignored build output stays), goes onto `key`'s new branch from the
+/// default branch as fetched just now, and moves to `key`'s place. `from`'s local branch goes, as
+/// `remove` would take it.
+pub async fn continue_from(
+    code_dir: &Path,
+    remote: &str,
+    repo: &str,
+    key: &str,
+    title: &str,
+    from: &str,
+) -> Result<Option<Workspace>> {
+    let (clone, dir) = paths(code_dir, repo, key)?;
+    let (_, old) = paths(code_dir, repo, from)?;
+    if dir.exists() || repo_of(code_dir, from).as_deref() != Some(repo) {
+        return Ok(None);
+    }
+    let target = sync(&clone, remote).await?;
+    if existing_branch(&clone, key).await?.is_some() {
+        return Ok(None);
+    }
+    let was = git(&old, &["rev-parse", "--abbrev-ref", "HEAD"]).await.ok();
+    let branch = branch_name(key, title);
+    let base = git(&clone, &["rev-parse", &target]).await?;
+    /* All in the old place first: should one fail, nothing has moved, and `from`'s sweep takes it. */
+    git(&old, &["reset", "--quiet", "--hard"]).await?;
+    git(&old, &["clean", "--quiet", "-fd"]).await?;
+    git(&old, &["switch", "--quiet", "--no-track", "-c", &branch, &base]).await?;
+    if let Some(was) = was.filter(|b| b != "HEAD" && *b != branch) {
+        let _ = git(&clone, &["branch", "-D", &was]).await;
+    }
+    git(
+        &clone,
+        &["worktree", "move", &old.to_string_lossy(), &dir.to_string_lossy()],
+    )
+    .await?;
+    Ok(Some(Workspace {
+        repo: repo.into(),
+        key: key.into(),
+        dir,
+        clone,
+        branch,
+        base,
+        target,
+        fresh: true,
+        read_only: false,
+        pull_requests: true,
+        after: Some(from.into()),
+    }))
 }
 
 /// The clone, cloned or fetched, and its default branch ("origin/main").
@@ -295,6 +359,7 @@ pub async fn view(code_dir: &Path, remote: &str, repo: &str, key: &str) -> Resul
         fresh: false,
         read_only: true,
         pull_requests: true,
+        after: None,
     })
 }
 
@@ -771,6 +836,76 @@ mod tests {
         let seventy = realize(&code, &remote, "o/r", "COPL-70", "Seventy").await.unwrap();
         assert!(seventy.fresh);
         assert_eq!(seventy.branch, "copl-70-seventy");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A chain's next task gets the last one's worktree (COPL-189): on a new branch from main as
+    /// it is now, what the last task left ignored still there, the rest of its leftovers gone.
+    #[tokio::test]
+    async fn a_chain_carries_on_in_the_last_tasks_worktree() {
+        let root = scratch("chain");
+        let remote = origin(&root).await;
+        let code = root.join("code");
+        let first = realize(&code, &remote, "o/r", "COPL-20", "First").await.unwrap();
+        commit(
+            &first.dir,
+            &[(".gitignore", "built/\n"), ("a.txt", "1")],
+            "first's work",
+        )
+        .await;
+        std::fs::create_dir_all(first.dir.join("built")).unwrap();
+        std::fs::write(first.dir.join("built/out"), "warm").unwrap();
+        std::fs::write(first.dir.join("stray.txt"), "left").unwrap();
+        std::fs::write(first.dir.join("a.txt"), "uncommitted").unwrap();
+        /* First's work lands on main, and main moves on besides. */
+        git(&first.dir, &["push", "--quiet", "origin", "HEAD:main"])
+            .await
+            .unwrap();
+        let elsewhere = root.join("elsewhere");
+        git(&root, &["clone", "--quiet", &remote, &elsewhere.to_string_lossy()])
+            .await
+            .unwrap();
+        commit(&elsewhere, &[("b.txt", "1")], "since").await;
+        git(&elsewhere, &["push", "--quiet", "origin", "main"]).await.unwrap();
+
+        let next = continue_from(&code, &remote, "o/r", "COPL-21", "Second", "COPL-20")
+            .await
+            .unwrap()
+            .expect("carried on");
+        assert_eq!(next.dir, code.join("work/COPL-21"));
+        assert_eq!(next.branch, "copl-21-second");
+        assert_eq!(next.after.as_deref(), Some("COPL-20"));
+        assert!(next.fresh && !first.dir.exists());
+        assert_eq!(git(&next.dir, &["rev-parse", "HEAD"]).await.unwrap(), next.base);
+        assert_eq!(
+            next.base,
+            git(&next.clone, &["rev-parse", "origin/main"]).await.unwrap()
+        );
+        assert!(next.dir.join("b.txt").exists(), "main as it is now");
+        assert_eq!(std::fs::read_to_string(next.dir.join("built/out")).unwrap(), "warm");
+        assert_eq!(std::fs::read_to_string(next.dir.join("a.txt")).unwrap(), "1");
+        assert!(!next.dir.join("stray.txt").exists());
+        assert_eq!(worktrees(&code), vec![("COPL-21".to_string(), "o/r".to_string())]);
+        assert!(existing_branch(&next.clone, "COPL-20").await.unwrap().is_none());
+        /* A later run of it finds it as its own. */
+        let again = realize(&code, &remote, "o/r", "COPL-21", "Second").await.unwrap();
+        assert_eq!((again.branch.as_str(), again.fresh), ("copl-21-second", false));
+
+        /* Nothing to carry on from, or a worktree of its own already: left alone. */
+        assert!(
+            continue_from(&code, &remote, "o/r", "COPL-22", "Third", "COPL-20")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let other = realize(&code, &remote, "o/r", "COPL-23", "Fourth").await.unwrap();
+        assert!(
+            continue_from(&code, &remote, "o/r", "COPL-23", "Fourth", "COPL-21")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(other.dir.exists() && again.dir.exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
