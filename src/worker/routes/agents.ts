@@ -24,7 +24,9 @@
    agent that inherits nothing.
 
    Pausing or deleting an agent ends its runs (cancelled) and releases their
-   claims (repo/runs.ts), and the list shows each agent's latest runs.
+   claims (repo/runs.ts), and the list shows each agent's latest runs, and
+   the hosts its daemon reported, which are live now, and whether it is
+   live on two at once (routes/hosts.ts, COPL-135).
    ========================================================================== */
 
 import { handleProblem, normalizeHandle } from "@/domain/handle";
@@ -38,6 +40,7 @@ import { createAgent } from "../repo/agents";
 import { claimedBoards, endRunsStatements, listRuns } from "../repo/runs";
 import { findUserById, peopleAudience, rowToUser, type UserRow } from "../repo/users";
 import { listTokens } from "../tokens";
+import { agentHosts } from "./hosts";
 import { replaceAvatar, storeAvatar } from "./profile";
 
 const MAX_DESCRIPTION = 500;
@@ -69,7 +72,8 @@ async function ownedAgent(db: D1Database, viewer: Viewer, id: string): Promise<A
   return row;
 }
 
-async function listAgents(db: D1Database, ownerId: string): Promise<Agent[]> {
+async function listAgents(env: Env, ownerId: string): Promise<Agent[]> {
+  const db = env.DB;
   const [agents, grants, boards] = await Promise.all([
     db
       .prepare(`${AGENT_SELECT} WHERE u.owner_id = ?1 AND u.disabled_at IS NULL ORDER BY a.created_at`)
@@ -89,6 +93,7 @@ async function listAgents(db: D1Database, ownerId: string): Promise<Agent[]> {
       .bind(ownerId)
       .all<{ user_id: string; board_id: string; role: BoardRole }>(),
   ]);
+  const hosts = await agentHosts(env, ownerId, agents.results.map((row) => row.id));
   return Promise.all(
     agents.results.map(async (row) => ({
       user: rowToUser(row),
@@ -100,6 +105,8 @@ async function listAgents(db: D1Database, ownerId: string): Promise<Agent[]> {
       boards: boards.results.filter((b) => b.user_id === row.id).map((b) => ({ boardId: b.board_id, role: b.role })),
       tokens: await listTokens(db, row.id),
       runs: await listRuns(db, row.id),
+      hosts: hosts.get(row.id)?.hosts ?? [],
+      liveOnTwoHosts: hosts.get(row.id)?.liveOnTwoHosts ?? false,
       createdAt: row.agent_created_at,
     })),
   );
@@ -128,7 +135,7 @@ async function requireFreeHandle(db: D1Database, handle: string): Promise<void> 
 
 export async function getAgents(env: Env, viewer: Viewer): Promise<Response> {
   requireOwnerInApp(viewer);
-  return json(await listAgents(env.DB, viewer.user.id));
+  return json(await listAgents(env, viewer.user.id));
 }
 
 /** POST /api/agents { name, description? }: closed by default, no boards, no grants, work only from you. */
@@ -139,7 +146,7 @@ export async function postAgent(request: Request, env: Env, viewer: Viewer, chan
   const description = body.description === undefined ? "" : parseDescription(body.description);
   const id = await createAgent(env.DB, viewer.user, name, description);
   changes.notify([viewer.user.id], "agents");
-  const agent = (await listAgents(env.DB, viewer.user.id)).find((a) => a.user.id === id);
+  const agent = (await listAgents(env, viewer.user.id)).find((a) => a.user.id === id);
   return json(agent, { status: 201 });
 }
 
@@ -202,7 +209,7 @@ export async function patchAgent(request: Request, env: Env, viewer: Viewer, id:
   changes.notify([viewer.user.id], "agents");
   if (renamed) changes.notify(await peopleAudience(db, id), "people");
   for (const boardId of released) changes.board(await boardAudience(db, boardId), { board: boardId });
-  return json((await listAgents(db, viewer.user.id)).find((a) => a.user.id === id));
+  return json((await listAgents(env, viewer.user.id)).find((a) => a.user.id === id));
 }
 
 /** DELETE /api/agents/:id. See the header for what stays. */
@@ -238,7 +245,7 @@ export async function putAgentAvatar(request: Request, env: Env, viewer: Viewer,
   await ownedAgent(env.DB, viewer, id);
   await storeAvatar(request, env, id);
   changes.notify([viewer.user.id, ...(await peopleAudience(env.DB, id))], "agents", "people");
-  return json((await listAgents(env.DB, viewer.user.id)).find((a) => a.user.id === id));
+  return json((await listAgents(env, viewer.user.id)).find((a) => a.user.id === id));
 }
 
 export async function deleteAgentAvatar(env: Env, viewer: Viewer, id: string, changes: Changes) {
@@ -246,7 +253,7 @@ export async function deleteAgentAvatar(env: Env, viewer: Viewer, id: string, ch
   await ownedAgent(env.DB, viewer, id);
   await replaceAvatar(env, id, null);
   changes.notify([viewer.user.id, ...(await peopleAudience(env.DB, id))], "agents", "people");
-  return json((await listAgents(env.DB, viewer.user.id)).find((a) => a.user.id === id));
+  return json((await listAgents(env, viewer.user.id)).find((a) => a.user.id === id));
 }
 
 /* ---------------------------------------------------------------- boards -- */
@@ -276,7 +283,7 @@ export async function putAgentBoard(
     .run();
   changes.notify([viewer.user.id], "agents");
   changes.board(await boardAudience(db, boardId), { board: boardId }, "boards");
-  return json((await listAgents(db, viewer.user.id)).find((a) => a.user.id === id));
+  return json((await listAgents(env, viewer.user.id)).find((a) => a.user.id === id));
 }
 
 /** DELETE /api/agents/:id/boards/:boardId: off the board, and off its tasks there. */
@@ -294,7 +301,7 @@ export async function deleteAgentBoard(env: Env, viewer: Viewer, id: string, boa
   ]);
   changes.notify([viewer.user.id], "agents");
   changes.board(audience, { board: boardId }, "boards");
-  return json((await listAgents(db, viewer.user.id)).find((a) => a.user.id === id));
+  return json((await listAgents(env, viewer.user.id)).find((a) => a.user.id === id));
 }
 
 /** For other routes: the agent behind a user id, if it is one, so its owner's settings can refresh. */
