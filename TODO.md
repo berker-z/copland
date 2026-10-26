@@ -575,6 +575,14 @@ docs/DESIGN.md under Touch.
   login's commands for a terminal, `r` checks again, and Enter starts the
   daemon whatever they say. Its last line says to connect your own chat to
   `/mcp` as "you".
+- Setup on a terminal (COPL-177): `copland-daemon --setup [--url]` asks
+  for the address, prints the device code and link and polls as the box
+  does, saves the tokens at once (so it resumes at the runtimes from
+  `daemon.toml.setup`), asks a runtime and workdir per agent, writes the
+  box's `daemon.toml` with a backup, and runs the preflight offering its
+  fixes. Refuses without a terminal. `copland-daemon --check --fix` too
+  (`daemon/cli/src/setup.rs`). Run end to end against a stub device
+  server; not yet against a real Copland.
 - Waiting work starts when what it waits on closes (COPL-164): a write
   that closes or deletes the last open task a todo task depends on puts an
   `unblocked` item in each of its assignees' inboxes (migration 0035,
