@@ -11,7 +11,6 @@ mod log;
 mod menu;
 mod notify;
 mod prefs;
-mod runtime;
 mod scene;
 mod setup;
 mod theme;
