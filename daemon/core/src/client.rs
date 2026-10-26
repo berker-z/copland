@@ -13,6 +13,7 @@ use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+use crate::daemon::Reloaded;
 use crate::lock;
 use crate::status::Status;
 
@@ -136,45 +137,6 @@ pub async fn reload(config: &Path, runtime_dir: &Path, out: &mut (dyn Write + Se
     Ok(Outcome::Shown)
 }
 
-/// What a reload did, as the socket says it (`daemon::Reloaded`); lists a daemon leaves out are empty.
-#[derive(Debug, Default, serde::Deserialize)]
-#[serde(default)]
-struct Reloaded {
-    kept: Vec<String>,
-    started: Vec<String>,
-    rebound: Vec<String>,
-    stopped: Vec<String>,
-}
-
-impl Reloaded {
-    fn says(&self, config: &Path) -> String {
-        let handles = |hs: &[String]| {
-            hs.iter()
-                .map(|h| format!("@{}", h.trim_start_matches('@')))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let mut out = format!("reloaded {}", config.display());
-        let changed = [
-            ("started", &self.started),
-            ("rebound (after its runs)", &self.rebound),
-            ("stopped (after its runs)", &self.stopped),
-        ];
-        if changed.iter().all(|(_, hs)| hs.is_empty()) {
-            out.push_str(": nothing changed\n");
-            return out;
-        }
-        out.push('\n');
-        for (what, hs) in changed.into_iter().filter(|(_, hs)| !hs.is_empty()) {
-            out.push_str(&format!("{what}: {}\n", handles(hs)));
-        }
-        if !self.kept.is_empty() {
-            out.push_str(&format!("as they were: {}\n", handles(&self.kept)));
-        }
-        out
-    }
-}
-
 /// Hold (`held`) or release the agent `handle` (as the server says it, or as `daemon.toml` has
 /// it, with or without the @) of the daemon running `config`, and say so on `out`. Holding is
 /// this machine's alone: Copland's pause is untouched (see daemon/README.md's "The status socket").
@@ -290,7 +252,7 @@ pub(crate) fn done(line: &str) -> Result<()> {
 }
 
 /// The same, keeping what else `{"ok":true,…}` says.
-fn ok(line: &str) -> Result<serde_json::Value> {
+pub(crate) fn ok(line: &str) -> Result<serde_json::Value> {
     let answer: serde_json::Value = serde_json::from_str(line).context("the daemon's answer isn't JSON")?;
     if let Some(e) = answer.get("error") {
         bail!("the daemon says: {}", e.as_str().unwrap_or(&e.to_string()));

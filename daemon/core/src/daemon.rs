@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tracing::Instrument;
@@ -167,14 +167,46 @@ impl Reloader {
     }
 }
 
-/// What a reload did, by handle as configured. As JSON, the status socket's `reload` answer.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+/// What a reload did, by handle as configured. As JSON, the status socket's `reload` answer;
+/// read back, a list an older daemon leaves out is empty.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Reloaded {
     /// Run as they were.
     pub kept: Vec<String>,
     pub started: Vec<String>,
     pub rebound: Vec<String>,
     pub stopped: Vec<String>,
+}
+
+impl Reloaded {
+    /// What `copland-daemon reload` prints for a reload of `config`.
+    pub fn says(&self, config: &std::path::Path) -> String {
+        let handles = |hs: &[String]| {
+            hs.iter()
+                .map(|h| format!("@{}", h.trim_start_matches('@')))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut out = format!("reloaded {}", config.display());
+        let changed = [
+            ("started", &self.started),
+            ("rebound (after its runs)", &self.rebound),
+            ("stopped (after its runs)", &self.stopped),
+        ];
+        if changed.iter().all(|(_, hs)| hs.is_empty()) {
+            out.push_str(": nothing changed\n");
+            return out;
+        }
+        out.push('\n');
+        for (what, hs) in changed.into_iter().filter(|(_, hs)| !hs.is_empty()) {
+            out.push_str(&format!("{what}: {}\n", handles(hs)));
+        }
+        if !self.kept.is_empty() {
+            out.push_str(&format!("as they were: {}\n", handles(&self.kept)));
+        }
+        out
+    }
 }
 
 impl Daemon {
