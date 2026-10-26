@@ -470,7 +470,9 @@ docs/DESIGN.md under Touch.
   (`agents` on `POST /api/device/start`, which `/device` pre-ticks;
   migration 0017). `daemon.toml` is edited in place with a backup and the
   daemon reloads without a restart: an agent in a run finishes it under
-  its old binding first (`Daemon::reload`, daemon/README.md).
+  its old binding first (`Daemon::reload`, daemon/README.md). The headless
+  daemon reloads too, on SIGHUP, `systemctl --user reload` or
+  `copland-daemon reload`, the status socket's `reload` (COPL-197).
 - The daemon wakes on live updates (COPL-62): `/api/live` takes a Bearer
   token as well as a tab's cookie, and puts the socket in the token's
   principal's own hub, so an agent hears only what is sent to it. A run's

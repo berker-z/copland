@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::Result;
 use copland_daemon_core::api::{Api, DeviceIdentity, DevicePoll, DeviceStart, WiredAgent};
 use copland_daemon_core::config::AgentConfig;
-use copland_daemon_core::{Config, Reloaded, Status, status};
+use copland_daemon_core::{Config, Reload, Status, status};
 use gpui::{Context, KeyDownEvent, Task};
 use tokio::sync::{mpsc, oneshot};
 
@@ -43,12 +43,6 @@ const ROWS: usize = 3;
 const SLOW_DOWN: u64 = 5;
 /// The most a message holds (`MESSAGE_MAX` in `src/domain/messages.ts`).
 const MESSAGE_MAX: usize = 1000;
-
-/// A changed config for the daemon to run, and its answer.
-pub struct Reload {
-    pub config: Config,
-    pub reply: oneshot::Sender<Result<Reloaded>>,
-}
 
 /// Setup over the same config, the address filled in and a note to show (after signing out).
 pub type SetupAgain = std::rc::Rc<dyn Fn(Option<&str>, Option<String>) -> Result<crate::wizard::Wizard>>;

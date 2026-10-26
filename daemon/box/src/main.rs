@@ -30,7 +30,8 @@ use std::thread::JoinHandle;
 use anyhow::{Context as _, Result};
 use clap::Parser;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
-use copland_daemon_core::{Config, Daemon, DaemonState, Lock, Paths, RunStopper, Status};
+use copland_daemon_core::socket::Serve;
+use copland_daemon_core::{Config, Daemon, DaemonState, Lock, Paths, Reload, RunStopper, Status};
 use gpui::{
     AppContext as _, Application, Bounds, SharedString, WindowBounds, WindowDecorations, WindowKind, WindowOptions, px,
     size,
@@ -38,7 +39,7 @@ use gpui::{
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::agents::{Control, Reload, SetupAgain};
+use crate::agents::{Control, SetupAgain};
 use crate::feed::{Feed, Notices};
 use crate::menu::Prefs;
 use crate::notify::{Desktop, Notifier};
@@ -221,7 +222,8 @@ fn statuses(mut daemon: watch::Receiver<DaemonState>) -> watch::Receiver<Status>
 impl Running {
     /// Start the daemon, and with an owner token the owner's feed, which also sends desktop
     /// notifications while `notes` says so.
-    fn start(config: Config, lock: Lock, notes: Arc<AtomicBool>) -> Result<Started> {
+    /// `config_path` is the file `config` came from, which the status socket's reload reads again.
+    fn start(config: Config, config_path: PathBuf, lock: Lock, notes: Arc<AtomicBool>) -> Result<Started> {
         let owner = config.owner.clone();
         let feed = owner.as_ref().map(|o| {
             watch::channel(Feed {
@@ -248,7 +250,6 @@ impl Running {
         let socket = lock.socket();
         let (state_tx, state_rx) = std::sync::mpsc::channel();
         let (stop, mut stop_rx) = oneshot::channel::<()>();
-        let (reload_tx, mut reload_rx) = mpsc::unbounded_channel::<Reload>();
         let thread = std::thread::Builder::new().name("daemon".into()).spawn(move || {
             let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
                 Ok(r) => r,
@@ -262,18 +263,24 @@ impl Running {
                     state_dir: default_state_dir(),
                     runtime_dir: default_runtime_dir(),
                 };
-                let mut daemon = match Daemon::start(config, paths, Some(socket)) {
+                let serve = Serve {
+                    socket,
+                    config: config_path,
+                };
+                let mut daemon = match Daemon::start(config, paths, Some(serve)) {
                     Ok(d) => d,
                     Err(e) => {
                         let _ = state_tx.send(Err(e));
                         return;
                     }
                 };
+                let mut reloads = daemon.reloads().expect("taken once, here");
                 let status = statuses(daemon.subscribe());
                 let _ = state_tx.send(Ok((
                     status.clone(),
                     tokio::runtime::Handle::current(),
                     daemon.run_stopper(),
+                    daemon.reload_sender(),
                 )));
                 if let (Some(owner), Some(tx)) = (owner, feed_tx) {
                     tokio::spawn(feed::run(owner, tx, status, notices));
@@ -289,14 +296,8 @@ impl Running {
                         _ = term.recv() => { tracing::info!("SIGTERM: stopping"); break true }
                         _ = int.recv() => { tracing::info!("SIGINT: stopping"); break true }
                         _ = &mut stop_rx => { tracing::info!("window closed: stopping"); break false }
-                        /* The agents screen changed daemon.toml: run what it says now, here. */
-                        Some(req) = reload_rx.recv() => {
-                            let done = daemon.reload(req.config);
-                            if let Err(e) = &done {
-                                tracing::error!("reload: {e:#}");
-                            }
-                            let _ = req.reply.send(done);
-                        }
+                        /* The agents screen changed daemon.toml, or the socket's reload read it again: run what it says now, here. */
+                        Some(req) = reloads.recv() => req.answer(&mut daemon),
                         _ = daemon.join() => {
                             tracing::error!("no agent left to watch");
                             finished_tx.send_replace(true);
@@ -316,7 +317,7 @@ impl Running {
                 }
             });
         })?;
-        let (state, rt, stopper) = state_rx
+        let (state, rt, stopper, reload) = state_rx
             .recv()
             .context("the daemon's thread ended before it started")??;
         Ok(Started {
@@ -329,7 +330,7 @@ impl Running {
             feed: feed_rx,
             finished,
             rt,
-            reload: reload_tx,
+            reload,
             stopper,
             clicks,
         })
@@ -459,7 +460,7 @@ fn main() -> Result<()> {
             }
             /* One daemon per config (COPL-175): a copland-daemon or another box on it refuses this. */
             let lock = Lock::take(&path, &default_runtime_dir(), "copland-box")?;
-            let s = Running::start(config, lock, notes.clone())?;
+            let s = Running::start(config, path.clone(), lock, notes.clone())?;
             *running.lock().expect("one writer") = Some(s.running);
             let setup_again = setup_again.clone();
             let control = Control {

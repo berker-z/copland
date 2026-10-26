@@ -10,6 +10,10 @@
 //!   (`RunStopper::stop`) and answers `{"ok":true}`.
 //! - `{"op":"hold","slot":1}` holds that agent on this machine (COPL-186, `Holder`): its loop
 //!   starts no run and claims nothing until `{"op":"release","slot":1}`. Both answer `{"ok":true}`.
+//! - `{"op":"reload"}` (COPL-197) loads the config file the daemon was started with again and
+//!   runs it (`Reloader`, `Daemon::reload`), answering `{"ok":true,"reloaded":{"kept":[…],
+//!   "started":[…],"rebound":[…],"stopped":[…]}}` (handles as configured). A config that doesn't
+//!   load, or a reload refused, answers the error and changes nothing.
 //!
 //! Anything else (an unknown op, a line that isn't JSON, an unknown slot or run) answers
 //! `{"error":"…"}` and keeps the connection. Only the socket's owner can connect: the socket is
@@ -28,7 +32,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 
-use crate::daemon::{Holder, RunStopper};
+use crate::daemon::{Holder, Reloader, RunStopper};
 use crate::state::DaemonState;
 use crate::status::Status;
 
@@ -43,6 +47,7 @@ enum Request {
     StopRun { slot: u64, run: String },
     Hold { slot: u64 },
     Release { slot: u64 },
+    Reload,
 }
 
 /// What the socket can change.
@@ -50,6 +55,15 @@ enum Request {
 struct Controls {
     stopper: RunStopper,
     holder: Holder,
+    reloader: Reloader,
+}
+
+/// Where a daemon serves its socket (`Lock::socket`), and the config file it runs, which the
+/// socket's `reload` reads again.
+#[derive(Debug, Clone)]
+pub struct Serve {
+    pub socket: PathBuf,
+    pub config: PathBuf,
 }
 
 /// The socket being served. Dropping it stops serving, hangs up every client and removes the socket.
@@ -68,6 +82,7 @@ impl Server {
         state: watch::Receiver<DaemonState>,
         stopper: RunStopper,
         holder: Holder,
+        reloader: Reloader,
     ) -> Result<Self> {
         if let Some(dir) = path.parent() {
             crate::setup::private_dir(dir)?;
@@ -87,7 +102,15 @@ impl Server {
         tracing::info!(socket = %path.display(), "serving status");
         Ok(Self {
             path: path.to_path_buf(),
-            task: tokio::spawn(accept(listener, state, Controls { stopper, holder })),
+            task: tokio::spawn(accept(
+                listener,
+                state,
+                Controls {
+                    stopper,
+                    holder,
+                    reloader,
+                },
+            )),
         })
     }
 
@@ -174,6 +197,13 @@ fn hold(holder: &Holder, slot: u64, held: bool) -> String {
     }
 }
 
+async fn reload(reloader: &Reloader) -> String {
+    match reloader.reload().await {
+        Ok(reloaded) => json!({ "ok": true, "reloaded": reloaded }).to_string(),
+        Err(e) => error(format!("{e:#}")),
+    }
+}
+
 async fn serve(stream: UnixStream, mut state: watch::Receiver<DaemonState>, controls: Controls) {
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
@@ -199,6 +229,8 @@ async fn serve(stream: UnixStream, mut state: watch::Receiver<DaemonState>, cont
                         Ok(Request::StopRun { slot, run }) => stop_run(&state, &controls.stopper, slot, &run),
                         Ok(Request::Hold { slot }) => hold(&controls.holder, slot, true),
                         Ok(Request::Release { slot }) => hold(&controls.holder, slot, false),
+                        /* Watched changes wait meanwhile; the reload's own come after its answer. */
+                        Ok(Request::Reload) => reload(&controls.reloader).await,
                         Err(e) => error(format!("bad request: {e}")),
                     }
                 }
@@ -283,7 +315,14 @@ mod tests {
         let path = dir.join("copland").join("daemon-test.sock");
         let (state_tx, state) = watch::channel(running());
         let (stop_tx, mut stops) = watch::channel::<StopRequest>(None);
-        let server = Server::start(&path, state, RunStopper(stop_tx), Holder(state_tx.clone())).unwrap();
+        let server = Server::start(
+            &path,
+            state,
+            RunStopper(stop_tx),
+            Holder(state_tx.clone()),
+            Reloader::nowhere(),
+        )
+        .unwrap();
         assert_eq!(server.path(), path);
         assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
         assert_eq!(fs::metadata(path.parent().unwrap()).unwrap().mode() & 0o777, 0o700);
@@ -360,7 +399,14 @@ mod tests {
         assert!(path.exists());
         let (tx, state) = watch::channel(running());
         let (stop_tx, _) = watch::channel::<StopRequest>(None);
-        let server = Server::start(&path, state.clone(), RunStopper(stop_tx.clone()), Holder(tx.clone())).unwrap();
+        let server = Server::start(
+            &path,
+            state.clone(),
+            RunStopper(stop_tx.clone()),
+            Holder(tx.clone()),
+            Reloader::nowhere(),
+        )
+        .unwrap();
         assert_eq!(
             Client::connect(&path).await.ask(r#"{"op":"status"}"#).await["version"],
             1
@@ -368,7 +414,7 @@ mod tests {
         drop(server);
 
         fs::write(&path, "mine").unwrap();
-        let err = Server::start(&path, state, RunStopper(stop_tx), Holder(tx)).unwrap_err();
+        let err = Server::start(&path, state, RunStopper(stop_tx), Holder(tx), Reloader::nowhere()).unwrap_err();
         assert!(err.to_string().contains("not a socket"), "{err}");
         assert_eq!(fs::read_to_string(&path).unwrap(), "mine");
         let _ = fs::remove_dir_all(&dir);

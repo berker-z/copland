@@ -3,7 +3,7 @@
 //! keeps up, `watch::Receiver<Connection>`, through the socket's `watch`, and keeps it up across
 //! the daemon ending and another one starting: when it goes away the watcher tries again every
 //! `RETRY` and picks up a daemon started later, without the caller doing anything. Its
-//! `stop_run`, `hold` and `release` ask the same daemon to do something.
+//! `stop_run`, `hold`, `release` and `reload` ask the same daemon to do something.
 //!
 //! `client.rs` is the same socket for a terminal, which shows a snapshot and ends.
 
@@ -19,6 +19,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::client;
+use crate::daemon::Reloaded;
 use crate::lock;
 use crate::status::{Status, VERSION};
 
@@ -77,24 +78,32 @@ impl Watcher {
 
     /// Stop the run `run` of the agent in `slot`, as the box's ■ does.
     pub async fn stop_run(&self, slot: u64, run: &str) -> Result<()> {
-        self.ask(json!({ "op": "stop_run", "slot": slot, "run": run })).await
+        self.ask(json!({ "op": "stop_run", "slot": slot, "run": run }))
+            .await
+            .map(drop)
     }
 
     /// Hold the agent in `slot` on this machine: it starts nothing until released.
     pub async fn hold(&self, slot: u64) -> Result<()> {
-        self.ask(json!({ "op": "hold", "slot": slot })).await
+        self.ask(json!({ "op": "hold", "slot": slot })).await.map(drop)
     }
 
     /// Release the agent in `slot`.
     pub async fn release(&self, slot: u64) -> Result<()> {
-        self.ask(json!({ "op": "release", "slot": slot })).await
+        self.ask(json!({ "op": "release", "slot": slot })).await.map(drop)
     }
 
-    /* A request that answers `{"ok":true}` (reload, once the socket has it) is one more of these. */
+    /// Have the daemon read its config file again and run it (COPL-197), as after saving
+    /// `daemon.toml`, and say what changed. A file that doesn't load is the daemon's `Err`, and
+    /// nothing changed.
+    pub async fn reload(&self) -> Result<Reloaded> {
+        let answer = self.ask(json!({ "op": "reload" })).await?;
+        serde_json::from_value(answer["reloaded"].clone()).context("the daemon's answer doesn't say what it reloaded")
+    }
 
     /// Send `request` on a connection of its own, which keeps its answer apart from the watch's
-    /// snapshots, and say what the daemon answered: `Err` with the socket's `error` text.
-    async fn ask(&self, request: Value) -> Result<()> {
+    /// snapshots, and give what the daemon answered: `Err` with the socket's `error` text.
+    async fn ask(&self, request: Value) -> Result<Value> {
         let socket = &self.socket;
         let asking = async {
             let stream = match UnixStream::connect(socket).await {
@@ -115,7 +124,7 @@ impl Watcher {
                 .await
                 .with_context(|| format!("reading {}", socket.display()))?
                 .with_context(|| format!("the daemon at {} hung up without answering", socket.display()))?;
-            client::done(&line)
+            client::ok(&line)
         };
         tokio::time::timeout(ANSWER, asking).await.with_context(|| {
             format!(
@@ -207,7 +216,7 @@ mod tests {
 
     use super::*;
     use crate::agent::StopRequest;
-    use crate::daemon::{Holder, RunStopper};
+    use crate::daemon::{Holder, Reloader, RunStopper};
     use crate::socket::Server;
     use crate::state::{AgentState, DaemonState, Phase};
 
@@ -241,7 +250,14 @@ mod tests {
     fn serve(socket: &Path, st: DaemonState) -> Served {
         let (state, rx) = watch::channel(st);
         let (stop_tx, stops) = watch::channel::<StopRequest>(None);
-        let server = Server::start(socket, rx, RunStopper(stop_tx), Holder(state.clone())).unwrap();
+        let server = Server::start(
+            socket,
+            rx,
+            RunStopper(stop_tx),
+            Holder(state.clone()),
+            Reloader::nowhere(),
+        )
+        .unwrap();
         Served { server, state, stops }
     }
 
@@ -258,6 +274,58 @@ mod tests {
             Connection::Connected(s) => Some(s),
             _ => None,
         }
+    }
+
+    #[tokio::test]
+    async fn reload_says_what_changed_or_why_not() {
+        let (dir, config) = scratch("reload");
+        let socket = lock::socket_for(&config, &dir);
+        let (state, rx) = watch::channel(running());
+        let (stop_tx, _) = watch::channel::<StopRequest>(None);
+        let (reload_tx, mut reloads) = tokio::sync::mpsc::unbounded_channel();
+        let _server = Server::start(
+            &socket,
+            rx,
+            RunStopper(stop_tx),
+            Holder(state),
+            Reloader::new(config.clone(), reload_tx),
+        )
+        .unwrap();
+        let watcher = Watcher::start(&config, &dir);
+        until(&mut watcher.subscribe(), |c| connected(c).is_some()).await;
+
+        /* A file that doesn't load never reaches the daemon. */
+        fs::write(&config, "[[agent]\n").unwrap();
+        let err = watcher.reload().await.unwrap_err();
+        assert!(err.to_string().contains("loading the config"), "{err}");
+        assert!(reloads.try_recv().is_err());
+
+        /* One that does is run by whoever owns the daemon, and its answer comes back. */
+        fs::write(
+            &config,
+            format!(
+                "[[agent]]\nurl=\"http://x\"\nhandle=\"me/new\"\ntoken=\"cpl_t\"\ncommand=[\"claude\"]\nworkdir=\"{}\"\n",
+                dir.display()
+            ),
+        )
+        .unwrap();
+        let owner = tokio::spawn(async move {
+            let req = reloads.recv().await.unwrap();
+            assert_eq!(req.config.agents[0].handle, "me/new");
+            let _ = req.reply.send(Ok(Reloaded {
+                started: vec!["me/new".into()],
+                stopped: vec!["me/dev".into()],
+                ..Reloaded::default()
+            }));
+        });
+        let done = watcher.reload().await.unwrap();
+        assert_eq!(
+            (done.started, done.stopped),
+            (vec!["me/new".to_string()], vec!["me/dev".to_string()])
+        );
+        owner.await.unwrap();
+        drop(watcher);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

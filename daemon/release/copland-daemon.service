@@ -4,6 +4,7 @@ Documentation=https://github.com/berker-z/copland/blob/main/daemon/README.md
 
 [Service]
 ExecStart=%h/.local/bin/copland-daemon --headless
+ExecReload=%h/.local/bin/copland-daemon reload
 Restart=on-failure
 RestartSec=10
 # SIGTERM to the daemon alone: it stops its runtimes and finishes their runs as
