@@ -14,6 +14,7 @@ use tokio::sync::watch;
 use tokio::time::{Instant, interval_at, timeout};
 
 use crate::api::{Api, Backoff, Run};
+use crate::chain;
 use crate::config::{AgentConfig, Secret, fill_command};
 use crate::guard::Message;
 use crate::limit::{self, OutOfUsage};
@@ -160,7 +161,15 @@ pub fn prompt(
                 only = only(task_key),
             ),
             Some(ws) => format!(
-                "You are @{handle} working on {task_key}, in a git worktree of {repo} on the branch {branch} (from {target} at {base}). Read it with get_task, and work as the copland guide says, including its Code section on finishing coding work.{integrate} When you stop, leave the task in the right stage. {TURN} {only}",
+                "You are @{handle} working on {task_key}, in a git worktree of {repo} on the branch {branch} (from {target} at {base}).{chain} Read it with get_task, and work as the copland guide says, including its Code section on finishing coding work.{integrate} When you stop, leave the task in the right stage. {TURN} {only}",
+                chain = match &ws.after {
+                    /* COPL-189: carried on from the task before it, which is not this one. */
+                    Some(after) => format!(
+                        " {task_key} is a new task, which waited on {after}. This worktree was {after}'s, kept so what it built is still there, and is now on a new branch from {target} as it is today: main has moved since {after}'s work, which is in it now along with whatever else landed.",
+                        target = ws.target,
+                    ),
+                    None => String::new(),
+                },
                 repo = ws.repo,
                 branch = ws.branch,
                 target = ws.target,
@@ -248,6 +257,8 @@ pub struct Ended {
     pub usage: Option<Usage>,
     /// It exited saying its account is out of usage (COPL-195): the account's trouble, not the task's.
     pub out_of_usage: Option<OutOfUsage>,
+    /// The session its result said it ran in (COPL-189).
+    pub session: Option<String>,
 }
 
 impl Ended {
@@ -390,6 +401,9 @@ pub struct Launch<'a> {
     pub runtime_dir: &'a Path,
     /// A coding task's workspace: the run uses `code_command`, sandboxed, in the worktree.
     pub workspace: Option<&'a Workspace>,
+    /// The session a chain's next task carries on in (COPL-189, `chain.rs`): a worker's Claude Code
+    /// run, with the agent's `resume_chains`, starts with `--resume` and it.
+    pub resume: Option<&'a str>,
     /// How its last files report is asked again while Copland is down (COPL-148).
     pub last_word: Backoff,
 }
@@ -431,8 +445,9 @@ async fn run_until(
     let log = log_path(launch.state_dir, launch.run_id);
     let started = std::time::Instant::now();
     let mut header = None;
-    let mut usage = None;
-    let exit = supervise(launch, shutdown, cancel, limits, &mut header, &mut usage).await;
+    let mut result = None;
+    let exit = supervise(launch, shutdown, cancel, limits, &mut header, &mut result).await;
+    let (usage, session) = result.map_or((None, None), |(u, s)| (Some(u), s));
     /* Silent: nothing after the header, or no header at all (it never got that far). */
     let silent = header.is_none_or(|len| fs::metadata(&log).map_or(true, |m| m.len() <= len));
     /* A runtime that died saying it is out of usage said so last: read the end of what it wrote. */
@@ -446,6 +461,7 @@ async fn run_until(
         silent,
         usage,
         out_of_usage,
+        session,
     };
     let footer = (|| -> Result<()> {
         private_dir(log.parent().expect("log path has a parent"))?;
@@ -476,14 +492,14 @@ fn tail(log: &Path, from: u64) -> String {
 
 /// Start the runtime and wait for it, as `run` says. `header` is set to the log's length once
 /// the daemon's header is in it, so what the runtime wrote after can be told from nothing, and
-/// `usage` to what its result line said it cost (`copy_stdout`).
+/// `result` to what its result line said it cost and the session it ran in (`copy_stdout`).
 async fn supervise(
     launch: Launch<'_>,
     mut shutdown: watch::Receiver<bool>,
     cancel: impl std::future::Future<Output = ()>,
     limits: Limits,
     header: &mut Option<u64>,
-    usage: &mut Option<Usage>,
+    result: &mut Option<(Usage, Option<String>)>,
 ) -> Exit {
     let ceiling = limits.ceiling;
     let Launch {
@@ -499,6 +515,7 @@ async fn supervise(
         state_dir,
         runtime_dir,
         workspace,
+        resume,
         last_word,
     } = launch;
 
@@ -519,7 +536,21 @@ async fn supervise(
         Err(e) => return Exit::SpawnFailed(format!("{e:#}")),
     };
 
-    let text = prompt(handle, task_key, brief, workspace, messages);
+    /* A worker's Claude Code run with resume_chains keeps its session for the next task of its
+    chain, and resumes the last one's when it is that next task (COPL-189). */
+    let chained = match (workspace, &agent.code_command) {
+        (Some(ws), Some(code)) if agent.resume_chains && !ws.read_only && chain::resumable(code) => {
+            Some(chain::argv(code, resume))
+        }
+        _ => None,
+    };
+    let resumed = chained.is_some() && resume.is_some();
+    let mut text = prompt(handle, task_key, brief, workspace, messages);
+    if let (true, Some(after)) = (resumed, workspace.and_then(|ws| ws.after.as_deref())) {
+        text.push_str(&format!(
+            " The conversation before this prompt is {after}'s run, resumed: {after} is closed. {task_key} is new work, so go by what get_task says of it, not by what you remember of {after}."
+        ));
+    }
     /* A worker's build output, shared with the repo's other worktrees; there before the sandbox binds it. */
     let build = match (workspace, &agent.code_command) {
         (Some(ws), Some(_)) if !ws.read_only => match workspace::build_dir(&agent.code_dir, &ws.repo)
@@ -533,6 +564,7 @@ async fn supervise(
     /* A coding task: its own command, in its worktree, inside the sandbox. */
     let (argv, cwd, sandboxed) = match (workspace, &agent.code_command) {
         (Some(ws), Some(code)) => {
+            let code = chained.as_ref().unwrap_or(code);
             let backend = sandbox::of(agent);
             /* A lead reads the repo; a worker writes its worktree, its commits land in the clone's .git,
             and what it builds in the repo's shared build dir (COPL-187). */
@@ -713,7 +745,12 @@ async fn supervise(
     if let Some(copier) = copier {
         let abort = copier.abort_handle();
         match timeout(DRAIN, copier).await {
-            Ok(Ok(u)) => *usage = u,
+            Ok(Ok(r)) => {
+                *result = r.map(|(mut u, session)| {
+                    u.resumed = resumed;
+                    (u, session)
+                })
+            }
             Ok(Err(e)) => tracing::warn!(run = %short(run_id), "reading the runtime's output: {e}"),
             Err(_) => {
                 tracing::info!(run = %short(run_id), "something the runtime started still holds its output; no longer reading it");
@@ -732,8 +769,8 @@ async fn supervise(
 
 /// The runtime's stdout into the run log as it comes, a line at a time: its result line
 /// (`usage::read_line`) as the text it stands for and a `# usage:` line, everything else as it
-/// is. Returns the usage the result line said, when there was one.
-async fn copy_stdout(out: tokio::process::ChildStdout, mut log: File) -> Option<Usage> {
+/// is. Returns the usage the result line said, when there was one, and the session it named.
+async fn copy_stdout(out: tokio::process::ChildStdout, mut log: File) -> Option<(Usage, Option<String>)> {
     use tokio::io::AsyncBufReadExt;
     let mut reader = tokio::io::BufReader::new(out);
     let mut line = Vec::new();
@@ -747,7 +784,7 @@ async fn copy_stdout(out: tokio::process::ChildStdout, mut log: File) -> Option<
         let written = match std::str::from_utf8(&line).ok().and_then(usage::read_line) {
             Some(r) => {
                 let w = writeln!(log, "{}\n# usage: {}", r.text.trim_end(), r.usage.line());
-                usage = Some(r.usage);
+                usage = Some((r.usage, r.session));
                 w
             }
             None => log.write_all(&line),
@@ -922,6 +959,7 @@ mod tests {
             fresh: true,
             read_only: false,
             pull_requests: true,
+            after: None,
         };
         let lead = prompt(
             "me/dev",
@@ -948,6 +986,23 @@ mod tests {
             &[],
         );
         assert!(plain.contains("fast-forwarding main, then move the task to done"));
+        /* A chain's next task (COPL-189) is told it is new, what came before, and that main moved. */
+        let chained = prompt(
+            "me/dev",
+            "COPL-9",
+            Brief::Work,
+            Some(&Workspace {
+                after: Some("COPL-8".into()),
+                ..ws.clone()
+            }),
+            &[],
+        );
+        assert!(
+            chained.contains("COPL-9 is a new task, which waited on COPL-8."),
+            "{chained}"
+        );
+        assert!(chained.contains("main has moved since COPL-8's work"), "{chained}");
+        assert!(!code.contains("waited on"));
         let p = prompt_for("me/dev", "COPL-9", Brief::Work);
         assert!(p.starts_with("You are @me/dev working on COPL-9."));
         let p = prompt_for("me/dev", "COPL-9", Brief::Mentioned);
@@ -1027,6 +1082,7 @@ mod tests {
             fresh: true,
             read_only: false,
             pull_requests: true,
+            after: None,
         };
         let lead = Workspace {
             read_only: true,
@@ -1062,6 +1118,7 @@ mod tests {
             fresh: true,
             read_only: false,
             pull_requests: true,
+            after: None,
         };
         for p in [
             prompt_for("me/dev", "COPL-9", Brief::Work),
@@ -1129,6 +1186,7 @@ mod tests {
             fresh: false,
             read_only: false,
             pull_requests: true,
+            after: None,
         }
     }
 
@@ -1268,6 +1326,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
+            resume_chains: false,
         };
         let api = Api::new(&agent.url).unwrap();
         let (_tx, shutdown) = watch::channel(false);
@@ -1286,6 +1345,7 @@ mod tests {
                 state_dir: &scratch,
                 runtime_dir: &scratch,
                 workspace: None,
+                resume: None,
                 last_word: Backoff::LAST_WORD,
             },
             shutdown,
@@ -1363,6 +1423,7 @@ mod tests {
                 runtime: crate::config::Runtime::ClaudeCode,
                 code_dir: "/tmp/copland-code".into(),
                 max_runs: 10,
+                resume_chains: false,
             };
             let api = Api::new(&url).unwrap();
             let (_tx, shutdown) = watch::channel(false);
@@ -1381,6 +1442,7 @@ mod tests {
                     state_dir: &scratch,
                     runtime_dir: &scratch,
                     workspace: Some(&ws),
+                    resume: None,
                     last_word: Backoff::LAST_WORD,
                 },
                 shutdown,
@@ -1422,6 +1484,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
+            resume_chains: false,
         };
         let api = Api::new(&agent.url).unwrap();
         let (_tx, shutdown) = watch::channel(false);
@@ -1440,6 +1503,7 @@ mod tests {
                 state_dir: &scratch,
                 runtime_dir: &scratch,
                 workspace: None,
+                resume: None,
                 last_word: Backoff::LAST_WORD,
             },
             shutdown,
@@ -1467,6 +1531,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
+            resume_chains: false,
         };
         let api = Api::new(&agent.url).unwrap();
         let (_tx, shutdown) = watch::channel(false);
@@ -1485,6 +1550,7 @@ mod tests {
                 state_dir: &scratch,
                 runtime_dir: &scratch,
                 workspace: None,
+                resume: None,
                 last_word: Backoff::LAST_WORD,
             },
             shutdown,
@@ -1499,6 +1565,106 @@ mod tests {
 
     /// A worker's coding run builds into the repo's shared build dir (COPL-187): it is made, named
     /// in `CARGO_TARGET_DIR` and writable inside the sandbox. Skipped where the sandbox doesn't work.
+    /// A chain's next task (COPL-189): with resume_chains, a worker's Claude Code run keeps its
+    /// session and resumes the one it is given, is told so, says so in its usage, and hands back
+    /// the session it ended in. Run through the sandbox with a `claude` that prints what it got.
+    #[tokio::test]
+    async fn a_chained_run_resumes_the_last_tasks_session() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target")
+            .join(format!("copland-chain-{}", std::process::id()));
+        let ws = Workspace {
+            after: Some("COPL-8".into()),
+            ..worktree(&root.join("work"))
+        };
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let claude = bin.join("claude");
+        fs::write(
+            &claude,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\necho '{\"type\":\"result\",\"result\":\"ok\",\"session_id\":\"s-2\",\"usage\":{\"input_tokens\":1}}'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let agent = AgentConfig {
+            url: "http://127.0.0.1:9".into(),
+            handle: "me/dev".into(),
+            token: Secret::new("cpl_x"),
+            command: vec!["false".into()],
+            workdir: std::env::temp_dir(),
+            client: "test".into(),
+            code_command: Some(
+                [claude.to_str().unwrap(), "-p", "{prompt}", "--no-session-persistence"]
+                    .map(String::from)
+                    .to_vec(),
+            ),
+            writable: Vec::new(),
+            runtime: crate::config::Runtime::ClaudeCode,
+            code_dir: root.join("code"),
+            max_runs: 10,
+            resume_chains: true,
+        };
+        if let Err(said) = sandbox::of(&agent).probe() {
+            eprintln!("the sandbox doesn't work here; skipping: {said}");
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        let api = Api::new(&agent.url).unwrap();
+        let scratch = root.join("state");
+        let run = |resume: Option<&'static str>| {
+            let (api, agent, ws, scratch) = (&api, &agent, &ws, &scratch);
+            async move {
+                let (_tx, shutdown) = watch::channel(false);
+                let ended = run_until(
+                    Launch {
+                        api,
+                        agent,
+                        handle: "me/dev",
+                        run_id: "00000000-0000-0000-0000-000000000004",
+                        secret: &Secret::new("cplr_x"),
+                        task_id: "t-1",
+                        task_key: "COPL-9",
+                        brief: Brief::Work,
+                        messages: &[],
+                        state_dir: scratch,
+                        runtime_dir: scratch,
+                        workspace: Some(ws),
+                        resume,
+                        last_word: Backoff {
+                            first: Duration::from_millis(1),
+                            most: Duration::from_millis(1),
+                            give_up: Duration::ZERO,
+                        },
+                    },
+                    shutdown,
+                    std::future::pending(),
+                    Limits::RUN,
+                )
+                .await;
+                let args = fs::read_to_string(ws.dir.join("args")).unwrap_or_default();
+                (ended, args)
+            }
+        };
+        let (resumed, args) = run(Some("s-1")).await;
+        let (cold, cold_args) = run(None).await;
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(resumed.exit, Exit::Code(0));
+        let args: Vec<&str> = args.lines().collect();
+        assert_eq!(args[..2], ["--resume", "s-1"]);
+        assert!(!args.contains(&"--no-session-persistence"), "{args:?}");
+        assert!(args[3].contains("is a new task, which waited on COPL-8"), "{}", args[3]);
+        assert!(args[3].contains("COPL-8's run, resumed"), "{}", args[3]);
+        assert!(resumed.usage.as_ref().is_some_and(|u| u.resumed));
+        assert_eq!(resumed.session.as_deref(), Some("s-2"));
+        /* Nothing to resume: the session is still kept, and the run is no resumed one. */
+        assert!(!cold_args.contains("--resume") && !cold_args.contains("--no-session-persistence"));
+        assert!(!cold_args.contains("resumed"));
+        assert!(cold.usage.as_ref().is_some_and(|u| !u.resumed));
+        assert_eq!(cold.session.as_deref(), Some("s-2"));
+    }
+
     #[tokio::test]
     async fn a_worker_builds_into_the_repos_shared_dir() {
         /* Not under /tmp: bubblewrap gives every run an empty /tmp of its own. */
@@ -1525,6 +1691,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: code_dir.clone(),
             max_runs: 10,
+            resume_chains: false,
         };
         if let Err(said) = sandbox::of(&agent).probe() {
             eprintln!("the sandbox doesn't work here; skipping: {said}");
@@ -1548,6 +1715,7 @@ mod tests {
                 state_dir: &scratch,
                 runtime_dir: &scratch,
                 workspace: Some(&ws),
+                resume: None,
                 /* Nothing answers at that url: give up on the last files report at once. */
                 last_word: Backoff {
                     first: Duration::from_millis(1),
@@ -1705,6 +1873,7 @@ mod tests {
             silent: true,
             usage: None,
             out_of_usage: None,
+            session: None,
         };
         assert_eq!(ended(Exit::Code(1)).reason(), "exit 1 after 3.8s");
         assert_eq!(ended(Exit::Signal(9)).reason(), "signal 9 after 3.8s");

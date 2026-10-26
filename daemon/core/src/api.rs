@@ -129,6 +129,11 @@ pub struct Task {
     /// Branches and PRs naming it, from a connected GitHub repo.
     #[serde(default)]
     pub code: Vec<CodeLink>,
+    /// The tasks it waits on, by id (COPL-189's chains).
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub assignee_ids: Vec<String>,
 }
 
 impl Task {
@@ -217,6 +222,18 @@ pub struct BoardTask {
     pub id: String,
     #[serde(default)]
     pub parent_id: Option<String>,
+    /// What a chain (COPL-189, `chain.rs`) reads: which task it is, whether it is closed, where
+    /// it stands, what it waits on and whose it is. An older server's tasks have them too.
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    #[serde(default)]
+    pub stage_id: Option<String>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub assignee_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -27,8 +27,8 @@ pub struct Usage {
     pub turns: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
-    /// The run resumed an earlier session. Never yet: every run starts fresh
-    /// (`--no-session-persistence`) until COPL-188's resume lands.
+    /// The run resumed an earlier session: a chain's next task, carrying on in the last one's
+    /// (`chain.rs`, COPL-189). The daemon sets it; the runtime's result doesn't say.
     pub resumed: bool,
 }
 
@@ -89,6 +89,8 @@ pub struct Result {
     /// without `--output-format json`, or why there is none.
     pub text: String,
     pub usage: Usage,
+    /// The session it ran in, which a chain's next task can resume (COPL-189).
+    pub session: Option<String>,
 }
 
 /// The result, when `line` is Claude Code's JSON one (`"type":"result"` with its usage); None for
@@ -148,6 +150,7 @@ pub fn read_line(line: &str) -> Option<Result> {
             duration_ms: v.get("duration_ms").and_then(Value::as_u64),
             resumed: false,
         },
+        session: v.get("session_id").and_then(Value::as_str).map(str::to_string),
     })
 }
 
@@ -162,6 +165,7 @@ mod tests {
     fn reads_claude_codes_result() {
         let r = read_line(CLAUDE).unwrap();
         assert_eq!(r.text, "ok");
+        assert_eq!(r.session.as_deref(), Some("7006f296"));
         assert_eq!(
             r.usage,
             Usage {

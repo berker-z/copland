@@ -24,7 +24,8 @@ use tokio::sync::{Notify, watch};
 use tokio::task::{Id, JoinError, JoinHandle, JoinSet};
 use tracing::Instrument;
 
-use crate::api::{Api, ApiError, Backoff, Ending, InboxItem, Me};
+use crate::api::{Api, ApiError, Backoff, BoardRepos, Ending, InboxItem, Me};
+use crate::chain;
 use crate::config::AgentConfig;
 use crate::guard::{Check, Identity, Message, Plan, Refused, Wake, WakeGuard, add_ready, plan, refused};
 use crate::limit::{self, OutOfUsage};
@@ -348,6 +349,7 @@ impl AgentLoop {
             shutdown: self.shutdown.clone(),
             stop_run: self.stop_run.clone(),
             last_word: self.last_word,
+            user_id: self.me.as_ref().map(|m| m.id.clone()),
         }
     }
 
@@ -650,9 +652,23 @@ impl AgentLoop {
             .map(|b| b.key)
             .collect();
         let running: Vec<&str> = self.inflight.values().map(|r| r.key.as_str()).collect();
+        let mut read: HashMap<String, Option<BoardRepos>> = HashMap::new();
         for (key, repo) in found {
             let lookup = match self.api.task(&self.agent.token, &key).await {
-                Ok(t) if t.completed_at.is_some() => Lookup::Closed,
+                Ok(t) if t.completed_at.is_some() => {
+                    /* A task waiting on it may carry on in it (COPL-189): kept until that one starts. */
+                    if !read.contains_key(&t.board_id) {
+                        let board = self.api.board_repos(&self.agent.token, &t.board_id).await.ok();
+                        read.insert(t.board_id.clone(), board);
+                    }
+                    match &read[&t.board_id] {
+                        Some(board) if chain::waited_on(&key, board, code_dir) => {
+                            tracing::debug!(task = %key, "closed, and a task waiting on it may carry on in its worktree; kept");
+                            Lookup::Open
+                        }
+                        _ => Lookup::Closed,
+                    }
+                }
                 Ok(_) => Lookup::Open,
                 Err(e) if e.status() == Some(404) => Lookup::NotFound,
                 Err(e) if e.is_refusal() => Lookup::Refused,
@@ -667,6 +683,7 @@ impl AgentLoop {
                 Ok(false) => {}
                 Err(e) => tracing::warn!(task = %key, "removing its worktree: {e:#}"),
             }
+            chain::forget_session(&self.paths.state_dir, &key);
         }
         Ok(())
     }
@@ -944,6 +961,13 @@ impl AgentLoop {
                 tracing::debug!(task = %wake.task_key, "a program its run needs is missing; not starting");
                 continue;
             }
+            /* A chain's next task waits for the last one's run to end, which may still be in its worktree. */
+            if let Some(after) = lookup.after(&self.agent, Some(me.id.as_str())) {
+                if self.inflight.values().any(|r| r.key.eq_ignore_ascii_case(&after)) {
+                    tracing::debug!(task = %wake.task_key, "carries on from {after}, whose run is still going; next time");
+                    continue;
+                }
+            }
             let workdir = lookup.role == Role::Workdir;
             if workdir && self.inflight.values().any(|r| r.workdir) {
                 tracing::debug!(task = %wake.task_key, "another run has the workdir; next time");
@@ -1072,6 +1096,19 @@ struct TaskInfo {
     role: Role,
     task: Option<crate::api::Task>,
     source: Option<crate::api::CodeSource>,
+    board: Option<BoardRepos>,
+}
+
+impl TaskInfo {
+    /// The task a worker's run would carry on from (COPL-189), with the agent's `resume_chains`.
+    fn after(&self, agent: &AgentConfig, me: Option<&str>) -> Option<String> {
+        let (Some(task), Some(board), Some(me)) = (&self.task, &self.board, me) else {
+            return None;
+        };
+        (agent.resume_chains && self.role == Role::Worker)
+            .then(|| chain::before(task, board, me).map(|t| t.key.clone()))
+            .flatten()
+    }
 }
 
 /// How a run ends, by how its runtime did. A runtime that never started is this machine's
@@ -1198,6 +1235,8 @@ struct RunCtx {
     shutdown: watch::Receiver<bool>,
     stop_run: watch::Receiver<StopRequest>,
     last_word: Backoff,
+    /// The agent's id, once the server has said: whose tasks a chain carries on from (COPL-189).
+    user_id: Option<String>,
 }
 
 impl RunCtx {
@@ -1317,6 +1356,7 @@ impl RunCtx {
             tracing::info!(run = %short, task = %key, dir = %ws.dir.display(), branch = %ws.branch, fresh = ws.fresh, "workspace ready");
             self.update(|s| s.run_worktree(&short, ws.dir.clone()));
         }
+        let resume = workspace.as_ref().and_then(|ws| self.resume(&short, &key, ws));
 
         /* The program the run starts, for the plain word on one that dies at once. */
         let runtime = runner::program(match (&workspace, &self.agent.code_command) {
@@ -1338,6 +1378,7 @@ impl RunCtx {
                 state_dir: &self.paths.state_dir,
                 runtime_dir: &self.paths.runtime_dir,
                 workspace: workspace.as_ref(),
+                resume: resume.as_deref(),
                 last_word: self.last_word,
             },
             self.shutdown.clone(),
@@ -1369,14 +1410,24 @@ impl RunCtx {
             /* The runtime finished it first (finish_run), and its word stands. */
             tracing::info!(run = %short, task = %key, "runtime {how}; run {status} (finished by the runtime)");
         }
-        /* A closed task's worktree has nothing left to do; its branch lives on in the remote. */
+        /* Its session, for a chain's next task (COPL-189). */
+        if let (Some(ws), Some(session)) = (&workspace, &ended.session) {
+            if self.agent.resume_chains && !ws.read_only {
+                if let Err(e) = chain::save_session(&self.paths.state_dir, &key, &run_id, session) {
+                    tracing::warn!(run = %short, task = %key, "keeping its session: {e:#}");
+                }
+            }
+        }
+        /* A closed task's worktree has nothing left to do, unless a task waiting on it will carry on
+        in it (COPL-189); its branch lives on in the remote. */
         if let Some(ws) = &workspace {
             if let Ok(t) = self.api.task(&self.agent.token, &wake.task_id).await {
-                if t.completed_at.is_some() {
+                if t.completed_at.is_some() && !self.kept_for_chain(&t).await {
                     match workspace::remove(&self.agent.code_dir, &ws.repo, &ws.key).await {
                         Ok(_) => tracing::info!(task = %key, "task closed; its worktree is removed"),
                         Err(e) => tracing::warn!(task = %key, "removing its worktree: {e:#}"),
                     }
+                    chain::forget_session(&self.paths.state_dir, &key);
                 }
             }
         }
@@ -1396,6 +1447,58 @@ impl RunCtx {
         Done {
             runtime,
             ..Done::ran(wake, updated, false)
+        }
+    }
+
+    /// The session a chain's next task resumes (COPL-189): the one the run on the task before it
+    /// kept, carried to where the worktree is now, for a Claude Code `code_command` with
+    /// `resume_chains`. Taken from that task, whose worktree this is now. None, to start cold, when
+    /// there is none or it can't be carried.
+    fn resume(&self, run: &str, key: &str, ws: &Workspace) -> Option<String> {
+        let after = ws.after.as_deref()?;
+        let code = self.agent.code_command.as_deref()?;
+        let kept = chain::load_session(&self.paths.state_dir, after);
+        chain::forget_session(&self.paths.state_dir, after);
+        if !self.agent.resume_chains || !chain::resumable(code) {
+            return None;
+        }
+        let Some(kept) = kept else {
+            tracing::info!(run = %run, task = %key, "carries on in {after}'s worktree; no session of it kept, so starting cold");
+            return None;
+        };
+        let carried = chain::claude_dir()
+            .ok_or_else(|| anyhow!("no HOME or CLAUDE_CONFIG_DIR"))
+            .and_then(|claude| chain::carry_session(&claude, &kept.session, &ws.dir));
+        match carried {
+            Ok(()) => {
+                tracing::info!(run = %run, task = %key, session = %kept.session, "resuming {after}'s session (its run {})", runner::short(&kept.run));
+                Some(kept.session)
+            }
+            Err(e) => {
+                tracing::warn!(run = %run, task = %key, "resuming {after}'s session: {e:#}; starting cold");
+                None
+            }
+        }
+    }
+
+    /// Whether a closed task's worktree stays for a task waiting on it (`chain::waited_on`). Only
+    /// with `resume_chains`: this agent's own run on it is ending, and it would carry on in it.
+    async fn kept_for_chain(&self, task: &crate::api::Task) -> bool {
+        if !self.agent.resume_chains {
+            return false;
+        }
+        match self.api.board_repos(&self.agent.token, &task.board_id).await {
+            Ok(board) => {
+                let kept = chain::waited_on(&task.key, &board, &self.agent.code_dir);
+                if kept {
+                    tracing::info!(task = %task.key, "task closed; its worktree stays for the task waiting on it");
+                }
+                kept
+            }
+            Err(e) => {
+                tracing::warn!(task = %task.key, "reading its board for a task waiting on it: {e}");
+                false
+            }
         }
     }
 
@@ -1491,6 +1594,7 @@ impl RunCtx {
                 state_dir: &self.paths.state_dir,
                 runtime_dir: &self.paths.runtime_dir,
                 workspace: None,
+                resume: None,
                 last_word: self.last_word,
             },
             self.shutdown.clone(),
@@ -1533,6 +1637,7 @@ impl RunCtx {
                 role: Role::Workdir,
                 task: None,
                 source: None,
+                board: None,
             });
         }
         let task = self
@@ -1555,18 +1660,33 @@ impl RunCtx {
             role,
             task: Some(task),
             source,
+            board: Some(board),
         })
     }
 
     /// Where the run works: a worker's worktree, a lead's read-only view of the repo, or none
     /// (the agent's `workdir`).
     async fn workspace(&self, task_id: &str, key: &str) -> Result<Option<Workspace>> {
-        let TaskInfo { role, task, source } = self.lookup(task_id, key).await?;
+        let info = self.lookup(task_id, key).await?;
+        let after = info.after(&self.agent, self.user_id.as_deref());
+        let TaskInfo { role, task, source, .. } = info;
         let (Some(task), Some(src)) = (task, source) else {
             return Ok(None);
         };
         let dir = &self.agent.code_dir;
+        /* A chain's next task carries on in the last one's worktree, when it is there (COPL-189). */
+        let carried = match &after {
+            Some(after) => match workspace::continue_from(dir, &src.remote, &src.dir, key, &task.title, after).await {
+                Ok(ws) => ws,
+                Err(e) => {
+                    tracing::warn!(task = %key, "carrying on in {after}'s worktree: {e:#}; starting a new one");
+                    None
+                }
+            },
+            None => None,
+        };
         let ws = match role {
+            Role::Worker if carried.is_some() => carried.expect("carried"),
             Role::Worker => workspace::realize(dir, &src.remote, &src.dir, key, &task.title).await?,
             Role::Lead => workspace::view(dir, &src.remote, &src.dir, key).await?,
             Role::Workdir | Role::Skip => return Ok(None),
@@ -1732,6 +1852,7 @@ mod tests {
             runtime: crate::config::Runtime::detect(&argv(code.unwrap_or(command))),
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
+            resume_chains: false,
         }
     }
 
