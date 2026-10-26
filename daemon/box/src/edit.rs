@@ -183,8 +183,10 @@ fn is_untested_note(line: &str) -> bool {
     l.starts_with(setup::UNTESTED_START) && l.contains(" template hasn't been run against Copland yet")
 }
 
-/// The agent's `client` and `command` replaced by `runtime`'s, where they were; the rest of
-/// its table as it was.
+/// The agent's binding (`client`, `command`, `code_command`, `writable`, `runtime`) replaced by
+/// `runtime`'s, written where its `command` was, so no other runtime's `code_command` is left
+/// behind (COPL-160). A table without a `code_command` (an older setup's) gets one. The rest of
+/// its table stays as it was.
 pub fn set_runtime(text: &str, url: &str, handle: &str, runtime: Runtime) -> Result<String> {
     let block = find(text, url, handle)?;
     let body = &text[block.range.clone()];
@@ -196,7 +198,7 @@ pub fn set_runtime(text: &str, url: &str, handle: &str, runtime: Runtime) -> Res
     for (n, s) in stmts.iter().enumerate() {
         let piece = &body[s.range.clone()];
         match &s.kind {
-            Kind::Key(k) if k == "client" => {}
+            Kind::Key(k) if k != "command" && setup::BINDING_KEYS.contains(&k.as_str()) => {}
             Kind::Other if is_untested_note(piece) => {}
             Kind::Key(k) if k == "command" && n == at => {
                 let mut binding = render_binding(runtime);
@@ -417,7 +419,12 @@ mod tests {
         let c = parse(&codex);
         assert_eq!(c.agents[0].command, Runtime::Codex.command());
         assert_eq!(c.agents[0].client, "Codex");
+        /* The coding template goes with it: no Claude code_command is left on a Codex agent. */
+        assert_eq!(c.agents[0].code_command, Some(Runtime::Codex.code_command()));
+        assert_eq!(c.agents[0].runtime, Runtime::Codex.kind());
+        assert_eq!(c.agents[0].writable.len(), Runtime::Codex.writable().len());
         assert_eq!(c.agents[1].command, parse(&text).agents[1].command);
+        assert_eq!(c.agents[1].code_command, Some(Runtime::ClaudeCode.code_command()));
         assert!(
             !codex.contains("hasn't been run"),
             "every template has been run (COPL-143)"
@@ -438,6 +445,49 @@ mod tests {
         let back = set_runtime(&old, "http://localhost:5173", "me/dev", Runtime::ClaudeCode).unwrap();
         assert_eq!(back, text);
         assert!(set_runtime(&text, "http://localhost:5173", "me/nobody", Runtime::Codex).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A runtime switch replaces the whole binding (COPL-160): a `code_command`, `writable` and
+    /// `runtime` written anywhere in the table go, and the new runtime's come in their place. A
+    /// table an older setup wrote, with `command` alone, gets them.
+    #[test]
+    fn a_runtime_switch_replaces_the_coding_template_too() {
+        let dir = scratch("coding");
+        let head = format!(
+            "[[agent]]\nurl = \"http://x\"\nhandle = \"me/dev\"\ntoken = \"cpl_a\"\nworkdir = \"{}\"\n",
+            dir.display()
+        );
+        let old = format!(
+            "{head}command = [\"claude\", \"-p\", \"{{prompt}}\"]\nmax_runs = 3\n\
+             code_command = [\n  \"claude\",\n  \"{{prompt}}\",\n]\nwritable = [\"~/.claude\"]\nruntime = \"claude-code\"\n"
+        );
+        let out = set_runtime(&old, "http://x", "me/dev", Runtime::Codex).unwrap();
+        let c = parse(&out);
+        assert_eq!(c.agents[0].command, Runtime::Codex.command());
+        assert_eq!(c.agents[0].code_command, Some(Runtime::Codex.code_command()));
+        assert_eq!(c.agents[0].runtime, Runtime::Codex.kind());
+        assert_eq!(c.agents[0].max_runs, 3);
+        for key in setup::BINDING_KEYS {
+            assert_eq!(out.matches(&format!("\n{key} = ")).count(), 1, "{key} in {out}");
+        }
+        assert!(!out.contains("~/.claude\""), "{out}");
+
+        /* Narrow only, as setup wrote before COPL-160: the same runtime again adds the coding one. */
+        let narrow = format!(
+            "{head}{}",
+            render_binding(Runtime::ClaudeCode)
+                .split("code_command")
+                .next()
+                .unwrap()
+        );
+        assert!(parse(&narrow).agents[0].code_command.is_none());
+        let out = set_runtime(&narrow, "http://x", "me/dev", Runtime::ClaudeCode).unwrap();
+        assert_eq!(out, format!("{head}{}", render_binding(Runtime::ClaudeCode)));
+        assert_eq!(
+            parse(&out).agents[0].code_command,
+            Some(Runtime::ClaudeCode.code_command())
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -1,8 +1,12 @@
 //! The runtimes setup knows how to launch, and how each one is given the
-//! prompt and the run's MCP connection: one adapter per runtime, as an argv
-//! template for `daemon.toml`. The daemon itself knows nothing of these; it
-//! fills `{prompt}` and `{mcp_config}` (a Claude Code-shaped MCP JSON file
-//! holding the run's URL and secret) into whatever `command` says.
+//! prompt and the run's MCP connection: one adapter per runtime, as argv
+//! templates for `daemon.toml`. Each has two: `command`, for a run with
+//! nothing to code, which runs outside any sandbox and so gets Copland's MCP
+//! tools alone; and `code_command`, for a task on a board with a repo, which
+//! runs in the task's worktree inside the daemon's sandbox with the runtime's
+//! own tools (COPL-160). The daemon itself knows nothing of these; it fills
+//! `{prompt}` and `{mcp_config}` (a Claude Code-shaped MCP JSON file holding
+//! the run's URL and secret) into whatever the command says.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -18,7 +22,8 @@ pub enum Runtime {
     Codex,
 }
 
-/// The tools the agents may use: Copland's MCP and nothing else. Kept narrow on purpose.
+/// The tools a `command` run may use: Copland's MCP and nothing else. Kept narrow on purpose,
+/// since that run has no sandbox around it.
 const COPLAND_TOOLS: [&str; 14] = [
     "guide",
     "whoami",
@@ -36,16 +41,27 @@ const COPLAND_TOOLS: [&str; 14] = [
     "create_task",
 ];
 
-/// Claude Code's settings for a run (COPL-139): the heartbeat hook, so the run stays alive between
-/// Copland calls and, given the hook's event, hears comments on its task at its next step. The same
-/// hooks as Copland's own `.claude/settings.json`, which a test holds it to, so a run in that repo
-/// gets them once.
-const CLAUDE_SETTINGS: &str = concat!(
-    r#"{"hooks":{"PostToolUse":[{"matcher":"^(?!mcp__copland__)","hooks":[{"type":"mcp_tool","server":"copland","#,
-    r#""tool":"heartbeat","input":{"event":"${hook_event_name}"},"timeout":10}]}],"#,
-    r#""UserPromptSubmit":[{"hooks":[{"type":"mcp_tool","server":"copland","tool":"heartbeat","#,
-    r#""input":{"event":"${hook_event_name}"},"timeout":10}]}]}}"#,
-);
+/// The heartbeat hook (COPL-139), so a run stays alive between Copland calls and, given the hook's
+/// event, hears comments on its task at its next step. Every Claude Code template carries it.
+macro_rules! claude_hooks {
+    () => {
+        concat!(
+            r#"{"PostToolUse":[{"matcher":"^(?!mcp__copland__)","hooks":[{"type":"mcp_tool","server":"copland","#,
+            r#""tool":"heartbeat","input":{"event":"${hook_event_name}"},"timeout":10}]}],"#,
+            r#""UserPromptSubmit":[{"hooks":[{"type":"mcp_tool","server":"copland","tool":"heartbeat","#,
+            r#""input":{"event":"${hook_event_name}"},"timeout":10}]}]}"#,
+        )
+    };
+}
+
+/// Claude Code's settings for a run with nothing to code: the hooks alone. The same hooks as
+/// Copland's own `.claude/settings.json`, which a test holds it to, so a run in that repo gets
+/// them once.
+const CLAUDE_SETTINGS: &str = concat!(r#"{"hooks":"#, claude_hooks!(), "}");
+
+/// Claude Code's settings for a coding run (COPL-160): Claude's own sandbox off, since it would
+/// run inside the daemon's, where its push fails and the retry outside it asks; and the same hooks.
+const CLAUDE_CODE_SETTINGS: &str = concat!(r#"{"sandbox":{"enabled":false},"hooks":"#, claude_hooks!(), "}");
 
 /// Codex can't read the MCP JSON file, so a shell takes the run's secret out of it into an
 /// environment variable Codex reads as the bearer token, kept from Codex's own shell commands;
@@ -95,7 +111,8 @@ impl Runtime {
         }
     }
 
-    /// The argv for daemon.toml: the prompt as the task, Copland's MCP as the only tools.
+    /// The argv for daemon.toml's `command`, for a run with nothing to code (messages, a board
+    /// without a repo): the prompt as the task, Copland's MCP as the only tools.
     pub fn command(self) -> Vec<String> {
         let s = |v: &str| v.to_string();
         match self {
@@ -134,6 +151,60 @@ impl Runtime {
                 s(PROMPT),
                 s(MCP_CONFIG),
             ],
+        }
+    }
+
+    /// The argv for a task on a board with a repo (`code_command` in daemon.toml, COPL-160): run in
+    /// the task's own worktree inside the daemon's sandbox, which is what limits it, so it gets
+    /// the runtime's own tools and asks nothing.
+    pub fn code_command(self) -> Vec<String> {
+        match self {
+            /* As in daemon/README.md's Coding tasks: no prompts, none of your keyboard settings. */
+            Runtime::ClaudeCode => [
+                "claude",
+                "-p",
+                PROMPT,
+                "--mcp-config",
+                MCP_CONFIG,
+                "--strict-mcp-config",
+                "--permission-mode",
+                "bypassPermissions",
+                "--no-session-persistence",
+                "--setting-sources",
+                "project",
+                "--settings",
+                CLAUDE_CODE_SETTINGS,
+            ]
+            .map(String::from)
+            .into(),
+            /* The same wrapper: the daemon's Codex backend appends its write profile after it,
+            through "$@", in place of the read-only one (COPL-143). */
+            Runtime::Codex => self.command(),
+        }
+    }
+
+    /// What a coding run may write besides its worktree (`writable`): the runtime's own state
+    /// when the sandbox holds the runtime itself, and the caches builds use.
+    pub fn writable(self) -> &'static [&'static str] {
+        match self {
+            Runtime::ClaudeCode => &[
+                "~/.claude",
+                "~/.claude.json",
+                "~/.cache",
+                "~/.npm",
+                "~/.cargo/registry",
+                "~/.config/.wrangler",
+            ],
+            /* Codex sandboxes the commands it runs, not itself, so ~/.codex needs no place here. */
+            Runtime::Codex => &["~/.cache", "~/.npm", "~/.cargo/registry", "~/.config/.wrangler"],
+        }
+    }
+
+    /// The daemon's name for it (`runtime` in daemon.toml), which picks the sandbox.
+    pub fn kind(self) -> copland_daemon_core::config::Runtime {
+        match self {
+            Runtime::ClaudeCode => copland_daemon_core::config::Runtime::ClaudeCode,
+            Runtime::Codex => copland_daemon_core::config::Runtime::Codex,
         }
     }
 }
@@ -236,9 +307,10 @@ mod tests {
     #[test]
     fn each_template_takes_the_prompt_and_the_mcp_config() {
         for r in Runtime::ALL {
-            let c = r.command();
-            assert!(c.iter().any(|a| a == PROMPT), "{r:?}");
-            assert!(c.iter().any(|a| a == MCP_CONFIG), "{r:?}");
+            for c in [r.command(), r.code_command()] {
+                assert!(c.iter().any(|a| a == PROMPT), "{r:?}");
+                assert!(c.iter().any(|a| a == MCP_CONFIG), "{r:?}");
+            }
         }
         let claude = Runtime::ClaudeCode.command();
         assert_eq!(
@@ -255,11 +327,9 @@ mod tests {
     fn the_daemon_knows_each_template_for_its_runtime() {
         use copland_daemon_core::config::Runtime as Kind;
         for r in Runtime::ALL {
-            let kind = match r {
-                Runtime::ClaudeCode => Kind::ClaudeCode,
-                Runtime::Codex => Kind::Codex,
-            };
-            assert_eq!(Kind::detect(&r.command()), kind, "{r:?}");
+            assert_eq!(Kind::detect(&r.command()), r.kind(), "{r:?}");
+            assert_eq!(Kind::detect(&r.code_command()), r.kind(), "{r:?}");
+            assert_eq!(Kind::named(r.kind().name()), r.kind(), "{r:?}");
         }
     }
 
@@ -275,6 +345,35 @@ mod tests {
         let bare = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
         assert_eq!(bare(&repo), CLAUDE_SETTINGS);
         assert!(CLAUDE_SETTINGS.contains(r#""input":{"event":"${hook_event_name}"}"#));
+        /* A coding run's settings are the same hooks, with Claude's own sandbox off. */
+        let code = Runtime::ClaudeCode.code_command();
+        let at = code.iter().position(|a| a == "--settings").unwrap();
+        assert_eq!(code[at + 1], CLAUDE_CODE_SETTINGS);
+        assert_eq!(
+            CLAUDE_CODE_SETTINGS,
+            format!(r#"{{"sandbox":{{"enabled":false}},{}"#, &bare(&repo)[1..])
+        );
+    }
+
+    /// A coding run is limited by the daemon's sandbox, not by its tools (COPL-160): Claude Code
+    /// gets its own, asks nothing, and reads only the repo's checked-in settings.
+    #[test]
+    fn the_claude_coding_template_works_inside_the_sandbox() {
+        let code = Runtime::ClaudeCode.code_command();
+        let after = |flag: &str| code.iter().position(|a| a == flag).map(|i| code[i + 1].as_str());
+        assert_eq!(after("--permission-mode"), Some("bypassPermissions"));
+        assert_eq!(after("--setting-sources"), Some("project"));
+        assert_eq!(after("--mcp-config"), Some(MCP_CONFIG));
+        assert!(code.iter().any(|a| a == "--strict-mcp-config"));
+        assert!(
+            !code.iter().any(|a| a == "--tools" || a == "--allowedTools"),
+            "{code:?}"
+        );
+        /* The run's own state and the caches its builds use are writable. */
+        for w in ["~/.claude", "~/.claude.json", "~/.cache", "~/.npm", "~/.cargo/registry"] {
+            assert!(Runtime::ClaudeCode.writable().contains(&w), "{w}");
+        }
+        assert!(!Runtime::Codex.writable().iter().any(|w| w.starts_with("~/.codex")));
     }
 
     #[test]
@@ -306,7 +405,7 @@ mod tests {
     #[test]
     fn the_codex_template_hands_the_daemons_sandbox_on_to_codex() {
         use copland_daemon_core::sandbox::{Backend, Codex, Writable, codex_forbidden};
-        let template = Runtime::Codex.command();
+        let template = Runtime::Codex.code_command();
         assert_eq!(
             codex_forbidden(&template),
             None,

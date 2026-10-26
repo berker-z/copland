@@ -5,8 +5,10 @@
 //!
 //! An agent is the same agent across the two when its instance and handle
 //! (as configured, case aside) are. Anything else about it differing (its
-//! command, workdir, client, token) is a rebind; so is every agent, when the
-//! poll interval changed.
+//! command or code_command, writable, runtime, workdir, client, token, max
+//! runs) is a rebind; so is every agent, when the poll interval or code_dir
+//! changed. A runtime switch on the agents screen changes the first four
+//! together.
 
 use crate::config::AgentConfig;
 

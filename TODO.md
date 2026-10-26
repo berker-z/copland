@@ -271,7 +271,7 @@ docs/DESIGN.md under Touch.
   (`runs.heard_until`, migration 0031). The MCP's `heartbeat`, given the
   Claude Code hook's event, returns them as the hook's
   `additionalContext`, so they arrive at the run's next step; the box's
-  setup puts that hook in the Claude Code command. The guide has every run
+  setup puts that hook in both Claude Code commands. The guide has every run
   read the task again before it integrates or moves it to done, and the
   task modal tells a commenter when the run will see the comment
   (checks/runNews.check.ts)
