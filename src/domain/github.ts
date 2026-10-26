@@ -140,8 +140,12 @@ export interface Drift {
 
 export type DriftState = "clean" | "behind" | "recheck" | "revalidated";
 
-/** How many overlapping files make the task review first: a person merges it, not its author. */
-export const DRIFT_REVIEW = 3;
+/**
+ * How many overlapping files make drift heavy: Copland then tells the task's
+ * assignees in its thread (driftNotice). It never changes who merges: only a
+ * person sets review first (COPL-192, COPL-194).
+ */
+export const DRIFT_HEAVY = 3;
 
 export function overlapOf(mainFiles: string[], taskFiles: string[]): string[] {
   const main = new Set(mainFiles);
@@ -183,6 +187,24 @@ export function driftStatus(d: Drift): { state: "success" | "pending"; descripti
         description: `main changed ${plural(d.overlap.length, "file")} this PR changes since it started: re-check, then revalidate`,
       };
   }
+}
+
+/**
+ * The comment Copland posts on a PR's task when main has changed DRIFT_HEAVY
+ * or more of its files and that hasn't been re-checked, or null for none.
+ * `before` is the drift as last measured: it is said once per overlap, and
+ * again only when main changes another of the PR's files, so a push or main
+ * moving elsewhere doesn't repeat it.
+ */
+export function driftNotice(before: Pick<Drift, "overlap"> | null, now: Drift): string | null {
+  if (now.overlap.length < DRIFT_HEAVY || now.revalidated) return null;
+  const known = new Set(before && before.overlap.length >= DRIFT_HEAVY ? before.overlap : []);
+  if (now.overlap.every((f) => known.has(f))) return null;
+  const files = now.overlap.map((f) => `- \`${f}\``).join("\n");
+  return (
+    `Copland (drift): main changed ${plural(now.overlap.length, "file")} this PR changes since its base \`${short(now.base)}\`, now at \`${short(now.main)}\`:\n\n${files}\n\n` +
+    "Re-check before merging: bring main in, read what changed in these files, rerun the checks, then revalidate. This changes nothing about who merges."
+  );
 }
 
 /* ------------------------------------------------------- plain git ---- */
