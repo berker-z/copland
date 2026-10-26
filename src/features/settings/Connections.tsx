@@ -6,7 +6,9 @@
    connect each kind of client. Tokens is what is connected for one
    principal, with when each was last used. Whatever connects acts as that
    principal with exactly its board roles (worker/tokens.ts), and a task's
-   history names it ("via Claude Code").
+   history names it ("via Claude Code"). Settings › access also lists the
+   apps connected as your agents, since a chat client's consent page is
+   where one gets connected as an agent: each app there says who it acts as.
 
    Three ways in, easiest first:
      claude.ai / Claude desktop   OAuth: paste the URL, sign in, allow
@@ -69,7 +71,18 @@ const EXPIRY: { value: string; label: string; days: number | null }[] = [
   { value: "never", label: "no expiry", days: null },
 ];
 
-function TokenRow({ token, onRevoke, pending }: { token: ApiToken; onRevoke: () => void; pending: boolean }) {
+function TokenRow({
+  token,
+  onRevoke,
+  pending,
+  showWho,
+}: {
+  token: ApiToken;
+  onRevoke: () => void;
+  pending: boolean;
+  /** Say who it acts as: settings › access, where your apps and your agents' are side by side. */
+  showWho: boolean;
+}) {
   const [confirming, setConfirming] = useState(false);
   const client = token.client ? clientLabel(token.client) : null;
   return (
@@ -80,11 +93,25 @@ function TokenRow({ token, onRevoke, pending }: { token: ApiToken; onRevoke: () 
           {client && client !== token.name && <span className="text-muted"> · {client}</span>}
         </span>
         <span className="block text-xs text-muted">
+          {showWho && (
+            <>
+              {token.as ? (
+                <>
+                  as <span className="text-ink">@{token.as}</span>
+                </>
+              ) : (
+                "as you"
+              )}
+              {" · "}
+            </>
+          )}
           <span className={token.scope === "read" ? "text-blue" : "text-yellow"}>
             {token.scope === "read" ? "read only" : "read + write"}
           </span>
           {" · "}
-          {token.lastUsedAt ? `used ${token.lastUsedAt.slice(0, 10)}` : "never used"}
+          <span className="whitespace-nowrap">
+            {token.lastUsedAt ? `used ${token.lastUsedAt.slice(0, 10)}` : "never used"}
+          </span>
           {token.kind === "personal" && ` · ${token.expiresAt ? `until ${token.expiresAt.slice(0, 10)}` : "no expiry"}`}
         </span>
       </span>
@@ -112,6 +139,11 @@ export function Tokens({ tokens, isPending, agentId }: { tokens: ApiToken[] | un
   const [expiry, setExpiry] = useState("never");
   const [created, setCreated] = useState<CreatedToken | null>(null);
   const changed = () => void queryClient.invalidateQueries({ queryKey: agentId ? KEYS.agents : KEYS.tokens });
+  /* An agent's app is on its page and on settings › access: a revoke from either refetches both. */
+  const revoked = () => {
+    void queryClient.invalidateQueries({ queryKey: KEYS.agents });
+    void queryClient.invalidateQueries({ queryKey: KEYS.tokens });
+  };
 
   const create = useMutation({
     mutationFn: () =>
@@ -132,14 +164,20 @@ export function Tokens({ tokens, isPending, agentId }: { tokens: ApiToken[] | un
      refetched from the server, and a failure says so. */
   const revoke = useMutation({
     mutationFn: (id: string) => send<ApiToken[]>("DELETE", `/tokens/${id}`),
-    onSuccess: changed,
+    onSuccess: revoked,
   });
 
   const apps = (tokens ?? []).filter((t) => t.kind === "oauth");
   const personal = (tokens ?? []).filter((t) => t.kind === "personal");
   const rows = (list: ApiToken[]) =>
     list.map((t) => (
-      <TokenRow key={t.id} token={t} pending={revoke.isPending} onRevoke={() => revoke.mutate(t.id)} />
+      <TokenRow
+        key={t.id}
+        token={t}
+        pending={revoke.isPending}
+        onRevoke={() => revoke.mutate(t.id)}
+        showWho={!agentId && t.kind === "oauth"}
+      />
     ));
 
   return (
@@ -149,7 +187,7 @@ export function Tokens({ tokens, isPending, agentId }: { tokens: ApiToken[] | un
         {isPending ? (
           <p className="text-xs text-muted animate-pulse">loading…</p>
         ) : apps.length === 0 ? (
-          <p className="text-xs text-faint">None. An app appears here once it is connected{agentId ? " as this agent" : ""}.</p>
+          <p className="text-xs text-faint">None. An app appears here once it is connected{agentId ? " as this agent" : ", as you or as one of your agents"}.</p>
         ) : (
           <ul className="text-sm">{rows(apps)}</ul>
         )}
@@ -240,10 +278,11 @@ export function AccessSection() {
       title="access"
       hint={
         <>
-          Use copland from Claude, another AI assistant or a script, as you: “what's due this week?”, “move LNCH-4 to
-          done”. Whatever connects here has your role on each board and nothing more, and its changes show in a task's
-          history as “via Claude”. The consent page also offers your agents: pick one there, or make one, to give an
-          assistant its own name and narrower access instead.
+          Use copland from Claude, another AI assistant or a script: “what's due this week?”, “move LNCH-4 to done”.
+          Whatever connects as you has your role on each board and nothing more, and its changes show in a task's history
+          as “via Claude”. The consent page also offers your agents: pick one there, or make one, to give an assistant
+          its own name and narrower access instead. Connected apps below say who each acts as; an agent's own tokens are
+          on its page.
         </>
       }
     >
