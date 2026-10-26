@@ -59,6 +59,26 @@ pub fn hostname() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// This machine's name as Copland keeps a host's (COPL-179): what `hostname` reads, as `host_name`
+/// takes it, or None when there is none to give (a run and the live socket then name no host).
+pub fn host() -> Option<String> {
+    host_name(&hostname())
+}
+
+/// A hostname as `parseHostname` in `src/domain/hosts.ts` keeps it: trimmed and lowercased, 1 to
+/// 253 of letters, digits, `.`, `-` and `_`, starting with a letter or digit. None when it can't
+/// be one, or is the "unknown" `hostname` gives when it finds none.
+pub fn host_name(name: &str) -> Option<String> {
+    let name = name.trim().to_ascii_lowercase();
+    let ok = name != "unknown"
+        && (1..=253).contains(&name.len())
+        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    ok.then_some(name)
+}
+
 /// "owner/name" → "name", made safe for a file or directory name.
 pub fn agent_name(handle: &str) -> String {
     let name = handle.trim_start_matches('@').rsplit('/').next().unwrap_or(handle);
@@ -341,6 +361,15 @@ mod tests {
 
     const CLIENT: &str = "copland-box";
     use crate::config::Secret;
+
+    #[test]
+    fn a_host_is_named_as_copland_keeps_it() {
+        assert_eq!(host_name(" Laptop.local\n").as_deref(), Some("laptop.local"));
+        assert_eq!(host_name("build_box-2").as_deref(), Some("build_box-2"));
+        for bad in ["", "unknown", "-lead", "my laptop", "café", &"a".repeat(254)] {
+            assert_eq!(host_name(bad), None, "{bad:?}");
+        }
+    }
 
     #[test]
     fn normalizes_addresses() {
