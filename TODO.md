@@ -592,6 +592,16 @@ docs/DESIGN.md under Touch.
   fixes. Refuses without a terminal. `copland-daemon --check --fix` too
   (`daemon/cli/src/setup.rs`). Run end to end against a stub device
   server; not yet against a real Copland.
+- Server mode (COPL-180): `copland-daemon --install-service [--config]`
+  writes a systemd user unit (Linux) or launchd agent (macOS) for the
+  running binary, its config and your PATH, then enables and starts it,
+  noting `loginctl enable-linger` when lingering is off;
+  `--uninstall-service` removes it. Refuses without a config, pointing at
+  `--setup`. The Linux tarball and the Nix package ship the unit, the macOS
+  tarball the plist as a template (`daemon/cli/src/service.rs`, tested
+  against `daemon/release/`). A config written by `copland-daemon --setup`
+  no longer points at the box's agents screen. The systemd side checked
+  with systemd-analyze; launchd not yet tried on a Mac.
 - Waiting work starts when what it waits on closes (COPL-164): a write
   that closes or deletes the last open task a todo task depends on puts an
   `unblocked` item in each of its assignees' inboxes (migration 0035,
