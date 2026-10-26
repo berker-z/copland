@@ -49,7 +49,7 @@ import {
   type TaskWrite,
   type Viewer,
 } from "@/domain/types";
-import { personOf, requireBoard } from "../access";
+import { personOf, requireBoard, requirePerson } from "../access";
 import type { Env } from "../env";
 import { badRequest, forbidden, HttpError, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
@@ -340,7 +340,7 @@ export async function postTask(
   }
   if (body.level !== undefined) level = parseLevel(body.level);
 
-  const reviewFirst = body.reviewFirst === undefined ? false : parseFlag(body.reviewFirst, "reviewFirst");
+  const reviewFirst = body.reviewFirst === undefined ? false : parseReviewFirst(viewer, body.reviewFirst);
 
   const rank = typeof body.rank === "number" && Number.isFinite(body.rank) ? body.rank : await bottomRank(db, stage.id);
   const id = crypto.randomUUID();
@@ -455,6 +455,16 @@ export async function getTask(env: Env, viewer: Viewer, ref: string): Promise<Re
   return json((progress ? { ...task, progress } : task) satisfies TaskRead);
 }
 
+/**
+ * Review first is a person's call (COPL-192): an agent never sets it, nor
+ * clears it, so a person's choice stands. Refused whatever the value, before
+ * anything is written; the rest of the call works with it left out.
+ */
+function parseReviewFirst(viewer: Viewer, value: unknown): boolean {
+  requirePerson(viewer, "set reviewFirst (review_first): only a person decides a task waits for review. Leave it out");
+  return parseFlag(value, "reviewFirst");
+}
+
 /** PATCH /api/tasks/:id: any subset of the fields POST takes. */
 export async function patchTask(
   request: Request,
@@ -486,7 +496,7 @@ export async function patchTask(
   if (body.title !== undefined) set("title", "title", parseTitle(body.title));
   if (body.brief !== undefined) set("brief", "brief", parseBrief(body.brief));
   if (body.priority !== undefined) set("priority", "priority", parsePriority(body.priority));
-  if (body.reviewFirst !== undefined) set("review_first", "reviewFirst", parseFlag(body.reviewFirst, "reviewFirst"));
+  if (body.reviewFirst !== undefined) set("review_first", "reviewFirst", parseReviewFirst(viewer, body.reviewFirst));
 
   const startDate = body.startDate === undefined ? task.startDate : parseDate(body.startDate, "startDate");
   const dueDate = body.dueDate === undefined ? task.dueDate : parseDate(body.dueDate, "dueDate");
