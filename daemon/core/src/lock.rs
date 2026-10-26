@@ -139,6 +139,12 @@ impl Lock {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Where this config's daemon serves its status (COPL-184): next to the lock, the same name
+    /// with `.sock`. Whoever holds the lock owns it, so a socket already there is a dead daemon's.
+    pub fn socket(&self) -> PathBuf {
+        self.path.with_extension("sock")
+    }
 }
 
 /// Whether a daemon is running this config, and who, without taking its lock. It tests with a
@@ -175,6 +181,8 @@ mod tests {
         fs::write(&config, "").unwrap();
         let first = Lock::take(&config, &dir, "copland-daemon").unwrap();
         assert!(first.path().starts_with(dir.join("copland")));
+        assert_eq!(first.socket(), first.path().with_extension("sock"));
+        assert!(first.socket().to_string_lossy().ends_with(".sock"));
         let err = Lock::take(&config, &dir, "copland-box").unwrap_err();
         let held = err.downcast_ref::<Held>().expect("refused as held");
         assert_eq!(

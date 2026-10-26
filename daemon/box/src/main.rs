@@ -227,6 +227,7 @@ impl Running {
             None => (None, None),
         };
         let (finished_tx, finished) = watch::channel(false);
+        let socket = lock.socket();
         let (state_tx, state_rx) = std::sync::mpsc::channel();
         let (stop, mut stop_rx) = oneshot::channel::<()>();
         let (reload_tx, mut reload_rx) = mpsc::unbounded_channel::<Reload>();
@@ -243,7 +244,7 @@ impl Running {
                     state_dir: default_state_dir(),
                     runtime_dir: default_runtime_dir(),
                 };
-                let mut daemon = match Daemon::start(config, paths) {
+                let mut daemon = match Daemon::start(config, paths, Some(socket)) {
                     Ok(d) => d,
                     Err(e) => {
                         let _ = state_tx.send(Err(e));

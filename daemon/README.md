@@ -217,7 +217,7 @@ The local database starts empty: the first request makes the dev user, and a boa
 
 ## Status
 
-What the daemon is doing, outside its own process (COPL-170): `Status::of(&DaemonState)` (`core/src/status.rs`, COPL-181) is the same state the box draws, as JSON, and `Status::render` says it for a person, one block per agent in the box's words. Nothing serves it yet; the status socket and `copland-daemon status` come next.
+What the daemon is doing, outside its own process (COPL-170): `Status::of(&DaemonState)` (`core/src/status.rs`, COPL-181) is the same state the box draws, as JSON, and `Status::render` says it for a person, one block per agent in the box's words. The daemon serves it on the status socket (below); `copland-daemon status` comes next.
 
 The JSON is a contract. `version` is 1; fields are only ever added, never renamed, removed or given another meaning, so a client ignores fields it doesn't know, and a field it needs that is missing means an older daemon. Times are RFC 3339 in UTC, to the second (`2026-10-04T23:20:41Z`); a field with nothing to say is `null`, a list with nothing in it `[]`. The tests in `status.rs` pin every name below.
 
@@ -267,6 +267,20 @@ The JSON is a contract. `version` is 1; fields are only ever added, never rename
 ```
 
 `DaemonState` carries what this needs: each run's worktree (`ActiveRun::worktree`, set once the workspace is made) and what the machine lacks (`AgentState::missing`, also said in `last_error` after a good poll, which is where the box draws it).
+
+### The status socket
+
+Whatever runs the agents, `copland-daemon` or the box, serves this on a Unix socket next to its config's lock (COPL-184): `$XDG_RUNTIME_DIR/copland/daemon-<hash>.sock`, the same hash as the lock's, so two daemons on two configs never share one (`Lock::socket`, `core/src/socket.rs`). It is made mode 0600 in a 0700 directory, and a client whose uid (`SO_PEERCRED` on Linux, `getpeereid` on macOS) isn't the daemon's is hung up on, so only you can read it or stop your runs. It is removed when the daemon ends. One left by a daemon that was killed is replaced at the next start; the lock is what keeps two daemons off one config, and whoever holds it owns the socket.
+
+The protocol is newline-delimited JSON: one request per line, one answer per line, in order.
+
+```jsonc
+{"op":"status"}                          // → one Status, as above
+{"op":"watch"}                           // → a Status now, and another on every change, until you hang up
+{"op":"stop_run","slot":1,"run":"aaaa"}  // → {"ok":true}: stops that run as the box's ■ does
+```
+
+`slot` and `run` are an agent's `slot` and one of its `runs[].run` in the status. Anything that can't be done (an unknown op, a line that isn't JSON, a slot with no agent, a run that isn't going) answers `{"error":"…"}` and keeps the connection; an answer with `error` is never a status. While watching, requests can still be sent on the same connection, and their answers come in between the snapshots. A request line over 64 KiB is answered with an error and hung up on. Changes in quick succession can come as one snapshot: each is the state as it is then, never a diff. Try it with `socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/copland/daemon-<hash>.sock` and a request.
 
 ## Building
 
@@ -354,7 +368,7 @@ A desktop notification fires once for each new one, quietly: no sound (the box p
 
 ### Stopping a run
 
-A ticket in doing that this box is running gets a ■ in front of it. Click it, or press `s` (tab picks the next run when there are several), and the box asks "stop COPL-12's run?"; a second click or `s` within six seconds stops it, anything else keeps it. Stopping is the same as at shutdown, for that run alone: SIGTERM to the runtime's process group, SIGKILL ten seconds later, and the run finishes as cancelled. The wake guard remembers the task's items as after any run, so it isn't started again until something new comes. Underneath it is `Daemon::run_stopper()` (`RunStopper::stop(slot, run)`), which the agent's loop watches during a run.
+A ticket in doing that this box is running gets a ■ in front of it. Click it, or press `s` (tab picks the next run when there are several), and the box asks "stop COPL-12's run?"; a second click or `s` within six seconds stops it, anything else keeps it. Stopping is the same as at shutdown, for that run alone: SIGTERM to the runtime's process group, SIGKILL ten seconds later, and the run finishes as cancelled. The wake guard remembers the task's items as after any run, so it isn't started again until something new comes. Underneath it is `Daemon::run_stopper()` (`RunStopper::stop(slot, run)`), which the agent's loop watches during a run, and which the status socket's `stop_run` calls too.
 
 ### Signing out
 
