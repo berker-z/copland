@@ -131,12 +131,7 @@ pub async fn hold(
         );
     };
     let op = if held { "hold" } else { "release" };
-    let answer: serde_json::Value =
-        serde_json::from_str(&ask(format!(r#"{{"op":"{op}","slot":{}}}"#, agent.slot)).await?)
-            .context("the daemon's answer isn't JSON")?;
-    if let Some(e) = answer.get("error") {
-        bail!("the daemon says: {}", e.as_str().unwrap_or(&e.to_string()));
-    }
+    done(&ask(format!(r#"{{"op":"{op}","slot":{}}}"#, agent.slot)).await?)?;
     let says = if held {
         format!(
             "@{} held on this machine: it starts nothing until `copland-daemon release {}`; runs going finish\n",
@@ -209,6 +204,16 @@ pub async fn show(socket: &Path, mode: Mode, out: &mut (dyn Write + Send)) -> Re
             return Ok(Outcome::Shown);
         }
     }
+}
+
+/// The answer to a request that changes something: `{"ok":true}`, or `{"error":…}` as an error
+/// saying the socket's text.
+pub(crate) fn done(line: &str) -> Result<()> {
+    let answer: serde_json::Value = serde_json::from_str(line).context("the daemon's answer isn't JSON")?;
+    if let Some(e) = answer.get("error") {
+        bail!("the daemon says: {}", e.as_str().unwrap_or(&e.to_string()));
+    }
+    Ok(())
 }
 
 /// One answer from the socket: a `Status`, or `{"error":…}`.
