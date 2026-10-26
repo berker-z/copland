@@ -231,7 +231,7 @@ The local database starts empty: the first request makes the dev user, and a boa
 
 ## Status
 
-What the daemon is doing, outside its own process (COPL-170): `Status::of(&DaemonState)` (`core/src/status.rs`, COPL-181) is the same state the box draws, as JSON, and `Status::render` says it for a person, one block per agent in the box's words. The daemon serves it on the status socket (below); `copland-daemon status` comes next.
+What the daemon is doing, outside its own process (COPL-170): `Status::of(&DaemonState)` (`core/src/status.rs`, COPL-181) is the same state the box draws, as JSON, and `Status::render` says it for a person, one block per agent in the box's words. The daemon serves it on the status socket (below), and `copland-daemon status` reads it from a terminal (further below).
 
 The JSON is a contract. `version` is 1; fields are only ever added, never renamed, removed or given another meaning, so a client ignores fields it doesn't know, and a field it needs that is missing means an older daemon. Times are RFC 3339 in UTC, to the second (`2026-10-04T23:20:41Z`); a field with nothing to say is `null`, a list with nothing in it `[]`. The tests in `status.rs` pin every name below.
 
@@ -295,6 +295,22 @@ The protocol is newline-delimited JSON: one request per line, one answer per lin
 ```
 
 `slot` and `run` are an agent's `slot` and one of its `runs[].run` in the status. Anything that can't be done (an unknown op, a line that isn't JSON, a slot with no agent, a run that isn't going) answers `{"error":"…"}` and keeps the connection; an answer with `error` is never a status. While watching, requests can still be sent on the same connection, and their answers come in between the snapshots. A request line over 64 KiB is answered with an error and hung up on. Changes in quick succession can come as one snapshot: each is the state as it is then, never a diff. Try it with `socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/copland/daemon-<hash>.sock` and a request.
+
+### `copland-daemon status`
+
+The socket from a terminal or a script (COPL-185, `core/src/client.rs`). It finds the socket for the config as the daemon does, so `--config` picks the daemon to ask, the default config's when left out.
+
+```sh
+copland-daemon status                  # what it is doing, as text (Status::render)
+copland-daemon status --json           # one Status as above, on one line
+copland-daemon status --watch          # the text again on every change it shows, until interrupted
+copland-daemon status --watch --json   # one Status per line on every change, until interrupted
+copland-daemon status --config ~/work.toml
+```
+
+`--watch` clears the screen before each snapshot on a terminal, and separates them with a `---` line otherwise. `--json` writes each line as the socket sends it, so fields a newer daemon adds come through.
+
+Exit codes: 0 when shown (or a watch whose reader went away); 3 when no daemon is running the config (no socket, or one a killed daemon left), with a line on stderr saying how to start one, and the same when the daemon stops during `--watch`; 1 for anything else, including a daemon from before the socket holding the config's lock.
 
 ## Building
 
