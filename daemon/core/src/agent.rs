@@ -24,7 +24,7 @@ use tokio::sync::{Notify, watch};
 use tokio::task::{Id, JoinError, JoinHandle, JoinSet};
 use tracing::Instrument;
 
-use crate::api::{Api, ApiError, Backoff, Ending, InboxItem, Me};
+use crate::api::{Api, ApiError, Backoff, Ending, InboxItem, Me, RepoCapability};
 use crate::config::AgentConfig;
 use crate::guard::{Check, Identity, Message, Plan, Refused, Wake, WakeGuard, add_ready, plan, refused};
 use crate::live::{self, FALLBACK_POLL, Heard, Link};
@@ -155,6 +155,30 @@ pub struct AgentLoop {
     last_word: Backoff,
     /// Whether it was held on this machine (`AgentState::held`) at the last poll, to say it once.
     held: bool,
+    /// What the repo check (COPL-178) found for each remote its boards name, by remote.
+    repos: HashMap<String, Checked>,
+    /// Whether every board's repos were checked since the loop started (`check_boards`).
+    boards_checked: bool,
+}
+
+/// One repo's check, and when it was made.
+struct Checked {
+    access: RepoCapability,
+    at: tokio::time::Instant,
+}
+
+/// A repo that failed its check is checked again when a task on it comes up this long after,
+/// so a login fixed meanwhile is picked up without a restart. One that passed stays passed.
+const RECHECK_FAILED: Duration = Duration::from_secs(10 * 60);
+
+/// Whether a run of this role can't go on a repo as its check found it (COPL-178): coding pushes,
+/// so a worker needs push; a lead only reads its view of the repo, so it needs clone.
+pub fn repo_stops(role: Role, access: &RepoCapability) -> bool {
+    match role {
+        Role::Worker => !(access.clone && access.push),
+        Role::Lead => !access.clone,
+        Role::Workdir | Role::Skip => false,
+    }
 }
 
 /// Whether the agent in `slot` is held on this machine.
@@ -301,6 +325,8 @@ impl AgentLoop {
             probed: None,
             last_word: Backoff::LAST_WORD,
             held: false,
+            repos: HashMap::new(),
+            boards_checked: false,
         })
     }
 
@@ -602,6 +628,62 @@ impl AgentLoop {
         Ok(())
     }
 
+    /// Check every repo on the agent's boards (COPL-178), once when the loop starts, so the status
+    /// says what this machine can push to before a task comes up. Repos added later are checked when
+    /// a task on them does (`repo_access`).
+    async fn check_boards(&mut self) -> Result<()> {
+        let boards = self
+            .api
+            .boards(&self.agent.token)
+            .await
+            .map_err(|e| anyhow!("listing boards: {e}"))?;
+        for b in boards {
+            let repos = self
+                .api
+                .board_repos(&self.agent.token, &b.id)
+                .await
+                .map_err(|e| anyhow!("reading board {}: {e}", b.key))?;
+            for r in &repos.repos {
+                self.repo_access(&r.repo, &r.source().remote).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// One board repo's check: as found before, or made now when it never was or failed
+    /// `RECHECK_FAILED` ago. A new result is logged when it changes and goes in the agent's state.
+    async fn repo_access(&mut self, repo: &str, remote: &str) -> RepoCapability {
+        if let Some(c) = self.repos.get(remote) {
+            let passed = c.access.clone && c.access.push;
+            if passed || c.at.elapsed() < RECHECK_FAILED {
+                return c.access.clone();
+            }
+        }
+        let access = crate::preflight::repo_access(repo, remote).await;
+        let before = self.repos.get(remote).map(|c| &c.access);
+        if before != Some(&access) {
+            match &access.detail {
+                None => tracing::info!(repo = %repo, "this machine can clone and push it"),
+                Some(d) => tracing::warn!(
+                    repo = %repo,
+                    "{}; its coding tasks are left for a machine that can",
+                    d.trim_end_matches('.')
+                ),
+            }
+        }
+        self.repos.insert(
+            remote.to_string(),
+            Checked {
+                access: access.clone(),
+                at: tokio::time::Instant::now(),
+            },
+        );
+        let mut all: Vec<RepoCapability> = self.repos.values().map(|c| c.access.clone()).collect();
+        all.sort_by(|a, b| a.repo.cmp(&b.repo));
+        self.update(|s| s.repos = all);
+        access
+    }
+
     /// Who the token is, from the server. The config's handle is only a label.
     async fn identity(&mut self) -> Result<Identity> {
         if let Some(me) = &self.me {
@@ -705,6 +787,12 @@ impl AgentLoop {
             self.missing = missing;
         }
         let me = self.identity().await?;
+        if self.agent.code_command.is_some() && !self.boards_checked {
+            match self.check_boards().await {
+                Ok(()) => self.boards_checked = true,
+                Err(e) => tracing::debug!("checking its boards' repos, again next poll: {e:#}"),
+            }
+        }
         let (unread, items) = self.unread().await?;
         let mut plan: Plan = plan(&me, &items);
         /* Work nobody said anything about but that can start now: a task the agent gave itself, one whose dependencies just closed. */
@@ -858,6 +946,26 @@ impl AgentLoop {
                 tracing::debug!(task = %wake.task_key, "a program its run needs is missing; not starting");
                 continue;
             }
+            /* A repo this machine can't push to (or clone): the task stays in todo, unclaimed, for a machine that can. */
+            if let (Some(src), Some(repo)) = (&lookup.source, &lookup.repo) {
+                let access = self.repo_access(repo, &src.remote).await;
+                if repo_stops(lookup.role, &access) {
+                    let said = format!(
+                        "{}; leaving it for a machine that can",
+                        access
+                            .detail
+                            .as_deref()
+                            .unwrap_or("its repo failed its check")
+                            .trim_end_matches('.')
+                    );
+                    if self.noted.insert(format!("repo {} {said}", wake.task_id)) {
+                        tracing::info!(task = %wake.task_key, repo = %repo, "{said}");
+                    } else {
+                        tracing::debug!(task = %wake.task_key, repo = %repo, "{said}");
+                    }
+                    continue;
+                }
+            }
             let workdir = lookup.role == Role::Workdir;
             if workdir && self.inflight.values().any(|r| r.workdir) {
                 tracing::debug!(task = %wake.task_key, "another run has the workdir; next time");
@@ -986,6 +1094,8 @@ struct TaskInfo {
     role: Role,
     task: Option<crate::api::Task>,
     source: Option<crate::api::CodeSource>,
+    /// The repo's name as its board shows it ("owner/name"), with `source`.
+    repo: Option<String>,
 }
 
 /// How a run ends, by how its runtime did. A runtime that never started is this machine's
@@ -1408,6 +1518,7 @@ impl RunCtx {
                 role: Role::Workdir,
                 task: None,
                 source: None,
+                repo: None,
             });
         }
         let task = self
@@ -1430,13 +1541,14 @@ impl RunCtx {
             role,
             task: Some(task),
             source,
+            repo: board.repos.first().map(|r| r.repo.clone()),
         })
     }
 
     /// Where the run works: a worker's worktree, a lead's read-only view of the repo, or none
     /// (the agent's `workdir`).
     async fn workspace(&self, task_id: &str, key: &str) -> Result<Option<Workspace>> {
-        let TaskInfo { role, task, source } = self.lookup(task_id, key).await?;
+        let TaskInfo { role, task, source, .. } = self.lookup(task_id, key).await?;
         let (Some(task), Some(src)) = (task, source) else {
             return Ok(None);
         };
@@ -1706,6 +1818,8 @@ mod tests {
         kind: std::sync::Mutex<Option<String>>,
         /// The ids each `POST /api/inbox/read` named.
         marked: std::sync::Mutex<Vec<serde_json::Value>>,
+        /// The plain git remote its board's one repo is at, when it has one (COPL-178).
+        remote: std::sync::Mutex<Option<String>>,
     }
 
     impl Fake {
@@ -1789,6 +1903,14 @@ mod tests {
                     (200, r#"{"unread":0}"#.into())
                 }
                 "GET /api/tasks/ready" => (200, r#"{"tasks":[]}"#.into()),
+                "GET /api/boards" => (200, r#"[{"id":"b1","key":"COPL","name":"copland"}]"#.into()),
+                "GET /api/boards/b1" => {
+                    let repos = match self.remote.lock().unwrap().as_deref() {
+                        Some(r) => serde_json::json!([{ "repo": "o/r", "kind": "git", "remote": r }]),
+                        None => serde_json::json!([]),
+                    };
+                    (200, serde_json::json!({ "repos": repos }).to_string())
+                }
                 "POST /api/tasks/t1/claim" if self.closed.load(Ordering::SeqCst) => (
                     409,
                     r#"{"error":"conflict","code":"closed","message":"COPL-1 is closed"}"#.into(),
@@ -1890,9 +2012,12 @@ mod tests {
 
         /// Running `command`, held on this machine from the start when `held`.
         fn start_with(url: &str, name: &str, command: &[&str], held: bool) -> Self {
+            Self::start_agent(url, name, agent(command, None), held)
+        }
+
+        fn start_agent(url: &str, name: &str, mut a: AgentConfig, held: bool) -> Self {
             let dir = std::env::temp_dir().join(format!("copland-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
-            let mut a = agent(command, None);
             a.url = url.to_string();
             a.workdir = dir.clone();
             let mut st = AgentState::new("me/dev", url);
@@ -1966,6 +2091,53 @@ mod tests {
         })
         .await
         .expect("a finish landed")
+    }
+
+    /// COPL-178: a coding agent checks its boards' repos when it starts, says the one it can't
+    /// reach in its state, and claims no task on it, which waits in todo for a machine that can.
+    #[tokio::test]
+    async fn a_task_on_a_repo_it_cant_push_to_is_left_unclaimed() {
+        let fake = Arc::new(Fake::default());
+        let gone = std::env::temp_dir().join(format!("copland-no-such-remote-{}.git", std::process::id()));
+        *fake.remote.lock().unwrap() = Some(gone.display().to_string());
+        let mut a = agent(&["true"], Some(&["true"]));
+        a.code_dir = std::env::temp_dir().join(format!("copland-repo-check-code-{}", std::process::id()));
+        let mut l = Looping::start_agent(&fake.start(), "repo-check", a, false);
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            l.state.wait_for(|s| !s.agents[0].repos.is_empty()),
+        )
+        .await
+        .expect("checked")
+        .unwrap();
+        let repos = l.state.borrow().agents[0].repos.clone();
+        assert_eq!(repos.len(), 1, "{repos:?}");
+        assert!(repos[0].repo == "o/r" && !repos[0].clone && !repos[0].push, "{repos:?}");
+        let polls = fake.count("GET /api/inbox");
+        while fake.count("GET /api/inbox") < polls + 3 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(fake.count("POST /api/runs"), 0, "no run started");
+        assert_eq!(fake.count("POST /api/tasks/t1/claim"), 0, "nothing claimed");
+        assert_eq!(fake.count("GET /api/boards"), 1, "its boards are checked once");
+        assert_eq!(l.state.borrow().agents[0].waiting, ["COPL-1"]);
+        l.stop().await;
+    }
+
+    /// COPL-178: coding needs push, leading only clone; nothing else is stopped by a repo.
+    #[test]
+    fn a_worker_needs_push_and_a_lead_clone() {
+        let access = |clone, push| RepoCapability {
+            repo: "o/r".into(),
+            clone,
+            push,
+            detail: None,
+        };
+        let (both, read_only, none) = (access(true, true), access(true, false), access(false, false));
+        assert!(!repo_stops(Role::Worker, &both) && !repo_stops(Role::Lead, &both));
+        assert!(repo_stops(Role::Worker, &read_only) && !repo_stops(Role::Lead, &read_only));
+        assert!(repo_stops(Role::Worker, &none) && repo_stops(Role::Lead, &none));
+        assert!(!repo_stops(Role::Workdir, &none) && !repo_stops(Role::Skip, &none));
     }
 
     /// COPL-186: a held agent with work waiting polls, says what waits, and starts and claims

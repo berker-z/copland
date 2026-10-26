@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use crate::api::RepoCapability;
 use crate::live::Link;
 
 #[derive(Debug, Clone, Default)]
@@ -60,6 +61,10 @@ pub struct AgentState {
     /// alone. Not Copland's pause, which stops the agent's tokens everywhere and which the daemon
     /// never sets. Kept by a reload, forgotten by a restart.
     pub held: bool,
+    /// Each board repo this machine checked for the agent (COPL-178), by name: whether it can be
+    /// cloned and pushed from here. Its coding tasks on one it can't push to stay in todo,
+    /// unclaimed, for a machine that can. Empty for an agent without a `code_command`.
+    pub repos: Vec<RepoCapability>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +175,7 @@ impl AgentState {
             unavailable: None,
             missing: None,
             held: false,
+            repos: Vec::new(),
         }
     }
 }
