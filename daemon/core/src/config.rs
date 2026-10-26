@@ -29,6 +29,11 @@
 //!
 //! `code_dir = "~/copland"` (top level, optional) is where repos are cloned and tasks'
 //! worktrees made (workspace.rs).
+//!
+//! `copland-box --setup` writes all of an agent's runtime keys (`client`, `command`,
+//! `code_command`, `writable`, `runtime`) from its templates (box/src/runtime.rs, COPL-160):
+//! `command` limited to Copland's tools, since it runs outside any sandbox, for runs with
+//! nothing to code; `code_command` for a board with a repo, in the task's worktree inside one.
 
 use std::fmt;
 use std::fs;

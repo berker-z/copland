@@ -330,10 +330,11 @@ pub fn render_config(saved: &Saved, choices: &[Choice]) -> String {
     ));
     out.push_str(&format!("owner_token_file = {}\n", q(&tilde(&saved.owner_token_file))));
     out.push_str(
-        "\n# What the agents may do is not decided yet. Each command below lets its agent use\n\
-         # Copland's MCP tools and nothing else (no shell, no file edits): it reads and moves\n\
-         # tasks and comments, and that's all. Widen an agent's command by hand once you\n\
-         # have decided what it may touch; setup will keep writing the narrow one.\n",
+        "\n# Each agent has two commands. `command` is for runs with nothing to code (messages,\n\
+         # boards without a repo): it runs outside any sandbox, so it may use Copland's MCP\n\
+         # tools and nothing else. `code_command` is what runs on a board with a repo, in the\n\
+         # task's own worktree inside the sandbox: it has the runtime's own tools, and writes\n\
+         # its worktree and what `writable` lists, little else.\n",
     );
     for (a, c) in saved.agents.iter().zip(choices) {
         out.push('\n');
@@ -342,14 +343,26 @@ pub fn render_config(saved: &Saved, choices: &[Choice]) -> String {
     out
 }
 
-/// The lines saying which runtime an agent uses: `client` and `command`, one argument a line.
+/// The keys `render_binding` writes, which a runtime switch replaces together.
+pub const BINDING_KEYS: [&str; 5] = ["client", "command", "code_command", "writable", "runtime"];
+
+/// The lines saying which runtime an agent uses: `client`, `command`, `code_command` (one
+/// argument a line), `writable` and `runtime`.
 pub fn render_binding(runtime: Runtime) -> String {
+    let argv = |key: &str, args: Vec<String>| {
+        let mut out = format!("{key} = [\n");
+        for arg in args {
+            out.push_str(&format!("  {},\n", q(&arg)));
+        }
+        out.push_str("]\n");
+        out
+    };
     let mut out = format!("client = {}\n", q(runtime.name()));
-    out.push_str("command = [\n");
-    for arg in runtime.command() {
-        out.push_str(&format!("  {},\n", q(&arg)));
-    }
-    out.push_str("]\n");
+    out.push_str(&argv("command", runtime.command()));
+    out.push_str(&argv("code_command", runtime.code_command()));
+    let writable: Vec<String> = runtime.writable().iter().map(|w| q(w)).collect();
+    out.push_str(&format!("writable = [{}]\n", writable.join(", ")));
+    out.push_str(&format!("runtime = {}\n", q(runtime.kind().name())));
     out
 }
 
@@ -580,6 +593,27 @@ mod tests {
         assert_eq!(c.agents[1].client, "Codex");
         assert_eq!(c.agents[2].token.expose(), "cpl_dev2");
         assert_eq!(c.agents[1].workdir, dir.join("agents/b"));
+        /* Every agent codes (COPL-160): a board with a repo gets the coding template, sandboxed. */
+        use copland_daemon_core::agent::{Role, role_of};
+        use copland_daemon_core::config::expand_home;
+        for (a, r) in c
+            .agents
+            .iter()
+            .zip([Runtime::ClaudeCode, Runtime::Codex, Runtime::ClaudeCode])
+        {
+            assert_eq!(a.code_command.as_ref(), Some(&r.code_command()), "{}", a.handle);
+            assert_eq!(
+                a.writable,
+                r.writable().iter().map(|w| expand_home(w)).collect::<Vec<_>>()
+            );
+            assert_eq!(a.runtime, r.kind());
+            assert_eq!(role_of(a.code_command.is_some(), true, None, false), Role::Worker);
+            assert_eq!(role_of(a.code_command.is_some(), false, None, false), Role::Workdir);
+        }
+        /* The note says what each command is for, and nothing is left undecided. */
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(text.contains("`code_command` is what runs on a board with a repo"));
+        assert!(!text.contains("not decided"));
         let owner = c.owner.unwrap();
         assert_eq!(
             (owner.url.as_str(), owner.token.expose()),
