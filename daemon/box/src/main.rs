@@ -31,7 +31,7 @@ use anyhow::{Context as _, Result};
 use clap::Parser;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
 use copland_daemon_core::socket::Serve;
-use copland_daemon_core::{Config, Daemon, DaemonState, Lock, Paths, Reload, RunStopper};
+use copland_daemon_core::{Config, Daemon, DaemonState, Lock, Paths, Reload, RunStopper, Status};
 use gpui::{
     AppContext as _, Application, Bounds, SharedString, WindowBounds, WindowDecorations, WindowKind, WindowOptions, px,
     size,
@@ -189,7 +189,8 @@ struct Running {
 /// A daemon just started: it, what the window watches, and the ways back to it.
 struct Started {
     running: Running,
-    state: watch::Receiver<DaemonState>,
+    /// What the daemon is doing, as its status socket says it.
+    state: watch::Receiver<Status>,
     /// The owner's view, when the config has an owner token.
     feed: Option<watch::Receiver<Feed>>,
     /// True once the daemon has stopped by itself (a signal, or no agent left).
@@ -199,6 +200,23 @@ struct Started {
     stopper: RunStopper,
     /// Links of desktop notifications that were clicked.
     clicks: Option<mpsc::UnboundedReceiver<String>>,
+}
+
+/// The daemon's state as its status, which is what the window draws: a task on the daemon's
+/// runtime that says each change again, and ends (closing the status) when the daemon's does.
+fn statuses(mut daemon: watch::Receiver<DaemonState>) -> watch::Receiver<Status> {
+    let (tx, rx) = watch::channel(Status::of(&daemon.borrow_and_update()));
+    tokio::spawn(async move {
+        while daemon.changed().await.is_ok() {
+            let now = Status::of(&daemon.borrow_and_update());
+            tx.send_if_modified(|s| {
+                let changed = *s != now;
+                *s = now;
+                changed
+            });
+        }
+    });
+    rx
 }
 
 impl Running {
@@ -257,14 +275,15 @@ impl Running {
                     }
                 };
                 let mut reloads = daemon.reloads().expect("taken once, here");
+                let status = statuses(daemon.subscribe());
                 let _ = state_tx.send(Ok((
-                    daemon.subscribe(),
+                    status.clone(),
                     tokio::runtime::Handle::current(),
                     daemon.run_stopper(),
                     daemon.reload_sender(),
                 )));
                 if let (Some(owner), Some(tx)) = (owner, feed_tx) {
-                    tokio::spawn(feed::run(owner, tx, daemon.subscribe(), notices));
+                    tokio::spawn(feed::run(owner, tx, status, notices));
                 }
                 let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
                 else {

@@ -1,8 +1,9 @@
 [workspace]
-members = ["core", "cli", "box"]
+members = ["core", "cli", "tray", "box"]
 # The box needs GPUI and its native libraries (see flake.nix); plain `cargo build`
-# and `cargo test` here stay the headless daemon. `--workspace` takes in the box.
-default-members = ["core", "cli"]
+# and `cargo test` here stay the headless daemon and the tray, which need none.
+# `--workspace` takes in the box.
+default-members = ["core", "cli", "tray"]
 resolver = "3"
 
 [workspace.package]

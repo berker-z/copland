@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use copland_daemon_core::{DaemonState, Phase};
+use copland_daemon_core::Status;
 use gpui::{
     Bounds, Context, FocusHandle, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, Rgba, SharedString, StyledText,
     Task, Window, canvas, div, fill, point, prelude::*, px, size,
@@ -73,9 +73,9 @@ const BELL: [&str; 7] = [
 pub enum Source {
     /// The prototype's simulation.
     Demo,
-    /// The daemon running in this process.
+    /// The daemon running in this process, as its status says.
     Live {
-        state: watch::Receiver<DaemonState>,
+        state: watch::Receiver<Status>,
         /// The owner's view from `/api/wired`, when the config has an owner token.
         feed: Option<watch::Receiver<Feed>>,
         /// True once the daemon has stopped by itself (a signal, or no agent left).
@@ -111,14 +111,14 @@ pub struct RunHere {
 }
 
 /// The runs this box has going now, in the daemon's order.
-pub fn runs_here(st: &DaemonState) -> Vec<RunHere> {
+pub fn runs_here(st: &Status) -> Vec<RunHere> {
     st.agents
         .iter()
         .flat_map(|a| {
             a.runs.iter().map(|r| RunHere {
                 slot: a.slot,
                 run: r.run.clone(),
-                key: r.task.clone(),
+                key: r.key().to_string(),
                 agent: a.handle.rsplit('/').next().unwrap_or(&a.handle).to_string(),
             })
         })
@@ -188,8 +188,8 @@ impl BoxView {
         self.menu.as_mut()
     }
 
-    /// The daemon's state and the owner's feed as they are now, in live mode.
-    fn live(&self) -> Option<(DaemonState, Option<Feed>)> {
+    /// The daemon's status and the owner's feed as they are now, in live mode.
+    fn live(&self) -> Option<(Status, Option<Feed>)> {
         match &self.source {
             Source::Live { state, feed, .. } => {
                 Some((state.borrow().clone(), feed.as_ref().map(|f| f.borrow().clone())))
@@ -758,7 +758,7 @@ pub fn filter_board(b: &mut Board, prefs: &Prefs) {
 /// What the scene is told: the owner's view from `/api/wired` when there is one, with the
 /// daemon's own runs over it (a run it just started shows before the next read), else what
 /// the daemon alone knows. `now` is scene seconds at `wall`.
-pub fn board_from(st: &DaemonState, feed: Option<&Feed>, now: f64, wall: SystemTime) -> Board {
+pub fn board_from(st: &Status, feed: Option<&Feed>, now: f64, wall: SystemTime) -> Board {
     let name = |handle: &str| handle.rsplit('/').next().unwrap_or(handle).to_string();
     let at = |t: SystemTime| match wall.duration_since(t) {
         Ok(ago) => now - ago.as_secs_f64(),
@@ -780,7 +780,7 @@ pub fn board_from(st: &DaemonState, feed: Option<&Feed>, now: f64, wall: SystemT
         board.agents.push(AgentLabel {
             name: name(&a.handle),
             error: a.last_error.clone(),
-            stopped: a.phase == Phase::Stopped,
+            stopped: a.state == "stopped",
         });
     }
     board.live = crate::feed::links_up(st, feed);
@@ -850,7 +850,7 @@ pub fn board_from(st: &DaemonState, feed: Option<&Feed>, now: f64, wall: SystemT
 
     /* The daemon's own runs: shown at once, before the server says so. */
     for (a, r) in st.agents.iter().flat_map(|a| a.runs.iter().map(move |r| (a, r))) {
-        let (task, since) = (&r.task, &r.since);
+        let (task, since) = (&r.key().to_string(), parse_utc(&r.since).unwrap_or(wall));
         board.todo.retain(|k| k != task);
         board.blocked.retain(|b| &b.0 != task);
         if let Some(done) = &mut board.done {
@@ -860,12 +860,12 @@ pub fn board_from(st: &DaemonState, feed: Option<&Feed>, now: f64, wall: SystemT
             Some(d) if d.live => {}
             Some(d) => {
                 d.live = true;
-                d.started = Some(at(*since));
+                d.started = Some(at(since));
             }
             None => board.doing.push(Doing {
                 key: task.clone(),
                 agent: name(&a.handle),
-                started: Some(at(*since)),
+                started: Some(at(since)),
                 live: true,
             }),
         }
@@ -1313,8 +1313,8 @@ impl Render for BoxView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use copland_daemon_core::AgentState;
     use copland_daemon_core::api::{Wired, WiredAgent, WiredTask};
+    use copland_daemon_core::{AgentState, DaemonState, Phase};
 
     /// The window's quit waits on the daemon's word alone, with no redraw to notice it
     /// (COPL-101), and a daemon thread that ends without saying so doesn't quit it.
@@ -1450,7 +1450,8 @@ mod tests {
         }
     }
 
-    fn daemon(phase: Phase, waiting: &[&str]) -> DaemonState {
+    /// What the daemon says, as the box gets it: its state as a status.
+    fn daemon(phase: Phase, waiting: &[&str]) -> Status {
         let mut a = AgentState::new("me/dev", "http://x");
         /* A running phase is one run going, as the daemon records it. */
         if let Phase::Running { run, task, since } = &phase {
@@ -1463,10 +1464,15 @@ mod tests {
         }
         a.phase = phase;
         a.waiting = waiting.iter().map(|s| s.to_string()).collect();
-        DaemonState {
+        Status::of(&DaemonState {
             agents: vec![a],
             stopping: false,
-        }
+        })
+    }
+
+    /// The status as it comes over the socket: through JSON and back.
+    fn sent(st: &Status) -> Status {
+        serde_json::from_str(&serde_json::to_string(st).unwrap()).unwrap()
     }
 
     #[test]
@@ -1507,6 +1513,7 @@ mod tests {
             &["T-9"],
         );
         let b = board_from(&st, Some(&feed), 100.0, wall);
+        assert_eq!(board_from(&sent(&st), Some(&feed), 100.0, wall), b);
         assert!(b.ready);
         assert_eq!(b.todo, ["T-2"]);
         assert_eq!(
@@ -1529,6 +1536,7 @@ mod tests {
         let wall = SystemTime::now();
         let st = daemon(Phase::Idle, &["T-9", "T-8"]);
         let b = board_from(&st, None, 0.0, wall);
+        assert_eq!(board_from(&sent(&st), None, 0.0, wall), b);
         assert_eq!(b.todo, ["T-9", "T-8"]);
         assert!(b.done.is_none());
         assert!(b.note.unwrap().0.contains("owner_token_file"));

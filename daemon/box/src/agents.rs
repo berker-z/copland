@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::Result;
 use copland_daemon_core::api::{Api, DeviceIdentity, DevicePoll, DeviceStart, WiredAgent};
 use copland_daemon_core::config::AgentConfig;
-use copland_daemon_core::{AgentState, Config, DaemonState, Phase, Reload};
+use copland_daemon_core::{Config, Reload, Status, status};
 use gpui::{Context, KeyDownEvent, Task};
 use tokio::sync::{mpsc, oneshot};
 
@@ -140,14 +140,14 @@ pub struct Failed {
 }
 
 impl Failed {
-    fn of(s: &AgentState) -> Option<Self> {
+    fn of(s: &status::Agent) -> Option<Self> {
         let r = s.last_run.as_ref().filter(|r| r.failed)?;
         Some(Self {
             run: r.run.clone(),
-            task: r.task.clone(),
+            task: r.key().to_string(),
             how: r.how.clone().unwrap_or_else(|| r.outcome.clone()),
             hint: r.hint.clone(),
-            log: r.log.clone(),
+            log: r.log.as_ref().map(PathBuf::from),
         })
     }
 }
@@ -193,7 +193,7 @@ fn same_handle(a: &str, b: &str) -> bool {
 /// The rows: the agents in daemon.toml in its order, then the rest of yours from `/api/wired`.
 /// A configured agent is matched to yours by the id the daemon learned from its token, else
 /// by handle.
-pub fn rows(configured: &[AgentConfig], st: &DaemonState, wired: Option<&[WiredAgent]>) -> Vec<Row> {
+pub fn rows(configured: &[AgentConfig], st: &Status, wired: Option<&[WiredAgent]>) -> Vec<Row> {
     let mut out = Vec::new();
     let mut seen: Vec<&str> = Vec::new();
     for a in configured {
@@ -216,27 +216,27 @@ pub fn rows(configured: &[AgentConfig], st: &DaemonState, wired: Option<&[WiredA
         }
         let doing = match live {
             None => Doing::Starting,
-            Some(s) => match (&s.phase, s.retiring) {
+            Some(s) => match (s.state.as_str(), s.retiring) {
                 /* Copland down (COPL-148): said over a run going too, which waits on it for its finish. */
-                (Phase::Running { .. } | Phase::Idle, _) if s.unavailable.is_some() => {
+                ("running" | "watching", _) if s.unavailable_since.is_some() => {
                     Doing::Error(s.unavailable_line().unwrap_or_default())
                 }
-                (Phase::Running { .. }, true) => Doing::AfterRun,
-                (Phase::Running { .. }, false) => {
-                    Doing::Running(s.runs.iter().map(|r| r.task.as_str()).collect::<Vec<_>>().join(", "))
+                ("running", true) => Doing::AfterRun,
+                ("running", false) => {
+                    Doing::Running(s.runs.iter().map(status::Run::key).collect::<Vec<_>>().join(", "))
                 }
                 (_, true) => Doing::Starting,
-                (Phase::Stopped, _) => match &s.last_error {
+                ("stopped", _) => match &s.last_error {
                     Some(e) => Doing::Error(e.clone()),
                     None => Doing::Stopped,
                 },
                 (_, _) if s.last_error.is_some() => Doing::Error(s.last_error.clone().unwrap_or_default()),
-                (Phase::Idle, _) if s.holds(SystemTime::now()) => Doing::Held(
-                    s.out_of_usage_line(SystemTime::now())
-                        .unwrap_or_else(|| "held on this machine".to_string()),
-                ),
-                (Phase::Starting, _) => Doing::Starting,
-                (Phase::Idle, _) => Failed::of(s).map_or(Doing::Watching, Doing::Failed),
+                ("watching", _) if held(s, SystemTime::now()).is_some() => {
+                    Doing::Held(held(s, SystemTime::now()).unwrap_or_default())
+                }
+                ("watching", _) => Failed::of(s).map_or(Doing::Watching, Doing::Failed),
+                /* Starting, or a state a newer daemon has that this box doesn't know yet. */
+                _ => Doing::Starting,
             },
         };
         out.push(Row::Here {
@@ -684,7 +684,7 @@ impl Agents {
     }
 
     /// A key while a message is typed: the line edits, enter sends, escape goes back to the list.
-    pub fn type_key(&mut self, e: &KeyDownEvent, st: &DaemonState, cx: &mut Context<BoxView>) {
+    pub fn type_key(&mut self, e: &KeyDownEvent, st: &Status, cx: &mut Context<BoxView>) {
         let Mode::Compose {
             input, sending, note, ..
         } = &mut self.mode
@@ -706,7 +706,7 @@ impl Agents {
     }
 
     /// Enter on the message line: sent, unless it is empty or too long.
-    fn submit(&mut self, st: &DaemonState, cx: &mut Context<BoxView>) {
+    fn submit(&mut self, st: &Status, cx: &mut Context<BoxView>) {
         let Mode::Compose {
             handle,
             input,
@@ -776,7 +776,7 @@ impl Agents {
     }
 
     /// A key by name (or a click as one), given the daemon's state and the owner's feed as the screen shows them.
-    pub fn press(&mut self, name_: &str, st: &DaemonState, feed: Option<&Feed>, cx: &mut Context<BoxView>) -> Key {
+    pub fn press(&mut self, name_: &str, st: &Status, feed: Option<&Feed>, cx: &mut Context<BoxView>) -> Key {
         if self.busy {
             return Key::Ignored;
         }
@@ -906,7 +906,7 @@ impl Agents {
             )
     }
 
-    pub fn panel(&self, st: &DaemonState, feed: Option<&Feed>) -> Panel {
+    pub fn panel(&self, st: &Status, feed: Option<&Feed>) -> Panel {
         match &self.mode {
             Mode::Approve {
                 handle,
@@ -992,7 +992,7 @@ impl Agents {
         }
     }
 
-    fn list_panel(&self, st: &DaemonState, feed: Option<&Feed>) -> Panel {
+    fn list_panel(&self, st: &Status, feed: Option<&Feed>) -> Panel {
         let wired = wired(feed);
         let list = rows(&self.configured, st, wired);
         let n = list.len();
@@ -1187,8 +1187,19 @@ impl Agents {
     }
 }
 
+/// What an agent that starts nothing on this machine at `now` says: out of usage until a reset
+/// (COPL-195), while that is still after `now`, or held by hand (COPL-186).
+fn held(s: &status::Agent, now: SystemTime) -> Option<String> {
+    let until = s.out_of_usage_until.as_deref().and_then(crate::view::parse_utc);
+    match s.out_of_usage_line() {
+        Some(line) if until.is_some_and(|t| t > now) => Some(line),
+        _ if s.held => Some("held on this machine".to_string()),
+        _ => None,
+    }
+}
+
 /// Whether the agent has a run going here: a message to it then waits for its next run.
-fn running(st: &DaemonState, handle: &str) -> bool {
+fn running(st: &Status, handle: &str) -> bool {
     st.agents
         .iter()
         .any(|s| !s.runs.is_empty() && (same_handle(&s.handle, handle) || same_handle(&s.configured, handle)))
@@ -1298,6 +1309,23 @@ async fn poll(api: Api, code: String, interval: u64, expires_in: u64) -> Result<
 mod tests {
     use super::*;
     use copland_daemon_core::config::Secret;
+    use copland_daemon_core::{AgentState, DaemonState, Phase};
+
+    /// The daemon's state as it comes over the socket: its status, through JSON and back.
+    fn status(st: &DaemonState) -> Status {
+        serde_json::from_str(&serde_json::to_string(&Status::of(st)).unwrap()).unwrap()
+    }
+
+    /// The rows from the daemon's state, as its status and as that status sent through JSON.
+    fn rows(configured: &[AgentConfig], st: &DaemonState, wired: Option<&[WiredAgent]>) -> Vec<Row> {
+        let here = super::rows(configured, &Status::of(st), wired);
+        assert_eq!(super::rows(configured, &status(st), wired), here);
+        here
+    }
+
+    fn running(st: &DaemonState, handle: &str) -> bool {
+        super::running(&status(st), handle)
+    }
 
     fn agent(handle: &str, runtime: Option<Runtime>) -> AgentConfig {
         AgentConfig {
@@ -1507,6 +1535,31 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A status says until when it is out of usage; once that has passed, the box doesn't say it,
+    /// even before a newer status comes.
+    #[test]
+    fn out_of_usage_ends_at_its_reset_even_in_an_older_status() {
+        let mut dev = AgentState::new("me/dev", "http://x");
+        dev.phase = Phase::Idle;
+        let now = SystemTime::now();
+        dev.out_of_usage = Some(now + Duration::from_secs(600));
+        let st = status(&DaemonState {
+            agents: vec![dev],
+            stopping: false,
+        });
+        let a = &st.agents[0];
+        assert!(held(a, now).is_some_and(|w| w.starts_with("out of usage until ")));
+        assert_eq!(held(a, now + Duration::from_secs(601)), None);
+        let by_hand = status::Agent {
+            held: true,
+            ..a.clone()
+        };
+        assert_eq!(
+            held(&by_hand, now + Duration::from_secs(601)).as_deref(),
+            Some("held on this machine")
+        );
     }
 
     #[test]

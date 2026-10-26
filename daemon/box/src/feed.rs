@@ -21,8 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use copland_daemon_core::DaemonState;
-use copland_daemon_core::Phase;
+use copland_daemon_core::Status;
 use copland_daemon_core::api::{Api, BoardRef, InboxItem, Wired};
 use copland_daemon_core::config::Owner;
 use copland_daemon_core::live::{self, Burst, Heard, Link};
@@ -136,12 +135,12 @@ pub struct Notices {
 /// Whether the box's live sockets are up, for the status line: the running agents' and the
 /// owner's (unless its token was refused). Some(false) once any is down, Some(true) when all
 /// are up, None while none has connected or failed yet (nothing to say).
-pub fn links_up(st: &DaemonState, feed: Option<&Feed>) -> Option<bool> {
+pub fn links_up(st: &Status, feed: Option<&Feed>) -> Option<bool> {
     let links: Vec<Link> = st
         .agents
         .iter()
-        .filter(|a| a.phase != Phase::Stopped && !a.retiring)
-        .map(|a| a.live)
+        .filter(|a| a.state != "stopped" && !a.retiring)
+        .map(|a| a.link())
         .chain(feed.filter(|f| !f.refused).map(|f| f.live))
         .collect();
     if links.contains(&Link::Reconnecting) {
@@ -154,7 +153,7 @@ pub fn links_up(st: &DaemonState, feed: Option<&Feed>) -> Option<bool> {
 }
 
 /// The runs each agent has going: a change means a run started or ended.
-fn runs(st: &DaemonState) -> Vec<Vec<String>> {
+fn runs(st: &Status) -> Vec<Vec<String>> {
     st.agents
         .iter()
         .map(|a| a.runs.iter().map(|r| r.run.clone()).collect())
@@ -162,7 +161,7 @@ fn runs(st: &DaemonState) -> Vec<Vec<String>> {
 }
 
 /// Resolves once some agent's run has started or ended (never, once the daemon is gone).
-async fn run_changed(daemon: &mut watch::Receiver<DaemonState>, seen: &mut Vec<Vec<String>>) {
+async fn run_changed(daemon: &mut watch::Receiver<Status>, seen: &mut Vec<Vec<String>>) {
     loop {
         if daemon.changed().await.is_err() {
             std::future::pending::<()>().await;
@@ -246,7 +245,7 @@ async fn unread(api: &Api, owner: &Owner) -> Result<Vec<InboxItem>, copland_daem
 pub async fn run(
     owner: Owner,
     tx: watch::Sender<Feed>,
-    mut daemon: watch::Receiver<DaemonState>,
+    mut daemon: watch::Receiver<Status>,
     mut notices: Option<Notices>,
 ) {
     let refuse = |why: String| {
@@ -507,15 +506,18 @@ mod tests {
 
     #[test]
     fn the_status_dot_is_up_only_when_every_socket_is() {
+        use copland_daemon_core::{AgentState, DaemonState, Phase};
         let agent = |live: Link, phase: Phase| {
-            let mut a = copland_daemon_core::AgentState::new("me/dev", "http://x");
+            let mut a = AgentState::new("me/dev", "http://x");
             a.live = live;
             a.phase = phase;
             a
         };
-        let st = |agents: Vec<copland_daemon_core::AgentState>| DaemonState {
-            agents,
-            stopping: false,
+        let st = |agents: Vec<AgentState>| {
+            Status::of(&DaemonState {
+                agents,
+                stopping: false,
+            })
         };
         let feed = |live: Link, refused: bool| Feed {
             live,

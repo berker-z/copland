@@ -65,6 +65,12 @@ pub struct Daemon {
 pub struct RunStopper(pub(crate) watch::Sender<StopRequest>);
 
 impl RunStopper {
+    /// One that asks whoever watches `requests`: a `socket::Server` that isn't a `Daemon`'s, as a
+    /// test of a socket client serves.
+    pub fn new(requests: watch::Sender<StopRequest>) -> Self {
+        Self(requests)
+    }
+
     /// Stop `run` (the short id `Phase::Running` shows) of the agent in `slot` (`AgentState::slot`).
     pub fn stop(&self, slot: u64, run: &str) {
         self.0.send_replace(Some((slot, run.to_string())));
@@ -79,6 +85,12 @@ impl RunStopper {
 pub struct Holder(pub(crate) watch::Sender<DaemonState>);
 
 impl Holder {
+    /// One that holds agents in `state`: a `socket::Server` that isn't a `Daemon`'s, as a test of a
+    /// socket client serves.
+    pub fn new(state: watch::Sender<DaemonState>) -> Self {
+        Self(state)
+    }
+
     /// Hold (`held`) or release the agent in `slot` (`AgentState::slot`). False when no agent is in it.
     /// A release also ends a hold for being out of usage (COPL-195): whoever releases it says to try now.
     pub fn set(&self, slot: u64, held: bool) -> bool {
@@ -131,6 +143,12 @@ pub struct Reloader {
 }
 
 impl Reloader {
+    /// One that loads `config` and sends it to whoever reads `requests`: a `socket::Server` that
+    /// isn't a `Daemon`'s, as a test of a socket client serves.
+    pub fn new(config: PathBuf, requests: mpsc::UnboundedSender<Reload>) -> Self {
+        Self { config, tx: requests }
+    }
+
     /// Load the config file again and have the daemon run it.
     pub async fn reload(&self) -> Result<Reloaded> {
         let config = Config::load(&self.config).context("loading the config")?;
@@ -145,10 +163,7 @@ impl Reloader {
 impl Reloader {
     /// One no daemon answers, for tests of the socket's other ops.
     pub(crate) fn nowhere() -> Self {
-        Self {
-            config: PathBuf::new(),
-            tx: mpsc::unbounded_channel().0,
-        }
+        Self::new(PathBuf::new(), mpsc::unbounded_channel().0)
     }
 }
 

@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
-use copland_daemon_core::DaemonState;
+use copland_daemon_core::Status;
 use copland_daemon_core::api::Api;
 use copland_daemon_core::config::{Secret, expand_home};
 use gpui::{Context, Task};
@@ -345,7 +345,7 @@ impl Menu {
         &mut self,
         name: &str,
         prefs: &mut Prefs,
-        st: &DaemonState,
+        st: &Status,
         feed: Option<&Feed>,
         cx: &mut Context<BoxView>,
     ) -> Act {
@@ -543,7 +543,7 @@ impl Menu {
     }
 
     /// What the open panel shows.
-    pub fn panel(&self, prefs: &Prefs, st: &DaemonState, feed: Option<&Feed>, dots: &str) -> Panel {
+    pub fn panel(&self, prefs: &Prefs, st: &Status, feed: Option<&Feed>, dots: &str) -> Panel {
         if self.signing_out {
             return Panel {
                 lines: vec![
