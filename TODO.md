@@ -107,6 +107,12 @@ docs/DESIGN.md under Touch.
       action, compact on a compositor other than Hyprland, the autostart
       entry actually starting the box at a real login, and macOS, which sends
       no notifications yet (`box/src/notify.rs`).
+- [ ] What runs cost (COPL-71) was checked against the routes in
+      `checks/usage.check.ts`, the parser against a real `claude -p
+      --output-format json` result, and a fake runtime through the runner;
+      no daemon run has reported one to a deployed Copland yet. Codex runs
+      send no usage (it reports it only in `codex exec --json`'s events),
+      and nothing yet sets `resumed`: that waits on COPL-188's resume.
 - [ ] A runtime that calls `finish_run` completed itself, with its task still
       active, isn't caught by the daemon's check for unfinished runs
       (COPL-147): a finished run can't be finished again as failed, so the

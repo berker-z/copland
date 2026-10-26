@@ -26,7 +26,7 @@ The poll is the fallback, not the usual way in (COPL-62). Each agent also keeps 
 
 While the socket is up the daemon still polls every five minutes (or `poll_interval`, if that's longer), because the hub keeps nothing and a message sent during a reconnect is gone. When it drops, the daemon polls once straight away and then every `poll_interval` until it's back. Reconnecting backs off from one second to a minute with jitter; a refusal (a 4xx, say a revoked token) waits five minutes. After a reconnect it polls once, for whatever it missed. It pings every 30 seconds and treats 75 seconds of silence as a dead connection. The client is `core/src/live.rs`: the handshake and the frame format by hand over reqwest's upgraded connection, with `ring` (already there for TLS) for SHA-1 and randomness, so no WebSocket crate. Revoking the token, pausing the agent or disabling its owner closes the socket at the next message for it. `AgentState::live` says where each socket is.
 
-The runtime's stdout and stderr go to `$XDG_STATE_HOME/copland/runs/<run-id>.log` (`~/.local/state/copland/runs/` by default), mode 0600. The daemon writes two header lines first (`# copland-daemon: run …` and `# argv: …`) and, whatever the ending, success included, a last line with how it ended: `# copland-daemon: exit 1 after 3.8s`, the same words as the finish's reason. The runtime also gets `COPLAND_URL`, `COPLAND_TASK` (the key; not for a run on messages), `COPLAND_RUN` (the id) and `COPLAND_MCP_CONFIG` in its environment. Never the secret; that lives only in the config file.
+The runtime's stdout and stderr go to `$XDG_STATE_HOME/copland/runs/<run-id>.log` (`~/.local/state/copland/runs/` by default), mode 0600. The daemon writes two header lines first (`# copland-daemon: run …` and `# argv: …`) and, whatever the ending, success included, a last line with how it ended: `# copland-daemon: exit 1 after 3.8s`, the same words as the finish's reason. A runtime's stdout goes through the daemon on its way there, a line at a time: Claude Code's result (the one line of JSON `--output-format json` makes it end with) goes in as the text it would have printed without the flag, followed by `# usage: $0.84 · 1.3M tokens (in 12k, out 3.1k, cache read 1.2M, cache write 40k) · 23 turns · 4m 2s`, and everything else as it is (`core/src/usage.rs`, COPL-71). Those numbers go to Copland with the run's finish (`usage` in `POST /api/runs/:id/finish`), even when the runtime finished its run first, and Copland shows them on the run in Settings and sums them on its task, and a parent's subtree, next to progress. They are the tokens of every model the run used (a subagent's too), fresh input, output, read from the cache and written to it, and Claude Code's own cost in dollars. Codex reports its usage only in `codex exec --json`'s event stream, which would make the log unreadable, so a Codex run sends none yet. Once the runtime exits its stdout is read for five more seconds at most, since something it left running can hold it open. The runtime also gets `COPLAND_URL`, `COPLAND_TASK` (the key; not for a run on messages), `COPLAND_RUN` (the id) and `COPLAND_MCP_CONFIG` in its environment. Never the secret; that lives only in the config file.
 
 SIGINT or SIGTERM stops polling, sends SIGTERM to each runtime's process group (SIGKILL ten seconds later), and finishes their runs as interrupted (`cancelled` with `interrupted: true`), which puts their tasks back in todo for the next start. A run stopped from the box is plain cancelled, and Copland parks its task in backlog; one whose runtime fails, failed, which puts it back in todo, or in blocked after three in a row. A runtime that can't be started at all is the machine's trouble, not the task's, so that run finishes as interrupted and costs the task no strike. A second signal exits at once; whatever runs were left go stale within the lease, and Copland's cron ends them and puts their tasks back.
 
@@ -71,7 +71,7 @@ token_file = "~/.config/copland/dev.token"
 workdir = "~/work/dev"
 client = "Claude Code"             # optional; history says "via Claude Code"
 command = [
-  "claude", "-p", "{prompt}",
+  "claude", "-p", "{prompt}", "--output-format", "json",
   "--mcp-config", "{mcp_config}", "--strict-mcp-config",
   "--tools", "",
   "--permission-mode", "dontAsk",
@@ -118,7 +118,7 @@ code_dir = "~/copland"   # top level; optional, ~/copland by default
 [[agent]]
 # ...as above, then:
 code_command = [
-  "claude", "-p", "{prompt}",
+  "claude", "-p", "{prompt}", "--output-format", "json",
   "--mcp-config", "{mcp_config}", "--strict-mcp-config",
   "--permission-mode", "bypassPermissions",
   "--no-session-persistence",

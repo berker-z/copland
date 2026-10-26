@@ -11,7 +11,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { HANDLE_MAX, handleProblem, normalizeHandle } from "@/domain/handle";
-import type { RunStatus } from "@/domain/runs";
+import { tokenBreakdown, usageLine, type RunStatus } from "@/domain/runs";
 import { AGENT_GRANTS, type Agent, type AgentGrant, type BoardRole, type Me } from "@/domain/types";
 import { send } from "@/lib/api";
 import { uploadAvatar } from "@/lib/avatar";
@@ -269,7 +269,7 @@ const RUN_CLASS: Record<RunStatus, string> = {
   cancelled: "text-faint",
 };
 
-/** Its latest runs: supervised ones declared by whatever starts it (POST /api/runs), interactive ones made by a chat session's first claim; stale once they go quiet. How one ended, when its finish said (COPL-136), follows its status. */
+/** Its latest runs: supervised ones declared by whatever starts it (POST /api/runs), interactive ones made by a chat session's first claim; stale once they go quiet. How one ended, when its finish said (COPL-136), follows its status, then what it cost when its launcher reported it (COPL-71). */
 function RunsGroup({ agent }: { agent: Agent }) {
   return (
     <Group title="runs">
@@ -284,9 +284,18 @@ function RunsGroup({ agent }: { agent: Agent }) {
               <span className="text-faint">{r.short}</span>
               <span className={RUN_CLASS[r.status]}>{r.status}</span>
               {r.reason && <span className="text-muted">{r.reason}</span>}
+              {r.usage && (
+                <span className="text-muted" title={tokenBreakdown(r.usage)}>
+                  {usageLine(r.usage)}
+                </span>
+              )}
               <span className="text-faint">{r.kind}</span>
               {r.client && <span className="text-muted">{r.client}</span>}
-              {r.claims.length > 0 && <span className="text-muted">on {r.claims.join(", ")}</span>}
+              {r.claims.length > 0 ? (
+                <span className="text-muted">on {r.claims.join(", ")}</span>
+              ) : (
+                r.task && <span className="text-faint">for {r.task}</span>
+              )}
               <span className="flex-1" />
               <span className="text-faint">
                 {r.endedAt ? `ended ${when(r.endedAt)}` : `heard ${when(r.lastSeenAt)}`}

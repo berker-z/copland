@@ -31,6 +31,7 @@ use crate::live::{self, FALLBACK_POLL, Heard, Link};
 use crate::runner::{self, Brief, Ended, Exit, Launch, MESSAGES};
 use crate::sandbox;
 use crate::state::{AgentState, DaemonState, Phase, RunSummary};
+use crate::usage::Usage;
 use crate::workspace::{self, Workspace};
 
 const PAGE: u32 = 100;
@@ -1084,12 +1085,12 @@ impl RunCtx {
     /// Finish the run, asking again while Copland is down (COPL-148): a finish that never lands
     /// leaves the run for the cron to end as stale, a strike on its task, and one that lands late
     /// still sets its ending right.
-    async fn finish(&self, run_id: &str, ending: Ending, reason: Option<&str>) -> String {
+    async fn finish(&self, run_id: &str, ending: Ending, reason: Option<&str>, usage: Option<&Usage>) -> String {
         let what = format!("finishing run {} as {}", runner::short(run_id), ending.as_str());
         let sent = self
             .last_word
             .retry(&what, self.shutdown.clone(), || {
-                self.api.finish_run(&self.agent.token, run_id, ending, reason)
+                self.api.finish_run(&self.agent.token, run_id, ending, reason, usage)
             })
             .await;
         match sent {
@@ -1126,7 +1127,7 @@ impl RunCtx {
                     brief
                 }
                 why => {
-                    let ending = self.finish(&run_id, Ending::Cancelled, None).await;
+                    let ending = self.finish(&run_id, Ending::Cancelled, None, None).await;
                     self.update(|s| s.run_ended(&short));
                     let held = why == Refused::Hold;
                     if held {
@@ -1150,7 +1151,7 @@ impl RunCtx {
                 }
             },
             Err(e) => {
-                self.finish(&run_id, Ending::Interrupted, None).await;
+                self.finish(&run_id, Ending::Interrupted, None, None).await;
                 self.update(|s| s.run_ended(&short));
                 return Done::failed(wake, format!("claiming {key}: {e}"));
             }
@@ -1162,7 +1163,7 @@ impl RunCtx {
                 Ok(ws) => ws,
                 Err(e) => {
                     tracing::warn!(run = %short, task = %key, "its workspace could not be made: {e:#}");
-                    let ending = self.finish(&run_id, Ending::Failed, None).await;
+                    let ending = self.finish(&run_id, Ending::Failed, None, None).await;
                     self.update(|s| s.run_ended(&short));
                     let updated = self.updated_at(&wake.task_id).await;
                     self.summary(&short, &key, format!("{ending}: no workspace ({e})"), true);
@@ -1221,7 +1222,7 @@ impl RunCtx {
             }
         }
         drop(started);
-        let status = self.finish(&run_id, ending, Some(&how)).await;
+        let status = self.finish(&run_id, ending, Some(&how), ended.usage.as_ref()).await;
         if status == ending.as_str() {
             tracing::info!(run = %short, task = %key, "runtime {how}; run {status}");
         } else {
@@ -1306,12 +1307,12 @@ impl RunCtx {
                 claimed
             }
             Err(e) => {
-                self.finish(&run_id, Ending::Interrupted, None).await;
+                self.finish(&run_id, Ending::Interrupted, None, None).await;
                 return Done::failed(wake, format!("claiming {n} message(s): {e}"));
             }
         };
         if claimed.is_empty() {
-            let ending = self.finish(&run_id, Ending::Cancelled, None).await;
+            let ending = self.finish(&run_id, Ending::Cancelled, None, None).await;
             tracing::info!(run = %short, "every message was claimed by another run or read; nothing to launch");
             self.summary(
                 &short,
@@ -1346,7 +1347,9 @@ impl RunCtx {
         .await;
         drop(started);
         let how = ended.reason();
-        let status = self.finish(&run_id, ending_of(&ended.exit), Some(&how)).await;
+        let status = self
+            .finish(&run_id, ending_of(&ended.exit), Some(&how), ended.usage.as_ref())
+            .await;
         tracing::info!(run = %short, messages = n, "runtime {how}; run {status}");
         self.ran(
             &run_id,
