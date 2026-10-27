@@ -335,6 +335,14 @@ impl Agent {
             .map(|t| format!("out of usage until {}", clock(t)))
     }
 
+    /// "waiting for a slot on claude-code (b…@…)" while its account's `max_runs_per_account` holds
+    /// its work back (COPL-232). Not a failure or a need: a seat going back starts it by itself.
+    pub fn waiting_for_slot_line(&self) -> Option<String> {
+        self.waiting_for_slot
+            .as_deref()
+            .map(|account| format!("waiting for a slot on {account}"))
+    }
+
     fn render(&self, out: &mut String) {
         let doing = match (self.state.as_str(), self.retiring) {
             ("running", true) => "● changes after this run".to_string(),
@@ -368,8 +376,8 @@ impl Agent {
                 clock(t)
             ));
         }
-        if let Some(account) = &self.waiting_for_slot {
-            out.push_str(&format!("  ‖ waiting for a slot on {account}\n"));
+        if let Some(line) = self.waiting_for_slot_line() {
+            out.push_str(&format!("  ‖ {line}\n"));
         }
         if let Some(t) = &self.unavailable_since {
             out.push_str(&format!("  × Copland unavailable since {}\n", clock(t)));
