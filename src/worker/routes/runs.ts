@@ -43,7 +43,10 @@
    batch. The claim, the assignment, the move and the log go in one batch
    whose second statement fails unless this run holds the claim, so two runs
    racing for a task cannot both win. A refusal is a 409 whose `code` says
-   why: closed, assigned_elsewhere or claimed (domain/runs.ts).
+   why: closed, assigned_elsewhere or claimed (domain/runs.ts). Claiming
+   again a task this run already holds, with nothing else to do, only
+   renews it, like any request through the run: it logs nothing, bumps no
+   version and tells nobody (COPL-207).
 
    A claim ends with its run (finish, or the principal paused, deleted or
    disabled), with an explicit release, when its task closes, is deleted or
@@ -388,9 +391,11 @@ export async function postClaim(env: Env, viewer: Viewer, id: string, changes: C
     after.assigneeIds = [me];
   }
 
+  /* Renewing a claim we already hold, with nothing else changing, is not news: no event, no version, nobody told (COPL-207). */
+  const news = fresh || !!active || assigning;
   let version: number | undefined;
   try {
-    version = await bumped(db, board.id, [
+    const statements = [
       /* Take it: new, or replacing a claim that lapsed or whose run ended, or renewing our own. */
       db
         .prepare(
@@ -421,20 +426,21 @@ export async function postClaim(env: Env, viewer: Viewer, id: string, changes: C
               .bind(task.id, active.id, rank, now),
           ]
         : []),
-      /* Renewing a claim we already hold, with nothing else changing, is not news. */
-      ...(fresh || active || assigning
-        ? [eventStatement(db, { boardId: board.id, taskId: task.id, actorId: me, kind: "task.claimed", before, after })]
-        : []),
+      ...(news ? [eventStatement(db, { boardId: board.id, taskId: task.id, actorId: me, kind: "task.claimed", before, after })] : []),
       ...follow.statements,
-    ]);
+    ];
+    if (news) version = await bumped(db, board.id, statements);
+    else await db.batch(statements);
   } catch (error) {
     const held = await currentClaim(db, task.id);
     if (held?.live && held.run_id !== runId) throw refused(`${task.key} was just claimed by ${heldBy(held)}`, "claimed");
     throw error;
   }
 
-  const news = await taskChange(db, board.id, version, [task.id, task.parentId, ...follow.moved.map((m) => m.id)]);
-  changes.board(await boardAudience(db, board.id), news);
+  if (news) {
+    const change = await taskChange(db, board.id, version, [task.id, task.parentId, ...follow.moved.map((m) => m.id)]);
+    changes.board(await boardAudience(db, board.id), change);
+  }
   return json(written(await findTask(db, task.id), follow.moved));
 }
 

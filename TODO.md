@@ -303,6 +303,15 @@ docs/DESIGN.md under Touch.
   tasks (`useTaskView` in `src/lib/queries.ts`). A live event naming one
   of those tasks refetches just it. 107 rows on the reads check's seed
   (its `inbox:` row), where it read the board (739)
+- A changed-files report tells only that overlap moved (COPL-207, for
+  COPL-206): its event names no task and bumps no version
+  (`BoardChange.overlap`), so the box skips it and a tab holding the board
+  reads the board's overlap (`GET /api/boards/:id/overlap`, 13 rows on the
+  reads check's seed) instead of the board (806). A task closing or
+  reopening on a board with code patches in and reads the overlap the same
+  way. A run claiming again a task it holds only renews it: no event, no
+  version, nobody told. Heartbeats and unchanged reports already told
+  nobody (checks/boardEvents.check.ts, the reads check's `live:` rows)
 - The daemon stops reading a whole board (COPL-212, for COPL-206): a run's
   repos and stage categories come from the board's shell (29 rows on the
   reads check's seed), whether a task has children from its own read's

@@ -97,7 +97,7 @@ import { getDevice, postDeviceApprove, postDeviceDeny, postDevicePoll, postDevic
 import { deleteOwnToken, deleteToken, getTokens, postToken, SELF_REVOKE_PATH } from "./routes/tokens";
 import { handleIntegration, isIntegrationPath } from "./integrations";
 import { getTaskDrift, postRevalidate } from "./drift";
-import { getTaskOverlap, putTaskFiles } from "./routes/files";
+import { getBoardOverlap, getTaskOverlap, putTaskFiles } from "./routes/files";
 import { asAccess, bearerFrom, requireWriteScope, touchStatements } from "./tokens";
 import { getMarketExtras } from "./routes/markets";
 import { deleteNote, getNotes, patchNote, postNote } from "./routes/notes";
@@ -252,6 +252,7 @@ const api = new Router<Ctx>()
   .on("GET", "/api/boards/:id", ({ env, viewer }, { id }) => getBoard(env, viewer, id))
   .on("GET", "/api/boards/:id/shell", ({ env, viewer }, { id }) => getBoardShell(env, viewer, id))
   .on("GET", "/api/boards/:id/closed", ({ env, viewer, url }, { id }) => getClosed(env, viewer, id, url))
+  .on("GET", "/api/boards/:id/overlap", ({ env, viewer }, { id }) => getBoardOverlap(env, viewer, id))
   .on("PATCH", "/api/boards/:id", ({ request, env, viewer, changes }, { id }) =>
     patchBoard(request, env, viewer, id, changes),
   )

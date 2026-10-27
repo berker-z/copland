@@ -690,6 +690,13 @@ mod tests {
         /* A burst with no board message touched nothing. */
         c.add(topics(&["inbox"]), t0);
         assert_eq!(c.take(t0 + COALESCE).unwrap().touched, Some(Touched::default()));
+        /* Nor does a changed-files report (COPL-207): only overlap moved, which the box doesn't show. */
+        c.add(
+            event_of(r#"{"topics":["board"],"tab":null,"board":"b","tasks":[],"assignees":[],"overlap":true}"#)
+                .unwrap(),
+            t0,
+        );
+        assert_eq!(c.take(t0 + COALESCE).unwrap().touched, Some(Touched::default()));
     }
 
     #[test]
