@@ -113,6 +113,25 @@ fn only(task_key: &str) -> String {
     )
 }
 
+/// The same for a lane (COPL-236), which handles its story's tasks' items too.
+fn only_lane(story: &str) -> String {
+    format!(
+        "This run handles only {story} and its tasks: their comments and mentions, which are in your inbox. Leave everything else there unread, messages above all, for the runs they belong to."
+    )
+}
+
+/// `COPLAND_ROLE` for a run in this workspace: a lead's read-only view, a story's lane (COPL-236),
+/// or a worker's worktree.
+fn role(ws: &Workspace) -> &'static str {
+    if ws.read_only {
+        "lead"
+    } else if ws.lane {
+        "lane"
+    } else {
+        "worker"
+    }
+}
+
 /// What a run on a task is told of its end (COPL-147): the runtime's turn ending is the run ending.
 const TURN: &str = "Your run ends when your turn does, and nothing brings you back: wait for whatever you start instead of leaving it in the background to pick up later, and if it is too long to wait for, push what you have, comment where it stands, and move the task to todo.";
 
@@ -153,6 +172,20 @@ pub fn prompt(
     match brief {
         Brief::Work => match workspace {
             /* A lead (COPL-87): an epic or story, or a task with children, is planned, not coded. */
+            /* A lane (COPL-236): a story's tasks, one at a time, in one worktree, one PR each. */
+            Some(ws) if ws.lane => format!(
+                "You are @{handle} running {task_key} as a lane: a story whose tasks you do yourself, one after another, in this one git worktree of {repo} (now on {branch}, {target} at {base}). Read {task_key} with get_task, and list its open tasks with list_tasks {{ parent: {task_key} }}, taking them in order: after the tasks each depends on (depends_on), then as they stand on the board. If it has none, plan them first as the copland guide's Leading section says, assigned to yourself, and then do them in this run. For each task in turn: claim_task it; `git fetch` and make its branch from {target} as it is now (`git switch -c <key>-<short-title> {target}`, the key lowercased, as copl-12-short-title); do it as the guide's Code section says, one PR with `Fixes <its key>` in its body, merged once CI is green;{integrate} wait for it to land (it moves to done), and only then start the next. Leave {task_key} open: it closes when its tasks are done. {TURN} {only}",
+                repo = ws.repo,
+                branch = ws.branch,
+                target = ws.target,
+                base = &ws.base[..ws.base.len().min(8)],
+                integrate = if ws.pull_requests {
+                    ""
+                } else {
+                    " this repo has no pull requests, so integrate by fast-forwarding main and move the task to done yourself;"
+                },
+                only = only_lane(task_key),
+            ),
             Some(ws) if ws.read_only => format!(
                 "You are @{handle} leading {task_key}, which is work to plan into tasks, not to code. Your working directory is {repo} at {target} ({base}), read-only: read it to plan. Read {task_key} with get_task, and plan it as the copland guide's Leading section says: child tasks with parent {task_key}, depends_on where one needs another's result, each assigned. Leave {task_key} open: it closes when its children are done. {only}",
                 repo = ws.repo,
@@ -539,7 +572,7 @@ async fn supervise(
     /* A worker's Claude Code run with resume_chains keeps its session for the next task of its
     chain, and resumes the last one's when it is that next task (COPL-189). */
     let chained = match (workspace, &agent.code_command) {
-        (Some(ws), Some(code)) if agent.resume_chains && !ws.read_only && chain::resumable(code) => {
+        (Some(ws), Some(code)) if agent.resume_chains && !ws.read_only && !ws.lane && chain::resumable(code) => {
             Some(chain::argv(code, resume))
         }
         _ => None,
@@ -638,7 +671,7 @@ async fn supervise(
             .env("COPLAND_BRANCH", &ws.branch)
             .env("COPLAND_BASE", &ws.base)
             .env("COPLAND_TARGET", &ws.target)
-            .env("COPLAND_ROLE", if ws.read_only { "lead" } else { "worker" })
+            .env("COPLAND_ROLE", role(ws))
             .env(
                 "COPLAND_INTEGRATE",
                 if ws.pull_requests {
@@ -669,9 +702,11 @@ async fn supervise(
     /* A worker's worktree: its changed files are reported while it works and once at the end. */
     let reported = workspace.filter(|ws| brief == Brief::Work && !ws.read_only);
     let mut reporter = Reporter::default();
+    /* A lane's are reported against the task its run holds now (COPL-236), each with a reporter of its own. */
+    let mut on: Option<String> = None;
     let mut report = interval_at(Instant::now() + REPORT_EVERY, REPORT_EVERY);
     /* A worker on a repo with PRs: its task is watched for a review_first PR it opened (COPL-193). */
-    let watched = reported.is_some_and(|ws| ws.pull_requests);
+    let watched = reported.is_some_and(|ws| ws.pull_requests && !ws.lane);
     let mut review = interval_at(Instant::now(), limits.review_every);
     let mut wait = ReviewWait::default();
     let exit = loop {
@@ -699,7 +734,13 @@ async fn supervise(
             }
             _ = report.tick(), if alive && reported.is_some() => {
                 if let Some(ws) = reported {
-                    reporter.report(api, secret, task_id, ws).await;
+                    if let Some((id, ws)) = reporting_on(api, agent, secret, run_id, task_id, ws).await {
+                        if on.as_deref() != Some(id.as_str()) {
+                            reporter = Reporter::default();
+                            on = Some(id.clone());
+                        }
+                        reporter.report(api, secret, &id, &ws).await;
+                    }
                 }
             }
             _ = review.tick(), if watched => {
@@ -760,11 +801,61 @@ async fn supervise(
     }
     /* The runtime is done, the run not yet finished: the last word on what the work changed. */
     if let Some(ws) = reported.filter(|_| alive) {
-        reporter
-            .report_last(api, secret, run_id, task_id, ws, last_word, &shutdown)
-            .await;
+        if let Some((id, ws)) = reporting_on(api, agent, secret, run_id, task_id, ws).await {
+            if on.as_deref() != Some(id.as_str()) {
+                reporter = Reporter::default();
+            }
+            reporter
+                .report_last(api, secret, run_id, &id, &ws, last_word, &shutdown)
+                .await;
+        }
     }
     exit
+}
+
+/// Which task a run's changed files are reported against, by id, with the workspace as that
+/// task's: a worker's own. A lane's (COPL-236) are the story's task its run holds now, so overlap
+/// stays per task; None while it holds none (between tasks) or that can't be read.
+async fn reporting_on(
+    api: &Api,
+    agent: &AgentConfig,
+    secret: &Secret,
+    run_id: &str,
+    task_id: &str,
+    ws: &Workspace,
+) -> Option<(String, Workspace)> {
+    if !ws.lane {
+        return Some((task_id.to_string(), ws.clone()));
+    }
+    let run = match api.run(secret, run_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(task = %ws.key, "reading which task the lane is on: {e}");
+            return None;
+        }
+    };
+    let key = lane_task(&run, &ws.key)?;
+    match api.task(&agent.token, key).await {
+        Ok(t) => Some((
+            t.id,
+            Workspace {
+                key: t.key,
+                ..ws.clone()
+            },
+        )),
+        Err(e) => {
+            tracing::debug!(task = %key, "reading the lane's task: {e}");
+            None
+        }
+    }
+}
+
+/// The task a lane run is on (COPL-236): the claim it holds other than its story's.
+fn lane_task<'a>(run: &'a Run, story: &str) -> Option<&'a str> {
+    run.claims
+        .iter()
+        .map(String::as_str)
+        .find(|k| !k.eq_ignore_ascii_case(story))
 }
 
 /// The runtime's stdout into the run log as it comes, a line at a time: its result line
@@ -960,6 +1051,7 @@ mod tests {
             read_only: false,
             pull_requests: true,
             after: None,
+            lane: false,
         };
         let lead = prompt(
             "me/dev",
@@ -1083,6 +1175,7 @@ mod tests {
             read_only: false,
             pull_requests: true,
             after: None,
+            lane: false,
         };
         let lead = Workspace {
             read_only: true,
@@ -1119,6 +1212,7 @@ mod tests {
             read_only: false,
             pull_requests: true,
             after: None,
+            lane: false,
         };
         for p in [
             prompt_for("me/dev", "COPL-9", Brief::Work),
@@ -1187,6 +1281,7 @@ mod tests {
             read_only: false,
             pull_requests: true,
             after: None,
+            lane: false,
         }
     }
 
@@ -1732,6 +1827,160 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         assert_eq!(ended.exit, Exit::Code(0));
         assert_eq!(built.unwrap(), "built\n");
+    }
+
+    /// COPL-236: a lane is told to do its story's tasks in order, each on a branch of its own from
+    /// main as it is then, one PR each, waiting for each to land; that its turn is its run; and that
+    /// it handles its story's tasks' comments too. Its runtime is told it is a lane.
+    #[test]
+    fn a_lane_does_its_storys_tasks_one_at_a_time() {
+        let ws = Workspace {
+            repo: "o/r".into(),
+            key: "COPL-227".into(),
+            dir: "/c/work/COPL-227".into(),
+            clone: "/c/repos/o/r".into(),
+            branch: "HEAD".into(),
+            base: "0123456789abcdef".into(),
+            target: "origin/main".into(),
+            fresh: true,
+            read_only: false,
+            pull_requests: true,
+            after: None,
+            lane: true,
+        };
+        let p = prompt("me/dev", "COPL-227", Brief::Work, Some(&ws), &[]);
+        assert!(p.starts_with("You are @me/dev running COPL-227 as a lane"), "{p}");
+        for said in [
+            "list_tasks { parent: COPL-227 }",
+            "depends_on",
+            "plan them first as the copland guide's Leading section says, assigned to yourself",
+            "claim_task it",
+            "git switch -c <key>-<short-title> origin/main",
+            "`Fixes <its key>`",
+            "wait for it to land (it moves to done), and only then start the next",
+            "Leave COPL-227 open",
+            TURN,
+            "This run handles only COPL-227 and its tasks: their comments and mentions",
+            "messages above all",
+        ] {
+            assert!(p.contains(said), "{said:?} in {p}");
+        }
+        assert!(!p.contains("fast-forwarding"));
+        let plain = prompt(
+            "me/dev",
+            "COPL-227",
+            Brief::Work,
+            Some(&Workspace {
+                pull_requests: false,
+                ..ws.clone()
+            }),
+            &[],
+        );
+        assert!(plain.contains("integrate by fast-forwarding main"), "{plain}");
+        assert_eq!(role(&ws), "lane");
+        assert_eq!(
+            role(&Workspace {
+                lane: false,
+                ..ws.clone()
+            }),
+            "worker"
+        );
+        assert_eq!(
+            role(&Workspace {
+                lane: false,
+                read_only: true,
+                ..ws
+            }),
+            "lead"
+        );
+    }
+
+    /// COPL-236: a lane's files go to the task its run holds besides the story, and to none
+    /// between tasks.
+    #[test]
+    fn a_lane_reports_against_the_task_it_holds() {
+        let run = |claims: &[&str]| Run {
+            id: "r".into(),
+            short: "r".into(),
+            status: "running".into(),
+            claims: claims.iter().map(|c| c.to_string()).collect(),
+            host: None,
+        };
+        assert_eq!(lane_task(&run(&["COPL-227"]), "COPL-227"), None);
+        assert_eq!(lane_task(&run(&["copl-227", "COPL-240"]), "COPL-227"), Some("COPL-240"));
+        assert_eq!(lane_task(&run(&["COPL-240", "COPL-227"]), "COPL-227"), Some("COPL-240"));
+        assert_eq!(lane_task(&run(&[]), "COPL-227"), None);
+    }
+
+    /// COPL-236: a lane is held to the ceiling like any run, and stopped there the same way, which
+    /// fails it (`ending_of`).
+    #[tokio::test]
+    async fn a_lane_is_stopped_at_the_ceiling() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target")
+            .join(format!("copland-lane-{}", std::process::id()));
+        let ws = Workspace {
+            key: "COPL-227".into(),
+            lane: true,
+            ..worktree(&root.join("work"))
+        };
+        let agent = AgentConfig {
+            url: "http://127.0.0.1:9".into(),
+            handle: "me/dev".into(),
+            token: Secret::new("cpl_x"),
+            command: vec!["false".into()],
+            workdir: std::env::temp_dir(),
+            client: "test".into(),
+            code_command: Some(["sleep", "30"].map(String::from).to_vec()),
+            writable: Vec::new(),
+            runtime: crate::config::Runtime::ClaudeCode,
+            code_dir: root.join("code"),
+            max_runs: 10,
+            resume_chains: false,
+        };
+        if let Err(said) = sandbox::of(&agent).probe() {
+            eprintln!("the sandbox doesn't work here; skipping: {said}");
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        let api = Api::new(&agent.url).unwrap();
+        let (_tx, shutdown) = watch::channel(false);
+        let scratch = root.join("state");
+        let started = std::time::Instant::now();
+        let ended = run_until(
+            Launch {
+                api: &api,
+                agent: &agent,
+                handle: "me/dev",
+                run_id: "00000000-0000-0000-0000-000000000004",
+                secret: &Secret::new("cplr_x"),
+                task_id: "t-227",
+                task_key: "COPL-227",
+                brief: Brief::Work,
+                messages: &[],
+                state_dir: &scratch,
+                runtime_dir: &scratch,
+                workspace: Some(&ws),
+                resume: None,
+                last_word: Backoff {
+                    first: Duration::from_millis(1),
+                    most: Duration::from_millis(1),
+                    give_up: Duration::ZERO,
+                },
+            },
+            shutdown,
+            std::future::pending(),
+            Limits {
+                ceiling: Duration::from_millis(300),
+                ..Limits::RUN
+            },
+        )
+        .await;
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ended.exit, Exit::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(20));
     }
 
     /// A runtime that dies at once, saying nothing: the log's last line says how, and so does
