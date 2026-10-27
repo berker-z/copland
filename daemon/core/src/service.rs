@@ -149,12 +149,12 @@ fn log_path() -> PathBuf {
     expand_home("~/Library/Logs/copland-daemon.log")
 }
 
-/// Run a command, failing with its stderr when it fails.
+/// Run a command, failing with its stderr when it fails, and saying so when it isn't there.
 fn run(program: &str, args: &[&str]) -> Result<()> {
-    let out = Command::new(program)
-        .args(args)
-        .output()
-        .with_context(|| format!("running {program}"))?;
+    let out = match Command::new(program).args(args).output() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!("there is no {program} here"),
+        out => out.with_context(|| format!("running {program}"))?,
+    };
     if !out.status.success() {
         bail!(
             "`{program} {}` failed ({}): {}",
@@ -499,11 +499,18 @@ pub fn install(config: &Path, program: &Path) -> Result<Installed> {
     } else {
         let unit = unit_path();
         let wrote = write_if_changed(&unit, &systemd_unit(&program, Some(&config)), unit_program)?;
-        run("systemctl", &["--user", "daemon-reload"])?;
-        run("systemctl", &["--user", "enable", UNIT])?;
         /* restart, not start: a reinstall's new unit replaces the one running, and an unchanged
         one starts the binary on disk, which an upgrade in place has replaced. */
-        run("systemctl", &["--user", "restart", UNIT])?;
+        run("systemctl", &["--user", "daemon-reload"])
+            .and_then(|_| run("systemctl", &["--user", "enable", UNIT]))
+            .and_then(|_| run("systemctl", &["--user", "restart", UNIT]))
+            .with_context(|| {
+                format!(
+                    "wrote {}, but couldn't enable and start it: this needs systemd's user manager \
+                     (`systemctl --user`); without one, run `copland-daemon` from your session instead",
+                    unit.display()
+                )
+            })?;
         let user = std::env::var("USER").unwrap_or_else(|_| "$USER".into());
         let linger = Command::new("loginctl")
             .args(["show-user", &user, "--property=Linger", "--value"])
