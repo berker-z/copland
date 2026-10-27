@@ -45,19 +45,35 @@ t("a parent already active is left alone", run(chain("active", "active", "active
 t("a parent blocked by hand is not pulled back to active", run(chain("blocked", "blocked", "active", "todo"), "a") === "");
 t("everything delivered closes story and epic", run(chain("active", "active", "done", "done"), "a") === "S:done E:done");
 t("one child still ready holds the parent open", run(chain("active", "active", "done", "todo"), "a") === "");
-t("a parked child holds the parent open", run(chain("active", "active", "done", "backlog"), "a") === "");
-t("adding a parked child does not close the parent", run(chain("todo", "todo", "done", "backlog"), "b") === "");
+t("a parked child holds the parent open", run(chain("active", "active", "done", "backlog"), "a").split(" ").every((m) => !m.endsWith(":done")));
+t("the rest done and one parked: story and epic park", run(chain("active", "active", "done", "backlog"), "a") === "S:backlog E:backlog");
+t("adding a parked child does not close the parent, it parks it", run(chain("todo", "todo", "done", "backlog"), "b") === "S:backlog E:backlog");
+t("a blocked parent parks too", run(chain("blocked", "blocked", "backlog", "done"), "a") === "S:backlog E:backlog");
+t("parked plus cancelled parks", run(chain("active", "active", "backlog", "cancelled"), "a") === "S:backlog E:backlog");
+t("a child in todo keeps the parent out of backlog", run(chain("active", "active", "backlog", "todo"), "a") === "");
+t("a child under way keeps the parent active", run(chain("active", "active", "backlog", "active"), "a") === "");
+t("a closed parent with a parked child stays closed", run(chain("cancelled", "cancelled", "backlog", "done"), "a") === "");
+t("a board without backlog leaves the parent", run(chain("active", "active", "done", "todo").map((x) => (x.id === "b" ? { ...x, stageId: "backlog" } : x)), "b", FULL.filter((s) => s.category !== "backlog")) === "");
+t("deleting the last ready child parks the parent", followUp(chain("active", "active", "backlog", "todo").filter((x) => x.id !== "b"), FULL, [{ parentId: "S", childId: "b" }]).map((m) => `${m.id}:${m.to}`).join(" ") === "S:backlog E:backlog");
+{
+  /* the epic has another story still in todo: only the story parks */
+  const tasks = [...chain("active", "active", "backlog", "done"), task("S2", "E", "todo")];
+  t("an epic with another story ready stays where it is", run(tasks, "a") === "S:backlog");
+}
 t("deleting the last open child does not close the parent", followUp(chain("active", "active", "done", "done").filter((x) => x.id !== "b"), FULL, [{ parentId: "S", childId: "b" }]).length === 0);
 t("a child moving to todo under a parent whose rest is done does not close it", run(chain("active", "active", "todo", "done"), "a") === "");
 t("the parked child stays where it is", followUp(chain("active", "active", "done", "backlog"), FULL, [{ parentId: "S", childId: "a" }]).every((m) => m.id !== "b"));
-t("only parked children: the parent is left alone", run(chain("todo", "todo", "backlog", "backlog"), "a") === "");
+t("only parked children: story and epic park", run(chain("todo", "todo", "backlog", "backlog"), "a") === "S:backlog E:backlog");
 t("done plus cancelled closes as done", run(chain("active", "active", "done", "cancelled"), "a") === "S:done E:done");
 t("all cancelled leaves the parent alone", run(chain("active", "active", "cancelled", "cancelled"), "a") === "");
 t("a cancelled parent stays cancelled when the rest is done", run(chain("active", "cancelled", "done", "done"), "a") === "");
 t("a reopened child going active reopens story and epic", run(chain("done", "done", "active", "done"), "a") === "S:active E:active");
 t("a child back in todo under a done parent reopens it to todo", run(chain("done", "done", "todo", "done"), "a") === "S:todo E:todo");
 t("a parked child under a done parent leaves it done", run(chain("done", "done", "backlog", "done"), "a") === "");
-t("a todo child does not pull a parked parent into todo", run(chain("backlog", "backlog", "todo", "todo"), "a") === "");
+t("a parked child picked up again (to todo) brings story and epic back", run(chain("backlog", "backlog", "todo", "done"), "a") === "S:todo E:todo");
+t("a parked child claimed brings story and epic to active", run(chain("backlog", "backlog", "active", "done"), "a") === "S:active E:active");
+t("a new child added ready unparks the parent", run(chain("backlog", "backlog", "backlog", "todo"), "b") === "S:todo E:todo");
+t("another child changing leaves a parked parent with a todo child", run(chain("backlog", "backlog", "todo", "done"), "b") === "");
 t("a parent whose children are all todo is not demoted from active", run(chain("active", "active", "todo", "todo"), "a") === "");
 t("a board without the stage a rule needs leaves the parent", run(chain("active", "active", "done", "done"), "a", COPL.filter((s) => s.category !== "done")) === "");
 t("a board without cancelled (COPL) still closes on done", run(chain("active", "active", "done", "done"), "a", COPL) === "S:done E:done");
