@@ -10,6 +10,7 @@
    a board, which board and which tasks (COPL-151): the refetch goes through
    the API like any other read. A board event that names its tasks
    refetches those and patches them into the cached board (lib/boardPatch.ts);
+   one that says only overlap moved reads the board's overlap (COPL-207);
    one that names a board but no tasks reads that board whole; one that
    names no board (an older Worker) reads every board, as before. The boards
    list refetches only on "boards". A tab ignores its own writes, which it
@@ -33,7 +34,7 @@ import { useEffect } from "react";
 import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import type { BoardChange, LiveEvent, LiveTopic } from "@/domain/live";
 import { applyBoardEvents } from "./boardPatch";
-import { fetchTask, KEYS } from "./queries";
+import { fetchOverlap, fetchTask, KEYS } from "./queries";
 import { setCatchingUp, setLive, TAB_ID } from "./liveState";
 import { listen } from "./liveSocket";
 import { catchUpLanes, lanes } from "./liveWindow";
@@ -87,7 +88,7 @@ export function useLiveUpdates(enabled: boolean): void {
     if (!enabled || typeof WebSocket === "undefined") return;
 
     /* Each board's events, by board: patched or read on its own, at most once a window (lib/liveWindow.ts). */
-    const boards = lanes<BoardChange>((boardId, events) => void applyBoardEvents(queryClient, fetchTask, boardId, events, document.hidden));
+    const boards = lanes<BoardChange>((boardId, events) => void applyBoardEvents(queryClient, { task: fetchTask, overlap: fetchOverlap }, boardId, events, document.hidden));
     /* What reads across boards (only ever one lane), and every other topic (one lane too). */
     const across = lanes<never>(() => {
       for (const queryKey of ACROSS_BOARDS) void queryClient.invalidateQueries({ queryKey, refetchType: document.hidden ? "none" : "active" });

@@ -192,6 +192,7 @@ function merge(a: BoardChange, b: BoardChange): BoardChange {
   if (a.version !== undefined && a.version === b.version) out.version = a.version;
   if (a.tasks && b.tasks) out.tasks = [...new Set([...a.tasks, ...b.tasks])];
   if (a.assignees || b.assignees) out.assignees = [...new Set([...(a.assignees ?? []), ...(b.assignees ?? [])])];
+  if (a.overlap || b.overlap) out.overlap = true;
   return out;
 }
 

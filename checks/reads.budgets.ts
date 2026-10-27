@@ -11,8 +11,8 @@
    COPL-131 takes away. The board read went flat with COPL-150 (open tasks
    and the last two weeks' closed ones); its paged older history is a page
    of 100. Besides the routes, the live rows are a tab's cost: what a tab
-   reads when it hears a task edit (COPL-151), a burst of them, or its
-   socket coming back (COPL-209).
+   reads when it hears a task edit (COPL-151), a changed-files report
+   (COPL-207), a burst of edits, or its socket coming back (COPL-209).
    ========================================================================== */
 
 export interface Budget {
@@ -59,4 +59,7 @@ export const BUDGETS: Record<string, Budget> = {
      GET /api/boards/:id, 739 rows. 107 before its parent's progress summed
      what its subtree's runs cost (COPL-71). */
   "inbox: one task opened": { rows: 136, flat: true },
+  /* What a tab holding the board reads when a run reports changed files
+     (COPL-207): the board's overlap. Until then, GET /api/boards/:id, 806 rows. */
+  "live: a changed-files report, heard": { rows: 13, flat: true },
 };
