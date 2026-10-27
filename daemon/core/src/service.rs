@@ -61,10 +61,10 @@ fn word(s: &str) -> String {
     }
 }
 
-/// The systemd user unit running `program --headless [--config FILE]`, with `PATH` when given
-/// (the runtimes are looked up on it, and the user manager's is not your shell's). Logs go to the
-/// journal: the daemon writes them to stderr, without colour when that isn't a terminal.
-pub fn systemd_unit(program: &str, config: Option<&str>, path: Option<&str>) -> String {
+/// The systemd user unit running `program --headless [--config FILE]`. No PATH: the daemon builds
+/// the one it looks runtimes up on when it starts (`search_path`). Logs go to the journal: the
+/// daemon writes them to stderr, without colour when that isn't a terminal.
+pub fn systemd_unit(program: &str, config: Option<&str>) -> String {
     let mut exec = vec![exec_word(program)];
     exec.extend(arguments(config).iter().map(|a| exec_word(a)));
     let mut out = String::from(
@@ -81,9 +81,6 @@ pub fn systemd_unit(program: &str, config: Option<&str>, path: Option<&str>) -> 
         reload.extend(["--config".to_string(), exec_word(c)]);
     }
     out.push_str(&format!("ExecReload={}\n", reload.join(" ")));
-    if let Some(p) = path {
-        out.push_str(&format!("Environment={}\n", word(&format!("PATH={p}"))));
-    }
     out.push_str(&format!("Restart=on-failure\nRestartSec={RESTART_SEC}\n"));
     out.push_str(
         "# SIGTERM to the daemon alone: it stops its runtimes and finishes their runs as\n\
@@ -104,8 +101,8 @@ fn xml(s: &str) -> String {
 }
 
 /// The launchd agent running `program --headless [--config FILE]` at login, again after it
-/// fails (not after a clean stop), with its output appended to `log`.
-pub fn launchd_plist(program: &str, config: Option<&str>, path: Option<&str>, log: &str) -> String {
+/// fails (not after a clean stop), with its output appended to `log`. No PATH, as for the unit.
+pub fn launchd_plist(program: &str, config: Option<&str>, log: &str) -> String {
     let mut out = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
@@ -118,12 +115,6 @@ pub fn launchd_plist(program: &str, config: Option<&str>, path: Option<&str>, lo
         out.push_str(&format!("\t\t<string>{}</string>\n", xml(&a)));
     }
     out.push_str("\t</array>\n");
-    if let Some(p) = path {
-        out.push_str(&format!(
-            "\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n\t\t<string>{}</string>\n\t</dict>\n",
-            xml(p)
-        ));
-    }
     out.push_str(&format!(
         "\t<key>RunAtLoad</key>\n\t<true/>\n\
          \t<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>\n\
@@ -246,7 +237,6 @@ pub fn install(config: &Path, program: &Path) -> Result<Installed> {
     Config::load(config).context("loading the config, which the service would run")?;
     let config = fs::canonicalize(config).with_context(|| format!("resolving {}", config.display()))?;
     let (program, config) = (display(program)?, display(&config)?);
-    let path = std::env::var("PATH").ok().filter(|p| !p.is_empty());
 
     let mut notes = Vec::new();
     if program.starts_with("/nix/store/") {
@@ -267,11 +257,8 @@ pub fn install(config: &Path, program: &Path) -> Result<Installed> {
         for dir in [plist.parent(), log.parent()].into_iter().flatten() {
             fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
         }
-        fs::write(
-            &plist,
-            launchd_plist(&program, Some(&config), path.as_deref(), &display(&log)?),
-        )
-        .with_context(|| format!("writing {}", plist.display()))?;
+        fs::write(&plist, launchd_plist(&program, Some(&config), &display(&log)?))
+            .with_context(|| format!("writing {}", plist.display()))?;
         let domain = format!("gui/{}", uid()?);
         /* Loaded already (installed before): out first, so the new file is the one that runs. */
         let _ = run("launchctl", &["bootout", &format!("{domain}/{LABEL}")]);
@@ -287,7 +274,7 @@ pub fn install(config: &Path, program: &Path) -> Result<Installed> {
         if let Some(dir) = unit.parent() {
             fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
         }
-        fs::write(&unit, systemd_unit(&program, Some(&config), path.as_deref()))
+        fs::write(&unit, systemd_unit(&program, Some(&config)))
             .with_context(|| format!("writing {}", unit.display()))?;
         run("systemctl", &["--user", "daemon-reload"])?;
         run("systemctl", &["--user", "enable", UNIT])?;
@@ -669,7 +656,6 @@ mod tests {
         let unit = systemd_unit(
             "/home/me/.local/bin/copland-daemon",
             Some("/home/me/my configs/daemon.toml"),
-            Some("/home/me/.local/bin:/usr/bin"),
         );
         assert!(unit.contains(
             "\nExecStart=/home/me/.local/bin/copland-daemon --headless --config \"/home/me/my configs/daemon.toml\"\n"
@@ -677,14 +663,14 @@ mod tests {
         assert!(unit.contains(
             "\nExecReload=/home/me/.local/bin/copland-daemon reload --config \"/home/me/my configs/daemon.toml\"\n"
         ));
-        assert!(unit.contains("\nEnvironment=PATH=/home/me/.local/bin:/usr/bin\n"));
+        /* No PATH: the daemon finds its runtimes when it starts (COPL-216). */
+        assert!(!unit.contains("Environment="));
         assert!(unit.contains("\nRestart=on-failure\nRestartSec=10\n"));
         assert!(unit.contains("\nKillMode=mixed\n"));
         assert!(unit.ends_with("[Install]\nWantedBy=default.target\n"));
-        /* No --config, no PATH: the daemon's defaults and the user manager's. */
-        let bare = systemd_unit("/bin/copland-daemon", None, None);
+        /* No --config: the daemon's default. */
+        let bare = systemd_unit("/bin/copland-daemon", None);
         assert!(bare.contains("\nExecStart=/bin/copland-daemon --headless\nExecReload=/bin/copland-daemon reload\n"));
-        assert!(!bare.contains("Environment="));
     }
 
     #[test]
@@ -703,7 +689,6 @@ mod tests {
         let plist = launchd_plist(
             "/Applications/Copland.app/Contents/MacOS/copland-daemon",
             Some("/Users/me/a&b/daemon.toml"),
-            Some("/opt/homebrew/bin:/usr/bin"),
             "/Users/me/Library/Logs/copland-daemon.log",
         );
         assert!(plist.contains(&format!("<string>{LABEL}</string>")));
@@ -712,14 +697,13 @@ mod tests {
              \t\t<string>--headless</string>\n\t\t<string>--config</string>\n\
              \t\t<string>/Users/me/a&amp;b/daemon.toml</string>\n\t</array>\n"
         ));
-        assert!(plist.contains("<key>PATH</key>\n\t\t<string>/opt/homebrew/bin:/usr/bin</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>\n\t<true/>"));
         assert!(plist.contains("<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>"));
         assert!(
             plist
                 .contains("<key>StandardErrorPath</key>\n\t<string>/Users/me/Library/Logs/copland-daemon.log</string>")
         );
-        assert!(!launchd_plist("/x", None, None, "/l").contains("EnvironmentVariables"));
+        assert!(!plist.contains("EnvironmentVariables"));
     }
 
     /// The release's files are these renderings: the tarball's unit for its ~/.local layout (the
@@ -729,11 +713,11 @@ mod tests {
     fn release_files_are_what_install_writes() {
         assert_eq!(
             release("copland-daemon.service"),
-            systemd_unit("/PROGRAM", None, None).replace("/PROGRAM", "%h/.local/bin/copland-daemon")
+            systemd_unit("/PROGRAM", None).replace("/PROGRAM", "%h/.local/bin/copland-daemon")
         );
         assert_eq!(
             release(&format!("{LABEL}.plist")),
-            launchd_plist("@DAEMON@", None, None, "@LOG@")
+            launchd_plist("@DAEMON@", None, "@LOG@")
         );
     }
 

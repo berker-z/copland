@@ -250,6 +250,50 @@ fn uses(a: &AgentConfig) -> Vec<(Runtime, Vec<String>)> {
     }
 }
 
+/// The programs runs start, each once: every agent's runtimes, as `runtimes` looks for them, then
+/// git, gh and (on Linux) bubblewrap.
+pub fn programs(agents: &[AgentConfig]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let tools = ["git", "gh"].into_iter().map(String::from);
+    let bwrap = cfg!(target_os = "linux").then(|| crate::sandbox::BWRAP.to_string());
+    let all = agents
+        .iter()
+        .flat_map(uses)
+        .map(|(r, argv)| program_of(&r, &argv))
+        .chain(tools)
+        .chain(bwrap);
+    for p in all {
+        if !p.is_empty() && !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Where each program was found (COPL-216), or that it wasn't, under the PATH it was looked up on.
+pub fn render_found(path: &str, found: &[(String, Option<PathBuf>)]) -> String {
+    let width = found.iter().map(|(p, _)| p.chars().count()).max().unwrap_or(0);
+    let mut out = format!("PATH: {path}\n");
+    for (program, at) in found {
+        let at = at.as_ref().map_or("not found".to_string(), |p| p.display().to_string());
+        out.push_str(&format!("  {program:<width$}  {at}\n"));
+    }
+    out
+}
+
+/// `render_found` for `programs`, on this process's PATH.
+pub fn found_on_path(agents: &[AgentConfig]) -> String {
+    let found: Vec<_> = programs(agents)
+        .into_iter()
+        .map(|p| {
+            let at = locate(&p);
+            (p, at)
+        })
+        .collect();
+    let path = std::env::var("PATH").unwrap_or_default();
+    render_found(&path, &found)
+}
+
 /// What an agent's daemon reports of its runtimes (COPL-179): the checks `runtimes` makes, for this
 /// agent's, once each, by name. A runtime not known here is logged in as far as anyone can tell.
 pub async fn runtime_capabilities(agent: &AgentConfig) -> Vec<RuntimeCapability> {
@@ -299,7 +343,7 @@ pub async fn runtime(runtime: &Runtime, argv: &[String]) -> Check {
             Runtime::Unknown(_) => format!("install {program}"),
         };
         return Check::fail(name, format!("{program} not found on PATH")).with_fix(Fix::manual(format!(
-            "{install}, so it is on the PATH the daemon starts with"
+            "{install} on the PATH above (your login shell's is on it), then restart the daemon"
         )));
     };
     let at = path.display().to_string();
@@ -1107,6 +1151,20 @@ mod tests {
         /* A fix on a check that passed isn't shown. */
         let passed = Check::ok("a", "fine").with_fix(Fix::manual("x"));
         assert_eq!(render(&[passed]), "✓ a  fine\n");
+    }
+
+    #[test]
+    fn says_where_each_program_was_found_and_on_which_path() {
+        let found = [
+            ("claude".to_string(), Some(PathBuf::from("/home/me/.local/bin/claude"))),
+            ("droid".to_string(), None),
+            ("git".to_string(), Some(PathBuf::from("/usr/bin/git"))),
+        ];
+        assert_eq!(
+            render_found("/home/me/.local/bin:/usr/bin", &found),
+            "PATH: /home/me/.local/bin:/usr/bin\n  claude  /home/me/.local/bin/claude\n  \
+             droid   not found\n  git     /usr/bin/git\n"
+        );
     }
 
     #[test]

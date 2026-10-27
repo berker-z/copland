@@ -23,6 +23,7 @@ pub mod reload;
 pub mod runner;
 pub mod runtime;
 pub mod sandbox;
+pub mod search_path;
 pub mod service;
 pub mod setup;
 pub mod socket;

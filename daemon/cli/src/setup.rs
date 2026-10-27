@@ -353,6 +353,7 @@ pub fn pick_runtime(answer: &str, found: &[Found]) -> Result<runtime::Runtime> {
 /// The preflight on `config`, printed; with `fix`, offer each failing check's fix (y/N) and, when
 /// one ran, check again. How many still fail.
 pub async fn check(config: &Config, fix: bool) -> Result<usize> {
+    println!("{}", preflight::found_on_path(&config.agents));
     let mut checks = preflight::run(config).await;
     print!("{}", preflight::render(&checks));
     if fix && preflight::worst(&checks) != preflight::Status::Ok {

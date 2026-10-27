@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use copland_daemon_core::client;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
+use copland_daemon_core::search_path;
 use copland_daemon_core::service::{self, Log, Note, Uninstalled};
 use copland_daemon_core::socket::Serve;
 use copland_daemon_core::{Config, Daemon, Lock, Paths};
@@ -87,8 +88,7 @@ enum Command {
     Reload,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("COPLAND_LOG").unwrap_or_else(|_| "info".into()))
         .with_target(false)
@@ -97,6 +97,23 @@ async fn main() -> Result<()> {
         .init();
     let args = Args::parse();
     let _ = args.headless;
+    /* Running the agents, or checking that they can run: the PATH runtimes are found on is built
+    now (COPL-216), before the runtime's threads, since setting it isn't thread safe. */
+    let runs = args.command.is_none() && !(args.setup || args.install_service || args.uninstall_service);
+    if runs {
+        let path = search_path::set();
+        if !args.check {
+            tracing::info!(path = %path.to_string_lossy(), "runtimes are looked up on");
+        }
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("starting the async runtime")?
+        .block_on(run(args))
+}
+
+async fn run(args: Args) -> Result<()> {
     let named = args.config.is_some();
     let path = args.config.unwrap_or_else(default_config_path);
     if let Some(command) = args.command {
