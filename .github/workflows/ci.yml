@@ -174,8 +174,10 @@ jobs:
           # Started by lingering, but not waited for; this waits. The runner has
           # no user D-Bus, so systemctl --user uses the manager's own socket.
           sudo systemctl start user@$uid.service
-          for _ in $(seq 60); do [ -S /run/user/$uid/systemd/private ] && break; sleep 1; done
-          [ -S /run/user/$uid/systemd/private ] || { echo "no user manager for ci after 60s"; exit 1; }
+          # As ci: its /run/user is its own (0700).
+          ready() { sudo -u ci test -S /run/user/$uid/systemd/private; }
+          for _ in $(seq 60); do ready && break; sleep 1; done
+          ready || { sudo systemctl status user@$uid.service --no-pager; exit 1; }
           # A login's environment, not the runner's (its XDG_CONFIG_HOME is /home/runner's).
           sudo -u ci env -i HOME=/home/ci USER=ci LOGNAME=ci SHELL=/bin/bash \
             PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
