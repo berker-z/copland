@@ -1,0 +1,37 @@
+# The daemon flake's checks (COPL-217): its home-manager module evaluated
+# in a home configuration and the units it renders compared with
+# release/copland-daemon.service (daemon/nix/checks.nix). The checks use a
+# stub package, so this builds no GPUI and needs no cache; `nix flake
+# check` only evaluates the real package. Only on PRs that change the flake,
+# its modules, or what the flake reads while evaluating: Cargo.toml (the
+# version), the shipped unit and the desktop entries.
+
+name: nix-ci
+
+on:
+  pull_request:
+    paths:
+      - "daemon/flake.nix"
+      - "daemon/flake.lock"
+      - "daemon/nix/**"
+      - "daemon/Cargo.toml"
+      - "daemon/release/copland-daemon.service"
+      - "daemon/release/*.desktop"
+      - ".github/workflows/nix-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: nix-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  nix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - run: nix flake check -L ./daemon

@@ -1,0 +1,161 @@
+# The headless daemon (core, cli and tray; not the box, which box-release.yml
+# builds under Nix), on PRs that change something these jobs read: the crates'
+# sources and manifests, the lock, the install script and release files the
+# tests and install checks use, the two web-app files the daemon's tests
+# compare against, and this workflow. Docs (*.md) don't count. A PR that
+# changes none of them gets no run and no check from here; `ci` (ci.yml) is
+# the one that runs on every PR.
+#
+# `linux` runs the tests and lints. `macos` runs them on a Mac too, for its
+# sandbox (COPL-140), and installs its launchd agent (COPL-221). Both install
+# Codex, pinned, and require its sandbox tests (COPL-143), which run
+# `codex sandbox` with the policy the daemon gives Codex's runs: no model, no
+# account. `linux-install` installs the daemon as a user would, on the runner
+# and in Arch, Fedora and Ubuntu containers (COPL-220).
+
+name: daemon-ci
+
+on:
+  pull_request:
+    paths:
+      - "daemon/Cargo.toml"
+      - "daemon/Cargo.lock"
+      - "daemon/*/Cargo.toml"
+      - "daemon/core/**"
+      - "daemon/cli/**"
+      - "daemon/tray/**"
+      # install-flow.sh (linux-install).
+      - "daemon/ci/**"
+      # The unit and plist the tests and install checks compare against,
+      # check-launchd.sh, and the tray's icons (include_bytes!).
+      - "daemon/release/**"
+      # Read by core's tests: api.rs (hosts.ts) and runtime.rs (settings.json).
+      - "src/domain/hosts.ts"
+      - ".claude/settings.json"
+      - ".github/workflows/daemon-ci.yml"
+      - "!**/*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: daemon-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      # Codex's Linux sandbox is bubblewrap, which needs unprivileged user
+      # namespaces; Ubuntu 24.04's AppArmor keeps them from it otherwise.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          npm i -g @openai/codex@0.159.2
+      - working-directory: daemon
+        env:
+          COPLAND_TEST_CODEX: "1"
+        run: cargo test && cargo clippy --all-targets -- -D warnings
+
+  # The daemon on a Mac (COPL-140): its tests there run a command inside the
+  # Seatbelt sandbox that writes inside the worktree and fails outside it,
+  # which nobody can try on a real Mac.
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: npm i -g @openai/codex@0.159.2
+      - working-directory: daemon
+        env:
+          COPLAND_TEST_CODEX: "1"
+        run: cargo test && cargo clippy --all-targets -- -D warnings
+      # The launchd agent for real (COPL-221): installed into the runner's gui
+      # domain from ~/.local/bin, reinstalled, refused from a temporary dir,
+      # and uninstalled (release/check-launchd.sh).
+      - working-directory: daemon
+        run: cargo build -p copland-daemon && release/check-launchd.sh target/debug/copland-daemon
+
+  # The Linux install as INSTALL-linux.txt has a user do it (COPL-220,
+  # daemon/ci/install-flow.sh): the tarball's copy refused, the copy in
+  # ~/.local/bin installed, the unit stable, verified by systemd-analyze and
+  # left alone when run again, runtimes found off PATH. On the runner, as a new
+  # user with a real systemd user manager (lingering), so the service is
+  # started and removed too; then in Arch (Omarchy's base), Fedora and Ubuntu
+  # containers, which have no user manager, so only the unit is written there.
+  # The daemon is built once, here: it needs only glibc, and the runner's (Ubuntu
+  # 24.04, 2.39) is no newer than any of the three images'.
+  linux-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+      - working-directory: daemon
+        run: cargo build -p copland-daemon
+      # Somewhere every user (and container) can read: the binary, the script
+      # and the release files it installs.
+      - run: |
+          sudo mkdir -p /opt/copland
+          sudo cp -r daemon/ci daemon/release /opt/copland/
+          sudo install -m 755 daemon/target/debug/copland-daemon /opt/copland/copland-daemon
+      - name: On the runner, with systemd's user manager
+        run: |
+          sudo useradd -m -s /bin/bash ci
+          uid=$(id -u ci)
+          sudo loginctl enable-linger ci
+          # Started by lingering, but not waited for; this waits. The runner has
+          # no user D-Bus, so systemctl --user uses the manager's own socket.
+          sudo systemctl start user@$uid.service
+          # As ci: its /run/user is its own (0700).
+          ready() { sudo -u ci test -S /run/user/$uid/systemd/private; }
+          for _ in $(seq 60); do ready && break; sleep 1; done
+          ready || { sudo systemctl status user@$uid.service --no-pager; exit 1; }
+          # The runner's image gives every login the runner's own XDG_RUNTIME_DIR
+          # (/run/user/1001), and ci's manager passes it on to its services.
+          grep -rs XDG_RUNTIME_DIR /etc/environment /etc/security/pam_env.conf || true
+          sudo -u ci env XDG_RUNTIME_DIR=/run/user/$uid \
+            systemctl --user set-environment XDG_RUNTIME_DIR=/run/user/$uid
+          # A login's environment, not the runner's (its XDG_CONFIG_HOME is /home/runner's).
+          sudo -u ci env -i HOME=/home/ci USER=ci LOGNAME=ci SHELL=/bin/bash \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            XDG_RUNTIME_DIR=/run/user/$uid \
+            bash /opt/copland/ci/install-flow.sh /opt/copland/copland-daemon manager ||
+            { sudo dmesg | grep -i -E 'denied|apparmor' | tail -20; exit 1; }
+      - name: In Arch, Fedora and Ubuntu containers
+        run: |
+          for image in archlinux:latest fedora:latest ubuntu:24.04; do
+            echo "::group::$image"
+            id=$(docker run -d -v /opt/copland:/opt/copland:ro "$image" sleep infinity)
+            docker exec "$id" sh -c 'command -v useradd >/dev/null || dnf -y -q install shadow-utils'
+            docker exec "$id" useradd -m ci
+            docker exec --user ci -e HOME=/home/ci -w /home/ci "$id" \
+              bash /opt/copland/ci/install-flow.sh /opt/copland/copland-daemon
+            docker rm -f "$id" >/dev/null
+            echo "::endgroup::"
+          done
