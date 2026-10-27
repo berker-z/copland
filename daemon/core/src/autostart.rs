@@ -83,7 +83,7 @@ pub fn exec(name: &str, path_var: Option<&str>, fallback: Option<&Path>, places:
         },
         Err(u) => Exec {
             program: s,
-            caveat: Some(format!("{}: install it to ~/.local/bin first", u.why)),
+            caveat: Some(format!("{}: install it to {} first", u.why, u.to)),
             unstable: Some(u),
         },
     }

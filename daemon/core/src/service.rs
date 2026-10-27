@@ -132,6 +132,22 @@ pub fn launchd_plist(program: &str, config: Option<&str>, log: &str) -> String {
     out
 }
 
+/// The program a launchd plist's `ProgramArguments` starts (its first string), as
+/// `launchd_plist` escapes it.
+pub fn plist_program(plist: &str) -> Option<PathBuf> {
+    let rest = &plist[plist.find("<key>ProgramArguments</key>")?..];
+    let rest = &rest[rest.find("<array>")?..];
+    let start = rest.find("<string>")? + "<string>".len();
+    let end = start + rest[start..].find("</string>")?;
+    let v = rest[start..end]
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+    (!v.is_empty()).then(|| PathBuf::from(v))
+}
+
 /// `$XDG_CONFIG_HOME/systemd/user/copland-daemon.service`, where `systemctl --user` looks.
 fn unit_path() -> PathBuf {
     let base = match std::env::var_os("XDG_CONFIG_HOME") {
@@ -445,18 +461,19 @@ pub struct Installed {
 /// Write the platform's service running `program` on `config`, then enable and start it.
 /// `copland-daemon --install-service` passes itself; another program passes `daemon_binary()`.
 /// Refused, writing nothing, when `program` is Nix's (`nix_managed`): its service is the
-/// home-manager module's then, and the error says how to add it (`NixManaged`). On Linux, refused
-/// too when `program` is somewhere it won't stay (`stable::Unstable`: a tarball's versioned or
-/// download dir, a temporary one, a build), with the command that installs it to ~/.local/bin.
-/// Run again, it leaves a unit that is already right as it is (`Wrote::Same`) and replaces one
-/// that runs another program (`Wrote::Replaced`), a stale or missing one included.
+/// home-manager module's then, and the error says how to add it (`NixManaged`). Refused too
+/// when `program` is somewhere it won't stay (`stable::Unstable`: a tarball's versioned or
+/// download dir, a temporary one, a build, and on macOS a disk image or a translocated app),
+/// with the command that installs it to ~/.local/bin, or the app to /Applications.
+/// Run again, it leaves a unit or plist that is already right as it is (`Wrote::Same`) and
+/// replaces one that runs another program (`Wrote::Replaced`), a stale or missing one included;
+/// on macOS the agent is booted out and bootstrapped again either way, so the file loaded is
+/// the one on disk.
 pub fn install(config: &Path, program: &Path) -> Result<Installed> {
     if nix_managed(program) {
         return Err(NixManaged::here(program, Some(config), graphical_here()).into());
     }
-    if !cfg!(target_os = "macos") {
-        crate::stable::check_here(program)?;
-    }
+    crate::stable::check_here(program)?;
     if !config.exists() {
         bail!(
             "no config at {} yet: run `copland-daemon --setup` first (with the same --config, if you gave one), \
@@ -482,9 +499,11 @@ pub fn install(config: &Path, program: &Path) -> Result<Installed> {
         if let Some(dir) = log.parent() {
             fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
         }
-        let wrote = write_if_changed(&plist, &launchd_plist(&program, Some(&config), &display(&log)?), |_| {
-            None
-        })?;
+        let wrote = write_if_changed(
+            &plist,
+            &launchd_plist(&program, Some(&config), &display(&log)?),
+            plist_program,
+        )?;
         let domain = format!("gui/{}", uid()?);
         /* Loaded already (installed before): out first, so the new file is the one that runs. */
         let _ = run("launchctl", &["bootout", &format!("{domain}/{LABEL}")]);
@@ -585,7 +604,7 @@ pub struct Service {
     pub running: Option<bool>,
     /// Whether its ExecStart is in the Nix store: Nix's, the home-manager module's.
     pub nix: bool,
-    /// The program its ExecStart runs, when that could be read (Linux).
+    /// The program its ExecStart (or the plist's `ProgramArguments`) runs, when that could be read.
     pub program: Option<PathBuf>,
 }
 
@@ -596,12 +615,13 @@ pub struct Service {
 pub fn installed() -> Option<Service> {
     if cfg!(target_os = "macos") {
         let file = plist_path();
+        let program = fs::read_to_string(&file).ok().as_deref().and_then(plist_program);
         return file.exists().then_some(Service {
             file,
             enabled: true,
             running: None,
             nix: false,
-            program: None,
+            program,
         });
     }
     let shown = Command::new("systemctl")
@@ -728,38 +748,51 @@ pub fn describe(service: Option<&Service>, nix_here: bool) -> String {
     format!("service: {} ({}).", says.join(", "), s.file.display())
 }
 
-/// What `--check` says about the program the service runs (COPL-219): whether it is there,
-/// whether it is somewhere it will stay (`unstable` says why not), its version (`on_disk`), and
-/// when the daemon running the config is another version (`running`: the binary was upgraded in
-/// place since it started), that a restart starts the new one.
+/// What `--check` says about the program the service runs (COPL-219, COPL-221): whether it is
+/// there, whether it is somewhere it will stay (`unstable` says why not), its version
+/// (`on_disk`), and when the daemon running the config is another version (`running`: the
+/// binary was upgraded in place since it started), that a restart starts the new one. `mac`
+/// says it the launchd agent's way.
 pub fn describe_program(
     program: &Path,
     there: bool,
     on_disk: Option<&str>,
     running: Option<&str>,
     unstable: Option<&crate::stable::Why>,
+    mac: bool,
 ) -> String {
     let p = program.display();
+    let stable = match mac {
+        true => "/Applications/Copland.app/Contents/MacOS/copland-daemon or ~/.local/bin/copland-daemon",
+        false => "~/.local/bin/copland-daemon",
+    };
     if !there {
         return format!(
             "It runs {p}, which isn't there any more: run --install-service with the copland-daemon you have now \
-             (~/.local/bin/copland-daemon) to point the service at it."
+             ({stable}) to point the service at it."
         );
     }
     let version = on_disk.map(|v| format!(" ({v})")).unwrap_or_default();
     let mut out = format!("It runs {p}{version}.");
     if let Some(why) = unstable {
-        out.push_str(&format!(
-            " That is {why}: install it to ~/.local/bin and run `~/.local/bin/copland-daemon --install-service` \
-             to move the service there."
-        ));
+        let fix = match mac {
+            true => {
+                "install the app to /Applications (or the binary to ~/.local/bin) and run --install-service \
+                     with that copland-daemon"
+            }
+            false => "install it to ~/.local/bin and run `~/.local/bin/copland-daemon --install-service`",
+        };
+        out.push_str(&format!(" That is {why}: {fix} to move the service there."));
     }
     if let (Some(disk), Some(run)) = (on_disk, running)
         && disk != run
     {
+        let restart = match mac {
+            true => format!("launchctl kickstart -k gui/$(id -u)/{LABEL}"),
+            false => format!("systemctl --user restart {}", UNIT.trim_end_matches(".service")),
+        };
         out.push_str(&format!(
-            " The daemon running is {run}, from before {p} was upgraded: `systemctl --user restart {}` starts {disk}.",
-            UNIT.trim_end_matches(".service")
+            " The daemon running is {run}, from before {p} was upgraded: `{restart}` starts {disk}."
         ));
     }
     out
@@ -799,6 +832,7 @@ pub fn program_says(service: &Service, config: &Path) -> Option<String> {
         on_disk.as_deref(),
         running.as_deref(),
         unstable.as_ref(),
+        cfg!(target_os = "macos"),
     ))
 }
 
@@ -1472,10 +1506,7 @@ Type=simple
 
     #[test]
     fn install_refuses_a_program_that_wont_stay_before_writing_anything() {
-        if cfg!(target_os = "macos") {
-            return;
-        }
-        /* Before the missing config: nothing is looked at or written past it. */
+        /* Before the missing config: nothing is looked at or written past it. Linux and macOS alike. */
         let err = install(
             Path::new("/nonexistent/daemon.toml"),
             Path::new("/tmp/copland-box-0.5.0-linux-x86_64/bin/copland-daemon"),
@@ -1492,25 +1523,74 @@ Type=simple
     fn check_says_what_the_service_runs_and_when_a_restart_picks_up_an_upgrade() {
         let p = Path::new("/home/me/.local/bin/copland-daemon");
         assert_eq!(
-            describe_program(p, true, Some("0.5.1"), Some("0.5.1"), None),
+            describe_program(p, true, Some("0.5.1"), Some("0.5.1"), None, false),
             "It runs /home/me/.local/bin/copland-daemon (0.5.1)."
         );
         assert_eq!(
-            describe_program(p, true, Some("0.5.1"), Some("0.5.0"), None),
+            describe_program(p, true, Some("0.5.1"), Some("0.5.0"), None, false),
             "It runs /home/me/.local/bin/copland-daemon (0.5.1). The daemon running is 0.5.0, from before /home/me/.local/bin/copland-daemon was upgraded: `systemctl --user restart copland-daemon` starts 0.5.1."
         );
         /* Not running, or a daemon too old to say: nothing to compare. */
         assert_eq!(
-            describe_program(p, true, Some("0.5.1"), None, None),
+            describe_program(p, true, Some("0.5.1"), None, None, false),
             "It runs /home/me/.local/bin/copland-daemon (0.5.1)."
         );
         let gone = Path::new("/home/me/Downloads/copland-box-0.4.0-linux-x86_64/bin/copland-daemon");
-        assert!(describe_program(gone, false, None, Some("0.4.0"), None).contains("isn't there any more"));
+        assert!(describe_program(gone, false, None, Some("0.4.0"), None, false).contains("isn't there any more"));
         let why = crate::stable::Why::Downloads("/home/me/Downloads".into());
         assert!(
-            describe_program(gone, true, Some("0.4.0"), None, Some(&why))
+            describe_program(gone, true, Some("0.4.0"), None, Some(&why), false)
                 .contains("under /home/me/Downloads, a download folder: install it to ~/.local/bin")
         );
+        /* The launchd agent's way (COPL-221). */
+        let app = Path::new("/Applications/Copland.app/Contents/MacOS/copland-daemon");
+        assert_eq!(
+            describe_program(app, true, Some("0.5.1"), Some("0.5.0"), None, true),
+            "It runs /Applications/Copland.app/Contents/MacOS/copland-daemon (0.5.1). The daemon running is 0.5.0, \
+             from before /Applications/Copland.app/Contents/MacOS/copland-daemon was upgraded: \
+             `launchctl kickstart -k gui/$(id -u)/dev.berkerz.copland.daemon` starts 0.5.1."
+        );
+        let image = Path::new("/Volumes/Copland/Copland.app/Contents/MacOS/copland-daemon");
+        let why = crate::stable::Why::Volume("/Volumes".into());
+        let says = describe_program(image, true, Some("0.5.1"), None, Some(&why), true);
+        assert!(
+            says.contains(
+                "on /Volumes, a mounted disk that is gone once it is ejected: install the app to /Applications"
+            ),
+            "{says}"
+        );
+        assert!(describe_program(image, false, None, None, None, true).contains("/Applications/Copland.app"));
+    }
+
+    #[test]
+    fn reads_back_the_program_a_plist_runs() {
+        let plist = launchd_plist("/Users/me/a&b <c>/copland-daemon", Some("/c.toml"), "/l.log");
+        assert_eq!(
+            plist_program(&plist),
+            Some(PathBuf::from("/Users/me/a&b <c>/copland-daemon"))
+        );
+        assert_eq!(
+            plist_program(&release(&format!("{LABEL}.plist"))),
+            Some(PathBuf::from("@DAEMON@"))
+        );
+        assert_eq!(plist_program("<plist><dict></dict></plist>"), None);
+        /* A reinstall over a stale plist says what the old one ran. */
+        let dir = scratch("plist");
+        let file = dir.join(format!("{LABEL}.plist"));
+        let old = launchd_plist(
+            "/Volumes/Copland/Copland.app/Contents/MacOS/copland-daemon",
+            None,
+            "/l.log",
+        );
+        assert_eq!(write_if_changed(&file, &old, plist_program).unwrap(), Wrote::New);
+        assert_eq!(write_if_changed(&file, &old, plist_program).unwrap(), Wrote::Same);
+        assert_eq!(
+            write_if_changed(&file, &plist, plist_program).unwrap(),
+            Wrote::Replaced {
+                was: Some("/Volumes/Copland/Copland.app/Contents/MacOS/copland-daemon".into())
+            }
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The stand-in daemon `spawn` starts in the tests below: this test binary again, running
