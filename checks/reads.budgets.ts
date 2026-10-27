@@ -32,6 +32,9 @@ export const BUDGETS: Record<string, Budget> = {
   /* 3116 before task_rollup (COPL-208). */
   "GET /api/boards/:id/closed": { rows: 3112, flat: true },
   "GET /api/tasks/:id": { rows: 26, flat: true },
+  /* The open tasks waiting on one (COPL-212), for the daemon's chains: it
+     read GET /api/boards/:id for them before. */
+  "GET /api/tasks/:id/dependents": { rows: 35, flat: true },
   "GET /api/inbox": { rows: 241, flat: true },
   /* Where each agent runs (COPL-183, for the box): its reported hosts, one
      read over the owner's agents; 139 before. */

@@ -324,6 +324,16 @@ docs/DESIGN.md under Touch.
   way. A run claiming again a task it holds only renews it: no event, no
   version, nobody told. Heartbeats and unchanged reports already told
   nobody (checks/boardEvents.check.ts, the reads check's `live:` rows)
+- The daemon stops reading a whole board (COPL-212, for COPL-206): a run's
+  repos and stage categories come from the board's shell (29 rows on the
+  reads check's seed), whether a task has children from its own read's
+  progress, a chain's last task from the tasks it depends on, and what
+  waits on a closed task's worktree from `GET /api/tasks/:id/dependents`
+  (the open tasks depending on it, 35 rows, flat). Each read was
+  `GET /api/boards/:id` (806 rows there, ~1,700 on the real board), at
+  every run's start, every runtime exit, every closed task the sweep found
+  and every board at start. An older server without the dependents route
+  makes a closed task's worktree go, and the chain's next task start cold
 - Comments reach the run working on the task (COPL-139, for COPL-130):
   `POST /api/runs/current/news` tells a run, once each, the unread comments
   and mentions on the tasks it has claimed since it started

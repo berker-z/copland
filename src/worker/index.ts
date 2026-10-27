@@ -76,7 +76,7 @@ import {
 import { deleteBoardDoc, getBoardDoc, patchBoardDoc, postBoardDoc, putBoardNotes } from "./routes/docs";
 import { deleteComment, getComments, getTaskEvents, patchComment, postComment } from "./routes/comments";
 import { deleteLabel, deleteStage, patchLabel, patchStage, postLabel, postStage, putStageOrder } from "./routes/stages";
-import { deleteTask, getTask, patchTask, postTask } from "./routes/tasks";
+import { deleteTask, getDependents, getTask, patchTask, postTask } from "./routes/tasks";
 import { getMyWork, getReady } from "./routes/work";
 import { getWired } from "./routes/wired";
 import {
@@ -299,6 +299,8 @@ const api = new Router<Ctx>()
   /* Also before /:id: what the caller can start now; the daemon pulls it (COPL-86). */
   .on("GET", "/api/tasks/ready", ({ env, viewer }) => getReady(env, viewer))
   .on("GET", "/api/tasks/:id", ({ env, viewer }, { id }) => getTask(env, viewer, id))
+  /* The open tasks waiting on it: the daemon's chains (COPL-212). */
+  .on("GET", "/api/tasks/:id/dependents", ({ env, viewer }, { id }) => getDependents(env, viewer, id))
   .on("PATCH", "/api/tasks/:id", ({ request, env, viewer, changes }, { id }) =>
     patchTask(request, env, viewer, id, changes),
   )
