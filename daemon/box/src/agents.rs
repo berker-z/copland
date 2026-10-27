@@ -125,8 +125,8 @@ pub enum Doing {
     Error(String),
     /// Watching, after a run that went wrong (COPL-136): said until the next run.
     Failed(Failed),
-    /// Starting nothing on this machine: out of usage until a reset (COPL-195), or held by hand
-    /// (COPL-186). What it says.
+    /// Starting nothing on this machine: out of usage until a reset (COPL-195), held by hand
+    /// (COPL-186), or waiting for a slot on its account (COPL-232). What it says.
     Held(String),
     Stopped,
 }
@@ -1295,13 +1295,14 @@ impl Agents {
 }
 
 /// What an agent that starts nothing on this machine at `now` says: out of usage until a reset
-/// (COPL-195), while that is still after `now`, or held by hand (COPL-186).
+/// (COPL-195), while that is still after `now`, held by hand (COPL-186), or waiting for a slot on
+/// its account (COPL-232).
 fn held(s: &status::Agent, now: SystemTime) -> Option<String> {
     let until = s.out_of_usage_until.as_deref().and_then(crate::view::parse_utc);
     match s.out_of_usage_line() {
         Some(line) if until.is_some_and(|t| t > now) => Some(line),
         _ if s.held => Some("held on this machine".to_string()),
-        _ => None,
+        _ => s.waiting_for_slot_line(),
     }
 }
 
@@ -1696,6 +1697,42 @@ mod tests {
             Row::Here { doing: Doing::Held(w), .. } if w == "held on this machine"
         ));
         st.agents[0].held = false;
+        assert!(matches!(
+            &rows(&configured, &st, None)[0],
+            Row::Here {
+                doing: Doing::Watching,
+                ..
+            }
+        ));
+    }
+
+    /// COPL-232: work held back by the account's cap says which account, in the colours of a hold,
+    /// not a failure; out of usage on the same agent says that instead.
+    #[test]
+    fn waiting_for_a_slot_says_on_which_account() {
+        let configured = [agent("me/dev", Some(Runtime::ClaudeCode))];
+        let mut dev = AgentState::new("me/dev", "http://x");
+        dev.phase = Phase::Idle;
+        dev.waiting_for_slot = Some("claude-code (b…@…)".into());
+        let mut st = DaemonState {
+            agents: vec![dev],
+            stopping: false,
+            autostart: false,
+        };
+        let rs = rows(&configured, &st, None);
+        assert!(matches!(
+            &rs[0],
+            Row::Here { doing: Doing::Held(w), .. } if w == "waiting for a slot on claude-code (b…@…)"
+        ));
+        let until = SystemTime::now() + Duration::from_secs(3600);
+        st.agents[0].out_of_usage = Some(until);
+        let said = format!("out of usage until {}", copland_daemon_core::state::clock(until));
+        assert!(matches!(
+            &rows(&configured, &st, None)[0],
+            Row::Here { doing: Doing::Held(w), .. } if *w == said
+        ));
+        st.agents[0].out_of_usage = None;
+        st.agents[0].waiting_for_slot = None;
         assert!(matches!(
             &rows(&configured, &st, None)[0],
             Row::Here {
