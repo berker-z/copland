@@ -214,8 +214,9 @@ fn line(a: &Agent) -> String {
     if a.held {
         parts.push("held".into());
     }
-    /* Not a need: the account's usage comes back by itself at the reset (COPL-195). */
-    parts.extend(a.out_of_usage_line());
+    /* Not needs: the account's usage comes back by itself at the reset (COPL-195), and a seat on
+    it when a run ends (COPL-232). Out of usage says more, so it wins. */
+    parts.extend(a.out_of_usage_line().or_else(|| a.waiting_for_slot_line()));
     if let Some(n) = a.needs.first() {
         parts.push(format!("needs you: {}", n.says));
     }
@@ -496,6 +497,19 @@ mod tests {
         a.out_of_usage_until = Some("2026-10-26T17:10:00Z".into());
         let v = view(Some(&status(vec![a])), None);
         assert_eq!(v.icon, Icon::Idle);
+        assert_eq!(v.tooltip, ["dev · idle · out of usage until 17:10 UTC"]);
+    }
+
+    #[test]
+    fn waiting_for_a_slot_says_on_which_account_and_is_not_a_need() {
+        let mut a = agent(1, "berker-z/dev");
+        a.waiting_for_slot = Some("claude-code (b…@…)".into());
+        let v = view(Some(&status(vec![a.clone()])), None);
+        assert_eq!(v.icon, Icon::Idle);
+        assert_eq!(v.tooltip, ["dev · idle · waiting for a slot on claude-code (b…@…)"]);
+        /* Out of usage on the same account says that instead. */
+        a.out_of_usage_until = Some("2026-10-26T17:10:00Z".into());
+        let v = view(Some(&status(vec![a])), None);
         assert_eq!(v.tooltip, ["dev · idle · out of usage until 17:10 UTC"]);
     }
 
