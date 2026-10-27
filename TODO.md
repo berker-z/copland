@@ -711,6 +711,16 @@ docs/DESIGN.md under Touch.
   it starts, from its own, the login shell's and the usual install dirs
   (`daemon/core/src/search_path.rs`), and `--check` says where each was
   found.
+- On NixOS and home-manager (COPL-217, for COPL-215): the daemon flake
+  exports `homeManagerModules.default`, `services.copland` (`enable`,
+  `package`, `runtimes`, `configFile`, `tray.enable`), the daemon as a user
+  unit with the package's binary in ExecStart and the declared runtimes on
+  its PATH, and the tray tied to `graphical-session.target`
+  (`daemon/nix/hm-module.nix`). `nix flake check ./daemon` evaluates it in a
+  home configuration with a stub package and fails when its unit drifts
+  from `release/copland-daemon.service`; CI runs it when the Nix files
+  change. No NixOS VM test yet. `--install-service` and the rest still
+  write their own unit under Nix (COPL-218).
 - Waiting work starts when what it waits on closes (COPL-164): a write
   that closes or deletes the last open task a todo task depends on puts an
   `unblocked` item in each of its assignees' inboxes (migration 0035,
