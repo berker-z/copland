@@ -28,6 +28,10 @@
 //! new one (`continue_from`), on a branch of its own from the default branch as
 //! it is now, with the build output the last task left there still warm.
 //!
+//! A story is a lane (COPL-236): its run does the story's tasks one after
+//! another in one worktree, `work/<story key>` (`lane`), and makes each task's
+//! branch there itself. It goes when the story closes, like a task's.
+//!
 //! It is all plain `git` (worktrees need 2.5). Cloning goes over https, so
 //! pushing from the worktree uses whatever credential helper the machine has
 //! (`gh auth setup-git`, for one).
@@ -61,6 +65,8 @@ pub struct Workspace {
     pub pull_requests: bool,
     /// The task whose worktree this was (COPL-189): a chain's next task carries on in it.
     pub after: Option<String>,
+    /// A story's worktree (COPL-236): its lane run makes each task's branch in it itself.
+    pub lane: bool,
 }
 
 /// Where a repo's clone and a task's worktree live under the code directory.
@@ -200,6 +206,7 @@ pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title
             read_only: false,
             pull_requests: true,
             after: None,
+            lane: false,
         });
     }
     /* A stale entry for a worktree whose directory is gone would refuse the add. */
@@ -246,6 +253,7 @@ pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title
             read_only: false,
             pull_requests: true,
             after: None,
+            lane: false,
         });
     }
 
@@ -268,6 +276,40 @@ pub async fn realize(code_dir: &Path, remote: &str, repo: &str, key: &str, title
         read_only: false,
         pull_requests: true,
         after: None,
+        lane: false,
+    })
+}
+
+/// A story's worktree (COPL-236): one for its lane, under the story's key, which its run moves
+/// from task to task, making each task's branch itself from the default branch as it is when the
+/// task starts. A new one is made detached at the default branch's head as fetched just now, on
+/// no branch, since no work goes on the story's own. One an earlier run left is found as it is,
+/// on whichever task's branch that run was on.
+pub async fn lane(code_dir: &Path, remote: &str, repo: &str, key: &str) -> Result<Workspace> {
+    let (clone, dir) = paths(code_dir, repo, key)?;
+    let target = sync(&clone, remote).await?;
+    let fresh = !dir.join(".git").exists();
+    if fresh {
+        git(&clone, &["worktree", "prune"]).await?;
+        tokio::fs::create_dir_all(dir.parent().expect("a worktree path has a parent")).await?;
+        let path = dir.to_string_lossy().to_string();
+        git(&clone, &["worktree", "add", "--quiet", "--detach", &path, &target]).await?;
+    }
+    let branch = git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
+    let base = git(&dir, &["merge-base", "HEAD", &target]).await?;
+    Ok(Workspace {
+        repo: repo.into(),
+        key: key.into(),
+        dir,
+        clone,
+        branch,
+        base,
+        target,
+        fresh,
+        read_only: false,
+        pull_requests: true,
+        after: None,
+        lane: true,
     })
 }
 
@@ -322,6 +364,7 @@ pub async fn continue_from(
         read_only: false,
         pull_requests: true,
         after: Some(from.into()),
+        lane: false,
     }))
 }
 
@@ -360,6 +403,7 @@ pub async fn view(code_dir: &Path, remote: &str, repo: &str, key: &str) -> Resul
         read_only: true,
         pull_requests: true,
         after: None,
+        lane: false,
     })
 }
 
@@ -778,6 +822,42 @@ mod tests {
         let c = capped("b".into(), ["b", "a\\b", "tab\there", long.as_str(), "a"].into_iter());
         assert_eq!(c.files, vec!["a", "b"]);
         assert!(!c.truncated);
+    }
+
+    /// COPL-236: a story's lane gets one worktree under the story's key, on no branch of its own;
+    /// its run makes the tasks' branches there, and a later run finds it on the one it was left
+    /// on. It goes like a task's, its last task's local branch with it.
+    #[tokio::test]
+    async fn a_lane_has_one_worktree_its_run_branches_in() {
+        let root = scratch("lane");
+        let remote = origin(&root).await;
+        let code = root.join("code");
+
+        let ws = lane(&code, &remote, "o/r", "COPL-227").await.unwrap();
+        assert!(ws.fresh && ws.lane && !ws.read_only);
+        assert_eq!(ws.dir, code.join("work/COPL-227"));
+        assert_eq!(ws.branch, "HEAD");
+        let main = git(&ws.clone, &["rev-parse", "origin/main"]).await.unwrap();
+        assert_eq!(ws.base, main);
+        assert_eq!(git(&ws.dir, &["rev-parse", "HEAD"]).await.unwrap(), main);
+        /* No branch names the story, so nothing links it as the story's code. */
+        assert_eq!(existing_branch(&ws.clone, "COPL-227").await.unwrap(), None);
+
+        /* The run makes a task's branch itself, from main, and commits on it. */
+        git(&ws.dir, &["switch", "--quiet", "-c", "copl-240-first", "origin/main"])
+            .await
+            .unwrap();
+        commit(&ws.dir, &[("a.txt", "a")], "first task").await;
+        let again = lane(&code, &remote, "o/r", "COPL-227").await.unwrap();
+        assert!(!again.fresh);
+        assert_eq!(again.dir, ws.dir);
+        assert_eq!(again.branch, "copl-240-first");
+        assert_eq!(worktrees(&code), vec![("COPL-227".to_string(), "o/r".to_string())]);
+
+        assert!(remove(&code, "o/r", "COPL-227").await.unwrap());
+        assert!(!ws.dir.exists());
+        assert_eq!(existing_branch(&ws.clone, "COPL-240").await.unwrap(), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]

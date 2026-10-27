@@ -133,6 +133,9 @@ pub struct Task {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub assignee_ids: Vec<String>,
+    /// The task it is under, by id: a story's tasks are its lane's (COPL-236).
+    #[serde(default)]
+    pub parent_id: Option<String>,
     /// A parent's: how many children it has. Sent only for a task with children.
     #[serde(default)]
     pub progress: Option<ParentProgress>,

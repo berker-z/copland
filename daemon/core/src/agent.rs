@@ -199,7 +199,7 @@ const RECHECK_FAILED: Duration = Duration::from_secs(10 * 60);
 /// so a worker needs push; a lead only reads its view of the repo, so it needs clone.
 pub fn repo_stops(role: Role, access: &RepoCapability) -> bool {
     match role {
-        Role::Worker => !(access.clone && access.push),
+        Role::Worker | Role::Lane => !(access.clone && access.push),
         Role::Lead => !access.clone,
         Role::Workdir | Role::Skip => false,
     }
@@ -1136,7 +1136,11 @@ impl AgentLoop {
             }
             if let Check::Seen { updated_at, held } = self.guard.check(wake) {
                 let current = match self.api.task(&self.agent.token, &wake.task_id).await {
-                    Ok(t) => Some((t.updated_at, t.claim.is_some())),
+                    /* Held as a story's task (COPL-236): its lane holds the story, not the task, between tasks. */
+                    Ok(t) => {
+                        let claimed = t.claim.is_some() || (held && self.ctx().lane_held(&t).await);
+                        Some((t.updated_at, claimed))
+                    }
                     Err(e) if e.is_refusal() => None,
                     Err(e) => return Err(anyhow::Error::new(e).context(format!("reading {}", wake.task_key))),
                 };
@@ -1160,6 +1164,17 @@ impl AgentLoop {
             let lookup = self.ctx().lookup(&wake.task_id, &wake.task_key).await?;
             if lookup.role == Role::Skip {
                 tracing::info!(task = %wake.task_key, "a milestone: a checkpoint, not work; nothing to run");
+                self.guard.remember(wake, lookup.task.map(|t| t.updated_at), false);
+                continue;
+            }
+            /* A task of a story of the agent's own is its lane's (COPL-236): the run on the story does it, and
+            reads what was said there. Remembered, so it is looked at again once the task changes. */
+            if let Some(story) = &lookup.lane {
+                if self.inflight.values().any(|r| r.key.eq_ignore_ascii_case(story)) {
+                    tracing::debug!(task = %wake.task_key, "part of {story}, whose lane run is going; left to it");
+                } else {
+                    tracing::debug!(task = %wake.task_key, "part of {story}, which is a lane; left to the run on the story");
+                }
                 self.guard.remember(wake, lookup.task.map(|t| t.updated_at), false);
                 continue;
             }
@@ -1230,23 +1245,33 @@ pub enum Role {
     Workdir,
     /// A task, a leaf: coded in its own worktree.
     Worker,
-    /// An epic or a story, or anything with children: planned into tasks, reading the repo.
+    /// An epic, or a task with children: planned into tasks, reading the repo.
     Lead,
+    /// A story (COPL-236): one run in one worktree of its own does its tasks in order, one PR
+    /// each, planning them first when it has none.
+    Lane,
     /// A milestone: a checkpoint, not work. Nothing runs.
     Skip,
 }
 
-/// The rule, on its own so it can be tested: a leaf task is coded, anything that holds work is led.
+/// The rule, on its own so it can be tested: a leaf task is coded, a story is a lane, with
+/// children or without, and an epic or a task with children is led.
 pub fn role_of(code_command: bool, repo: bool, level: Option<&str>, has_children: bool) -> Role {
     if !code_command || !repo {
         return Role::Workdir;
     }
     match level {
         Some("milestone") => Role::Skip,
-        Some("epic" | "story") => Role::Lead,
+        Some("story") => Role::Lane,
+        Some("epic") => Role::Lead,
         _ if has_children => Role::Lead,
         _ => Role::Worker,
     }
+}
+
+/// Whether `parent` is a story still open, whose tasks are its lane's (COPL-236).
+fn in_lane(parent: &crate::api::Task) -> bool {
+    parent.level.as_deref() == Some("story") && parent.completed_at.is_none()
 }
 
 /// What this machine lacks to start an agent's runs (COPL-136): its command's program, and for
@@ -1316,7 +1341,7 @@ impl Missing {
     fn stops(&self, role: Role) -> bool {
         match role {
             Role::Workdir => self.workdir.is_some(),
-            Role::Worker | Role::Lead => self.code.is_some() || self.broken.is_some(),
+            Role::Worker | Role::Lead | Role::Lane => self.code.is_some() || self.broken.is_some(),
             Role::Skip => false,
         }
     }
@@ -1330,6 +1355,9 @@ struct TaskInfo {
     board: Option<BoardShell>,
     /// The task a worker's run would carry on from (COPL-189), with the agent's `resume_chains`.
     after: Option<String>,
+    /// The open story assigned to the agent that this leaf is a task of, by key (COPL-236): the
+    /// story's lane run does it, so no run of its own starts for it.
+    lane: Option<String>,
 }
 
 /// How a run ends, by how its runtime did. A runtime that never started is this machine's
@@ -1366,6 +1394,22 @@ pub fn unfinished(
     let elsewhere = task.claim.as_ref().is_some_and(|c| c.run_id != run_id);
     let for_review = task.review_first && (task.open_pr() || !pull_requests);
     active && !planned && !elsewhere && !for_review
+}
+
+/// The task a lane run whose runtime exited 0 left unfinished (COPL-236): one of the story's
+/// tasks (`held`, those the run claims, each with its stage's category) that `unfinished` says
+/// it left going, as a worker's would be. The story itself doesn't count, active or not: it
+/// follows its tasks. Tasks it closed are no longer held; with none left active, nothing is.
+pub fn lane_unfinished<'a>(
+    story: &crate::api::Task,
+    held: &[(&'a crate::api::Task, Option<&str>)],
+    run_id: &str,
+    pull_requests: bool,
+) -> Option<&'a crate::api::Task> {
+    held.iter()
+        .filter(|(t, _)| t.parent_id.as_deref() == Some(story.id.as_str()))
+        .find(|(t, category)| unfinished(t, *category, t.has_children(), run_id, pull_requests))
+        .map(|(t, _)| *t)
 }
 
 /// What a run tells its loop when it is over.
@@ -1615,7 +1659,19 @@ impl RunCtx {
         let (mut ending, mut how) = (ended_as(&ended), ended.reason());
         let mut left = false;
         let lead = workspace.as_ref().is_some_and(|ws| ws.read_only);
-        if brief == Brief::Work && ending == Ending::Completed && !lead {
+        let lane = workspace.as_ref().is_some_and(|ws| ws.lane);
+        if brief == Brief::Work && ending == Ending::Completed && lane {
+            let pull_requests = workspace.as_ref().is_some_and(|ws| ws.pull_requests);
+            if let Some(task) = self
+                .lane_left_going(&started.secret, &wake.task_id, &key, &run_id, pull_requests)
+                .await
+            {
+                /* It still holds the task, so failing the run puts it and the story back in todo. */
+                tracing::warn!(run = %short, task = %key, "runtime {how}, with {} still active; failing the run", task.key);
+                (ending, how) = (Ending::Failed, format!("{UNFINISHED} ({})", task.key));
+                left = true;
+            }
+        } else if brief == Brief::Work && ending == Ending::Completed && !lead {
             let pull_requests = workspace.as_ref().is_some_and(|ws| ws.pull_requests);
             if let Some(task) = self.left_going(&wake.task_id, &key, &run_id, pull_requests).await {
                 /* Failing puts back what the run holds: one that let it go takes it again first. */
@@ -1639,7 +1695,7 @@ impl RunCtx {
         }
         /* Its session, for a chain's next task (COPL-189). */
         if let (Some(ws), Some(session)) = (&workspace, &ended.session) {
-            if self.agent.resume_chains && !ws.read_only {
+            if self.agent.resume_chains && !ws.read_only && !ws.lane {
                 if let Err(e) = chain::save_session(&self.paths.state_dir, &key, &run_id, session) {
                     tracing::warn!(run = %short, task = %key, "keeping its session: {e:#}");
                 }
@@ -1649,7 +1705,7 @@ impl RunCtx {
         in it (COPL-189); its branch lives on in the remote. */
         if let Some(ws) = &workspace {
             if let Ok(t) = self.api.task(&self.agent.token, &wake.task_id).await {
-                if t.completed_at.is_some() && !self.kept_for_chain(&t).await {
+                if t.completed_at.is_some() && (ws.lane || !self.kept_for_chain(&t).await) {
                     match workspace::remove(&self.agent.code_dir, &ws.repo, &ws.key).await {
                         Ok(_) => tracing::info!(task = %key, "task closed; its worktree is removed"),
                         Err(e) => tracing::warn!(task = %key, "removing its worktree: {e:#}"),
@@ -1752,6 +1808,46 @@ impl RunCtx {
         };
         let category = task.stage_id.as_deref().and_then(|s| board.category(s));
         unfinished(&task, category, task.has_children(), run_id, pull_requests).then_some(task)
+    }
+
+    /// The story's task a lane run whose runtime just exited 0 left unfinished (`lane_unfinished`,
+    /// COPL-236): one it still holds, by the run's claims. None when it left none going, or when
+    /// the run, a task or the board can't be read.
+    async fn lane_left_going(
+        &self,
+        secret: &crate::config::Secret,
+        story_id: &str,
+        key: &str,
+        run_id: &str,
+        pull_requests: bool,
+    ) -> Option<crate::api::Task> {
+        let read = async {
+            let run = self.api.run(secret, run_id).await?;
+            let story = self.api.task(&self.agent.token, story_id).await?;
+            let board = self.api.board_shell(&self.agent.token, &story.board_id).await?;
+            let mut held = Vec::new();
+            for k in run.claims.iter().filter(|k| !k.eq_ignore_ascii_case(&story.key)) {
+                held.push(self.api.task(&self.agent.token, k).await?);
+            }
+            Ok::<_, ApiError>((story, board, held))
+        };
+        let (story, board, held) = match read.await {
+            Ok(r) => r,
+            /* The runtime finished its run itself, so its claims went with it. */
+            Err(e) if e.is_refusal() => {
+                tracing::debug!(task = %key, "reading where the lane run left its tasks: {e}");
+                return None;
+            }
+            Err(e) => {
+                tracing::warn!(task = %key, "reading where the lane run left its tasks: {e}");
+                return None;
+            }
+        };
+        let with: Vec<_> = held
+            .iter()
+            .map(|t| (t, t.stage_id.as_deref().and_then(|s| board.category(s))))
+            .collect();
+        lane_unfinished(&story, &with, run_id, pull_requests).cloned()
     }
 
     /// One run on messages, about a task or not (COPL-127): start it, claim each message for it
@@ -1869,6 +1965,7 @@ impl RunCtx {
                 source: None,
                 board: None,
                 after: None,
+                lane: None,
             });
         }
         let task = self
@@ -1895,13 +1992,46 @@ impl RunCtx {
             (Some(me), true) => self.carries_on_from(&task, me).await,
             _ => None,
         };
+        let lane = match (&self.user_id, role == Role::Worker) {
+            (Some(me), true) => self.lane_of(&task, me).await,
+            _ => None,
+        };
         Ok(TaskInfo {
             role,
             task: Some(task),
             source,
             board: Some(board),
             after,
+            lane,
         })
+    }
+
+    /// The story `task` is a task of, by key, when that story is open and assigned to `me`, so its
+    /// lane does the task (COPL-236). One read, of its parent; None when it has none, or it can't
+    /// be read.
+    async fn lane_of(&self, task: &crate::api::Task, me: &str) -> Option<String> {
+        let parent = self.parent(task).await?;
+        let mine = parent.assignee_ids.iter().any(|a| a == me);
+        (in_lane(&parent) && mine).then_some(parent.key)
+    }
+
+    /// Whether a run holds the open story `task` is a task of, as a lane (COPL-236): what a claim
+    /// refused as `lane` waits for, since between its tasks the lane run holds only the story.
+    async fn lane_held(&self, task: &crate::api::Task) -> bool {
+        self.parent(task)
+            .await
+            .is_some_and(|p| in_lane(&p) && p.claim.is_some())
+    }
+
+    async fn parent(&self, task: &crate::api::Task) -> Option<crate::api::Task> {
+        let id = task.parent_id.as_deref()?;
+        match self.api.task(&self.agent.token, id).await {
+            Ok(p) => Some(p),
+            Err(e) => {
+                tracing::debug!(task = %task.key, "reading the task it is under: {e}");
+                None
+            }
+        }
     }
 
     /// The task `task` would carry on from (`chain::before`), from the tasks it depends on, read
@@ -1918,8 +2048,8 @@ impl RunCtx {
         chain::before(task, &deps, me).map(|t| t.key.clone())
     }
 
-    /// Where the run works: a worker's worktree, a lead's read-only view of the repo, or none
-    /// (the agent's `workdir`).
+    /// Where the run works: a worker's worktree, a lane's (its story's), a lead's read-only view
+    /// of the repo, or none (the agent's `workdir`).
     async fn workspace(&self, task_id: &str, key: &str) -> Result<Option<Workspace>> {
         let TaskInfo {
             role,
@@ -1947,6 +2077,7 @@ impl RunCtx {
             Role::Worker if carried.is_some() => carried.expect("carried"),
             Role::Worker => workspace::realize(dir, &src.remote, &src.dir, key, &task.title).await?,
             Role::Lead => workspace::view(dir, &src.remote, &src.dir, key).await?,
+            Role::Lane => workspace::lane(dir, &src.remote, &src.dir, key).await?,
             Role::Workdir | Role::Skip => return Ok(None),
         };
         Ok(Some(Workspace {
@@ -2957,6 +3088,36 @@ mod tests {
         assert!(!unfinished(&review, Some("active"), false, "r1", false));
     }
 
+    /// COPL-236: a lane run that exits 0 with one of its story's tasks still active and held by
+    /// it left that task unfinished, as a worker would; done tasks are no longer held, and the
+    /// story itself, active as it follows its tasks, never counts.
+    #[test]
+    fn a_lane_left_with_a_task_active_is_unfinished() {
+        let story = task_with(serde_json::json!({ "id": "s1", "key": "COPL-227", "level": "story" }));
+        let mine = serde_json::json!({ "runId": "r1", "run": "r1" });
+        let active = task_with(serde_json::json!({ "id": "t2", "key": "COPL-240", "parentId": "s1", "claim": mine }));
+        let elsewhere = task_with(serde_json::json!({ "id": "t3", "key": "COPL-9", "parentId": "s9", "claim": mine }));
+        /* Only the story held: between tasks, or all of them done. */
+        assert!(lane_unfinished(&story, &[], "r1", true).is_none());
+        let found = lane_unfinished(&story, &[(&active, Some("active"))], "r1", true);
+        assert_eq!(found.map(|t| t.key.as_str()), Some("COPL-240"));
+        /* Its task moved on properly: blocked for a person, back to todo, or done. */
+        for stage in ["blocked", "todo", "done"] {
+            assert!(
+                lane_unfinished(&story, &[(&active, Some(stage))], "r1", true).is_none(),
+                "{stage}"
+            );
+        }
+        /* A task not of this story isn't the lane's to leave. */
+        assert!(lane_unfinished(&story, &[(&elsewhere, Some("active"))], "r1", true).is_none());
+        /* review_first with its PR open, left for a person, as a worker leaves it. */
+        let review = task_with(serde_json::json!({
+            "id": "t4", "parentId": "s1", "claim": mine, "reviewFirst": true,
+            "code": [{ "kind": "pull", "state": "open" }],
+        }));
+        assert!(lane_unfinished(&story, &[(&review, Some("active"))], "r1", true).is_none());
+    }
+
     /// An older server sends none of what `unfinished` reads: no stage, so never unfinished.
     #[test]
     fn an_older_servers_task_reads_and_is_never_unfinished() {
@@ -2971,16 +3132,19 @@ mod tests {
     }
 
     #[test]
-    fn a_leaf_task_is_coded_and_what_holds_work_is_led() {
+    fn a_leaf_task_is_coded_a_story_is_a_lane_and_what_holds_work_is_led() {
         /* No coding setup or no repo: the old way, whatever the level. */
         assert_eq!(role_of(false, true, Some("story"), true), Role::Workdir);
         assert_eq!(role_of(true, false, Some("story"), true), Role::Workdir);
         assert_eq!(role_of(true, true, Some("task"), false), Role::Worker);
         assert_eq!(role_of(true, true, None, false), Role::Worker);
-        assert_eq!(role_of(true, true, Some("story"), false), Role::Lead);
         assert_eq!(role_of(true, true, Some("epic"), false), Role::Lead);
+        assert_eq!(role_of(true, true, Some("epic"), true), Role::Lead);
         /* A task split into children is led too. */
         assert_eq!(role_of(true, true, Some("task"), true), Role::Lead);
+        /* A story is a lane (COPL-236), planned yet or not; a task under an epic is still a leaf. */
+        assert_eq!(role_of(true, true, Some("story"), false), Role::Lane);
+        assert_eq!(role_of(true, true, Some("story"), true), Role::Lane);
         assert_eq!(role_of(true, true, Some("milestone"), false), Role::Skip);
     }
 

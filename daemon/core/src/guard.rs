@@ -28,9 +28,10 @@
 //!   by anyone, wakes it. That is why a task the claim refused as "waiting"
 //!   needs its "unblocked" item: the tasks it waited on closing changes
 //!   nothing on the task itself.
-//! - A claim refused because another run holds the task is remembered as
-//!   held: that task wakes again once it has no live claim (its run ended or
-//!   went quiet), and not while it still has one, whatever else changes.
+//! - A claim refused because another run holds the task, or holds the story
+//!   it is part of as a lane (`lane`, COPL-236), is remembered as held: that
+//!   task wakes again once neither it nor its story has a live claim (the
+//!   run ended or went quiet), and not while one does, whatever else changes.
 //! - A claim refused because the task is closed, when nobody mentioned the
 //!   agent there (an assignment, a comment, an unblocked item), is dismissed:
 //!   the daemon marks those items read itself (COPL-165), since no run will
@@ -218,6 +219,8 @@ pub enum Refused {
 pub fn refused(code: Option<&str>, wake: &Wake) -> Refused {
     match code {
         Some("claimed") => Refused::Hold,
+        /* A story's task while another run holds the story (COPL-236): that lane does it, and it comes back when that run ends. */
+        Some("lane") => Refused::Hold,
         /* Waiting on tasks that aren't done: answer what was said, but those closing is what lets it start. */
         Some("waiting") if wake.mentioned || wake.commented => Refused::Answer(Brief::Waiting),
         Some("assigned_elsewhere") if wake.mentioned => Refused::Answer(Brief::Mentioned),
@@ -506,6 +509,9 @@ mod tests {
     #[test]
     fn refusals_by_reason() {
         assert_eq!(refused(Some("claimed"), &one("assigned")), Refused::Hold);
+        for kind in ["assigned", "unblocked", "commented", "mentioned"] {
+            assert_eq!(refused(Some("lane"), &one(kind)), Refused::Hold);
+        }
         assert_eq!(
             refused(Some("waiting"), &one("mentioned")),
             Refused::Answer(Brief::Waiting)
