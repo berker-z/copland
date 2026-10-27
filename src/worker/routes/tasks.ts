@@ -450,11 +450,9 @@ async function taskIdOf(env: Env, ref: string): Promise<string> {
  */
 export async function getTask(env: Env, viewer: Viewer, ref: string): Promise<Response> {
   const { task } = await taskFor(env, viewer, await taskIdOf(env, ref), "viewer");
-  /* A parent's progress, counted as the board read counts it, so a tab
-     patching it in from a live event has it too. Most tasks have no
-     children, which one probe of tasks_parent says before counting. */
-  const parent = await env.DB.prepare(`SELECT 1 FROM tasks WHERE parent_id = ?1 AND deleted_at IS NULL LIMIT 1`).bind(task.id).first();
-  const progress = parent ? (await progressFor(env.DB, [task.id]))[task.id] : undefined;
+  /* A parent's progress, as the board read has it, so a tab patching it in
+     from a live event has it too: one row of task_rollup. */
+  const progress = (await progressFor(env.DB, [task.id]))[task.id];
   return json((progress ? { ...task, progress } : task) satisfies TaskRead);
 }
 
