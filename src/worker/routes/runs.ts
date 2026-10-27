@@ -43,7 +43,14 @@
    batch. The claim, the assignment, the move and the log go in one batch
    whose second statement fails unless this run holds the claim, so two runs
    racing for a task cannot both win. A refusal is a 409 whose `code` says
-   why: closed, assigned_elsewhere or claimed (domain/runs.ts). Claiming
+   why: closed, assigned_elsewhere, claimed, waiting or lane (domain/runs.ts).
+
+   A story is a lane (COPL-235): the run that claims a story does its tasks,
+   claiming them one at a time beside the story, so one run holds several
+   claims. While a run holds a live claim on an open story, any other run
+   claiming one of its tasks is refused with `lane`. When the lane run
+   dies, deadRuns.ts puts back what it held as for any run: the task it was
+   on and the story go to todo, and the tasks it closed stay closed. Claiming
    again a task this run already holds, with nothing else to do, only
    renews it, like any request through the run: it logs nothing, bumps no
    version and tells nobody (COPL-207).
@@ -360,6 +367,20 @@ export async function postClaim(env: Env, viewer: Viewer, id: string, changes: C
       `${task.key} is assigned to ${results.map((r) => `@${r.handle}`).join(", ")}, not you; only an assignee, or anyone on an unassigned task, can claim it`,
       "assigned_elsewhere",
     );
+  }
+  /* A story's tasks are done by the run that holds the story, its lane, and nobody else while it does. */
+  if (task.parentId) {
+    const lane = await db
+      .prepare(
+        `SELECT p.number, c.run_id, c.user_id, c.claimed_until, u.handle, r.kind, r.client, 1 AS live
+           FROM tasks p JOIN task_claims c ON c.task_id = p.id JOIN runs r ON r.id = c.run_id JOIN users u ON u.id = c.user_id
+          WHERE p.id = ?1 AND p.level = 'story' AND p.deleted_at IS NULL AND p.completed_at IS NULL AND ${LIVE_CLAIM}`,
+      )
+      .bind(task.parentId)
+      .first<ClaimRow & { number: number }>();
+    if (lane && lane.run_id !== runId) {
+      throw refused(`${task.key} is part of story ${board.key}-${lane.number}, which ${heldBy(lane)} holds as a lane; its tasks are that run's`, "lane");
+    }
   }
   const existing = await currentClaim(db, task.id);
   if (existing?.live && existing.run_id !== runId) throw refused(`${task.key} is already claimed by ${heldBy(existing)}`, "claimed");

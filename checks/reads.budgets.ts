@@ -44,7 +44,9 @@ export const BUDGETS: Record<string, Budget> = {
      141 before, and on the real data the tasks read went from 593 rows to
      343, the seed having little backlog and few tasks of other people's. */
   "GET /api/wired": { rows: 139, flat: true },
-  "GET /api/tasks/ready": { rows: 43, flat: true },
+  /* A story's tasks wait for its lane (COPL-235): the ready task's parent
+     is read to see whether it is a story the caller is on; 43 before. */
+  "GET /api/tasks/ready": { rows: 44, flat: true },
   "GET /api/tasks/mine": { rows: 5731, flat: false },
   "GET /api/messages/recipients": { rows: 15, flat: true },
   /* Settings › access (COPL-159): yours, and the apps connected as your

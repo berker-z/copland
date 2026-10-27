@@ -63,6 +63,16 @@ export async function getMyWork(env: Env, viewer: Viewer): Promise<Response> {
  * live claim on it. What the daemon pulls besides its inbox, so work an agent
  * gave itself, or work whose dependencies just closed, starts without anyone
  * saying so. Copland decides whether work may start; the daemon only asks.
+ *
+ * A story is a lane (COPL-227, board doc orchestration): one run takes the
+ * story and does its tasks in turn, so a task whose parent is an open story
+ * the caller is assigned to is not offered on its own; the story is. When
+ * the caller isn't on the story, its daemon won't run that lane, and the
+ * task is offered as any other, so it can't get stuck. Tasks under an epic,
+ * or with no parent, are offered as ever. The story check reads the parent's
+ * board off the stage (a parent is on its child's board), so SQLite asks it
+ * only of todo tasks, after the stage join: on the task alone it is asked of
+ * every open task on the caller's boards, a row read for each.
  */
 export async function getReady(env: Env, viewer: Viewer): Promise<Response> {
   const { results } = await env.DB.prepare(
@@ -78,6 +88,9 @@ export async function getReady(env: Env, viewer: Viewer): Promise<Response> {
                          WHERE d.task_id = t.id AND u.deleted_at IS NULL AND u.completed_at IS NULL)
         AND NOT EXISTS (SELECT 1 FROM task_claims c JOIN runs r ON r.id = c.run_id
                          WHERE c.task_id = t.id AND ${LIVE_CLAIM})
+        AND (t.parent_id IS NULL OR NOT EXISTS (SELECT 1 FROM tasks p JOIN task_assignees pa ON pa.task_id = p.id AND pa.user_id = ?1
+                         WHERE p.id = t.parent_id AND p.level = 'story' AND p.deleted_at IS NULL AND p.completed_at IS NULL
+                           AND p.board_id = s.board_id))
       ORDER BY t.created_at
       LIMIT 50`,
   )
