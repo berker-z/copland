@@ -226,6 +226,8 @@ pub struct Menu {
     /// The same for the tray's switch.
     tray_autostart: Option<PathBuf>,
     tray_exec: prefs::Exec,
+    /// The box is Nix's: the tray at login is the home-manager module's, not an entry (COPL-218).
+    nix: bool,
 }
 
 impl Menu {
@@ -248,6 +250,7 @@ impl Menu {
             exec,
             tray_autostart: prefs::tray_autostart_file(),
             tray_exec,
+            nix: copland_daemon_core::service::nix_managed_here(),
         };
         m.go(tab, cx);
         m
@@ -526,6 +529,9 @@ impl Menu {
                 prefs.notifications.store(on, Ordering::Relaxed);
                 prefs.touch("notifications");
             }
+            4 if self.nix => {
+                self.message = Some((prefs::TRAY_NIX.into(), Role::Yellow));
+            }
             3 | 4 => {
                 let (file, exec, set): (_, _, SetEntry) = if i == 3 {
                     (&self.autostart, &self.exec, prefs::set_autostart)
@@ -733,7 +739,7 @@ impl Menu {
             ),
             (
                 "tray at login",
-                on_off(tray).into(),
+                if self.nix { "nix".into() } else { on_off(tray).into() },
                 "copland-tray's autostart entry: the daemon in your bar's tray",
             ),
             (
@@ -768,7 +774,9 @@ impl Menu {
         }
         if self.message.is_none() {
             let mut hint = rows[sel.min(rows.len() - 1)].2.to_string();
-            if let Some(exec) = [(3, &self.exec), (4, &self.tray_exec)]
+            if sel == 4 && self.nix {
+                hint = prefs::TRAY_NIX.into();
+            } else if let Some(exec) = [(3, &self.exec), (4, &self.tray_exec)]
                 .into_iter()
                 .find_map(|(row, e)| (row == sel).then_some(e))
             {

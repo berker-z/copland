@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use copland_daemon_core::client;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
 use copland_daemon_core::search_path;
-use copland_daemon_core::service::{self, Log, Note, Uninstalled};
+use copland_daemon_core::service::{self, Log, NixManaged, Note, Uninstalled};
 use copland_daemon_core::socket::Serve;
 use copland_daemon_core::{Config, Daemon, Lock, Paths};
 use tokio::signal::unix::{SignalKind, signal};
@@ -52,7 +52,8 @@ struct Args {
     /// (or boot, with lingering) and after a failure. Needs the config, so --setup first.
     #[arg(long, conflicts_with_all = ["check", "setup", "uninstall_service"])]
     install_service: bool,
-    /// Stop, disable and remove the service --install-service wrote.
+    /// Stop, disable and remove the service --install-service wrote. When this binary is from the
+    /// Nix store, both write and remove nothing: they print the home-manager module to add.
     #[arg(long, conflicts_with_all = ["check", "setup"])]
     uninstall_service: bool,
 }
@@ -145,6 +146,10 @@ async fn run(args: Args) -> Result<()> {
         match service::uninstall()? {
             Uninstalled::NotInstalled { file } => println!("No service installed ({} isn't there).", file.display()),
             Uninstalled::Removed { name, file } => println!("Stopped {name} and removed {}.", file.display()),
+            Uninstalled::Nix(nix) => {
+                print!("{}", nix.uninstall_says());
+                std::process::exit(1);
+            }
         }
         return Ok(());
     }
@@ -163,6 +168,10 @@ async fn run(args: Args) -> Result<()> {
         for a in &config.agents {
             println!("@{} at {}: {:?} in {}", a.handle, a.url, a.command, a.workdir.display());
         }
+        println!(
+            "{}",
+            service::describe(service::installed().as_ref(), service::nix_managed_here())
+        );
         println!();
         let failed = setup::check(&config, args.fix).await?;
         if failed > 0 {
@@ -229,7 +238,14 @@ async fn run(args: Args) -> Result<()> {
 /// `--install-service` on this binary, saying what it did (COPL-199: the work is core's).
 fn install_service(config: &std::path::Path) -> Result<()> {
     let program = std::env::current_exe().context("finding this binary")?;
-    let done = service::install(config, &program)?;
+    /* Nix's: home-manager runs the service, so nothing is written (COPL-218). */
+    let done = match service::install(config, &program) {
+        Err(e) if e.is::<NixManaged>() => {
+            print!("{e}");
+            std::process::exit(1);
+        }
+        done => done?,
+    };
     let (linger, early): (Vec<_>, Vec<_>) = done.notes.iter().partition(|n| matches!(n, Note::NoLinger { .. }));
     for note in early {
         println!("{note}");

@@ -6,6 +6,10 @@
 //! files in `release/` are what they render for a release's layout, and a test holds the two
 //! together.
 //!
+//! Under Nix (COPL-218) the service is the flake's home-manager module's: when the program is in
+//! the Nix store (`nix_managed`), `install` and `uninstall` write and remove nothing and say what
+//! to add instead (`NixManaged`, `module_lines`).
+//!
 //! For a program that isn't the daemon (the box): `installed` says whether a service is there,
 //! `start` starts an installed one (`restart` again, on a new config), `daemon_binary` finds the
 //! `copland-daemon` shipped with it, `spawn_session` starts one for this session only, detached
@@ -176,8 +180,6 @@ fn display(p: &Path) -> Result<String> {
 /// Something `install` noticed on the way, worth telling whoever installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Note {
-    /// The program is in the Nix store: the service runs that build until installed again.
-    NixStore { program: String },
     /// A daemon already runs the config; the service retries until it stops.
     AlreadyRunning { config: String, holder: Holder },
     /// systemd's lingering is off for the user, so the service stops at logout.
@@ -187,11 +189,6 @@ pub enum Note {
 impl std::fmt::Display for Note {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Note::NixStore { program } => write!(
-                f,
-                "Note: {program} is in the Nix store, so the service runs this build until you install it again. \
-                 The package has a unit of its own in share/systemd/user to use from your Nix config instead."
-            ),
             Note::AlreadyRunning { config, holder } => write!(
                 f,
                 "Note: a daemon is already running {config} ({holder}). The service retries every {RESTART_SEC}s \
@@ -205,6 +202,199 @@ impl std::fmt::Display for Note {
         }
     }
 }
+
+/* ---------- under Nix (COPL-218) ---------- */
+
+/// Where the home-manager module and its options are explained.
+pub const MODULE_DOCS: &str = "https://github.com/berker-z/copland/blob/main/daemon/README.md#installing-it";
+
+/// The Nix stores a program can be in: /nix/store, and `$NIX_STORE` when that names another.
+pub fn nix_stores() -> Vec<PathBuf> {
+    let mut stores = vec![PathBuf::from("/nix/store")];
+    if let Some(s) = std::env::var_os("NIX_STORE").map(PathBuf::from)
+        && s.is_absolute()
+        && !stores.contains(&s)
+    {
+        stores.push(s);
+    }
+    stores
+}
+
+/// Whether `path` is inside one of `stores`.
+pub fn in_store(path: &Path, stores: &[PathBuf]) -> bool {
+    stores.iter().any(|s| path.starts_with(s) && path != s)
+}
+
+/// Whether `exe` is a build of Nix's: it, or what its links resolve to (a profile's
+/// `bin/copland-daemon` is a link into the store), is in one of `stores`. Its service and its
+/// tray at login are then the home-manager module's (`services.copland`): nothing here writes
+/// or removes a unit or an autostart entry for it.
+pub fn nix_managed_in(exe: &Path, stores: &[PathBuf]) -> bool {
+    if in_store(exe, stores) {
+        return true;
+    }
+    let Ok(resolved) = fs::canonicalize(exe) else {
+        return false;
+    };
+    /* The stores resolved too: a store behind a link (macOS's /tmp is /private/tmp) holds what resolves into it. */
+    let stores: Vec<PathBuf> = stores
+        .iter()
+        .flat_map(|s| [s.clone(), fs::canonicalize(s).unwrap_or_else(|_| s.clone())])
+        .collect();
+    in_store(&resolved, &stores)
+}
+
+/// `nix_managed_in` the stores there are (`nix_stores`).
+pub fn nix_managed(exe: &Path) -> bool {
+    nix_managed_in(exe, &nix_stores())
+}
+
+/// Whether the running binary is Nix's (`nix_managed`): the box and the daemon ship together, so
+/// this says it for the daemon beside it too.
+pub fn nix_managed_here() -> bool {
+    std::env::current_exe().is_ok_and(|e| nix_managed(&e))
+}
+
+/// The module's lines to add to a home-manager configuration, with the option names
+/// `nix/hm-module.nix` has: `configFile` only when the config isn't the default one, the tray's
+/// line when it is wanted.
+pub fn module_lines(config: Option<&Path>, tray: bool) -> Vec<String> {
+    let mut lines = vec![
+        "services.copland.enable = true;".to_string(),
+        "services.copland.runtimes = [ pkgs.claude-code pkgs.git pkgs.gh ];".to_string(),
+    ];
+    if let Some(c) = config {
+        let c = c
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace("${", "\\${");
+        lines.push(format!("services.copland.configFile = \"{c}\";"));
+    }
+    if tray {
+        lines.push("services.copland.tray.enable = true;".to_string());
+    }
+    lines
+}
+
+/// All of it: the flake input, the import and `module_lines`, to paste.
+pub fn module_snippet(config: Option<&Path>, tray: bool) -> String {
+    let mut out = String::from(
+        "# flake.nix\n\
+         inputs.copland.url = \"github:berker-z/copland?dir=daemon\";\n\
+         \n\
+         # your home-manager configuration\n\
+         imports = [ inputs.copland.homeManagerModules.default ];\n",
+    );
+    for l in module_lines(config, tray) {
+        out.push_str(&l);
+        out.push('\n');
+    }
+    out
+}
+
+/// A unit at `unit` that is a file of its own rather than a link: one an earlier
+/// `--install-service` wrote, which home-manager won't replace with its link.
+pub fn leftover(unit: &Path) -> Option<PathBuf> {
+    fs::symlink_metadata(unit)
+        .is_ok_and(|m| m.file_type().is_file())
+        .then(|| unit.to_path_buf())
+}
+
+/// `leftover` where `install` writes its unit (Linux only: launchd has no module).
+pub fn leftover_unit() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        None
+    } else {
+        leftover(&unit_path())
+    }
+}
+
+/// Whether this session has a display, so the tray's line is worth suggesting.
+fn graphical_here() -> bool {
+    crate::autostart::graphical(
+        std::env::var("DISPLAY").ok().as_deref(),
+        std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
+    )
+}
+
+/// Why `install` and `uninstall` did nothing: the daemon is Nix's, so home-manager runs its
+/// service. Says what to add instead, and what an earlier install left in the way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NixManaged {
+    pub program: PathBuf,
+    /// The config, for `configFile`, when it isn't the default one.
+    pub config: Option<PathBuf>,
+    /// Whether to add the tray's line.
+    pub tray: bool,
+    /// A unit an earlier `--install-service` wrote (`leftover`).
+    pub leftover: Option<PathBuf>,
+}
+
+impl NixManaged {
+    /// For `program` on `config` (the default one is left out), looking for a leftover unit.
+    pub fn here(program: &Path, config: Option<&Path>, tray: bool) -> Self {
+        let resolved = |c: &Path| fs::canonicalize(c).unwrap_or_else(|_| c.to_path_buf());
+        /* Both resolved: on macOS the temp dir and the like are behind a link (/var, /private/var). */
+        let default = resolved(&crate::config::default_config_path());
+        let config = config.map(resolved).filter(|c| *c != default);
+        Self {
+            program: program.to_path_buf(),
+            config,
+            tray,
+            leftover: leftover_unit(),
+        }
+    }
+
+    /// What an earlier install left, and how to clear it: home-manager's switch stops at it.
+    fn leftover_says(&self) -> String {
+        match &self.leftover {
+            Some(f) => format!(
+                "\n{f} was written by an earlier --install-service, and home-manager won't replace it. \
+                 Remove it before you switch: `systemctl --user disable --now {UNIT} && rm {f}`.\n",
+                f = f.display()
+            ),
+            None => String::new(),
+        }
+    }
+
+    /// What `--uninstall-service` says: nothing removed, the module is where it goes.
+    pub fn uninstall_says(&self) -> String {
+        format!(
+            "{} is from the Nix store, so its service is home-manager's: nothing was stopped or removed. \
+             Take services.copland out of your home-manager configuration and switch.\n{}",
+            self.program.display(),
+            self.leftover_says()
+        )
+    }
+
+    /// The module to add, indented to print, then what an earlier install left in the way.
+    pub fn add_module(&self) -> String {
+        let mut out = format!("Add the flake's module to your configuration and switch ({MODULE_DOCS}):\n\n");
+        for l in module_snippet(self.config.as_deref(), self.tray).lines() {
+            if !l.is_empty() {
+                out.push_str("  ");
+                out.push_str(l);
+            }
+            out.push('\n');
+        }
+        out + &self.leftover_says()
+    }
+}
+
+impl std::fmt::Display for NixManaged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} is from the Nix store, so its service is home-manager's: nothing was written. {}",
+            self.program.display(),
+            self.add_module()
+        )
+    }
+}
+
+impl std::error::Error for NixManaged {}
 
 /// Where the service's log goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,7 +416,12 @@ pub struct Installed {
 
 /// Write the platform's service running `program` on `config`, then enable and start it.
 /// `copland-daemon --install-service` passes itself; another program passes `daemon_binary()`.
+/// Refused, writing nothing, when `program` is Nix's (`nix_managed`): its service is the
+/// home-manager module's then, and the error says how to add it (`NixManaged`).
 pub fn install(config: &Path, program: &Path) -> Result<Installed> {
+    if nix_managed(program) {
+        return Err(NixManaged::here(program, Some(config), graphical_here()).into());
+    }
     if !config.exists() {
         bail!(
             "no config at {} yet: run `copland-daemon --setup` first (with the same --config, if you gave one), \
@@ -239,11 +434,6 @@ pub fn install(config: &Path, program: &Path) -> Result<Installed> {
     let (program, config) = (display(program)?, display(&config)?);
 
     let mut notes = Vec::new();
-    if program.starts_with("/nix/store/") {
-        notes.push(Note::NixStore {
-            program: program.clone(),
-        });
-    }
     if let Ok(Some(holder)) = lock::running(Path::new(&config), &default_runtime_dir()) {
         notes.push(Note::AlreadyRunning {
             config: config.clone(),
@@ -304,10 +494,18 @@ pub enum Uninstalled {
     Removed { name: &'static str, file: PathBuf },
     /// Nothing to do: `file` isn't there.
     NotInstalled { file: PathBuf },
+    /// Nothing done: the daemon is Nix's, and so is its service.
+    Nix(NixManaged),
 }
 
-/// Stop, disable and remove the service `install` wrote.
+/// Stop, disable and remove the service `install` wrote. Nothing is stopped or removed when this
+/// binary is Nix's: `--uninstall-service` says to take the module out instead (`NixManaged`).
 pub fn uninstall() -> Result<Uninstalled> {
+    if let Ok(exe) = std::env::current_exe()
+        && nix_managed(&exe)
+    {
+        return Ok(Uninstalled::Nix(NixManaged::here(&exe, None, false)));
+    }
     if cfg!(target_os = "macos") {
         let plist = plist_path();
         if !plist.exists() {
@@ -334,32 +532,115 @@ pub fn uninstall() -> Result<Uninstalled> {
 /// An installed service, as `installed` finds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
-    /// The unit or plist.
+    /// The unit or plist: on Linux wherever systemd loaded it from (`FragmentPath`), so
+    /// home-manager's link in ~/.config/systemd/user, or a unit under /etc, counts too.
     pub file: PathBuf,
     /// Whether it starts by itself: on Linux, `systemctl --user is-enabled` says enabled; on
     /// macOS always, since launchd loads every agent in ~/Library/LaunchAgents at login.
     pub enabled: bool,
+    /// Whether systemd says it is running (`ActiveState`). None where that isn't asked (macOS,
+    /// or no user manager to ask): the status socket says then (`lock::running`).
+    pub running: Option<bool>,
+    /// Whether its ExecStart is in the Nix store: Nix's, the home-manager module's.
+    pub nix: bool,
 }
 
-/// The service `install` writes, when it is there: so a setup with a config and no service
-/// (0.4.x, or a box-only one) can be told from a service that is stopped. Whether it is running
-/// is the status socket's to say (`lock::running`), not this.
+/// The `copland-daemon` service when there is one, wherever its unit lives: so a setup with a
+/// config and no service (0.4.x, or a box-only one) can be told from a service that is
+/// stopped. On Linux it asks `systemctl --user show`, which finds the unit `install` writes and
+/// home-manager's alike; without a user manager to ask, it looks for `install`'s file.
 pub fn installed() -> Option<Service> {
     if cfg!(target_os = "macos") {
         let file = plist_path();
-        file.exists().then_some(Service { file, enabled: true })
-    } else {
-        let file = unit_path();
-        if !file.exists() {
-            return None;
-        }
-        let enabled = Command::new("systemctl")
-            .args(["--user", "is-enabled", UNIT])
-            .output()
-            .map(|o| is_enabled(&String::from_utf8_lossy(&o.stdout)))
-            .unwrap_or(false);
-        Some(Service { file, enabled })
+        return file.exists().then_some(Service {
+            file,
+            enabled: true,
+            running: None,
+            nix: false,
+        });
     }
+    let shown = Command::new("systemctl")
+        .args([
+            "--user",
+            "show",
+            UNIT,
+            "--property=LoadState,FragmentPath,UnitFileState,ActiveState,ExecStart",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| shown(&String::from_utf8_lossy(&o.stdout), &nix_stores()));
+    match shown {
+        Some(found) => found,
+        None => {
+            let file = unit_path();
+            file.exists().then(|| Service {
+                nix: fs::read_to_string(&file).is_ok_and(|t| exec_in_store(&t, &nix_stores())),
+                file,
+                enabled: false,
+                running: None,
+            })
+        }
+    }
+}
+
+/// The service in what `systemctl show` printed for it: `Some(None)` when systemd has no such
+/// unit, None when what it printed isn't an answer (no LoadState).
+fn shown(text: &str, stores: &[PathBuf]) -> Option<Option<Service>> {
+    let get = |key: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+            .map(str::trim)
+    };
+    let load = get("LoadState")?;
+    if load != "loaded" {
+        return Some(None);
+    }
+    let file = get("FragmentPath").filter(|f| !f.is_empty()).map(PathBuf::from)?;
+    Some(Some(Service {
+        file,
+        enabled: is_enabled(get("UnitFileState").unwrap_or("")),
+        running: Some(matches!(get("ActiveState"), Some("active" | "reloading"))),
+        nix: exec_in_store(&format!("ExecStart={}", get("ExecStart").unwrap_or("")), stores),
+    }))
+}
+
+/// Whether the program a unit starts is in the Nix store: `ExecStart=/nix/store/…` in a unit
+/// file, or `ExecStart={ path=/nix/store/… ; argv[]=… }` as `systemctl show` says it.
+fn exec_in_store(unit: &str, stores: &[PathBuf]) -> bool {
+    unit.lines()
+        .filter_map(|l| l.trim().strip_prefix("ExecStart="))
+        .any(|v| {
+            let v = v.trim().trim_start_matches('{').trim();
+            let v = v.strip_prefix("path=").unwrap_or(v);
+            /* systemd's prefixes: `-`, `@`, `+`, `!`, `:`. */
+            let program = v.trim_start_matches(['-', '@', '+', '!', ':']).split([' ', ';']).next();
+            program.is_some_and(|p| in_store(Path::new(p), stores))
+        })
+}
+
+/// What `--check` says about the service: whether there is one, where, whether it is Nix's,
+/// enabled and running. Without one, how to get one: the module when this daemon is Nix's
+/// (`nix_here`), `--install-service` otherwise.
+pub fn describe(service: Option<&Service>, nix_here: bool) -> String {
+    let Some(s) = service else {
+        return if nix_here {
+            format!(
+                "service: none. This copland-daemon is from the Nix store, so add the flake's home-manager module \
+                 (services.copland.enable = true; {MODULE_DOCS}) and switch."
+            )
+        } else {
+            "service: none (`copland-daemon --install-service` installs one).".into()
+        };
+    };
+    let mut says = vec![if s.nix { "managed by Nix" } else { "installed" }.to_string()];
+    says.push(if s.enabled { "enabled" } else { "not enabled" }.into());
+    match s.running {
+        Some(true) => says.push("running".into()),
+        Some(false) => says.push(format!("not running: `systemctl --user start {UNIT}` starts it")),
+        None => {}
+    }
+    format!("service: {} ({}).", says.join(", "), s.file.display())
 }
 
 /// What `systemctl is-enabled` prints for a unit that starts by itself.
@@ -790,12 +1071,184 @@ mod tests {
             "Note: a daemon is already running /c.toml (pid 7, copland-box). The service retries every 10s \
              and takes over once that one stops."
         );
+    }
+
+    #[test]
+    fn a_program_in_the_store_or_linked_into_it_is_nix_managed() {
+        let dir = scratch("nix");
+        let store = dir.join("store");
+        let program = store.join("abc-copland-0.5.0/bin").join(DAEMON);
+        fs::create_dir_all(program.parent().unwrap()).unwrap();
+        script(&program, "#!/bin/sh\n");
+        let stores = [store.clone()];
+        assert!(nix_managed_in(&program, &stores));
+        /* A profile's bin is a link into the store: it counts. */
+        let profile = dir.join("profile/bin");
+        fs::create_dir_all(&profile).unwrap();
+        std::os::unix::fs::symlink(&program, profile.join(DAEMON)).unwrap();
+        assert!(nix_managed_in(&profile.join(DAEMON), &stores));
+        /* A copy outside doesn't, nor does the store itself. */
+        fs::copy(&program, dir.join(DAEMON)).unwrap();
+        assert!(!nix_managed_in(&dir.join(DAEMON), &stores));
+        assert!(!nix_managed_in(&store, &stores));
+        /* A store path that isn't there (gone after a collection) still counts, by its name. */
+        assert!(nix_managed_in(
+            Path::new("/nix/store/gone/bin/copland-daemon"),
+            &nix_stores()
+        ));
+        assert!(!nix_managed_in(
+            Path::new("/nix/storefront/bin/copland-daemon"),
+            &nix_stores()
+        ));
+        assert!(!nix_managed_in(
+            Path::new("/home/me/.local/bin/copland-daemon"),
+            &nix_stores()
+        ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn install_under_nix_writes_nothing_and_says_what_to_add() {
+        /* Refused before anything else: before the missing config, so before any file. */
+        let err = install(
+            Path::new("/nonexistent/daemon.toml"),
+            Path::new("/nix/store/abc-copland/bin/copland-daemon"),
+        )
+        .unwrap_err();
+        let nix = err.downcast_ref::<NixManaged>().expect("refused as Nix's");
+        assert_eq!(nix.program, Path::new("/nix/store/abc-copland/bin/copland-daemon"));
+        assert_eq!(nix.config.as_deref(), Some(Path::new("/nonexistent/daemon.toml")));
+        let says = err.to_string();
         assert!(
-            Note::NixStore {
-                program: "/nix/store/x/bin/copland-daemon".into()
-            }
-            .to_string()
-            .starts_with("Note: /nix/store/x/bin/copland-daemon is in the Nix store")
+            says.starts_with(
+                "/nix/store/abc-copland/bin/copland-daemon is from the Nix store, so its service is home-manager's: \
+                 nothing was written."
+            ),
+            "{says}"
+        );
+        for line in [
+            "  inputs.copland.url = \"github:berker-z/copland?dir=daemon\";\n",
+            "  imports = [ inputs.copland.homeManagerModules.default ];\n",
+            "  services.copland.enable = true;\n",
+            "  services.copland.configFile = \"/nonexistent/daemon.toml\";\n",
+        ] {
+            assert!(says.contains(line), "{line} in {says}");
+        }
+        assert!(says.contains(MODULE_DOCS), "{says}");
+    }
+
+    #[test]
+    fn the_module_lines_use_the_modules_option_names() {
+        assert_eq!(
+            module_lines(None, true),
+            [
+                "services.copland.enable = true;",
+                "services.copland.runtimes = [ pkgs.claude-code pkgs.git pkgs.gh ];",
+                "services.copland.tray.enable = true;",
+            ]
+        );
+        assert_eq!(
+            module_lines(Some(Path::new("/w/my \"x\" ${y}.toml")), false)[2],
+            "services.copland.configFile = \"/w/my \\\"x\\\" \\${y}.toml\";"
+        );
+        /* Every option named here is one the module has. */
+        let module = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../nix/hm-module.nix")).unwrap();
+        for option in ["enable", "runtimes", "configFile", "tray.enable"] {
+            assert!(
+                module.contains(&format!("\n    {option} = ")),
+                "{option} in hm-module.nix"
+            );
+        }
+        assert!(module_snippet(None, false).contains("homeManagerModules.default"));
+    }
+
+    #[test]
+    fn a_unit_of_its_own_is_left_over_and_a_link_is_not() {
+        let dir = scratch("leftover");
+        let unit = dir.join(UNIT);
+        assert_eq!(leftover(&unit), None);
+        fs::write(&unit, "[Service]\n").unwrap();
+        assert_eq!(leftover(&unit), Some(unit.clone()));
+        let linked = dir.join("linked.service");
+        std::os::unix::fs::symlink(&unit, &linked).unwrap();
+        assert_eq!(leftover(&linked), None);
+        let nix = NixManaged {
+            program: "/nix/store/x/bin/copland-daemon".into(),
+            config: None,
+            tray: false,
+            leftover: Some(unit.clone()),
+        };
+        let says = nix.to_string();
+        assert!(says.contains("was written by an earlier --install-service"), "{says}");
+        assert!(says.contains(&format!(
+            "systemctl --user disable --now {UNIT} && rm {}",
+            unit.display()
+        )));
+        assert!(!says.contains("configFile") && !says.contains("tray.enable"), "{says}");
+        assert!(nix.uninstall_says().contains("nothing was stopped or removed"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reads_the_unit_systemctl_shows() {
+        let stores = [PathBuf::from("/nix/store")];
+        let hm = "LoadState=loaded\nFragmentPath=/home/me/.config/systemd/user/copland-daemon.service\n\
+                  UnitFileState=enabled\nActiveState=active\n\
+                  ExecStart={ path=/nix/store/abc-copland/bin/copland-daemon ; argv[]=/nix/store/abc-copland/bin/copland-daemon --headless ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n";
+        assert_eq!(
+            shown(hm, &stores),
+            Some(Some(Service {
+                file: "/home/me/.config/systemd/user/copland-daemon.service".into(),
+                enabled: true,
+                running: Some(true),
+                nix: true,
+            }))
+        );
+        let ours = "LoadState=loaded\nFragmentPath=/home/me/.config/systemd/user/copland-daemon.service\n\
+                    UnitFileState=disabled\nActiveState=failed\n\
+                    ExecStart={ path=/home/me/.local/bin/copland-daemon ; argv[]=/home/me/.local/bin/copland-daemon --headless }\n";
+        let s = shown(ours, &stores).unwrap().unwrap();
+        assert_eq!((s.enabled, s.running, s.nix), (false, Some(false), false));
+        assert_eq!(
+            shown("LoadState=not-found\nFragmentPath=\nActiveState=inactive\n", &stores),
+            Some(None)
+        );
+        assert_eq!(shown("", &stores), None, "no answer: look for the file instead");
+        /* A unit file's own ExecStart. */
+        assert!(exec_in_store(
+            "[Service]\nExecStart=/nix/store/x/bin/copland-daemon --headless\n",
+            &stores
+        ));
+        assert!(exec_in_store("ExecStart=-/nix/store/x/bin/copland-daemon\n", &stores));
+        assert!(!exec_in_store(
+            "ExecStart=/usr/bin/copland-daemon --headless\n",
+            &stores
+        ));
+    }
+
+    #[test]
+    fn check_says_where_the_service_is_and_how_to_get_one() {
+        assert!(describe(None, false).contains("--install-service"));
+        let nix = describe(None, true);
+        assert!(
+            nix.contains("services.copland.enable = true") && nix.contains(MODULE_DOCS),
+            "{nix}"
+        );
+        let mut s = Service {
+            file: "/home/me/.config/systemd/user/copland-daemon.service".into(),
+            enabled: true,
+            running: Some(true),
+            nix: true,
+        };
+        assert_eq!(
+            describe(Some(&s), true),
+            "service: managed by Nix, enabled, running (/home/me/.config/systemd/user/copland-daemon.service)."
+        );
+        (s.nix, s.enabled, s.running) = (false, false, Some(false));
+        assert_eq!(
+            describe(Some(&s), false),
+            "service: installed, not enabled, not running: `systemctl --user start copland-daemon.service` starts it \
+             (/home/me/.config/systemd/user/copland-daemon.service)."
         );
     }
 

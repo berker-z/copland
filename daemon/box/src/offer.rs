@@ -6,6 +6,11 @@
 //! agents itself, is told so once and offered the install (`State::Migration`); the answer is
 //! kept in the box's own state file, so "not now" isn't asked at every start.
 //!
+//! Under Nix (COPL-218: the box is in the store, `service::nix_managed_here`) the service is the
+//! home-manager module's, so nothing here installs one: the status line has no `i`, and `m`, the
+//! migration note and setup's end show the module to add instead (`State::Nix`), which `c`
+//! copies. `s` still starts a unit the module installed, and `r` still runs a session daemon.
+//!
 //! The work is core's and blocks (systemctl, launchctl, waiting for a session daemon's
 //! socket), so the view runs `perform` on the box's runtime and shows what came back here:
 //! `State` is plain data and `panel` says it, as setup's steps do.
@@ -14,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Result;
+use copland_daemon_core::autostart;
 use copland_daemon_core::service::{self, Installed, Log, Note, Service, Session};
 
 use crate::scene::{Line, Role};
@@ -65,22 +71,53 @@ pub enum State {
     Done(Outcome),
     /// It failed, and why.
     Failed(Ask, String),
+    /// Nix's: the module to add, in place of an install.
+    Nix,
 }
 
 pub struct Offer {
     pub state: State,
     /// The installed service, as last looked at: whether "start" is offered.
     pub service: Option<Service>,
+    /// Whether the box (and the daemon beside it) is Nix's: then nothing installs a service.
+    pub nix: bool,
+    /// The config, for the module's `configFile` when it isn't the default one.
+    pub config: Option<PathBuf>,
     pub since: Instant,
 }
 
 impl Offer {
-    pub fn new(service: Option<Service>) -> Self {
+    pub fn new(service: Option<Service>, nix: bool, config: &Path) -> Self {
         Self {
             state: State::Idle,
             service,
+            nix,
+            config: autostart::non_default(config).map(Path::to_path_buf),
             since: Instant::now(),
         }
+    }
+
+    /// Where a live view starts, given how it opens: the ask to perform at once, if any. Under
+    /// Nix with no service the migration note and setup's end show the module instead.
+    pub fn open(&mut self, opening: Opening) -> Option<Ask> {
+        let nix = self.nix && self.service.is_none();
+        match opening {
+            Opening::Plain => None,
+            Opening::Migration => {
+                self.state = if nix { State::Nix } else { State::Migration };
+                None
+            }
+            Opening::AfterSetup if nix => {
+                self.state = State::Nix;
+                None
+            }
+            Opening::AfterSetup => Some(Ask::AfterSetup),
+        }
+    }
+
+    /// The module's lines, as `c` copies them: the flake input and the import too.
+    pub fn snippet(&self) -> String {
+        service::module_snippet(self.config.as_deref(), true)
     }
 
     pub fn animating(&self) -> bool {
@@ -92,6 +129,7 @@ impl Offer {
         let mut keys = vec![(Line::one("no daemon on this config", Role::Yellow), None::<String>)];
         match &self.service {
             Some(_) => keys.push((key("s", "start the service"), Some("s".into()))),
+            None if self.nix => keys.push((key("m", "the nix module"), Some("m".into()))),
             None => keys.push((key("i", "install the service"), Some("i".into()))),
         }
         keys.push((key("r", "this session only"), Some("r".into())));
@@ -125,7 +163,22 @@ impl Offer {
                 ],
                 Vec::new(),
             ),
-            State::Done(outcome) => (said(outcome), ok),
+            State::Done(outcome) => (said(outcome, self.nix), ok),
+            State::Nix => {
+                let mut lines = vec![head("this box is from nix: home-manager runs the daemon")];
+                lines.extend(
+                    service::module_lines(self.config.as_deref(), true)
+                        .into_iter()
+                        .map(|l| Line::one(l, Role::Ink)),
+                );
+                lines.push(faint(
+                    "add it with the flake's module, then switch · daemon/README.md, installing it".into(),
+                ));
+                (
+                    lines,
+                    vec![key("c", "copy it"), key("r", "this session only"), key("enter", "ok")],
+                )
+            }
             State::Failed(ask, why) => (
                 vec![
                     Line::one(format!("× couldn't {}", failed(*ask)), Role::Red),
@@ -164,7 +217,7 @@ fn failed(ask: Ask) -> &'static str {
 
 /// What a done ask says: what it did, where things went, and install's notes, in words short
 /// enough for the panel.
-pub fn said(outcome: &Outcome) -> Vec<Line> {
+pub fn said(outcome: &Outcome, nix: bool) -> Vec<Line> {
     let done = |s: &str| Line::one(format!("✓ {s}"), Role::Green);
     let faint = |s: String| Line::one(s, Role::Faint);
     match outcome {
@@ -190,7 +243,11 @@ pub fn said(outcome: &Outcome) -> Vec<Line> {
         ],
         Outcome::Session(s) => vec![
             done(&format!("a daemon runs this config for this session (pid {})", s.pid)),
-            faint("it outlives the window, not your login: i installs the service instead".into()),
+            faint(if nix {
+                "it outlives the window, not your login: m shows the nix module that runs it at login".into()
+            } else {
+                "it outlives the window, not your login: i installs the service instead".into()
+            }),
             faint(format!("its log: {}", s.log.display())),
         ],
     }
@@ -199,7 +256,6 @@ pub fn said(outcome: &Outcome) -> Vec<Line> {
 /// An install note, shorter than core's for the panel.
 pub fn note(n: &Note) -> String {
     match n {
-        Note::NixStore { .. } => "it runs this build from the Nix store until you install it again".into(),
         Note::AlreadyRunning { holder, .. } => {
             format!("a daemon already runs this config ({holder}): the service takes over once it stops")
         }
@@ -286,26 +342,28 @@ mod tests {
         Service {
             file: "/home/me/.config/systemd/user/copland-daemon.service".into(),
             enabled: false,
+            running: Some(false),
+            nix: false,
         }
     }
 
     #[test]
     fn not_running_offers_install_or_start_and_a_session() {
-        let none = Offer::new(None);
+        let none = Offer::new(None, false, Path::new("/c.toml"));
         assert!(none.panel("").is_none());
         let keys: Vec<_> = none.keys().into_iter().map(|(l, k)| (text(&l), k)).collect();
         assert_eq!(keys[0].0, "no daemon on this config");
         assert_eq!(keys[1], ("i  install the service".into(), Some("i".into())));
         assert_eq!(keys[2], ("r  this session only".into(), Some("r".into())));
         /* An installed service that is stopped is started, not installed again. */
-        let stopped = Offer::new(Some(installed()));
+        let stopped = Offer::new(Some(installed()), false, Path::new("/c.toml"));
         let keys: Vec<_> = stopped.keys().into_iter().map(|(l, k)| (text(&l), k)).collect();
         assert_eq!(keys[1], ("s  start the service".into(), Some("s".into())));
     }
 
     #[test]
     fn the_migration_note_says_what_changed_and_offers_the_install() {
-        let mut o = Offer::new(None);
+        let mut o = Offer::new(None, false, Path::new("/c.toml"));
         o.state = State::Migration;
         let (lines, keys) = texts(&o.panel("").unwrap());
         assert!(lines[0].contains("no longer runs your agents"), "{lines:?}");
@@ -320,9 +378,6 @@ mod tests {
             name: service::UNIT,
             log: Log::Journal,
             notes: vec![
-                Note::NixStore {
-                    program: "/nix/store/x-copland/bin/copland-daemon".into(),
-                },
                 Note::NoLinger { user: "me".into() },
                 Note::AlreadyRunning {
                     config: "/c".into(),
@@ -333,7 +388,7 @@ mod tests {
                 },
             ],
         };
-        let lines: Vec<String> = said(&Outcome::Installed(i)).iter().map(text).collect();
+        let lines: Vec<String> = said(&Outcome::Installed(i), false).iter().map(text).collect();
         assert!(
             lines[0].starts_with("✓ the service is installed and started"),
             "{lines:?}"
@@ -343,20 +398,21 @@ mod tests {
             "copland-daemon.service: /home/me/.config/systemd/user/copland-daemon.service"
         );
         assert_eq!(lines[2], "its log: journalctl --user -u copland-daemon");
-        assert!(lines[3].contains("Nix store"), "{lines:?}");
-        assert!(lines[4].contains("sudo loginctl enable-linger me"), "{lines:?}");
-        assert!(lines[5].contains("(pid 42)"), "{lines:?}");
-        /* The panel has room for six lines: the most install can say. */
-        assert_eq!(lines.len(), 6);
+        assert!(lines[3].contains("sudo loginctl enable-linger me"), "{lines:?}");
+        assert!(lines[4].contains("(pid 42)"), "{lines:?}");
+        assert_eq!(lines.len(), 5);
     }
 
     #[test]
     fn a_session_says_it_ends_with_the_login() {
-        let lines: Vec<String> = said(&Outcome::Session(Session {
-            pid: 7,
-            program: "/bin/copland-daemon".into(),
-            log: "/home/me/.local/state/copland/daemon.log".into(),
-        }))
+        let lines: Vec<String> = said(
+            &Outcome::Session(Session {
+                pid: 7,
+                program: "/bin/copland-daemon".into(),
+                log: "/home/me/.local/state/copland/daemon.log".into(),
+            }),
+            false,
+        )
         .iter()
         .map(text)
         .collect();
@@ -367,7 +423,7 @@ mod tests {
 
     #[test]
     fn a_failure_says_what_and_why_and_busy_has_no_keys() {
-        let mut o = Offer::new(None);
+        let mut o = Offer::new(None, false, Path::new("/c.toml"));
         o.state = State::Failed(Ask::Install, "no copland-daemon beside /x or on PATH".into());
         let (lines, keys) = texts(&o.panel("").unwrap());
         assert_eq!(lines[0], "× couldn't install the service");
@@ -378,6 +434,68 @@ mod tests {
         let (lines, keys) = texts(&o.panel("..").unwrap());
         assert_eq!(lines[0], "starting the daemon on the new config..");
         assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn under_nix_nothing_offers_an_install_and_the_panel_shows_the_module() {
+        let config = copland_daemon_core::config::default_config_path();
+        let mut o = Offer::new(None, true, &config);
+        let keys: Vec<_> = o.keys().into_iter().map(|(l, k)| (text(&l), k)).collect();
+        assert_eq!(keys[1], ("m  the nix module".into(), Some("m".into())));
+        assert_eq!(keys[2], ("r  this session only".into(), Some("r".into())));
+        assert!(!keys.iter().any(|(_, k)| k.as_deref() == Some("i")), "{keys:?}");
+        /* The migration note and setup's end show the module rather than installing. */
+        assert_eq!(o.open(Opening::Migration), None);
+        assert_eq!(o.state, State::Nix);
+        o.state = State::Idle;
+        assert_eq!(o.open(Opening::AfterSetup), None);
+        assert_eq!(o.state, State::Nix);
+        let (lines, keys) = texts(&o.panel("").unwrap());
+        assert_eq!(
+            lines,
+            [
+                "this box is from nix: home-manager runs the daemon",
+                "services.copland.enable = true;",
+                "services.copland.runtimes = [ pkgs.claude-code pkgs.git pkgs.gh ];",
+                "services.copland.tray.enable = true;",
+                "add it with the flake's module, then switch · daemon/README.md, installing it",
+            ]
+        );
+        assert_eq!(keys, ["c  copy it", "r  this session only", "enter  ok"]);
+        assert!(
+            o.snippet()
+                .contains("imports = [ inputs.copland.homeManagerModules.default ];")
+        );
+        /* The default config isn't named; another one is. */
+        assert!(!o.snippet().contains("configFile"));
+        let other = Offer::new(None, true, Path::new("/w/work.toml"));
+        assert!(
+            other
+                .snippet()
+                .contains("services.copland.configFile = \"/w/work.toml\";")
+        );
+        /* A unit the module installed is started, and setup's end starts it again. */
+        let hm = Service {
+            nix: true,
+            ..installed()
+        };
+        let mut o = Offer::new(Some(hm), true, &config);
+        let keys: Vec<_> = o.keys().into_iter().map(|(_, k)| k).collect();
+        assert_eq!(keys[1].as_deref(), Some("s"));
+        assert_eq!(o.open(Opening::AfterSetup), Some(Ask::AfterSetup));
+        assert_eq!(o.open(Opening::Migration), None);
+        assert_eq!(
+            o.state,
+            State::Migration,
+            "only asked with no service, as opening() decides"
+        );
+        /* A session's word points at the module, not at i. */
+        let session = Outcome::Session(Session {
+            pid: 7,
+            program: "/nix/store/x/bin/copland-daemon".into(),
+            log: "/l".into(),
+        });
+        assert!(text(&said(&session, true)[1]).contains("m shows the nix module"));
     }
 
     #[test]

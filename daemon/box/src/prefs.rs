@@ -41,6 +41,9 @@ pub fn set_autostart(file: &Path, on: bool, config: Option<&Path>, exec: &Exec) 
     autostart::set(file, on, &autostart::BOX, config, exec)
 }
 
+/// What tray at login says under Nix, where it writes nothing: the module starts the tray.
+pub const TRAY_NIX: &str = "nix's: services.copland.tray.enable = true; in home-manager, then switch";
+
 /// Write the tray's entry at `file`, or remove it.
 pub fn set_tray_autostart(file: &Path, on: bool, config: Option<&Path>, exec: &Exec) -> Result<()> {
     autostart::set(file, on, &autostart::TRAY_ENTRY, config, exec)

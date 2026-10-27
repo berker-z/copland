@@ -719,8 +719,16 @@ docs/DESIGN.md under Touch.
   (`daemon/nix/hm-module.nix`). `nix flake check ./daemon` evaluates it in a
   home configuration with a stub package and fails when its unit drifts
   from `release/copland-daemon.service`; CI runs it when the Nix files
-  change. No NixOS VM test yet. `--install-service` and the rest still
-  write their own unit under Nix (COPL-218).
+  change. No NixOS VM test yet. A daemon or box from the Nix store
+  (COPL-218, `service::nix_managed`, links resolved) writes and removes
+  no unit or tray autostart entry: `--install-service`,
+  `--uninstall-service`, `--setup`'s end, the box's offer (`m` instead of
+  `i`) and tray at login print the module's lines instead, and name a unit
+  an earlier install left in home-manager's way. `service::installed` asks
+  `systemctl --user show`, so it finds home-manager's unit too, and
+  `--check` says whether there is one, whether it's Nix's and running.
+  Tried with a scratch store and `XDG_CONFIG_HOME`, not yet on a NixOS
+  session with the module.
 - Waiting work starts when what it waits on closes (COPL-164): a write
   that closes or deletes the last open task a todo task depends on puts an
   `unblocked` item in each of its assignees' inboxes (migration 0035,

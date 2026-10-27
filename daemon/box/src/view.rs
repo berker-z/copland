@@ -205,7 +205,7 @@ impl BoxView {
             armed: None,
             flash: None,
             shown_compact,
-            offer: Offer::new(None),
+            offer: Offer::new(None, false, std::path::Path::new("")),
             asking: None,
             here: crate::setup::host(),
         };
@@ -223,14 +223,17 @@ impl BoxView {
         };
         let opening = *opening;
         self.asking = None;
-        self.offer = Offer::new(copland_daemon_core::service::installed());
-        match opening {
-            Opening::Plain => {}
-            Opening::Migration => {
-                tracing::info!("no service installed: telling a box from before 0.5 that the daemon runs apart now");
-                self.offer.state = Offered::Migration;
-            }
-            Opening::AfterSetup => self.ask(Ask::AfterSetup, cx),
+        let config = self.control().map(|c| c.config.clone()).unwrap_or_default();
+        self.offer = Offer::new(
+            copland_daemon_core::service::installed(),
+            copland_daemon_core::service::nix_managed_here(),
+            &config,
+        );
+        if opening == Opening::Migration {
+            tracing::info!("no service installed: telling a box from before 0.5 that the daemon runs apart now");
+        }
+        if let Some(ask) = self.offer.open(opening) {
+            self.ask(ask, cx);
         }
     }
 
@@ -292,13 +295,38 @@ impl BoxView {
                 remember();
                 self.offer.state = Offered::Idle;
             }
+            /* Nix's (COPL-218): the module to add, which is the answer to the migration note too. */
+            (Offered::Nix, "c") => {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(self.offer.snippet()));
+                return true;
+            }
+            (Offered::Nix, "r") => {
+                remember();
+                self.ask(Ask::Session, cx);
+            }
+            (Offered::Nix, "enter" | "escape" | "space" | "n") => {
+                remember();
+                self.offer.state = Offered::Idle;
+            }
             (Offered::Done(_) | Offered::Failed(..), "enter" | "escape" | "space") => self.offer.state = Offered::Idle,
             /* "i" over a session's word installs the service after all. */
-            (Offered::Done(crate::offer::Outcome::Session(_)), "i") if self.offer.service.is_none() => {
+            (Offered::Done(crate::offer::Outcome::Session(_)), "i")
+                if self.offer.service.is_none() && !self.offer.nix =>
+            {
                 self.ask(Ask::Install, cx)
             }
+            (Offered::Done(crate::offer::Outcome::Session(_)), "m")
+                if self.offer.service.is_none() && self.offer.nix =>
+            {
+                self.offer.state = Offered::Nix
+            }
             (Offered::Busy(_), "escape") => {}
-            (Offered::Idle, "i") if self.not_running() && self.offer.service.is_none() => self.ask(Ask::Install, cx),
+            (Offered::Idle, "i") if self.not_running() && self.offer.service.is_none() && !self.offer.nix => {
+                self.ask(Ask::Install, cx)
+            }
+            (Offered::Idle, "m") if self.not_running() && self.offer.service.is_none() && self.offer.nix => {
+                self.offer.state = Offered::Nix
+            }
             (Offered::Idle, "s") if self.not_running() && self.offer.service.is_some() => self.ask(Ask::Start, cx),
             (Offered::Idle, "r") if self.not_running() => self.ask(Ask::Session, cx),
             _ => return false,

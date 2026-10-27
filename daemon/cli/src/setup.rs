@@ -1,8 +1,9 @@
 //! `copland-daemon --setup`: the box's setup on a terminal (COPL-177), with plain
 //! prompts on stdin and stdout. The address, approving this machine in the
 //! browser (a device code), a runtime and a workdir per agent, whether to start
-//! the tray at login (COPL-201), then daemon.toml written and the preflight run
-//! on it, offering the fixes it can run. The
+//! the tray at login (COPL-201; not asked under Nix, where it ends with the
+//! home-manager module instead, COPL-218), then daemon.toml written and the
+//! preflight run on it, offering the fixes it can run. The
 //! parts are core's (`copland_daemon_core::setup`), the same the box's wizard
 //! drives, so the config and the resume note are the box's too.
 
@@ -14,6 +15,7 @@ use anyhow::{Context as _, Result, bail};
 use copland_daemon_core::api::{Api, ApiError, DevicePoll};
 use copland_daemon_core::autostart::{self, Exec, TRAY};
 use copland_daemon_core::runtime::{self, Found};
+use copland_daemon_core::service::{self, NixManaged, Service};
 use copland_daemon_core::setup::{self, Choice, Saved};
 use copland_daemon_core::{Config, preflight};
 
@@ -77,15 +79,21 @@ pub async fn run(config: &Path, url: Option<&str>) -> Result<()> {
         );
     }
     let choices = choose(&mut input, &mut out, &saved, &found)?;
+    let graphical = autostart::graphical(
+        std::env::var("DISPLAY").ok().as_deref(),
+        std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
+    );
+    /* Under Nix the service and the tray at login are the home-manager module's (COPL-218):
+    nothing is asked or written, the end says what to add. */
+    let program = std::env::current_exe().context("finding this binary")?;
+    let nix = service::nix_managed(&program);
     /* Only where there is a tray to start: it ships beside the daemon on Linux. */
-    let tray = match (cfg!(target_os = "linux"), autostart::find(TRAY), autostart::file(TRAY)) {
-        (true, Some(_), Some(file)) => {
-            let graphical = autostart::graphical(
-                std::env::var("DISPLAY").ok().as_deref(),
-                std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
-            );
-            Some((ask_tray(&mut input, &mut out, graphical)?, file))
-        }
+    let tray = match (
+        cfg!(target_os = "linux") && !nix,
+        autostart::find(TRAY),
+        autostart::file(TRAY),
+    ) {
+        (true, Some(_), Some(file)) => Some((ask_tray(&mut input, &mut out, graphical)?, file)),
         _ => None,
     };
     drop(input);
@@ -98,8 +106,8 @@ pub async fn run(config: &Path, url: Option<&str>) -> Result<()> {
         let said = tray_at_login(&file, on, config, &autostart::here(TRAY))?;
         writeln!(out, "{said}")?;
     }
-    let config = Config::load(config).context("reading back the config just written")?;
-    let failed = check(&config, true).await?;
+    let loaded = Config::load(config).context("reading back the config just written")?;
+    let failed = check(&loaded, true).await?;
     writeln!(
         out,
         "\nConnect your own Claude Code or claude.ai to {}/mcp and pick \"you\" when it asks who.",
@@ -111,11 +119,33 @@ pub async fn run(config: &Path, url: Option<&str>) -> Result<()> {
             "{failed} check(s) still fail; `{CLIENT} --check --fix` offers the fixes again."
         )?;
     }
-    writeln!(
-        out,
-        "Start the daemon with `{CLIENT}`, or run it as a service with `{CLIENT} --install-service`."
-    )?;
+    if nix {
+        let service = service::installed();
+        let nix = NixManaged::here(&program, Some(config), graphical);
+        write!(out, "{}", nix_ending(service.as_ref(), &nix))?;
+    } else {
+        writeln!(
+            out,
+            "Start the daemon with `{CLIENT}`, or run it as a service with `{CLIENT} --install-service`."
+        )?;
+    }
     Ok(())
+}
+
+/// How setup ends when this daemon is Nix's: the module's service started again on the new
+/// config when there is one, else the module to add.
+pub fn nix_ending(service: Option<&Service>, nix: &NixManaged) -> String {
+    match service {
+        Some(s) => format!(
+            "The service is home-manager's ({}): `systemctl --user restart {}` starts it on this config.\n",
+            s.file.display(),
+            service::UNIT
+        ),
+        None => format!(
+            "This {CLIENT} is from the Nix store, so home-manager runs it as a service, and the tray at login. {}",
+            nix.add_module()
+        ),
+    }
 }
 
 /// Where setup starts.
@@ -383,6 +413,31 @@ mod tests {
                 version: Some("1.0.0".into()),
             })
             .collect()
+    }
+
+    #[test]
+    fn under_nix_setup_ends_with_the_module_or_restarting_its_service() {
+        let nix = NixManaged {
+            program: "/nix/store/x/bin/copland-daemon".into(),
+            config: None,
+            tray: true,
+            leftover: None,
+        };
+        let says = nix_ending(None, &nix);
+        assert!(says.starts_with("This copland-daemon is from the Nix store"), "{says}");
+        assert!(says.contains("  services.copland.tray.enable = true;\n"), "{says}");
+        assert!(!says.contains("--install-service"), "{says}");
+        let hm = Service {
+            file: "/home/me/.config/systemd/user/copland-daemon.service".into(),
+            enabled: true,
+            running: Some(false),
+            nix: true,
+        };
+        assert_eq!(
+            nix_ending(Some(&hm), &nix),
+            "The service is home-manager's (/home/me/.config/systemd/user/copland-daemon.service): \
+             `systemctl --user restart copland-daemon.service` starts it on this config.\n"
+        );
     }
 
     #[test]
