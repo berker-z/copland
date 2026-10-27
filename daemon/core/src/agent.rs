@@ -28,7 +28,8 @@ use tracing::Instrument;
 
 use crate::account::{Account, Accounts, Seat};
 use crate::api::{
-    Api, ApiError, Backoff, BoardShell, Ending, HostCapabilities, HostReport, InboxItem, MAX_REPOS, Me, RepoCapability,
+    ACCOUNT_FULL, Api, ApiError, Backoff, BoardShell, Ending, HostCapabilities, HostReport, InboxItem, MAX_REPOS, Me, OnAccount,
+    RepoCapability,
     RuntimeCapability,
 };
 use crate::chain;
@@ -190,6 +191,9 @@ pub struct AgentLoop {
     freed: watch::Receiver<u64>,
     /// Work waited at the last poll because its account had no seat free.
     short: bool,
+    /// Until when Copland said its account is full across machines (COPL-234): nothing starts on it
+    /// before then, as if no seat were free here, and the work waits unclaimed for the poll after.
+    full_until: Option<tokio::time::Instant>,
 }
 
 /// How often the runtimes' checks are made again for the host report, so a login made or lost
@@ -374,6 +378,7 @@ impl AgentLoop {
             accounts,
             account,
             short: false,
+            full_until: None,
             slot,
             agent,
             api,
@@ -434,6 +439,8 @@ impl AgentLoop {
             last_word: self.last_word,
             user_id: self.me.as_ref().map(|m| m.id.clone()),
             host: self.host.clone(),
+            account: self.account.shared.clone(),
+            account_cap: self.accounts.cap(),
         }
     }
 
@@ -447,6 +454,12 @@ impl AgentLoop {
                     self.guard.remember_messages(&d.claimed);
                 } else if let Some((updated, held)) = d.remember {
                     self.guard.remember(&d.wake, updated, held);
+                }
+                if let Some(said) = d.full {
+                    /* Copland counts the account's runs across machines (COPL-234): nothing was claimed or run,
+                    so the work stays ready, and it is tried again at the next poll. */
+                    tracing::info!("{} is at its cap across machines ({said}); waiting for a slot", self.account.shown);
+                    self.full_until = Some(tokio::time::Instant::now() + self.poll);
                 }
                 if let Some(e) = d.error {
                     tracing::warn!("{e}");
@@ -523,6 +536,9 @@ impl AgentLoop {
     /// A seat on the agent's account for a run about to start, or None, noted in `short`, when its
     /// runs going at once are at their cap: the work waits, unclaimed, for a later poll.
     fn seat(&mut self) -> Option<Seat> {
+        if self.full_elsewhere() {
+            return None;
+        }
         let seat = self.accounts.take(&self.account.key);
         if seat.is_none() {
             self.short = true;
@@ -532,11 +548,30 @@ impl AgentLoop {
 
     /// Whether a seat on the agent's account is free now, noting in `short` when none is.
     fn seat_free(&mut self) -> bool {
+        if self.full_elsewhere() {
+            return false;
+        }
         let free = self.accounts.free(&self.account.key);
         if !free {
             self.short = true;
         }
         free
+    }
+
+    /// Whether Copland said the account is full across machines, recently enough that it is not
+    /// asked again yet (COPL-234); noted in `short`, so the status says it waits for a slot.
+    fn full_elsewhere(&mut self) -> bool {
+        match self.full_until {
+            Some(until) if tokio::time::Instant::now() < until => {
+                self.short = true;
+                true
+            }
+            Some(_) => {
+                self.full_until = None;
+                false
+            }
+            None => false,
+        }
     }
 
     /// Shutting down, or this loop's binding has been replaced: start nothing new.
@@ -801,6 +836,7 @@ impl AgentLoop {
         /* Work waiting for a slot on its account polls again as soon as one goes back (COPL-232). */
         let mut freed = self.freed.clone();
         let short = self.short;
+        let full_until = self.full_until;
         loop {
             let connected = *link.borrow_and_update() == Link::Connected;
             let every = if connected {
@@ -816,6 +852,10 @@ impl AgentLoop {
                 _ = async { let _ = holding.wait_for(|s| held(s, slot) != was_held).await; } => return None,
                 _ = async { let _ = freed.changed().await; }, if short => {
                     tracing::debug!("a slot on its account went back");
+                    return None;
+                }
+                _ = async { tokio::time::sleep_until(full_until.expect("guarded")).await }, if full_until.is_some() => {
+                    tracing::debug!("asking Copland again for a slot on its account");
                     return None;
                 }
                 _ = async { tokio::time::sleep_until(resets.expect("guarded")).await }, if resets.is_some() => {
@@ -1543,6 +1583,9 @@ struct Done {
     claimed: Vec<Message>,
     /// What went wrong, for the agent's error line.
     error: Option<String>,
+    /// Copland's word that the run's account is at its cap across machines (COPL-234): no run was
+    /// started, nothing claimed, and the work waits.
+    full: Option<String>,
     /// How its runtime went, as far as its account's usage goes (COPL-195).
     runtime: Runtime,
 }
@@ -1570,6 +1613,19 @@ impl Done {
             remember: None,
             claimed: Vec::new(),
             error: Some(error),
+            full: None,
+            runtime: Runtime::NotLaunched,
+        }
+    }
+
+    /// Copland refused to start the run: its account is full across machines (COPL-234).
+    fn full(wake: Wake, said: String) -> Self {
+        Self {
+            wake,
+            remember: None,
+            claimed: Vec::new(),
+            error: None,
+            full: Some(said),
             runtime: Runtime::NotLaunched,
         }
     }
@@ -1580,6 +1636,7 @@ impl Done {
             remember: Some((updated_at, held)),
             claimed: Vec::new(),
             error: None,
+            full: None,
             runtime: Runtime::NotLaunched,
         }
     }
@@ -1625,9 +1682,29 @@ struct RunCtx {
     user_id: Option<String>,
     /// The machine its runs start on, named on each (COPL-179).
     host: Option<String>,
+    /// Its runtime account as Copland counts it, when it is one to share across machines, and the
+    /// daemon's cap on it (COPL-234).
+    account: Option<String>,
+    account_cap: usize,
+}
+
+/// What Copland said when it refused a run for its account being full: its own words.
+fn full_said(e: &ApiError) -> String {
+    match e {
+        ApiError::Status { message, .. } => message.clone(),
+        other => other.to_string(),
+    }
 }
 
 impl RunCtx {
+    /// The account a run is started on, for Copland's count across machines (COPL-234).
+    fn on(&self) -> Option<OnAccount<'_>> {
+        self.account.as_deref().map(|account| OnAccount {
+            account,
+            cap: self.account_cap,
+        })
+    }
+
     fn update(&self, f: impl FnOnce(&mut AgentState)) {
         let slot = self.slot;
         self.state
@@ -1676,10 +1753,11 @@ impl RunCtx {
         tracing::info!(task = %key, items = wake.items.len(), "waking for {key}");
         let started = match self
             .api
-            .start_run(&self.agent.token, &self.agent.client, self.host.as_deref())
+            .start_run(&self.agent.token, &self.agent.client, self.host.as_deref(), self.on())
             .await
         {
             Ok(s) => s,
+            Err(e) if e.code() == Some(ACCOUNT_FULL) => return Done::full(wake, full_said(&e)),
             Err(e) => return Done::failed(wake, format!("starting a run for {key}: {e}")),
         };
         let run_id = started.run.id.clone();
@@ -1988,10 +2066,11 @@ impl RunCtx {
         tracing::info!(messages = n, "waking for {n} message(s)");
         let started = match self
             .api
-            .start_run(&self.agent.token, &self.agent.client, self.host.as_deref())
+            .start_run(&self.agent.token, &self.agent.client, self.host.as_deref(), self.on())
             .await
         {
             Ok(s) => s,
+            Err(e) if e.code() == Some(ACCOUNT_FULL) => return Done::full(wake, full_said(&e)),
             Err(e) => return Done::failed(wake, format!("starting a run for {n} message(s): {e}")),
         };
         let run_id = started.run.id.clone();
@@ -2463,6 +2542,9 @@ mod tests {
         finished: std::sync::Mutex<Option<serde_json::Value>>,
         /// The task is closed: its claim is refused with a 409 `closed` (COPL-165).
         closed: AtomicBool,
+        /// The run's account is full across machines: starting one is refused with a 409
+        /// `account_full` (COPL-234).
+        full: AtomicBool,
         /// The kind of the one inbox item, "assigned" when unset.
         kind: std::sync::Mutex<Option<String>>,
         /// The ids each `POST /api/inbox/read` named.
@@ -2573,6 +2655,10 @@ mod tests {
                     r#"{"error":"conflict","code":"closed","message":"COPL-1 is closed"}"#.into(),
                 ),
                 "GET /api/tasks/t1" | "POST /api/tasks/t1/claim" => (200, task.into()),
+                "POST /api/runs" if self.full.load(Ordering::SeqCst) => (
+                    409,
+                    r#"{"error":"conflict","code":"account_full","message":"2 runs going on account 3f2a91 (desk, server), at its cap of 2; start it once one ends"}"#.into(),
+                ),
                 "POST /api/runs" => (200, format!(r#"{{"run":{},"secret":"cplr_run"}}"#, run("running"))),
                 "GET /api/runs/run-1" => (200, run("running")),
                 "PUT /api/hosts/self" => (
@@ -2950,7 +3036,69 @@ mod tests {
         .await
         .expect("no longer waiting")
         .unwrap();
-        assert_eq!(accounts.taken("shared"), 0, "the run gave its slot back");
+        /* The seat goes back once the loop hears the run is done, a moment after its finish lands. */
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while accounts.taken("shared") != 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the run gave its slot back");
+        l.stop().await;
+    }
+
+    /// COPL-234: a run is started on its account with the daemon's cap, and Copland saying the account
+    /// is full across machines leaves the task untouched: nothing claimed, no run to finish, so no
+    /// strike, and the status says it waits for a slot. A later poll asks again and runs it.
+    #[tokio::test]
+    async fn an_account_full_across_machines_leaves_the_task_waiting() {
+        let fake = Arc::new(Fake::default());
+        fake.full.store(true, Ordering::SeqCst);
+        let mut l = Looping::start_on(
+            &fake.start(),
+            "account-full",
+            shared(&["true"]),
+            false,
+            Accounts::new(2),
+            Vec::new(),
+        );
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            l.state
+                .wait_for(|s| s.agents[0].waiting_for_slot.as_deref() == Some("shared")),
+        )
+        .await
+        .expect("waiting for a slot")
+        .unwrap();
+        let runs = fake.sent("POST /api/runs");
+        let body = runs[0].0.as_ref().unwrap();
+        assert_eq!(body["account"], Account::find(&shared(&["true"]), None, |_| None).shared.unwrap());
+        assert_eq!(body["account_cap"], 2);
+        let polls = fake.count("GET /api/inbox");
+        while fake.count("GET /api/inbox") < polls + 3 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(fake.count("POST /api/tasks/t1/claim"), 0, "nothing claimed");
+        assert!(fake.finished.lock().unwrap().is_none(), "no run to finish, so no strike");
+        assert!(fake.marked.lock().unwrap().is_empty(), "its items stay unread");
+        /* It asks again each poll, so read the state while it waits. */
+        let waiting = tokio::time::timeout(
+            Duration::from_secs(10),
+            l.state
+                .wait_for(|s| s.agents[0].waiting_for_slot.as_deref() == Some("shared")),
+        )
+        .await
+        .expect("waiting again")
+        .unwrap();
+        assert_eq!(waiting.agents[0].last_error, None, "waiting is not an error");
+        let status = crate::status::Status::of(&waiting).render();
+        drop(waiting);
+        assert!(status.contains("waiting for a slot on shared"), "{status}");
+
+        fake.full.store(false, Ordering::SeqCst);
+        let said = finished(&fake).await;
+        assert_eq!(said["status"], "completed", "{said}");
+        assert_eq!(fake.count("POST /api/tasks/t1/claim"), 1);
         l.stop().await;
     }
 

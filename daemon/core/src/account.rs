@@ -14,6 +14,14 @@
 //! `max_runs` is a second limit on top. Who is signed in is personal, so an
 //! account is shown (`Account::shown`) by the runtime and a masked email or a
 //! short hash, never in full.
+//!
+//! Copland shares the cap across machines (COPL-234): each run is started
+//! with the account (`Account::shared`, a hash of its key, never the id or
+//! an email) and this daemon's cap, and Copland refuses it with
+//! `account_full` while the owner's live runs on that account, from any
+//! machine, are at the cap. An account read off no sign-in is the runtime's
+//! name alone, which says nothing about who is signed in, so it is never
+//! sent: two machines with nothing in common would share it.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -37,6 +45,9 @@ pub struct Account {
     pub key: String,
     /// For logs and the status: "claude-code (b…@…)", "codex (3f2a91)", "claude-code".
     pub shown: String,
+    /// What Copland counts it by across machines: the first 16 hex digits of the key's SHA-256.
+    /// None when it is only the runtime's name.
+    pub shared: Option<String>,
 }
 
 impl Account {
@@ -53,6 +64,7 @@ impl Account {
             return Self {
                 key: name.clone(),
                 shown: name.clone(),
+                shared: Some(shared(name)),
             };
         }
         let runtime = agent.runtime.name();
@@ -62,16 +74,21 @@ impl Account {
             Runtime::Unknown(_) => None,
         };
         match read {
-            Some(Who { id, email }) => Self {
-                key: format!("{runtime}:{id}"),
-                shown: format!(
-                    "{runtime} ({})",
-                    email.as_deref().map(mask).unwrap_or_else(|| short_hash(&id))
-                ),
-            },
+            Some(Who { id, email }) => {
+                let key = format!("{runtime}:{id}");
+                Self {
+                    shared: Some(shared(&key)),
+                    shown: format!(
+                        "{runtime} ({})",
+                        email.as_deref().map(mask).unwrap_or_else(|| short_hash(&id))
+                    ),
+                    key,
+                }
+            }
             None => Self {
                 key: runtime.to_string(),
                 shown: runtime.to_string(),
+                shared: None,
             },
         }
     }
@@ -137,6 +154,13 @@ fn mask(email: &str) -> String {
 fn short_hash(id: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, id.as_bytes());
     digest.as_ref()[..3].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// An account's key as Copland is told it (COPL-234): the first 16 hex digits of its SHA-256, the
+/// same on every machine signed in to it, and neither the runtime's id nor an email.
+fn shared(key: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, key.as_bytes());
+    digest.as_ref()[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The daemon's seats, by account: one, shared by every agent loop.
@@ -330,6 +354,12 @@ mod tests {
         assert_eq!(a.key, "claude-code:0b9e6c1e-1111-4a2b-9c3d-123456789abc");
         assert_eq!(a.shown, "claude-code (b…@…)");
         assert!(!a.shown.contains("berker"), "the email is never shown");
+        /* Copland is told a hash of the key: the same on every machine, and neither the id nor the email. */
+        let told = a.shared.clone().unwrap();
+        assert_eq!(told.len(), 16);
+        assert!(told.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!told.contains("0b9e6c1e") && !told.contains("berker"));
+        assert_eq!(Account::find(&agent(Runtime::ClaudeCode), Some(&home), none).shared, Some(told));
 
         /* $CLAUDE_CONFIG_DIR wins over $HOME. */
         let other = fixture("claude-dir");
@@ -371,10 +401,9 @@ mod tests {
     fn falls_back_to_the_runtime_and_the_config_overrides() {
         let home = fixture("empty");
         /* Nothing signed in (or an API key): every agent on the runtime here shares one. */
-        assert_eq!(
-            Account::find(&agent(Runtime::ClaudeCode), Some(&home), none).key,
-            "claude-code"
-        );
+        let fallback = Account::find(&agent(Runtime::ClaudeCode), Some(&home), none);
+        assert_eq!(fallback.key, "claude-code");
+        assert_eq!(fallback.shared, None, "only the runtime's name: never shared across machines");
         std::fs::write(home.join(".claude.json"), r#"{"oauthAccount":{}}"#).unwrap();
         assert_eq!(
             Account::find(&agent(Runtime::ClaudeCode), Some(&home), none).shown,
@@ -385,6 +414,7 @@ mod tests {
         named.account = Some("work".into());
         let a = Account::find(&named, Some(&home), none);
         assert_eq!((a.key.as_str(), a.shown.as_str()), ("work", "work"));
+        assert_eq!(a.shared, Some(shared("work")), "a named account is shared across machines");
     }
 
     #[test]

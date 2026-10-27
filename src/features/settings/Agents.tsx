@@ -356,6 +356,7 @@ function RunsGroup({ agent }: { agent: Agent }) {
               <span className="text-faint">{r.kind}</span>
               {r.client && <span className="text-muted">{r.client}</span>}
               {r.host && <span className="text-muted">at {r.host}</span>}
+              {r.account && <span className="text-faint">on account {r.account}</span>}
               {r.claims.length > 0 ? (
                 <span className="text-muted">on {r.claims.join(", ")}</span>
               ) : (

@@ -53,6 +53,24 @@ export function runReason(value: unknown): string | null | undefined {
   return line || null;
 }
 
+/**
+ * A run's runtime account (COPL-234), as POST /api/runs takes it: the
+ * daemon's hash of the runtime and who is signed in to it, never an email.
+ * 1 to 64 of letters, digits, `:`, `.`, `_` and `-`, starting with a letter
+ * or digit. Null when it is none of those.
+ */
+export function parseRunAccount(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const account = value.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9:._-]{0,63}$/.test(account) ? account : null;
+}
+
+/** The most runs going at once a daemon may say its account takes. */
+export const ACCOUNT_CAP_MAX = 100;
+
+/** An account as people see it: its first six characters past any `runtime:` prefix ("3f2a91"). */
+export const shortAccount = (account: string) => account.slice(account.lastIndexOf(":") + 1).slice(0, 6);
+
 /** The most a usage count may be: far past any run, well inside a safe integer. */
 export const USAGE_MAX = 1e12;
 
@@ -134,6 +152,10 @@ export function shortRunId(id: string): string {
 export function runStatus(stored: "running" | RunEnding, lastSeenAt: string, kind: RunKind, now = Date.now()): RunStatus {
   return stored === "running" && Date.parse(lastSeenAt) + leaseFor(kind) < now ? "stale" : stored;
 }
+
+/** Why POST /api/runs refused to start a run, as its 409's `code` says (COPL-234). */
+export const RUN_START_REFUSALS = ["account_full"] as const;
+export type RunStartRefusal = (typeof RUN_START_REFUSALS)[number];
 
 /**
  * Why POST /api/tasks/:id/claim said no, as the `code` of its 409: the task

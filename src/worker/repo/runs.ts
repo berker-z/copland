@@ -10,7 +10,7 @@
    ========================================================================== */
 
 import { clientLabel } from "@/domain/clients";
-import { INTERACTIVE_LEASE_MS, leaseFor, runStatus, shortRunId, type RunEnding, type RunKind } from "@/domain/runs";
+import { INTERACTIVE_LEASE_MS, leaseFor, runStatus, shortAccount, shortRunId, type RunEnding, type RunKind } from "@/domain/runs";
 import type { ApiAccess, Run, RunUsage } from "@/domain/types";
 import { randomToken, sha256Hex } from "../http";
 
@@ -216,6 +216,7 @@ interface RunRow {
   reason: string | null;
   claims: string | null;
   host: string | null;
+  account: string | null;
   task: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
@@ -228,7 +229,7 @@ interface RunRow {
 }
 
 const RUN_SELECT = `
-  SELECT r.id, r.user_id, r.client, r.kind, r.status, r.started_at, r.last_seen_at, r.ended_at, r.reason, r.host,
+  SELECT r.id, r.user_id, r.client, r.kind, r.status, r.started_at, r.last_seen_at, r.ended_at, r.reason, r.host, r.account,
          r.input_tokens, r.output_tokens, r.cache_read_tokens, r.cache_write_tokens, r.cost_usd, r.turns, r.duration_ms, r.resumed,
          (SELECT b.key || '-' || t.number FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = r.task_id) AS task,
          (SELECT group_concat(b.key || '-' || t.number)
@@ -249,6 +250,7 @@ function toRun(row: RunRow): Run {
     reason: row.reason,
     claims: row.claims ? row.claims.split(",") : [],
     host: row.host,
+    account: row.account ? shortAccount(row.account) : null,
     task: row.task,
     usage:
       row.input_tokens === null

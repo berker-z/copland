@@ -846,6 +846,15 @@ docs/DESIGN.md under Touch.
   the work up again; a release ends it sooner. `status` and the box say
   "out of usage until 17:10 UTC". Before, every run until the reset failed
   in seconds, and two tasks got two strikes in a minute.
+- Runs per runtime account across machines (COPL-234, for COPL-231): the
+  daemon starts each run with `POST /api/runs { account, account_cap }`,
+  the account a hash of its runtime and sign-in, and Copland refuses one
+  with a 409 `account_full` while the owner's live runs on that account,
+  across their agents and machines, are at the cap, in one conditional
+  insert (`runs.account`, migration 0040). The daemon waits on it as on
+  its own cap: nothing claimed, no strike, "waiting for a slot on …".
+  Settings shows a run's account in short. Checked in
+  checks/accounts.check.ts.
 - The tray (COPL-198): `copland-tray`, a StatusNotifierItem (`ksni`, no
   GTK) that watches the status socket of the daemon running a config and
   shows its agents as idle, working, needs you or not running, with a line
