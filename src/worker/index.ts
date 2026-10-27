@@ -210,7 +210,7 @@ const api = new Router<Ctx>()
   .on("DELETE", "/api/notes/:id", mine("notes:write", ({ env, viewer, changes }, { id }) => deleteNote(env, viewer, id, changes)))
   .on("GET", "/api/markets/coingecko", mine(null, ({ env, viewer }) => getMarketExtras(env, viewer)))
   /* The /wired pane: what your agents have on. Yours alone; an agent reads its own work through my_work. */
-  .on("GET", "/api/wired", mine(null, ({ env, viewer }) => getWired(env, viewer)))
+  .on("GET", "/api/wired", mine(null, ({ env, viewer, url }) => getWired(env, viewer, url)))
 
   .on("GET", "/api/calendar", mine("calendar:read", ({ env, viewer }) => getCalendarSetup(env, viewer)))
   .on(

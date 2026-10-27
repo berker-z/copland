@@ -362,7 +362,7 @@ pub struct StartedRun {
 }
 
 /// One task on the wired scene (`WiredTask` in `src/domain/types.ts`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WiredTask {
     pub id: String,
@@ -381,6 +381,12 @@ pub struct WiredTask {
     /// A live one's: the host its run started on (COPL-135), when its launcher named one.
     #[serde(default)]
     pub host: Option<String>,
+    /// Its stage's position on its board, and its rank in that stage: todo and blocked go by
+    /// board, then these (COPL-211), so the box can re-sort a task it read on its own.
+    #[serde(default)]
+    pub stage: u32,
+    #[serde(default)]
+    pub rank: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -420,7 +426,7 @@ impl WiredAgent {
 
 /// GET /api/wired: what the signed-in person's agents have on, by pole. A person's own read;
 /// an agent's token is refused.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Wired {
     pub agents: Vec<WiredAgent>,
@@ -433,7 +439,30 @@ pub struct Wired {
     /// All of those done within the window.
     pub done_count: u32,
     pub done_window_hours: u32,
+    /// The most `done` lists.
+    #[serde(default = "done_limit")]
+    pub done_limit: u32,
 }
+
+fn done_limit() -> u32 {
+    20
+}
+
+/// GET /api/wired?tasks=a,b (COPL-211): the poles for just those tasks, to sort onto the last
+/// whole read. One of `tasks` that is on no pole here has left them.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WiredPart {
+    pub tasks: Vec<String>,
+    pub todo: Vec<WiredTask>,
+    pub doing: Vec<WiredTask>,
+    pub blocked: Vec<WiredTask>,
+    pub done: Vec<WiredTask>,
+    pub done_limit: u32,
+}
+
+/// The most tasks one `wired_tasks` read names (`MAX_TASKS` in `src/worker/routes/wired.ts`).
+pub const WIRED_MAX_TASKS: usize = 50;
 
 /// One board from GET /api/boards, the parts the box shows.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -814,6 +843,15 @@ impl Api {
         self.send(self.http.get(self.url("/api/wired")), cred).await
     }
 
+    /// The same, for just these tasks (at most `WIRED_MAX_TASKS`): what a live event named.
+    pub async fn wired_tasks(&self, cred: &Secret, tasks: &[String]) -> ApiResult<WiredPart> {
+        let req = self
+            .http
+            .get(self.url("/api/wired"))
+            .query(&[("tasks", tasks.join(","))]);
+        self.send(req, cred).await
+    }
+
     /// The boards the token's principal is on (the box's boards filter).
     pub async fn boards(&self, cred: &Secret) -> ApiResult<Vec<BoardRef>> {
         self.send(self.http.get(self.url("/api/boards")), cred).await
@@ -1062,6 +1100,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t.host.as_deref(), Some("laptop"));
+        assert_eq!((t.stage, t.rank), (0, 0.0));
+    }
+
+    #[test]
+    fn a_read_of_some_wired_tasks_says_which_it_was_asked() {
+        let p: WiredPart = serde_json::from_str(
+            r#"{"tasks":["t","u"],"todo":[],"blocked":[],"done":[],"doneLimit":20,"doing":[
+                {"id":"t","boardId":"b","key":"COPL-1","title":"x","agentId":"a","since":null,"live":false,
+                 "host":null,"stage":2,"rank":1.5}]}"#,
+        )
+        .unwrap();
+        assert_eq!(p.tasks, ["t", "u"]);
+        assert_eq!((p.doing[0].stage, p.doing[0].rank, p.done_limit), (2, 1.5, 20));
     }
 
     #[test]

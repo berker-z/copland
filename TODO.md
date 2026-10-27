@@ -343,6 +343,22 @@ docs/DESIGN.md under Touch.
   every run's start, every runtime exit, every closed task the sweep found
   and every board at start. An older server without the dependents route
   makes a closed task's worktree go, and the chain's next task start cold
+- The box re-reads only the wired tasks that changed (COPL-211, for
+  COPL-206): a board event that names its tasks makes the box read
+  `GET /api/wired?tasks=` for those of them it shows (all of them when one
+  of your agents is on them), at most 50, and sort them onto its last whole
+  read itself (`merge` in `daemon/box/src/feed.rs`), by the stage and rank
+  each task now carries. It reads the whole for an event that names none,
+  for your boards, agents or people, on the clock, after a run here, when
+  the narrow read fails, and while done is past its limit and a task it
+  didn't show turns up or a done one leaves. One edit heard costs 17 rows
+  on the reads check's seed (`box: one task edit, heard`), where it read
+  the whole, 141. The whole read got cheaper too: the boards' stages once
+  instead of a stage and board row per task, backlog never read, and a
+  task's own row only under one of your agents. 141 to 139 on the seed,
+  and the tasks read from 593 rows to 343 on the real data, where 54 of
+  the 86 tasks it read were done in the window. The web pane still reads
+  it whole, only while it's on screen
 - Comments reach the run working on the task (COPL-139, for COPL-130):
   `POST /api/runs/current/news` tells a run, once each, the unread comments
   and mentions on the tasks it has claimed since it started

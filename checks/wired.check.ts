@@ -10,12 +10,13 @@
    isn't on never show; a task with two of sam's agents shows once, as the
    claimer's. Each agent says where it runs (COPL-183): its reported hosts,
    which are live, and live on two at once; a live task its run's host.
+   ?tasks= (COPL-211) answers the same for just the tasks named.
    ========================================================================== */
 
 import { d1, sqlite } from "./worker.ts";
-import type { Viewer, Wired } from "../src/domain/types.ts";
+import type { Viewer, Wired, WiredPart } from "../src/domain/types.ts";
 
-const { getWired } = await import("../src/worker/routes/wired.ts");
+const { getWired, MAX_TASKS } = await import("../src/worker/routes/wired.ts");
 
 const cases: Array<[string, boolean]> = [];
 const t = (name: string, pass: boolean) => cases.push([name, pass]);
@@ -100,6 +101,26 @@ t("a task no run holds says no host", wired.doing[1]?.host === null && wired.tod
 for (const hidden of ["parked", "old", "dropped", "gone", "sams", "kims bots", "elsewhere"]) {
   t(`"${hidden}" does not show`, !all.some((w) => w.title === hidden));
 }
+
+/* ?tasks= (COPL-211): the same poles for just the tasks named. */
+const part = async (ids: string[]) => (await getWired(env, sam, new URL(`http://x/api/wired?tasks=${ids.join(",")}`))).json() as Promise<WiredPart>;
+const some = await part(["claimed", "waiting", "recent", "parked", "elsewhere", "sams", "nope"]);
+const partAll = [...some.todo, ...some.doing, ...some.blocked, ...some.done];
+t("?tasks= answers only the tasks named, on the poles the whole read puts them", keys(some.todo) === "waiting" && keys(some.doing) === "claimed" && some.doing[0].live && keys(some.done) === "recent" && some.blocked.length === 0);
+t("?tasks= says the same of a task as the whole read", JSON.stringify(some.doing[0]) === JSON.stringify(wired.doing[0]) && JSON.stringify(some.todo[0]) === JSON.stringify(wired.todo[0]));
+t("?tasks= leaves out backlog, other people's, boards sam isn't on and unknown ids", partAll.length === 3);
+t("?tasks= echoes what it was asked, once each, and the done limit", some.tasks.length === 7 && some.doneLimit === 20 && wired.doneLimit === 20);
+t("a task says its stage and rank, for re-sorting", wired.todo[0]?.stage === 1 && typeof wired.todo[0]?.rank === "number" && wired.blocked[0]?.stage === 3);
+const refused = async (q: string) => {
+  try {
+    await getWired(env, sam, new URL(`http://x/api/wired?tasks=${q}`));
+    return false;
+  } catch (e) {
+    return (e as { status?: number }).status === 400;
+  }
+};
+t("?tasks= naming nothing is refused", await refused(""));
+t(`?tasks= naming more than ${MAX_TASKS} is refused`, await refused(Array.from({ length: MAX_TASKS + 1 }, (_, i) => `t${i}`).join(",")));
 
 let failed = 0;
 for (const [name, pass] of cases) {

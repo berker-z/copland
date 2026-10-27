@@ -352,6 +352,25 @@ async function taskEditHeard(env: Env, { live }: Seeded, skip: () => void): Prom
 }
 
 /**
+ * What a box reads when someone edits one of its agents' tasks (COPL-211):
+ * GET /api/wired for the tasks the write's live event names, which it
+ * re-sorts onto its last whole read (daemon/box/src/feed.rs). Before, the
+ * whole of GET /api/wired. Like the tab's edit, the write isn't counted.
+ */
+async function boxEditHeard(env: Env, { live }: Seeded, skip: () => void): Promise<Response> {
+  const { id } = (await (await getTask(env, sam, live)).json()) as { id: string };
+  const changes = new Changes();
+  await patchTask(new Request("http://x/", { method: "PATCH", body: JSON.stringify({ title: "edited for the box" }) }), env, sam, id, changes);
+  skip();
+  const [event] = changes.events(null).get("sam") ?? [];
+  if (!event?.tasks?.length) return new Response("the edit named no tasks", { status: 500 });
+  const response = await getWired(env, sam, new URL(`http://x/api/wired?tasks=${event.tasks.join(",")}`));
+  const part = (await response.clone().json()) as { doing: unknown[]; todo: unknown[]; blocked: unknown[] };
+  if (part.doing.length + part.todo.length + part.blocked.length !== 1) return new Response("the edited task isn't on a pole", { status: 500 });
+  return response;
+}
+
+/**
  * What a listening tab reads for a burst of edits (COPL-209): ten title
  * edits, alternating between a task and its parent, all inside one window
  * of lib/liveWindow.ts, so one round planned over all ten events
@@ -434,6 +453,7 @@ const ROUTES: Record<string, (env: Env, seeded: Seeded, skip: () => void) => Pro
   "live: a burst of edits, heard": burstHeard,
   "inbox: one task opened": openedFromInbox,
   "live: a changed-files report, heard": reportHeard,
+  "box: one task edit, heard": boxEditHeard,
 };
 
 /** Nobody is connected: the Durable Object that would say so isn't here. */
