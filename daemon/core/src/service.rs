@@ -405,10 +405,38 @@ pub enum Log {
     File(PathBuf),
 }
 
-/// What `install` did: wrote `file`, then enabled and started `name` (`UNIT` or `LABEL`).
+/// What became of the service's file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wrote {
+    /// There was none.
+    New,
+    /// It was already this, so it wasn't written again.
+    Same,
+    /// It was another, which ran `was` (when that could be read): a reinstall from a new place,
+    /// or one that fixes a unit pointing at a program that's gone.
+    Replaced { was: Option<PathBuf> },
+}
+
+/// Write `text` at `file` unless it is that already. `was` reads the program an old one ran.
+fn write_if_changed(file: &Path, text: &str, was: impl Fn(&str) -> Option<PathBuf>) -> Result<Wrote> {
+    let wrote = match fs::read_to_string(file) {
+        Ok(old) if old == text => return Ok(Wrote::Same),
+        Ok(old) => Wrote::Replaced { was: was(&old) },
+        Err(_) => Wrote::New,
+    };
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
+    }
+    fs::write(file, text).with_context(|| format!("writing {}", file.display()))?;
+    Ok(wrote)
+}
+
+/// What `install` did: wrote `file` (or found it as it would write it), then enabled and
+/// started `name` (`UNIT` or `LABEL`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Installed {
     pub file: PathBuf,
+    pub wrote: Wrote,
     pub name: &'static str,
     pub log: Log,
     pub notes: Vec<Note>,
@@ -417,10 +445,17 @@ pub struct Installed {
 /// Write the platform's service running `program` on `config`, then enable and start it.
 /// `copland-daemon --install-service` passes itself; another program passes `daemon_binary()`.
 /// Refused, writing nothing, when `program` is Nix's (`nix_managed`): its service is the
-/// home-manager module's then, and the error says how to add it (`NixManaged`).
+/// home-manager module's then, and the error says how to add it (`NixManaged`). On Linux, refused
+/// too when `program` is somewhere it won't stay (`stable::Unstable`: a tarball's versioned or
+/// download dir, a temporary one, a build), with the command that installs it to ~/.local/bin.
+/// Run again, it leaves a unit that is already right as it is (`Wrote::Same`) and replaces one
+/// that runs another program (`Wrote::Replaced`), a stale or missing one included.
 pub fn install(config: &Path, program: &Path) -> Result<Installed> {
     if nix_managed(program) {
         return Err(NixManaged::here(program, Some(config), graphical_here()).into());
+    }
+    if !cfg!(target_os = "macos") {
+        crate::stable::check_here(program)?;
     }
     if !config.exists() {
         bail!(
@@ -444,31 +479,30 @@ pub fn install(config: &Path, program: &Path) -> Result<Installed> {
     if cfg!(target_os = "macos") {
         let plist = plist_path();
         let log = log_path();
-        for dir in [plist.parent(), log.parent()].into_iter().flatten() {
+        if let Some(dir) = log.parent() {
             fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
         }
-        fs::write(&plist, launchd_plist(&program, Some(&config), &display(&log)?))
-            .with_context(|| format!("writing {}", plist.display()))?;
+        let wrote = write_if_changed(&plist, &launchd_plist(&program, Some(&config), &display(&log)?), |_| {
+            None
+        })?;
         let domain = format!("gui/{}", uid()?);
         /* Loaded already (installed before): out first, so the new file is the one that runs. */
         let _ = run("launchctl", &["bootout", &format!("{domain}/{LABEL}")]);
         run("launchctl", &["bootstrap", &domain, &display(&plist)?])?;
         Ok(Installed {
             file: plist,
+            wrote,
             name: LABEL,
             log: Log::File(log),
             notes,
         })
     } else {
         let unit = unit_path();
-        if let Some(dir) = unit.parent() {
-            fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
-        }
-        fs::write(&unit, systemd_unit(&program, Some(&config)))
-            .with_context(|| format!("writing {}", unit.display()))?;
+        let wrote = write_if_changed(&unit, &systemd_unit(&program, Some(&config)), unit_program)?;
         run("systemctl", &["--user", "daemon-reload"])?;
         run("systemctl", &["--user", "enable", UNIT])?;
-        /* restart, not start: a reinstall's new unit replaces the one running. */
+        /* restart, not start: a reinstall's new unit replaces the one running, and an unchanged
+        one starts the binary on disk, which an upgrade in place has replaced. */
         run("systemctl", &["--user", "restart", UNIT])?;
         let user = std::env::var("USER").unwrap_or_else(|_| "$USER".into());
         let linger = Command::new("loginctl")
@@ -480,6 +514,7 @@ pub fn install(config: &Path, program: &Path) -> Result<Installed> {
         }
         Ok(Installed {
             file: unit,
+            wrote,
             name: UNIT,
             log: Log::Journal,
             notes,
@@ -543,6 +578,8 @@ pub struct Service {
     pub running: Option<bool>,
     /// Whether its ExecStart is in the Nix store: Nix's, the home-manager module's.
     pub nix: bool,
+    /// The program its ExecStart runs, when that could be read (Linux).
+    pub program: Option<PathBuf>,
 }
 
 /// The `copland-daemon` service when there is one, wherever its unit lives: so a setup with a
@@ -557,6 +594,7 @@ pub fn installed() -> Option<Service> {
             enabled: true,
             running: None,
             nix: false,
+            program: None,
         });
     }
     let shown = Command::new("systemctl")
@@ -574,8 +612,10 @@ pub fn installed() -> Option<Service> {
         Some(found) => found,
         None => {
             let file = unit_path();
+            let text = fs::read_to_string(&file).ok();
             file.exists().then(|| Service {
-                nix: fs::read_to_string(&file).is_ok_and(|t| exec_in_store(&t, &nix_stores())),
+                nix: text.as_deref().is_some_and(|t| exec_in_store(t, &nix_stores())),
+                program: text.as_deref().and_then(unit_program),
                 file,
                 enabled: false,
                 running: None,
@@ -597,26 +637,64 @@ fn shown(text: &str, stores: &[PathBuf]) -> Option<Option<Service>> {
         return Some(None);
     }
     let file = get("FragmentPath").filter(|f| !f.is_empty()).map(PathBuf::from)?;
+    let exec = format!("ExecStart={}", get("ExecStart").unwrap_or(""));
     Some(Some(Service {
         file,
         enabled: is_enabled(get("UnitFileState").unwrap_or("")),
         running: Some(matches!(get("ActiveState"), Some("active" | "reloading"))),
-        nix: exec_in_store(&format!("ExecStart={}", get("ExecStart").unwrap_or("")), stores),
+        nix: exec_in_store(&exec, stores),
+        program: unit_program(&exec),
     }))
 }
 
 /// Whether the program a unit starts is in the Nix store: `ExecStart=/nix/store/…` in a unit
 /// file, or `ExecStart={ path=/nix/store/… ; argv[]=… }` as `systemctl show` says it.
 fn exec_in_store(unit: &str, stores: &[PathBuf]) -> bool {
-    unit.lines()
-        .filter_map(|l| l.trim().strip_prefix("ExecStart="))
-        .any(|v| {
-            let v = v.trim().trim_start_matches('{').trim();
-            let v = v.strip_prefix("path=").unwrap_or(v);
-            /* systemd's prefixes: `-`, `@`, `+`, `!`, `:`. */
-            let program = v.trim_start_matches(['-', '@', '+', '!', ':']).split([' ', ';']).next();
-            program.is_some_and(|p| in_store(Path::new(p), stores))
-        })
+    unit_program(unit).is_some_and(|p| in_store(&p, stores))
+}
+
+/// The program a unit's first `ExecStart=` runs, in a unit file (quoted as `exec_word` quotes,
+/// `%h` for the home) or as `systemctl show` says it (`{ path=… ; argv[]=… }`).
+pub fn unit_program(unit: &str) -> Option<PathBuf> {
+    let v = unit.lines().find_map(|l| l.trim().strip_prefix("ExecStart="))?;
+    let v = v.trim().trim_start_matches('{').trim();
+    let v = v.strip_prefix("path=").unwrap_or(v);
+    /* systemd's prefixes: `-`, `@`, `+`, `!`, `:`. */
+    let v = v.trim_start_matches(['-', '@', '+', '!', ':']);
+    let word = match v.strip_prefix('"') {
+        Some(rest) => {
+            let mut out = String::new();
+            let mut chars = rest.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => break,
+                    '\\' => out.extend(chars.next()),
+                    c => out.push(c),
+                }
+            }
+            out
+        }
+        None => v.split([' ', ';']).next()?.to_string(),
+    };
+    let word = word.replace("$$", "$");
+    /* Specifiers: `%%` is a `%`, `%h` the home. */
+    let mut out = String::new();
+    let mut chars = word.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('h') => out.push_str(&expand_home("~").display().to_string()),
+            Some(o) if o != '%' => {
+                out.push('%');
+                out.push(o);
+            }
+            _ => out.push('%'),
+        }
+    }
+    (!out.is_empty()).then(|| PathBuf::from(out))
 }
 
 /// What `--check` says about the service: whether there is one, where, whether it is Nix's,
@@ -641,6 +719,80 @@ pub fn describe(service: Option<&Service>, nix_here: bool) -> String {
         None => {}
     }
     format!("service: {} ({}).", says.join(", "), s.file.display())
+}
+
+/// What `--check` says about the program the service runs (COPL-219): whether it is there,
+/// whether it is somewhere it will stay (`unstable` says why not), its version (`on_disk`), and
+/// when the daemon running the config is another version (`running`: the binary was upgraded in
+/// place since it started), that a restart starts the new one.
+pub fn describe_program(
+    program: &Path,
+    there: bool,
+    on_disk: Option<&str>,
+    running: Option<&str>,
+    unstable: Option<&crate::stable::Why>,
+) -> String {
+    let p = program.display();
+    if !there {
+        return format!(
+            "It runs {p}, which isn't there any more: run --install-service with the copland-daemon you have now \
+             (~/.local/bin/copland-daemon) to point the service at it."
+        );
+    }
+    let version = on_disk.map(|v| format!(" ({v})")).unwrap_or_default();
+    let mut out = format!("It runs {p}{version}.");
+    if let Some(why) = unstable {
+        out.push_str(&format!(
+            " That is {why}: install it to ~/.local/bin and run `~/.local/bin/copland-daemon --install-service` \
+             to move the service there."
+        ));
+    }
+    if let (Some(disk), Some(run)) = (on_disk, running)
+        && disk != run
+    {
+        out.push_str(&format!(
+            " The daemon running is {run}, from before {p} was upgraded: `systemctl --user restart {}` starts {disk}.",
+            UNIT.trim_end_matches(".service")
+        ));
+    }
+    out
+}
+
+/// `describe_program` for the service as it is on this machine, running `config`: None for a
+/// service whose program can't be read, or Nix's (the module puts the current one there).
+pub fn program_says(service: &Service, config: &Path) -> Option<String> {
+    if service.nix {
+        return None;
+    }
+    let program = service.program.as_deref()?;
+    let on_disk = Command::new(program)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .last()
+                .map(str::to_string)
+        });
+    let config = fs::canonicalize(config).unwrap_or_else(|_| config.to_path_buf());
+    let running = lock::running(&config, &default_runtime_dir())
+        .ok()
+        .flatten()
+        .and_then(|h| h.version);
+    let unstable = crate::stable::why(
+        &fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf()),
+        &crate::stable::Places::here(),
+    );
+    Some(describe_program(
+        program,
+        executable(program),
+        on_disk.as_deref(),
+        running.as_deref(),
+        unstable.as_ref(),
+    ))
 }
 
 /// What `systemctl is-enabled` prints for a unit that starts by itself.
@@ -1061,6 +1213,7 @@ mod tests {
         let holder = Holder {
             pid: Some(7),
             binary: Some("copland-box".into()),
+            version: None,
         };
         assert_eq!(
             Note::AlreadyRunning {
@@ -1202,6 +1355,7 @@ mod tests {
                 enabled: true,
                 running: Some(true),
                 nix: true,
+                program: Some("/nix/store/abc-copland/bin/copland-daemon".into()),
             }))
         );
         let ours = "LoadState=loaded\nFragmentPath=/home/me/.config/systemd/user/copland-daemon.service\n\
@@ -1209,6 +1363,10 @@ mod tests {
                     ExecStart={ path=/home/me/.local/bin/copland-daemon ; argv[]=/home/me/.local/bin/copland-daemon --headless }\n";
         let s = shown(ours, &stores).unwrap().unwrap();
         assert_eq!((s.enabled, s.running, s.nix), (false, Some(false), false));
+        assert_eq!(
+            s.program.as_deref(),
+            Some(Path::new("/home/me/.local/bin/copland-daemon"))
+        );
         assert_eq!(
             shown("LoadState=not-found\nFragmentPath=\nActiveState=inactive\n", &stores),
             Some(None)
@@ -1239,6 +1397,7 @@ mod tests {
             enabled: true,
             running: Some(true),
             nix: true,
+            program: None,
         };
         assert_eq!(
             describe(Some(&s), true),
@@ -1249,6 +1408,101 @@ mod tests {
             describe(Some(&s), false),
             "service: installed, not enabled, not running: `systemctl --user start copland-daemon.service` starts it \
              (/home/me/.config/systemd/user/copland-daemon.service)."
+        );
+    }
+
+    #[test]
+    fn reads_back_the_program_a_unit_runs() {
+        let unit = systemd_unit("/home/me/my bin/50%/copland-$daemon", Some("/c.toml"));
+        assert_eq!(
+            unit_program(&unit),
+            Some(PathBuf::from("/home/me/my bin/50%/copland-$daemon"))
+        );
+        assert_eq!(
+            unit_program(&systemd_unit("/usr/bin/copland-daemon", None)),
+            Some(PathBuf::from("/usr/bin/copland-daemon"))
+        );
+        /* The release's unit names the home by its specifier. */
+        assert_eq!(
+            unit_program(&release("copland-daemon.service")),
+            Some(expand_home("~/.local/bin/copland-daemon"))
+        );
+        assert_eq!(
+            unit_program(
+                "[Service]
+Type=simple
+"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn writes_a_unit_only_when_it_changes() {
+        let dir = scratch("idempotent");
+        let unit = dir.join("user").join(UNIT);
+        let old = systemd_unit(
+            "/home/me/Downloads/copland-box-0.4.0-linux-x86_64/bin/copland-daemon",
+            None,
+        );
+        assert_eq!(write_if_changed(&unit, &old, unit_program).unwrap(), Wrote::New);
+        /* The same again: not written, so its time stays. */
+        let before = fs::metadata(&unit).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(write_if_changed(&unit, &old, unit_program).unwrap(), Wrote::Same);
+        assert_eq!(fs::metadata(&unit).unwrap().modified().unwrap(), before);
+        /* From a stable place: the stale one is replaced, saying what it ran. */
+        let new = systemd_unit("/home/me/.local/bin/copland-daemon", None);
+        assert_eq!(
+            write_if_changed(&unit, &new, unit_program).unwrap(),
+            Wrote::Replaced {
+                was: Some("/home/me/Downloads/copland-box-0.4.0-linux-x86_64/bin/copland-daemon".into())
+            }
+        );
+        assert_eq!(fs::read_to_string(&unit).unwrap(), new);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn install_refuses_a_program_that_wont_stay_before_writing_anything() {
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        /* Before the missing config: nothing is looked at or written past it. */
+        let err = install(
+            Path::new("/nonexistent/daemon.toml"),
+            Path::new("/tmp/copland-box-0.5.0-linux-x86_64/bin/copland-daemon"),
+        )
+        .unwrap_err();
+        let u = err
+            .downcast_ref::<crate::stable::Unstable>()
+            .expect("refused as unstable");
+        assert!(matches!(u.why, crate::stable::Why::Temp(_)), "{u:?}");
+        assert!(err.to_string().contains("~/.local/bin"), "{err}");
+    }
+
+    #[test]
+    fn check_says_what_the_service_runs_and_when_a_restart_picks_up_an_upgrade() {
+        let p = Path::new("/home/me/.local/bin/copland-daemon");
+        assert_eq!(
+            describe_program(p, true, Some("0.5.1"), Some("0.5.1"), None),
+            "It runs /home/me/.local/bin/copland-daemon (0.5.1)."
+        );
+        assert_eq!(
+            describe_program(p, true, Some("0.5.1"), Some("0.5.0"), None),
+            "It runs /home/me/.local/bin/copland-daemon (0.5.1). The daemon running is 0.5.0, from before /home/me/.local/bin/copland-daemon was upgraded: `systemctl --user restart copland-daemon` starts 0.5.1."
+        );
+        /* Not running, or a daemon too old to say: nothing to compare. */
+        assert_eq!(
+            describe_program(p, true, Some("0.5.1"), None, None),
+            "It runs /home/me/.local/bin/copland-daemon (0.5.1)."
+        );
+        let gone = Path::new("/home/me/Downloads/copland-box-0.4.0-linux-x86_64/bin/copland-daemon");
+        assert!(describe_program(gone, false, None, Some("0.4.0"), None).contains("isn't there any more"));
+        let why = crate::stable::Why::Downloads("/home/me/Downloads".into());
+        assert!(
+            describe_program(gone, true, Some("0.4.0"), None, Some(&why))
+                .contains("under /home/me/Downloads, a download folder: install it to ~/.local/bin")
         );
     }
 

@@ -15,6 +15,7 @@ use crate::APP_ID;
 /* Writing autostart entries is core's (`autostart`), shared with the tray's entry and setup. */
 pub use copland_daemon_core::autostart::Exec;
 use copland_daemon_core::autostart::{self, TRAY};
+use copland_daemon_core::stable::Places;
 
 /// The autostart entry this box would write or remove, for this process's environment.
 pub fn autostart_file() -> Option<PathBuf> {
@@ -26,14 +27,15 @@ pub fn tray_autostart_file() -> Option<PathBuf> {
     autostart::file(TRAY)
 }
 
-/// The box to start at login: on PATH, else this binary (see `autostart::exec`).
-pub fn exec(path_var: Option<&str>, current: Option<&Path>) -> Exec {
-    autostart::exec(APP_ID, path_var, current)
+/// The box to start at login: on PATH, else this binary (see `autostart::exec`), unless that is
+/// somewhere it won't stay on `places`.
+pub fn exec(path_var: Option<&str>, current: Option<&Path>, places: &Places) -> Exec {
+    autostart::exec(APP_ID, path_var, current, places)
 }
 
 /// The tray to start at login: on PATH, else the one beside this box.
-pub fn tray_exec(path_var: Option<&str>, current: Option<&Path>) -> Exec {
-    autostart::exec(TRAY, path_var, autostart::beside(current, TRAY).as_deref())
+pub fn tray_exec(path_var: Option<&str>, current: Option<&Path>, places: &Places) -> Exec {
+    autostart::exec(TRAY, path_var, autostart::beside(current, TRAY).as_deref(), places)
 }
 
 /// Write the box's entry at `file`, or remove it.
@@ -211,12 +213,29 @@ mod tests {
             std::fs::set_permissions(&t, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let me = bin.join(APP_ID);
-        let e = exec(None, Some(&me));
+        /* The scratch dir is a temporary one: these places leave temporary dirs out. */
+        let p = Places {
+            home: Some("/home/me".into()),
+            ..Places::default()
+        };
+        let e = exec(None, Some(&me), &p);
         assert_eq!(e.program, me.display().to_string());
         /* The tray beside this box, when PATH has none. */
-        let t = tray_exec(Some("/nonexistent"), Some(&me));
+        let t = tray_exec(Some("/nonexistent"), Some(&me), &p);
         assert_eq!((t.program, t.caveat), (bin.join(TRAY).display().to_string(), None));
-        assert_eq!(tray_exec(None, Some(Path::new("/nowhere/copland-box"))).program, TRAY);
+        assert_eq!(
+            tray_exec(None, Some(Path::new("/nowhere/copland-box")), &p).program,
+            TRAY
+        );
+        /* With the temporary dir counted (COPL-219): neither entry is written. */
+        let temp = Places {
+            temp: vec![dir.clone()],
+            ..p.clone()
+        };
+        let refused = dir.join("refused.desktop");
+        assert!(set_autostart(&refused, true, None, &exec(None, Some(&me), &temp)).is_err());
+        assert!(set_tray_autostart(&refused, true, None, &tray_exec(None, Some(&me), &temp)).is_err());
+        assert!(!refused.exists());
 
         let file = dir.join("autostart").join(format!("{APP_ID}.desktop"));
         set_autostart(&file, true, Some(Path::new("/tmp/my conf/daemon.toml")), &e).unwrap();
@@ -230,7 +249,7 @@ mod tests {
         assert!(!file.exists());
 
         let tray = dir.join("autostart").join(format!("{TRAY}.desktop"));
-        set_tray_autostart(&tray, true, None, &tray_exec(None, Some(&me))).unwrap();
+        set_tray_autostart(&tray, true, None, &tray_exec(None, Some(&me), &p)).unwrap();
         let text = std::fs::read_to_string(&tray).unwrap();
         assert!(text.contains(&format!("Exec={}\n", bin.join(TRAY).display())));
         assert!(text.contains("tray at login"));

@@ -19,6 +19,9 @@ use anyhow::{Context, Result};
 pub struct Holder {
     pub pid: Option<u32>,
     pub binary: Option<String>,
+    /// Its version (COPL-219: `--check` tells it from the binary's on disk after an upgrade).
+    /// None from a daemon older than that.
+    pub version: Option<String>,
 }
 
 impl std::fmt::Display for Holder {
@@ -111,6 +114,11 @@ fn read_holder(file: &mut File) -> Holder {
             .map(str::trim)
             .filter(|b| !b.is_empty())
             .map(str::to_string),
+        version: lines
+            .next()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string),
     }
 }
 
@@ -129,7 +137,14 @@ impl Lock {
         }
         file.set_len(0)
             .and_then(|_| file.seek(SeekFrom::Start(0)))
-            .and_then(|_| write!(file, "{}\n{binary}\n", std::process::id()))
+            .and_then(|_| {
+                write!(
+                    file,
+                    "{}\n{binary}\n{}\n",
+                    std::process::id(),
+                    env!("CARGO_PKG_VERSION")
+                )
+            })
             .and_then(|_| file.flush())
             .with_context(|| format!("writing {}", path.display()))?;
         Ok(Lock { _file: file, path })
@@ -196,7 +211,8 @@ mod tests {
             held.holder,
             Holder {
                 pid: Some(std::process::id()),
-                binary: Some("copland-daemon".into())
+                binary: Some("copland-daemon".into()),
+                version: Some(env!("CARGO_PKG_VERSION").into())
             }
         );
         assert!(err.to_string().contains("already running"), "{err}");
@@ -234,7 +250,8 @@ mod tests {
             running(&config, &dir).unwrap(),
             Some(Holder {
                 pid: Some(std::process::id()),
-                binary: Some("copland-box".into())
+                binary: Some("copland-box".into()),
+                version: Some(env!("CARGO_PKG_VERSION").into())
             })
         );
         /* Asking doesn't take it. */
@@ -255,7 +272,11 @@ mod tests {
         /* The new holder's line replaces the old one, not appended to it. */
         assert_eq!(
             fs::read_to_string(again.path()).unwrap(),
-            format!("{}\ncopland-daemon\n", std::process::id())
+            format!(
+                "{}\ncopland-daemon\n{}\n",
+                std::process::id(),
+                env!("CARGO_PKG_VERSION")
+            )
         );
         fs::remove_dir_all(&dir).unwrap();
     }

@@ -8,7 +8,7 @@ Copland box @VERSION@, Linux @ARCH@
 
 The layout matches ~/.local, so installing for yourself is one copy:
 
-  cp -r bin share ~/.local/
+  cp -r --remove-destination bin share ~/.local/
   gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor 2>/dev/null || true
 
 That puts the binaries in ~/.local/bin, copland-box.desktop and
@@ -16,6 +16,17 @@ copland-tray.desktop in ~/.local/share/applications and the icon in
 ~/.local/share/icons/hicolor/{scalable,32x32,...,256x256}/apps. The launcher
 runs `copland-box` from PATH; if ~/.local/bin isn't on your desktop
 session's PATH, change Exec= in the desktop file to the full path.
+
+Run the copy in ~/.local/bin, not the one in this directory: the service
+and the entries that start the box and the tray at login name the binary
+by its path, and they refuse a path like this one (a folder named for one
+version, ~/Downloads, /tmp), which won't be there after the next upgrade.
+
+To upgrade, copy the newer tarball's bin and share over ~/.local the same
+way (--remove-destination, since the daemon's binary is in use), then
+`systemctl --user restart copland-daemon`. The service keeps the same
+unit; `copland-daemon --check` says when the daemon running is older than
+the binary on disk.
 
 Then start `copland-box`. Without a config it sets itself up in its window:
 type your Copland's address and approve the box in the browser. Setup ends
@@ -42,7 +53,9 @@ On a machine with no display, run the headless daemon as a service:
   journalctl --user -u copland-daemon -f
 
 --install-service writes ~/.config/systemd/user/copland-daemon.service for
-this binary and config. The daemon finds the runtimes when it starts, on
+this binary and config, from ~/.local/bin or another place that lasts
+(it says how to get there otherwise). Running it again leaves an
+unchanged unit alone and replaces one that runs a binary since moved. The daemon finds the runtimes when it starts, on
 its PATH, your login shell's and ~/.local/bin; --check shows where.
 On a server you aren't logged in to, `sudo loginctl enable-linger $USER`
 keeps it running. share/systemd/user/copland-daemon.service is the same

@@ -103,8 +103,11 @@ pub async fn run(config: &Path, url: Option<&str>) -> Result<()> {
     }
     writeln!(out, "Wrote {}.\n", config.display())?;
     if let Some((on, file)) = tray {
-        let said = tray_at_login(&file, on, config, &autostart::here(TRAY))?;
-        writeln!(out, "{said}")?;
+        /* A tray somewhere it won't stay gets no entry (COPL-219): said, and setup goes on. */
+        match tray_at_login(&file, on, config, &autostart::here(TRAY)) {
+            Ok(said) => writeln!(out, "{said}")?,
+            Err(e) => writeln!(out, "{TRAY} won't start at login: {e:#}")?,
+        }
     }
     let loaded = Config::load(config).context("reading back the config just written")?;
     let failed = check(&loaded, true).await?;
@@ -432,6 +435,7 @@ mod tests {
             enabled: true,
             running: Some(false),
             nix: true,
+            program: None,
         };
         assert_eq!(
             nix_ending(Some(&hm), &nix),
@@ -527,6 +531,7 @@ mod tests {
         let exec = Exec {
             program: "/opt/bin/copland-tray".into(),
             caveat: None,
+            unstable: None,
         };
         let said = tray_at_login(&file, true, &dir.join("daemon.toml"), &exec).unwrap();
         assert!(said.contains("/opt/bin/copland-tray starts at login"), "{said}");

@@ -13,8 +13,9 @@ use clap::{Parser, Subcommand};
 use copland_daemon_core::client;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
 use copland_daemon_core::search_path;
-use copland_daemon_core::service::{self, Log, NixManaged, Note, Uninstalled};
+use copland_daemon_core::service::{self, Log, NixManaged, Note, Uninstalled, Wrote};
 use copland_daemon_core::socket::Serve;
+use copland_daemon_core::stable::Unstable;
 use copland_daemon_core::{Config, Daemon, Lock, Paths};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -168,10 +169,11 @@ async fn run(args: Args) -> Result<()> {
         for a in &config.agents {
             println!("@{} at {}: {:?} in {}", a.handle, a.url, a.command, a.workdir.display());
         }
-        println!(
-            "{}",
-            service::describe(service::installed().as_ref(), service::nix_managed_here())
-        );
+        let installed = service::installed();
+        println!("{}", service::describe(installed.as_ref(), service::nix_managed_here()));
+        if let Some(says) = installed.as_ref().and_then(|s| service::program_says(s, &path)) {
+            println!("{says}");
+        }
         println!();
         let failed = setup::check(&config, args.fix).await?;
         if failed > 0 {
@@ -239,8 +241,9 @@ async fn run(args: Args) -> Result<()> {
 fn install_service(config: &std::path::Path) -> Result<()> {
     let program = std::env::current_exe().context("finding this binary")?;
     /* Nix's: home-manager runs the service, so nothing is written (COPL-218). */
+    /* Somewhere it won't stay: nothing is written, and it says how to install it (COPL-219). */
     let done = match service::install(config, &program) {
-        Err(e) if e.is::<NixManaged>() => {
+        Err(e) if e.is::<NixManaged>() || e.is::<Unstable>() => {
             print!("{e}");
             std::process::exit(1);
         }
@@ -250,7 +253,17 @@ fn install_service(config: &std::path::Path) -> Result<()> {
     for note in early {
         println!("{note}");
     }
-    println!("Wrote {}.", done.file.display());
+    match &done.wrote {
+        Wrote::New => println!("Wrote {}.", done.file.display()),
+        Wrote::Same => println!("{} is already this; left as it is.", done.file.display()),
+        Wrote::Replaced { was } => println!(
+            "Replaced {}{}.",
+            done.file.display(),
+            was.as_ref()
+                .map(|w| format!(", which ran {}", w.display()))
+                .unwrap_or_default()
+        ),
+    }
     match &done.log {
         Log::File(log) => println!(
             "Started {}; it starts again at every login. Its log is {}.",
