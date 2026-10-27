@@ -324,9 +324,10 @@ pub struct NixManaged {
 impl NixManaged {
     /// For `program` on `config` (the default one is left out), looking for a leftover unit.
     pub fn here(program: &Path, config: Option<&Path>, tray: bool) -> Self {
-        let config = config
-            .map(|c| fs::canonicalize(c).unwrap_or_else(|_| c.to_path_buf()))
-            .filter(|c| crate::autostart::non_default(c).is_some());
+        let resolved = |c: &Path| fs::canonicalize(c).unwrap_or_else(|_| c.to_path_buf());
+        /* Both resolved: on macOS the temp dir and the like are behind a link (/var, /private/var). */
+        let default = resolved(&crate::config::default_config_path());
+        let config = config.map(resolved).filter(|c| *c != default);
         Self {
             program: program.to_path_buf(),
             config,
