@@ -25,7 +25,7 @@ use tokio::task::{Id, JoinError, JoinHandle, JoinSet};
 use tracing::Instrument;
 
 use crate::api::{
-    Api, ApiError, Backoff, BoardRepos, Ending, HostCapabilities, HostReport, InboxItem, MAX_REPOS, Me, RepoCapability,
+    Api, ApiError, Backoff, BoardShell, Ending, HostCapabilities, HostReport, InboxItem, MAX_REPOS, Me, RepoCapability,
     RuntimeCapability,
 };
 use crate::chain;
@@ -800,17 +800,12 @@ impl AgentLoop {
             .map(|b| b.key)
             .collect();
         let running: Vec<&str> = self.inflight.values().map(|r| r.key.as_str()).collect();
-        let mut read: HashMap<String, Option<BoardRepos>> = HashMap::new();
         for (key, repo) in found {
             let lookup = match self.api.task(&self.agent.token, &key).await {
                 Ok(t) if t.completed_at.is_some() => {
                     /* A task waiting on it may carry on in it (COPL-189): kept until that one starts. */
-                    if !read.contains_key(&t.board_id) {
-                        let board = self.api.board_repos(&self.agent.token, &t.board_id).await.ok();
-                        read.insert(t.board_id.clone(), board);
-                    }
-                    match &read[&t.board_id] {
-                        Some(board) if chain::waited_on(&key, board, code_dir) => {
+                    match self.api.dependents(&self.agent.token, &t.id).await {
+                        Ok(waiting) if chain::waited_on(&t, &waiting, code_dir) => {
                             tracing::debug!(task = %key, "closed, and a task waiting on it may carry on in its worktree; kept");
                             Lookup::Open
                         }
@@ -848,7 +843,7 @@ impl AgentLoop {
         for b in boards {
             let repos = self
                 .api
-                .board_repos(&self.agent.token, &b.id)
+                .board_shell(&self.agent.token, &b.id)
                 .await
                 .map_err(|e| anyhow!("reading board {}: {e}", b.key))?;
             for r in &repos.repos {
@@ -1198,8 +1193,8 @@ impl AgentLoop {
                 }
             }
             /* A chain's next task waits for the last one's run to end, which may still be in its worktree. */
-            if let Some(after) = lookup.after(&self.agent, Some(me.id.as_str())) {
-                if self.inflight.values().any(|r| r.key.eq_ignore_ascii_case(&after)) {
+            if let Some(after) = &lookup.after {
+                if self.inflight.values().any(|r| r.key.eq_ignore_ascii_case(after)) {
                     tracing::debug!(task = %wake.task_key, "carries on from {after}, whose run is still going; next time");
                     continue;
                 }
@@ -1332,19 +1327,9 @@ struct TaskInfo {
     role: Role,
     task: Option<crate::api::Task>,
     source: Option<crate::api::CodeSource>,
-    board: Option<BoardRepos>,
-}
-
-impl TaskInfo {
+    board: Option<BoardShell>,
     /// The task a worker's run would carry on from (COPL-189), with the agent's `resume_chains`.
-    fn after(&self, agent: &AgentConfig, me: Option<&str>) -> Option<String> {
-        let (Some(task), Some(board), Some(me)) = (&self.task, &self.board, me) else {
-            return None;
-        };
-        (agent.resume_chains && self.role == Role::Worker)
-            .then(|| chain::before(task, board, me).map(|t| t.key.clone()))
-            .flatten()
-    }
+    after: Option<String>,
 }
 
 /// How a run ends, by how its runtime did. A runtime that never started is this machine's
@@ -1729,16 +1714,16 @@ impl RunCtx {
         if !self.agent.resume_chains {
             return false;
         }
-        match self.api.board_repos(&self.agent.token, &task.board_id).await {
-            Ok(board) => {
-                let kept = chain::waited_on(&task.key, &board, &self.agent.code_dir);
+        match self.api.dependents(&self.agent.token, &task.id).await {
+            Ok(waiting) => {
+                let kept = chain::waited_on(task, &waiting, &self.agent.code_dir);
                 if kept {
                     tracing::info!(task = %task.key, "task closed; its worktree stays for the task waiting on it");
                 }
                 kept
             }
             Err(e) => {
-                tracing::warn!(task = %task.key, "reading its board for a task waiting on it: {e}");
+                tracing::warn!(task = %task.key, "reading the tasks waiting on it: {e}");
                 false
             }
         }
@@ -1755,7 +1740,7 @@ impl RunCtx {
     ) -> Option<crate::api::Task> {
         let read = async {
             let task = self.api.task(&self.agent.token, task_id).await?;
-            let board = self.api.board_repos(&self.agent.token, &task.board_id).await?;
+            let board = self.api.board_shell(&self.agent.token, &task.board_id).await?;
             Ok::<_, ApiError>((task, board))
         };
         let (task, board) = match read.await {
@@ -1766,8 +1751,7 @@ impl RunCtx {
             }
         };
         let category = task.stage_id.as_deref().and_then(|s| board.category(s));
-        let has_children = board.has_children(task_id);
-        unfinished(&task, category, has_children, run_id, pull_requests).then_some(task)
+        unfinished(&task, category, task.has_children(), run_id, pull_requests).then_some(task)
     }
 
     /// One run on messages, about a task or not (COPL-127): start it, claim each message for it
@@ -1884,6 +1868,7 @@ impl RunCtx {
                 task: None,
                 source: None,
                 board: None,
+                after: None,
             });
         }
         let task = self
@@ -1893,29 +1878,56 @@ impl RunCtx {
             .with_context(|| format!("reading {key}"))?;
         let board = self
             .api
-            .board_repos(&self.agent.token, &task.board_id)
+            .board_shell(&self.agent.token, &task.board_id)
             .await
             .with_context(|| format!("reading {key}'s board"))?;
         if board.repos.len() > 1 {
             tracing::debug!(task = %key, "its board has {} repos; working in the first", board.repos.len());
         }
-        let has_children = board.has_children(task_id);
-        let role = role_of(true, !board.repos.is_empty(), task.level.as_deref(), has_children);
+        let role = role_of(
+            true,
+            !board.repos.is_empty(),
+            task.level.as_deref(),
+            task.has_children(),
+        );
         let source = board.repos.first().map(|r| r.source());
+        let after = match (&self.user_id, self.agent.resume_chains && role == Role::Worker) {
+            (Some(me), true) => self.carries_on_from(&task, me).await,
+            _ => None,
+        };
         Ok(TaskInfo {
             role,
             task: Some(task),
             source,
             board: Some(board),
+            after,
         })
+    }
+
+    /// The task `task` would carry on from (`chain::before`), from the tasks it depends on, read
+    /// one by one: a task waits on a few, its board has hundreds (COPL-212). One that can't be
+    /// read is left out; with none, the run starts cold.
+    async fn carries_on_from(&self, task: &crate::api::Task, me: &str) -> Option<String> {
+        let mut deps = Vec::with_capacity(task.depends_on.len());
+        for id in &task.depends_on {
+            match self.api.task(&self.agent.token, id).await {
+                Ok(t) => deps.push(t),
+                Err(e) => tracing::debug!(task = %task.key, "reading a task it depends on: {e}"),
+            }
+        }
+        chain::before(task, &deps, me).map(|t| t.key.clone())
     }
 
     /// Where the run works: a worker's worktree, a lead's read-only view of the repo, or none
     /// (the agent's `workdir`).
     async fn workspace(&self, task_id: &str, key: &str) -> Result<Option<Workspace>> {
-        let info = self.lookup(task_id, key).await?;
-        let after = info.after(&self.agent, self.user_id.as_deref());
-        let TaskInfo { role, task, source, .. } = info;
+        let TaskInfo {
+            role,
+            task,
+            source,
+            after,
+            ..
+        } = self.lookup(task_id, key).await?;
         let (Some(task), Some(src)) = (task, source) else {
             return Ok(None);
         };
@@ -2296,7 +2308,7 @@ mod tests {
                 }
                 "GET /api/tasks/ready" => (200, r#"{"tasks":[]}"#.into()),
                 "GET /api/boards" => (200, r#"[{"id":"b1","key":"COPL","name":"copland"}]"#.into()),
-                "GET /api/boards/b1" => {
+                "GET /api/boards/b1/shell" => {
                     let repos = match self.remote.lock().unwrap().as_deref() {
                         Some(r) => serde_json::json!([{ "repo": "o/r", "kind": "git", "remote": r }]),
                         None => serde_json::json!([]),
@@ -2527,6 +2539,9 @@ mod tests {
         assert_eq!(fake.count("POST /api/runs"), 0, "no run started");
         assert_eq!(fake.count("POST /api/tasks/t1/claim"), 0, "nothing claimed");
         assert_eq!(fake.count("GET /api/boards"), 1, "its boards are checked once");
+        /* From its shell, not the whole board with its tasks (COPL-212). */
+        assert!(fake.count("GET /api/boards/b1/shell") >= 1);
+        assert_eq!(fake.count("GET /api/boards/b1"), 0, "the board itself is never read");
         assert_eq!(l.state.borrow().agents[0].waiting, ["COPL-1"]);
         l.stop().await;
     }
@@ -2949,7 +2964,7 @@ mod tests {
         }))
         .unwrap();
         assert!(t.stage_id.is_none() && !t.review_first && !t.open_pr());
-        let board: crate::api::BoardRepos = serde_json::from_value(serde_json::json!({ "repos": [] })).unwrap();
+        let board: crate::api::BoardShell = serde_json::from_value(serde_json::json!({ "repos": [] })).unwrap();
         assert_eq!(board.category("s"), None);
         assert!(!unfinished(&t, None, false, "r1", true));
     }

@@ -27,7 +27,7 @@ import { sqlite } from "./worker.ts";
 import type { Viewer } from "../src/domain/types.ts";
 
 const { getBoard, getBoardShell, getBoards, getClosed } = await import("../src/worker/routes/boards.ts");
-const { getTask, patchTask } = await import("../src/worker/routes/tasks.ts");
+const { getDependents, getTask, patchTask } = await import("../src/worker/routes/tasks.ts");
 const { Changes } = await import("../src/worker/live.ts");
 const { getInbox } = await import("../src/worker/routes/inbox.ts");
 const { getWired } = await import("../src/worker/routes/wired.ts");
@@ -359,6 +359,7 @@ const ROUTES: Record<string, (env: Env, live: string, skip: () => void) => Promi
   "GET /api/boards/:id/shell": (env) => getBoardShell(env, sam, "big"),
   "GET /api/boards/:id/closed": (env) => getClosed(env, sam, "big", new URL("http://x/api/boards/big/closed")),
   "GET /api/tasks/:id": (env, live) => getTask(env, sam, live),
+  "GET /api/tasks/:id/dependents": (env, live) => getDependents(env, dev, live),
   "GET /api/inbox": (env) => getInbox(env, sam, new URL("http://x/api/inbox")),
   "GET /api/wired": (env) => getWired(env, sam),
   "GET /api/tasks/ready": (env) => getReady(env, dev),

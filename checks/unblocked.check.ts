@@ -10,14 +10,15 @@
    for a task in backlog, a milestone, a closed one, an assignee who left the
    board, or a write that closes nothing. A parent closing by following its
    child counts, and so do a stage turned closing and a stage deleted into a
-   closing one.
+   closing one. GET /api/tasks/:id/dependents (COPL-212), what the daemon
+   reads for its chains, lists the open tasks waiting on one.
    ========================================================================== */
 
 import { d1, sqlite } from "./worker.ts";
 import type { Viewer } from "../src/domain/types.ts";
 
 const { Changes } = await import("../src/worker/live.ts");
-const { deleteTask, patchTask } = await import("../src/worker/routes/tasks.ts");
+const { deleteTask, getDependents, patchTask } = await import("../src/worker/routes/tasks.ts");
 const { deleteStage, patchStage } = await import("../src/worker/routes/stages.ts");
 const { readInbox } = await import("../src/worker/routes/inbox.ts");
 
@@ -154,6 +155,36 @@ const same = (a: string[], b: string[]) => a.join() === b.join();
   const d = task("todo", { assignees: ["dev"], dependsOn: [c2] });
   const r2 = await write((c) => deleteStage(env, sam, "ship", new URL("https://x.test/?moveTo=done"), c));
   t("a stage deleted into a closing one frees what waited on its tasks", same(r2.added, [`dev:${d}`]) && same(r2.told, ["dev"]));
+}
+
+/* What waits on a task (COPL-212): the open tasks depending on it, by id or key, no one else's. */
+{
+  const a = task("done", { assignees: ["dev"] });
+  const open = task("todo", { assignees: ["kim", "dev"], dependsOn: [a] });
+  const parked = task("backlog", { dependsOn: [a] });
+  task("done", { assignees: ["dev"], dependsOn: [a] });
+  const gone = task("todo", { dependsOn: [a] });
+  db.prepare(`UPDATE tasks SET deleted_at = '2026-01-02T00:00:00.000Z' WHERE id = ?1`).run(gone);
+  task("todo", { assignees: ["dev"] });
+  const read = async (viewer: Viewer, ref: string) => {
+    const r = await getDependents(env, viewer, ref);
+    return (await r.json()) as { tasks: { id: string; key: string; stageId: string; category: string; assigneeIds: string[] }[] };
+  };
+  const { tasks } = await read(dev, a);
+  t("the open tasks waiting on it, closed and deleted ones not", same(tasks.map((x) => x.id), [open, parked]));
+  const first = tasks[0];
+  t(
+    "each with its key, stage, category and assignees",
+    first.key === `BB-${open.slice(1)}` && first.stageId === "todo" && first.category === "todo" && same(first.assigneeIds, ["dev", "kim"]),
+  );
+  t("one in backlog says so", tasks[1].category === "backlog" && tasks[1].assigneeIds.length === 0);
+  t("by key too", same((await read(dev, `bb-${a.slice(1)}`)).tasks.map((x) => x.id), [open, parked]));
+  const zed: Viewer = { user: person("zed") };
+  const refused = await getDependents(env, zed, a).then(
+    () => 200,
+    (e: { status?: number }) => e.status,
+  );
+  t("someone not on the board is told there is no such task", refused === 404);
 }
 
 /* --------------------------------------------------------------- report -- */
