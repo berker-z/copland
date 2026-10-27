@@ -35,9 +35,12 @@ has() { grep -qF -- "$1" <<<"$out" || fail "expected \"$1\" in what it printed";
 
 [ -d "$HOME" ] && [ -w "$HOME" ] || fail "HOME ($HOME) isn't a writable directory"
 unit=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/copland-daemon.service
-config=$HOME/.config/copland/daemon.toml
+config=${XDG_CONFIG_HOME:-$HOME/.config}/copland/daemon.toml
 [ ! -e "$unit" ] || fail "$unit is there already; run this in a HOME without Copland"
 echo "$(. /etc/os-release && echo "$PRETTY_NAME"), $(id -un) in $HOME, systemd user manager: ${manager:-no}"
+if [ -n "$manager" ]; then
+  systemctl --user show-environment >/dev/null || fail "systemctl --user can't reach a running user manager"
+fi
 
 step "an unpacked tarball below HOME"
 tarball=$HOME/copland-box-0.0.0-linux-$(uname -m)
@@ -45,7 +48,7 @@ install -Dm755 "$bin" "$tarball/bin/copland-daemon"
 install -Dm644 "$release/copland-daemon.service" "$tarball/share/systemd/user/copland-daemon.service"
 
 step "a config (setup needs a server; install only loads it)"
-mkdir -p "$HOME/.config/copland" "$HOME/work"
+mkdir -p "$(dirname "$config")" "$HOME/work"
 cat >"$config" <<EOF
 [[agent]]
 url = "http://127.0.0.1:9"
