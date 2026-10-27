@@ -10,6 +10,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -146,7 +147,15 @@ impl Lock {
 
     fn take_at(path: PathBuf, config: &Path, binary: &str) -> Result<Lock> {
         let mut file = open(&path, true).with_context(|| format!("opening the lock {}", path.display()))?;
-        if !try_flock(&file, libc::LOCK_EX).with_context(|| format!("locking {}", path.display()))? {
+        /* `running` tests a lock for an instant, and the daemon tests its tray's every second
+        (`tray_gone`): a lock refused once is tried again before it counts as held. */
+        let mut tries = 0;
+        while !try_flock(&file, libc::LOCK_EX).with_context(|| format!("locking {}", path.display()))? {
+            tries += 1;
+            if tries < TRIES {
+                std::thread::sleep(RETRY);
+                continue;
+            }
             return Err(Held {
                 config: config.into(),
                 holder: read_holder(&mut file),
@@ -195,6 +204,57 @@ pub fn running(config: &Path, runtime_dir: &Path) -> Result<Option<Holder>> {
 /// Whether a tray is showing this config, and whose, as `running` says for the daemon.
 pub fn tray_running(config: &Path, runtime_dir: &Path) -> Result<Option<Holder>> {
     running_at(&tray_path_for(config, runtime_dir))
+}
+
+/// How often a lock is tried before it counts as held, and how long between tries.
+const TRIES: u32 = 3;
+const RETRY: Duration = Duration::from_millis(20);
+
+/// How long a workstation's daemon waits for its tray to come back before it stops (COPL-225):
+/// longer than the tray's unit waits to restart it (`RestartSec=10`) and it takes to show again.
+pub const TRAY_GRACE: Duration = Duration::from_secs(30);
+
+/// Whether a tray that has shown a config is gone for good (COPL-225), from what `tray_running`
+/// says each time it is asked. Nothing is gone until a tray has been seen; after that, it is
+/// gone once no tray has held the lock for `grace`, so a tray that restarts (its unit's
+/// `Restart=`, `systemctl restart`, a second one taking over) is not.
+#[derive(Debug)]
+pub struct TrayWatch {
+    grace: Duration,
+    last_seen: Option<Instant>,
+}
+
+impl TrayWatch {
+    pub fn new(grace: Duration) -> Self {
+        TrayWatch { grace, last_seen: None }
+    }
+
+    /// A tray showing (`showing`) or not at `now`: true once the one seen is gone for good.
+    pub fn saw(&mut self, showing: bool, now: Instant) -> bool {
+        if showing {
+            self.last_seen = Some(now);
+            return false;
+        }
+        self.last_seen
+            .is_some_and(|seen| now.saturating_duration_since(seen) >= self.grace)
+    }
+}
+
+/// Resolves once the tray showing `config` is gone for good (`TrayWatch`), asking every `every`.
+/// A workstation's daemon stops then: the tray is how its user sees and stops it, so one left
+/// running without it would go on unseen. Never resolves while no tray has shown the config.
+pub async fn tray_gone(config: PathBuf, runtime_dir: PathBuf, grace: Duration, every: Duration) {
+    let mut watch = TrayWatch::new(grace);
+    let mut tick = tokio::time::interval(every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        /* A lock that can't be read says nothing either way: counted as showing. */
+        let showing = tray_running(&config, &runtime_dir).map_or(true, |h| h.is_some());
+        if watch.saw(showing, Instant::now()) {
+            return;
+        }
+    }
 }
 
 fn running_at(path: &Path) -> Result<Option<Holder>> {
@@ -304,6 +364,46 @@ mod tests {
                 env!("CARGO_PKG_VERSION")
             )
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /* COPL-225: a workstation's daemon goes with its tray, but not before one has shown it, and
+    not while one restarts within the grace. */
+    #[test]
+    fn a_tray_is_gone_only_after_the_grace() {
+        let grace = Duration::from_secs(30);
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut w = TrayWatch::new(grace);
+        assert!(!w.saw(false, at(0)));
+        assert!(!w.saw(false, at(600)), "no tray yet: nothing to go with");
+        assert!(!w.saw(true, at(601)));
+        assert!(!w.saw(false, at(602)));
+        assert!(!w.saw(false, at(612)), "restarting");
+        assert!(!w.saw(true, at(615)), "back");
+        assert!(!w.saw(false, at(616)));
+        assert!(!w.saw(false, at(644)));
+        assert!(w.saw(false, at(645)), "gone for good");
+    }
+
+    #[tokio::test]
+    async fn the_daemon_hears_its_tray_go() {
+        let dir = scratch("tray-gone");
+        let config = dir.join("daemon.toml");
+        fs::write(&config, "").unwrap();
+        let tray = Lock::take_tray(&config, &dir, "copland-tray").unwrap();
+        let (grace, every) = (Duration::from_secs(1), Duration::from_millis(20));
+        let mut gone = tokio::spawn(tray_gone(config.clone(), dir.clone(), grace, every));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!gone.is_finished(), "the tray is showing");
+        drop(tray);
+        /* Not straight away: it waits out the grace (`TrayWatch` holds it to the second). */
+        let soon = tokio::time::timeout(Duration::from_millis(200), &mut gone).await;
+        assert!(soon.is_err(), "gone before the grace");
+        tokio::time::timeout(Duration::from_secs(5), gone)
+            .await
+            .unwrap()
+            .unwrap();
         fs::remove_dir_all(&dir).unwrap();
     }
 }

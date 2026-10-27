@@ -189,9 +189,9 @@ mod tests {
         assert_eq!(tray.tool_tip().description, "not running");
     }
 
-    /* COPL-224: with a run going, Stop Copland is a submenu whose last item stops. */
+    /* COPL-224: with a run going, Quit Copland is a submenu whose last item stops. */
     #[test]
-    fn stop_copland_with_a_run_is_a_submenu() {
+    fn quit_copland_with_a_run_is_a_submenu() {
         use copland_daemon_core::status::{Agent, Run, Status};
         use ksni::Tray as _;
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -222,14 +222,14 @@ mod tests {
             error: None,
         });
         let menu = tray.menu();
-        let Some(ksni::MenuItem::SubMenu(stop)) = menu.iter().rev().nth(1) else {
-            panic!("Stop Copland before Hide tray");
+        let Some(ksni::MenuItem::SubMenu(stop)) = menu.last() else {
+            panic!("Quit Copland last");
         };
-        assert_eq!(stop.label, "Stop Copland");
+        assert_eq!(stop.label, "Quit Copland");
         let Some(ksni::MenuItem::Standard(confirm)) = stop.submenu.last() else {
             panic!("the confirmation in it");
         };
-        assert_eq!(confirm.label, "Stop Copland: 1 run on COPL-7 will go back to todo");
+        assert_eq!(confirm.label, "Quit Copland: 1 run on COPL-7 will go back to todo");
         (confirm.activate)(&mut tray);
         assert_eq!(rx.try_recv().unwrap(), Action::StopCopland);
     }

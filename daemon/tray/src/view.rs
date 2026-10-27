@@ -47,7 +47,8 @@ pub enum Action {
         slot: u64,
         run: String,
     },
-    /// Stop the daemon, the way `copland-daemon stop` does, and then quit the tray (COPL-224).
+    /// Stop the daemon, the way `copland-daemon stop` does, and then quit the tray (COPL-224): a
+    /// workstation's Quit Copland.
     StopCopland,
     /// Start the daemon, as `copland-daemon start` does, when none is running.
     StartCopland,
@@ -98,10 +99,11 @@ pub struct View {
 /// The tray for `status`, None when no daemon answers, with `error` (the last request the daemon
 /// refused, or why it can't be reached) in the tooltip and as the menu's first line.
 ///
-/// How it ends depends on the daemon (COPL-224). One started by hand (a workstation's) is the
-/// tray's to stop: Stop Copland stops it and the tray, asking first in a submenu when runs are
-/// going, and Hide tray quits only the tray. One that starts at login (a server's, `autostart`)
-/// outlives the tray, which only quits. With no daemon running, it offers to start one.
+/// How it ends depends on the daemon (COPL-224). One started by hand (a workstation's) goes with
+/// the tray (COPL-225): the one way to close it is Quit Copland, which stops the daemon and the
+/// tray, asking first in a submenu when runs are going. One that starts at login (a server's,
+/// `autostart`) outlives the tray, which only quits. With no daemon running, it offers to start
+/// one.
 pub fn view(status: Option<&Status>, error: Option<&str>) -> View {
     let mut tooltip = Vec::new();
     let mut menu = Vec::new();
@@ -149,10 +151,7 @@ pub fn view(status: Option<&Status>, error: Option<&str>) -> View {
     match status {
         None => menu.push(Entry::does("Quit tray", Action::Quit)),
         Some(s) if s.autostart => menu.push(Entry::does("Quit tray (daemon keeps running)", Action::Quit)),
-        Some(s) => {
-            menu.push(stop(s));
-            menu.push(Entry::does("Hide tray (agents keep running)", Action::Quit));
-        }
+        Some(s) => menu.push(quit(s)),
     }
     View {
         icon,
@@ -162,9 +161,9 @@ pub fn view(status: Option<&Status>, error: Option<&str>) -> View {
     }
 }
 
-/// Stop Copland: straight away when no run is going, else a submenu saying what stopping does to
-/// the runs, its last entry the one that stops.
-fn stop(s: &Status) -> Entry {
+/// Quit Copland: straight away when no run is going, else a submenu saying what quitting does to
+/// the runs, its last entry the one that quits.
+fn quit(s: &Status) -> Entry {
     let runs: Vec<(&Agent, &str)> = s
         .agents
         .iter()
@@ -175,9 +174,9 @@ fn stop(s: &Status) -> Entry {
         _ => "will go back to todo",
     };
     let confirm = match runs.as_slice() {
-        [] => return Entry::does("Stop Copland", Action::StopCopland),
-        [(_, on)] => format!("Stop Copland: 1 run on {on} {}", goes(on)),
-        more => format!("Stop Copland: {} runs will be interrupted", more.len()),
+        [] => return Entry::does("Quit Copland", Action::StopCopland),
+        [(_, on)] => format!("Quit Copland: 1 run on {on} {}", goes(on)),
+        more => format!("Quit Copland: {} runs will be interrupted", more.len()),
     };
     let mut entries = Vec::new();
     if runs.len() > 1 {
@@ -188,7 +187,7 @@ fn stop(s: &Status) -> Entry {
     }
     entries.push(Entry::does(confirm, Action::StopCopland));
     Entry::Menu {
-        label: "Stop Copland".into(),
+        label: "Quit Copland".into(),
         entries,
     }
 }
@@ -299,13 +298,9 @@ mod tests {
         [Entry::does("Open the box", Action::OpenBox), Entry::Separator]
     }
 
-    /// How a workstation's menu ends, with no run going.
-    fn quit() -> [Entry; 3] {
-        [
-            Entry::Separator,
-            Entry::does("Stop Copland", Action::StopCopland),
-            Entry::does("Hide tray (agents keep running)", Action::Quit),
-        ]
+    /// How a workstation's menu ends, with no run going: one way out, which stops the daemon too.
+    fn quit() -> [Entry; 2] {
+        [Entry::Separator, Entry::does("Quit Copland", Action::StopCopland)]
     }
 
     #[test]
@@ -342,35 +337,50 @@ mod tests {
         assert!(!v.menu.iter().any(|e| matches!(e, Entry::Menu { .. })));
     }
 
-    /* COPL-224: with a run going, Stop Copland asks first, saying where the run goes. */
+    /* COPL-225: a workstation's tray has one way out, Quit Copland, which stops the daemon too,
+    and nothing that quits the tray alone. */
     #[test]
-    fn stopping_with_a_run_going_asks_first() {
+    fn a_workstation_tray_only_quits_with_the_daemon() {
+        let v = view(Some(&status(vec![agent(1, "berker-z/dev")])), None);
+        assert!(v.menu.ends_with(&quit()), "{:?}", v.menu);
+        assert!(!v.menu.iter().any(|e| matches!(
+            e,
+            Entry::Item {
+                action: Some(Action::Quit),
+                ..
+            }
+        )));
+    }
+
+    /* COPL-224: with a run going, Quit Copland asks first, saying where the run goes. */
+    #[test]
+    fn quitting_with_a_run_going_asks_first() {
         let mut a = agent(1, "berker-z/dev");
         a.runs = vec![run("aaaa", Some("COPL-166"))];
         let v = view(Some(&status(vec![a])), None);
         assert_eq!(
             v.menu[v.menu.len() - 2..],
             [
+                Entry::Separator,
                 Entry::Menu {
-                    label: "Stop Copland".into(),
+                    label: "Quit Copland".into(),
                     entries: vec![Entry::does(
-                        "Stop Copland: 1 run on COPL-166 will go back to todo",
+                        "Quit Copland: 1 run on COPL-166 will go back to todo",
                         Action::StopCopland
                     )],
                 },
-                Entry::does("Hide tray (agents keep running)", Action::Quit),
             ]
         );
         let mut a = agent(1, "berker-z/dev");
         a.runs = vec![run("bbbb", None)];
         let v = view(Some(&status(vec![a])), None);
-        let Some(Entry::Menu { entries, .. }) = v.menu.iter().rev().nth(1) else {
+        let Some(Entry::Menu { entries, .. }) = v.menu.last() else {
             panic!("a submenu: {:?}", v.menu);
         };
         assert_eq!(
             entries[..],
             [Entry::does(
-                "Stop Copland: 1 run on messages will be interrupted",
+                "Quit Copland: 1 run on messages will be interrupted",
                 Action::StopCopland
             )]
         );
@@ -444,16 +454,15 @@ mod tests {
         menu.extend([
             Entry::Separator,
             Entry::Menu {
-                label: "Stop Copland".into(),
+                label: "Quit Copland".into(),
                 entries: vec![
                     Entry::note("dev's run on COPL-166 will go back to todo"),
                     Entry::note("dev's run on messages will be interrupted"),
                     Entry::note("ops's run on COPL-12 will go back to todo"),
                     Entry::Separator,
-                    Entry::does("Stop Copland: 3 runs will be interrupted", Action::StopCopland),
+                    Entry::does("Quit Copland: 3 runs will be interrupted", Action::StopCopland),
                 ],
             },
-            Entry::does("Hide tray (agents keep running)", Action::Quit),
         ]);
         assert_eq!(v.menu, menu);
     }

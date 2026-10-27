@@ -12,7 +12,9 @@
 # Neither starts at login unless asked (COPL-223): `autostart` (a server, a
 # headless machine) and `tray.autostart`. A workstation starts the daemon by
 # hand, from the package's "Copland Daemon" launcher (`copland-daemon start`,
-# which starts the tray's unit too) or the box.
+# which starts the tray's unit too) or the box, and it stops when the tray goes
+# (COPL-225). The daemon watches for that itself, so the units don't depend on
+# each other.
 { self }:
 {
   config,
@@ -59,9 +61,13 @@ in
       description = ''
         Start the daemon at login (`WantedBy=default.target`). For a server
         or a headless machine; with `loginctl enable-linger` it starts at boot
-        and keeps running with nobody logged in. Off, the unit is installed
-        and started by hand: the "Copland Daemon" launcher, `copland-daemon
-        start` or `systemctl --user start copland-daemon`, and the box.
+        and keeps running with nobody logged in, and quitting the tray leaves
+        it running. Off, the unit is installed and started by hand: the
+        "Copland Daemon" launcher, `copland-daemon start` or `systemctl --user
+        start copland-daemon`, and the box. Then the daemon goes with the
+        tray: the tray's Quit Copland stops both, and so does the tray going
+        any other way (`systemctl --user stop copland-tray`, a crash it
+        doesn't restart from, logging out) once it has been gone 30 seconds.
       '';
     };
 
@@ -110,7 +116,8 @@ in
         Start the tray with the graphical session
         (`WantedBy=graphical-session.target`). Off, it starts with the daemon
         from the launcher (`copland-daemon start`), or with `systemctl --user
-        start copland-tray`.
+        start copland-tray`. Without `autostart`, the daemon stops when the
+        tray goes.
       '';
     };
   };

@@ -17,7 +17,7 @@ use copland_daemon_core::search_path;
 use copland_daemon_core::service::{self, Installed, Log, NixManaged, Note, Uninstalled};
 use copland_daemon_core::socket::Serve;
 use copland_daemon_core::stable::Unstable;
-use copland_daemon_core::{Config, Daemon, Lock, Paths};
+use copland_daemon_core::{Config, Daemon, Lock, Paths, lock};
 use tokio::signal::unix::{SignalKind, signal};
 
 #[derive(Parser)]
@@ -99,7 +99,7 @@ enum Command {
     /// until you log out.
     Start,
     /// Stop the daemon running this config (the service, or one started otherwise) and the tray
-    /// showing it (its unit, or one started otherwise), as the tray's Stop Copland does. Runs
+    /// showing it (its unit, or one started otherwise), as the tray's Quit Copland does. Runs
     /// going finish as interrupted, their tasks back in todo. Neither starts again until started.
     Stop,
 }
@@ -222,7 +222,20 @@ async fn run(args: Args) -> Result<()> {
         }),
     )?;
     /* A server's daemon outlives the tray, a workstation's is stopped from it (COPL-224). */
-    daemon.set_autostart(service::autostarts(std::process::id()));
+    let autostart = service::autostarts(std::process::id());
+    daemon.set_autostart(autostart);
+    /* And goes with its tray (COPL-225): a tray that showed it and is gone for good, however it
+    went (quit, `systemctl --user stop copland-tray`, crashed for good, the session ended). */
+    let tray_gone = async {
+        match autostart {
+            true => std::future::pending().await,
+            false => {
+                let every = std::time::Duration::from_secs(1);
+                lock::tray_gone(path.clone(), default_runtime_dir(), lock::TRAY_GRACE, every).await
+            }
+        }
+    };
+    tokio::pin!(tray_gone);
     let mut reloads = daemon.reloads().expect("taken once, here");
     let reloader = daemon.reloader(path.clone());
     let mut term = signal(SignalKind::terminate())?;
@@ -232,6 +245,7 @@ async fn run(args: Args) -> Result<()> {
         tokio::select! {
             _ = term.recv() => { tracing::info!("SIGTERM: stopping"); break }
             _ = int.recv() => { tracing::info!("SIGINT: stopping"); break }
+            _ = &mut tray_gone => { tracing::info!("the tray is gone: stopping with it, as a workstation's daemon does"); break }
             /* COPL-197: the config again, as the socket's reload. Answered below, by this loop. */
             _ = hup.recv() => {
                 tracing::info!("SIGHUP: reloading {}", path.display());
