@@ -294,6 +294,15 @@ docs/DESIGN.md under Touch.
   rows, where it read the board and the boards list (778 on the reads
   check's seed, 12213 before COPL-150); pinned by
   checks/boardEvents.check.ts and the reads check's `live:` row
+- A burst of live events costs a tab or box a read per board every few
+  seconds, not one per event (COPL-209, for COPL-206): each board, what
+  reads across boards and every other topic are a lane that acts at most
+  once every 5 s, trailing (`src/lib/liveWindow.ts`, `READ_EVERY_MS`), and
+  a reconnect's catch-up goes through the same lanes and only reads what's
+  on screen. The box reads at most every `SPACING` (5 s, `box/src/feed.rs`
+  `read_at`), a socket dropping included. Pinned by checks/live.check.ts
+  and the reads check's `live: a burst of edits, heard` (33 rows for ten
+  edits) and `live: a reconnect` (776) rows
 - A task opened from the inbox or /wired loads that task, not its board
   (COPL-153, for COPL-131): when the tab doesn't hold the board already,
   the modal reads the task, the board's shell (`GET /api/boards/:id/shell`:

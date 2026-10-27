@@ -24,12 +24,14 @@ import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { getPlatformProxy } from "wrangler";
 import { BUDGETS } from "./reads.budgets.ts";
 import { sqlite } from "./worker.ts";
+import type { BoardChange } from "../src/domain/live.ts";
 import type { Viewer } from "../src/domain/types.ts";
 
 const { getBoard, getBoardShell, getBoards, getClosed } = await import("../src/worker/routes/boards.ts");
 const { getDependents, getTask, patchTask } = await import("../src/worker/routes/tasks.ts");
 const { getBoardOverlap, putTaskFiles } = await import("../src/worker/routes/files.ts");
 const { Changes } = await import("../src/worker/live.ts");
+const { planBoard } = await import("../src/domain/live.ts");
 const { getInbox } = await import("../src/worker/routes/inbox.ts");
 const { getWired } = await import("../src/worker/routes/wired.ts");
 const { getMyWork, getReady } = await import("../src/worker/routes/work.ts");
@@ -350,6 +352,44 @@ async function taskEditHeard(env: Env, { live }: Seeded, skip: () => void): Prom
 }
 
 /**
+ * What a listening tab reads for a burst of edits (COPL-209): ten title
+ * edits, alternating between a task and its parent, all inside one window
+ * of lib/liveWindow.ts, so one round planned over all ten events
+ * (planBoard) reads each task named once. Before COPL-209 the tab acted
+ * every 300 ms, a round for each edit or two.
+ */
+async function burstHeard(env: Env, { live }: Seeded, skip: () => void): Promise<Response> {
+  const task = (await (await getTask(env, sam, live)).json()) as { id: string; parentId: string | null };
+  if (!task.parentId) return new Response("the live task has no parent", { status: 500 });
+  const events: BoardChange[] = [];
+  for (let i = 0; i < 10; i++) {
+    /* A request each, so an event each, as the tab hears them. */
+    const changes = new Changes();
+    const id = i % 2 ? task.parentId : task.id;
+    await patchTask(new Request("http://x/", { method: "PATCH", body: JSON.stringify({ title: `edited ${i}` }) }), env, sam, id, changes);
+    for (const e of changes.events(null).get("sam") ?? []) if (e.board) events.push({ ...e, board: e.board });
+  }
+  skip();
+  const first = events[0]?.version;
+  if (events.length !== 10 || first === undefined) return new Response("the edits named no versions", { status: 500 });
+  const plan = planBoard(first - 1, events);
+  if (plan.kind !== "patch") return new Response(`a burst of ten edits planned ${plan.kind}`, { status: 500 });
+  for (const id of plan.tasks) await getTask(env, sam, id);
+  return new Response("{}");
+}
+
+/**
+ * What a tab on a board reads when its socket comes back (COPL-209): what's
+ * on screen, its board and the boards list. Before COPL-209, every query
+ * the tab held, once a reconnect; now once a window at most, however often
+ * the network drops (lib/liveWindow.ts).
+ */
+async function reconnect(env: Env): Promise<Response> {
+  await getBoard(env, sam, "big");
+  return getBoards(env, sam);
+}
+
+/**
  * What a tab holding the board reads when a run reports changed files
  * (COPL-207): the board's overlap, nothing else, since the event names no
  * task. Before, a whole board read. The report itself is not counted, and,
@@ -389,7 +429,9 @@ const ROUTES: Record<string, (env: Env, seeded: Seeded, skip: () => void) => Pro
   "GET /api/tasks/mine": (env) => getMyWork(env, sam),
   "GET /api/messages/recipients": (env) => getRecipients(env, sam),
   "GET /api/tokens": (env) => getTokens(env, sam),
+  "live: a reconnect": reconnect,
   "live: one task edit, heard": taskEditHeard,
+  "live: a burst of edits, heard": burstHeard,
   "inbox: one task opened": openedFromInbox,
   "live: a changed-files report, heard": reportHeard,
 };

@@ -16,9 +16,15 @@
    list refetches only on "boards". A tab ignores its own writes, which it
    has already applied.
 
+   With agents busy a board sends far more events than a tab need act on:
+   each board acts at most once every few seconds (lib/liveWindow.ts),
+   gathering whatever arrived meanwhile into one patch or one read. What
+   reads across boards (my work, wired, recipients) and every other topic
+   are a lane each, held to the same window.
+
    While the socket is up the fallback polls stop (isLive). When it drops
    they start again and it reconnects with backoff; once it is back,
-   everything on screen is refetched, once. A hidden tab closes its socket,
+   what's on screen is caught up, once, through the same lanes. A hidden tab closes its socket,
    marks things stale without fetching, and reconnects and catches up when
    it is shown again. The socket's life is in lib/liveSocket.ts; this file
    is what its messages mean.
@@ -31,6 +37,7 @@ import { applyBoardEvents } from "./boardPatch";
 import { fetchOverlap, fetchTask, KEYS } from "./queries";
 import { setCatchingUp, setLive, TAB_ID } from "./liveState";
 import { listen } from "./liveSocket";
+import { catchUpLanes, lanes } from "./liveWindow";
 
 const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
   boards: [KEYS.boards],
@@ -51,10 +58,6 @@ const TOPIC_KEYS: Record<LiveTopic, QueryKey[]> = {
   people: [KEYS.me, KEYS.boardAll, ["comments"], ["events"], KEYS.adminUsers, ["people"]],
 };
 
-/* Several writes in a burst (a drag across stages, an assistant filing ten
-   tasks) become one refetch. */
-const COALESCE_MS = 300;
-
 /** Refetch what these topics cover. Also for a tab's own writes that touch more than the query it changed. */
 export function refresh(queryClient: QueryClient, topics: Iterable<LiveTopic>): void {
   const keys = new Map<string, QueryKey>();
@@ -66,11 +69,16 @@ export function refresh(queryClient: QueryClient, topics: Iterable<LiveTopic>): 
 /* What reads tasks across boards: refetched on any board event, which can change whose work is whose. */
 const ACROSS_BOARDS = [KEYS.myWork, KEYS.wired, KEYS.recipients];
 
-/** Board events that say which board: each board patched or read on its own, and what reads across boards. */
-function boardRefresh(queryClient: QueryClient, byBoard: Map<string, BoardChange[]>): void {
-  const hidden = document.hidden;
-  for (const queryKey of ACROSS_BOARDS) void queryClient.invalidateQueries({ queryKey, refetchType: hidden ? "none" : "active" });
-  for (const [boardId, events] of byBoard) void applyBoardEvents(queryClient, { task: fetchTask, overlap: fetchOverlap }, boardId, events, hidden);
+/* The lane for every topic but a board's: "*" in it is a catch-up's everything else. */
+const TOPICS = "topics";
+type Gathered = LiveTopic | "*";
+/* A board's, and read again with it: threads and history only show with a board's query on screen (a task modal is one). */
+const WITH_BOARD = new Set(["board", "comments", "events"]);
+
+/** A catch-up's share outside the board lanes: every query that is not a board's, refetched if on screen. */
+function refreshRest(queryClient: QueryClient): void {
+  const refetchType = document.hidden ? "none" : "active";
+  void queryClient.invalidateQueries({ refetchType, predicate: ({ queryKey: [head] }) => !WITH_BOARD.has(head as string) });
 }
 
 export function useLiveUpdates(enabled: boolean): void {
@@ -79,10 +87,33 @@ export function useLiveUpdates(enabled: boolean): void {
   useEffect(() => {
     if (!enabled || typeof WebSocket === "undefined") return;
 
-    let flush: ReturnType<typeof setTimeout> | undefined;
-    const pending = new Set<LiveTopic>();
-    /* Board events that said which board, by board; a "board" topic in pending is one that didn't. */
-    const boards = new Map<string, BoardChange[]>();
+    /* Each board's events, by board: patched or read on its own, at most once a window (lib/liveWindow.ts). */
+    const boards = lanes<BoardChange>((boardId, events) => void applyBoardEvents(queryClient, { task: fetchTask, overlap: fetchOverlap }, boardId, events, document.hidden));
+    /* What reads across boards (only ever one lane), and every other topic (one lane too). */
+    const across = lanes<never>(() => {
+      for (const queryKey of ACROSS_BOARDS) void queryClient.invalidateQueries({ queryKey, refetchType: document.hidden ? "none" : "active" });
+    });
+    const topics = lanes<Gathered>((_lane, gathered) => {
+      const all = new Set(gathered);
+      if (all.delete("*")) refreshRest(queryClient);
+      refresh(queryClient, all as Set<LiveTopic>);
+    });
+
+    /* Everything on screen, through the lanes: each board held, what reads across boards, the rest. */
+    const catchUp = () => {
+      /* Whatever isn't on screen is fetched when it next shows. */
+      void queryClient.invalidateQueries({ refetchType: "none" });
+      const on = catchUpLanes(
+        queryClient
+          .getQueryCache()
+          .getAll()
+          .filter((q) => q.isActive())
+          .map((q) => q.queryKey),
+      );
+      for (const boardId of on.boards) boards.add(boardId, [{ board: boardId }]);
+      if (on.across) across.add("", []);
+      topics.add(TOPICS, ["*"]);
+    };
 
     const message = (data: string) => {
       let event: LiveEvent;
@@ -92,20 +123,17 @@ export function useLiveUpdates(enabled: boolean): void {
         return;
       }
       if (event.tab === TAB_ID || !Array.isArray(event.topics)) return;
+      const rest: LiveTopic[] = [];
       for (const topic of event.topics) {
         if (topic === "board" && typeof event.board === "string") {
+          /* Any board event can change whose work is whose. */
           const { topics: _topics, tab: _tab, ...change } = event;
-          boards.set(event.board, [...(boards.get(event.board) ?? []), change as BoardChange]);
-        } else pending.add(topic);
+          boards.add(event.board, [change as BoardChange]);
+          across.add("", []);
+        } else rest.push(topic);
       }
-      flush ??= setTimeout(() => {
-        flush = undefined;
-        /* A board event that named no board reads every board, which covers the ones that did. */
-        if (!pending.has("board")) boardRefresh(queryClient, boards);
-        refresh(queryClient, pending);
-        pending.clear();
-        boards.clear();
-      }, COALESCE_MS);
+      /* A "board" among them named no board (an older Worker): refresh reads every board for it. */
+      if (rest.length) topics.add(TOPICS, rest);
     };
 
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
@@ -120,10 +148,13 @@ export function useLiveUpdates(enabled: boolean): void {
       setLive,
       setCatchingUp,
       message,
+      catchUp,
     });
     return () => {
       stop();
-      clearTimeout(flush);
+      boards.stop();
+      across.stop();
+      topics.stop();
     };
   }, [enabled, queryClient]);
 }

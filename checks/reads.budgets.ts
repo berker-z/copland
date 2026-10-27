@@ -10,9 +10,9 @@
    routes not yet flat read their board's whole history, which the rest of
    COPL-131 takes away. The board read went flat with COPL-150 (open tasks
    and the last two weeks' closed ones); its paged older history is a page
-   of 100. Besides the routes, some rows are a live event's cost: what a tab
-   reads when it hears a task edit (COPL-151), or a changed-files report
-   (COPL-207).
+   of 100. Besides the routes, the live rows are a tab's cost: what a tab
+   reads when it hears a task edit (COPL-151), a changed-files report
+   (COPL-207), a burst of edits, or its socket coming back (COPL-209).
    ========================================================================== */
 
 export interface Budget {
@@ -49,6 +49,16 @@ export const BUDGETS: Record<string, Budget> = {
      GET /api/boards/:id and GET /api/boards, 778 rows on the larger seed
      (12213 before COPL-150). */
   "live: one task edit, heard": { rows: 24, flat: true },
+  /* Ten edits inside one window (COPL-209), between a task and its parent
+     epic: each read once, the epic with its progress (kept in task_rollup
+     since COPL-208; 105 before). Acting every 300 ms as before, a round
+     for each edit or two read them again each round. */
+  "live: a burst of edits, heard": { rows: 33, flat: true },
+  /* What a tab on a board reads when its socket comes back (COPL-209): the
+     board and the boards list, now at most once a window however often the
+     network drops; before, every query the tab held, on every reconnect.
+     845 before COPL-208's rollup. */
+  "live: a reconnect": { rows: 776, flat: true },
   /* What a tab reads to open a task from the inbox or /wired without holding
      its board (COPL-153): its shell, the task and its parent. Until then,
      GET /api/boards/:id, 739 rows. 107 before its parent's progress summed

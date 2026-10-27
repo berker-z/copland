@@ -9,6 +9,9 @@
 //! runs starts or ends, and on a clock: every fifteen seconds while the
 //! socket is down, every two minutes while it is up (a claim that lapses
 //! sends nothing, and the hub keeps nothing for a socket that was away).
+//! Reads are at least `SPACING` apart however often it is woken (COPL-209):
+//! a burst, or a socket that keeps dropping, is one read a window, trailing,
+//! covering everything that came in meanwhile.
 //!
 //! With the same token it also reads what the menu and the bell show (COPL-64,
 //! COPL-65), each when its topic says it changed and on the same clock: the
@@ -35,8 +38,11 @@ pub const EVERY: Duration = Duration::from_secs(15);
 pub const EVERY_LIVE: Duration = Duration::from_secs(120);
 /// After a run starts or ends, a moment for its claim or its last moves to land before reading.
 const SETTLE: Duration = Duration::from_secs(2);
-/// Reads the live socket asks for are at least this far apart.
-const SPACING: Duration = Duration::from_secs(1);
+/// Reads are at least this far apart, however often the live socket asks or drops (COPL-209):
+/// a busy board's burst is one read, trailing, with whatever else came in meanwhile.
+pub const SPACING: Duration = Duration::from_secs(5);
+/// What wakes a quiet feed waits this long for the rest of its burst.
+pub const QUICK: Duration = Duration::from_millis(300);
 /// The unread inbox is read at most this many pages of a hundred.
 const INBOX_PAGES: usize = 3;
 
@@ -95,6 +101,12 @@ impl Due {
         self.boards |= o.boards;
         self.settings |= o.settings;
     }
+}
+
+/// When to read after a wake at `now`, the last read having ended at `since`: a moment for the
+/// rest of the burst, and never inside the last read's window.
+pub fn read_at(since: tokio::time::Instant, now: tokio::time::Instant) -> tokio::time::Instant {
+    (since + SPACING).max(now + QUICK)
 }
 
 /// The clock's interval for a socket state.
@@ -370,18 +382,21 @@ pub async fn run(
                 }
                 _ = wake.notified() => {
                     /* A busy board sends a burst; one read every SPACING at most answers it. */
-                    tokio::time::sleep_until(since + SPACING).await;
+                    tokio::time::sleep_until(read_at(since, tokio::time::Instant::now())).await;
                     break;
                 }
                 _ = run_changed(&mut daemon, &mut seen) => {
                     tokio::time::sleep(SETTLE).await;
+                    tokio::time::sleep_until(since + SPACING).await;
                     due.lock().expect("not poisoned").wired = true;
                     break;
                 }
                 changed = link.changed() => {
                     let now = link.borrow().live;
-                    /* Gone down: anything could have been missed, so read now. */
+                    /* Gone down: anything could have been missed, so read, but no sooner than the
+                       window allows: a network that keeps dropping is one read a window. */
                     if changed.is_err() || (up == Link::Connected && now != Link::Connected) {
+                        tokio::time::sleep_until(read_at(since, tokio::time::Instant::now())).await;
                         due.lock().expect("not poisoned").add(Due::ALL);
                         break;
                     }
@@ -402,6 +417,19 @@ mod tests {
         assert_eq!(every(Link::Connecting), EVERY);
         assert!(wanted("board") && wanted("agents") && wanted("boards"));
         assert!(wanted("inbox") && wanted("settings") && !wanted("vault") && !wanted("notes"));
+    }
+
+    #[test]
+    fn a_burst_is_one_read_a_window() {
+        use tokio::time::Instant;
+        assert!(SPACING >= Duration::from_secs(5));
+        let since = Instant::now();
+        /* Woken just after a read: wait for the window's end, so the rest of the burst goes in it. */
+        assert_eq!(read_at(since, since + Duration::from_millis(100)), since + SPACING);
+        assert_eq!(read_at(since, since + SPACING - QUICK), since + SPACING);
+        /* Woken after a quiet spell: a moment for the rest of the burst, then read. */
+        let later = since + SPACING * 3;
+        assert_eq!(read_at(since, later), later + QUICK);
     }
 
     #[test]
