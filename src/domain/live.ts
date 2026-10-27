@@ -60,6 +60,16 @@ export interface BoardChange {
   tasks?: string[];
   /** Everyone assigned to those tasks, before the write and after it. */
   assignees?: string[];
+  /**
+   * Which open tasks share changed files may have moved (task.overlap, the
+   * overlap reads). With `tasks: []` it is the only thing that did: a
+   * changed-files report (COPL-207), which changes no task's row and bumps
+   * no version. A tab holding the board reads its overlap
+   * (GET /api/boards/:id/overlap) instead of the board, and the box, which
+   * shows no overlap, skips it as it skips any event naming none of its
+   * agents' tasks.
+   */
+  overlap?: boolean;
 }
 
 export interface LiveEvent extends Partial<BoardChange> {
@@ -67,6 +77,9 @@ export interface LiveEvent extends Partial<BoardChange> {
   /** The tab that made the change, which has already refreshed itself. */
   tab: string | null;
 }
+
+/** An event that moves only overlap: no task's row, no version (BoardChange.overlap). */
+export const onlyOverlap = (e: BoardChange) => e.overlap === true && e.tasks?.length === 0 && e.version === undefined;
 
 /** More tasks than this in one event, and a tab reads the board whole rather than each task. */
 export const PATCH_LIMIT = 10;
@@ -87,10 +100,12 @@ export type BoardPlan =
  * when they run on from `held` without a gap (held + 1, held + 2, ...: one
  * event each, nothing missed), each names its tasks, and together they name
  * at most PATCH_LIMIT. Anything else (a missed or doubled version, an event
- * without a version or tasks, too many tasks) reads the board whole.
+ * without a version or tasks, too many tasks) reads the board whole. An
+ * event that moves only overlap (onlyOverlap) is no task's, and left to the
+ * caller.
  */
 export function planBoard(held: number | undefined, events: BoardChange[]): BoardPlan {
-  const fresh = events.filter((e) => held === undefined || e.version === undefined || e.version > held);
+  const fresh = events.filter((e) => !onlyOverlap(e) && (held === undefined || e.version === undefined || e.version > held));
   if (fresh.length === 0) return { kind: "none" };
   if (held === undefined || fresh.some((e) => e.version === undefined || !e.tasks)) return { kind: "whole" };
   const versions = fresh.map((e) => e.version as number).sort((a, b) => a - b);

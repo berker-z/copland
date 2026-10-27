@@ -172,6 +172,16 @@ export interface TaskOverlapRead {
   }>;
 }
 
+/**
+ * GET /api/boards/:id/overlap's answer (worker/routes/files.ts, COPL-207):
+ * each open task's overlap as the board read has it (task.overlap), by task
+ * id; a task that shares nothing is left out. What a tab reads when a
+ * changed-files report, or a task closing or reopening, moves it.
+ */
+export interface BoardOverlapRead {
+  tasks: Record<string, Array<{ key: string; files: number }>>;
+}
+
 /** How many tasks a card's tooltip names before it counts the rest. */
 export const OVERLAP_TITLE_TASKS = 4;
 

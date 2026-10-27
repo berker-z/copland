@@ -17,7 +17,7 @@
 import { clientLabel } from "@/domain/clients";
 import { shortRunId } from "@/domain/runs";
 import { RECENT_CLOSED_DAYS } from "@/domain/tasks";
-import type { Attachment, ClosedPage, Label, Level, ParentProgress, Priority, Spent, Stage, StageCategory, Task } from "@/domain/types";
+import type { Attachment, ClosedPage, Label, Level, ParentProgress, Priority, Spent, Stage, StageCategory, Task, TaskOverlap } from "@/domain/types";
 import { currentRun, currentVia } from "../tokens";
 import { overlaps } from "@/domain/overlap";
 import { codeFor } from "./github";
@@ -388,6 +388,26 @@ export async function openTaskFiles(db: D1Database, boardId: string): Promise<Op
     assignees: r.assignees ? r.assignees.split(" ") : [],
     claimedBy: r.claimed_by,
   }));
+}
+
+/**
+ * Each open task's overlap on a board, as hydrate works it out for the board
+ * read: the same tasks (open ones with a report) in the same order, so the
+ * same answer. Only the task and its files are read.
+ */
+export async function boardOverlap(db: D1Database, boardId: string, boardKey: string): Promise<Map<string, TaskOverlap[]>> {
+  const { results } = await db
+    .prepare(
+      `SELECT t.id, ?2 || '-' || t.number AS key, f.files
+         FROM task_files f JOIN tasks t ON t.id = f.task_id
+        WHERE t.board_id = ?1 AND t.deleted_at IS NULL AND t.completed_at IS NULL
+        ORDER BY t.rank, t.number`,
+    )
+    .bind(boardId, boardKey)
+    .all<{ id: string; key: string; files: string }>();
+  const keys = new Map(results.map((r) => [r.id, r.key]));
+  const shared = overlaps(results.map((r) => ({ id: r.id, files: JSON.parse(r.files) as string[] })));
+  return new Map([...shared].map(([id, list]) => [id, list.map((o) => ({ key: keys.get(o.taskId)!, files: o.shared.length }))]));
 }
 
 /** A live (not deleted) task, or null. Access is the caller's job. */

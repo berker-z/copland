@@ -315,6 +315,15 @@ docs/DESIGN.md under Touch.
   2026-10-27). On the reads check's seed the board read is 737 (806), a
   task opened from the inbox 64 (136); checks/progress.check.ts holds the
   stored rows to `progress()` and the runs after a few hundred random writes
+- A changed-files report tells only that overlap moved (COPL-207, for
+  COPL-206): its event names no task and bumps no version
+  (`BoardChange.overlap`), so the box skips it and a tab holding the board
+  reads the board's overlap (`GET /api/boards/:id/overlap`, 13 rows on the
+  reads check's seed) instead of the board (806). A task closing or
+  reopening on a board with code patches in and reads the overlap the same
+  way. A run claiming again a task it holds only renews it: no event, no
+  version, nobody told. Heartbeats and unchanged reports already told
+  nobody (checks/boardEvents.check.ts, the reads check's `live:` rows)
 - Comments reach the run working on the task (COPL-139, for COPL-130):
   `POST /api/runs/current/news` tells a run, once each, the unread comments
   and mentions on the tasks it has claimed since it started

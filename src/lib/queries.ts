@@ -6,7 +6,7 @@
 
 import { useMemo, useState } from "react";
 import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { TaskOverlapRead } from "@/domain/overlap";
+import type { BoardOverlapRead, TaskOverlapRead } from "@/domain/overlap";
 import type { MarketExtras, Note } from "@/domain/panes";
 import type { Settings, VaultEntry } from "@/domain/settings";
 import type {
@@ -113,6 +113,9 @@ export const fetchTask = (ref: string): Promise<TaskRead | null> =>
     if (error instanceof ApiError && error.status === 404) return null;
     throw error;
   });
+
+/** Every open task's overlap on a board (GET /api/boards/:id/overlap, COPL-207), for lib/boardPatch.ts. */
+export const fetchOverlap = (boardId: string): Promise<BoardOverlapRead> => api<BoardOverlapRead>(`/boards/${encodeURIComponent(boardId)}/overlap`);
 
 /** A task by key or id, under its board's key: whatever refetches the board refetches it too. */
 const taskQuery = (boardId: string, ref: string) => ({

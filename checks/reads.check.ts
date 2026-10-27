@@ -28,6 +28,7 @@ import type { Viewer } from "../src/domain/types.ts";
 
 const { getBoard, getBoardShell, getBoards, getClosed } = await import("../src/worker/routes/boards.ts");
 const { getTask, patchTask } = await import("../src/worker/routes/tasks.ts");
+const { getBoardOverlap, putTaskFiles } = await import("../src/worker/routes/files.ts");
 const { Changes } = await import("../src/worker/live.ts");
 const { getInbox } = await import("../src/worker/routes/inbox.ts");
 const { getWired } = await import("../src/worker/routes/wired.ts");
@@ -230,7 +231,7 @@ function seed(db: DatabaseSync, scale: number) {
   item("dev", "assigned", "big", ready, "sam", ago(0), false);
 
   for (const [board, n] of Object.entries(number)) db.prepare(`UPDATE boards SET next_number = ? WHERE id = ?`).run(n + 1, board);
-  return { live: liveKey };
+  return { live: liveKey, run: now };
 }
 
 /* ------------------------------------------------------- local D1 copy -- */
@@ -328,6 +329,8 @@ const sam: Viewer = { user: user("sam") };
 const dev: Viewer = { user: user("dev", "sam"), agent: { owner: user("sam"), grants: [], workFrom: "owner", description: "" } };
 
 type Env = Parameters<typeof getBoards>[0];
+/** What seed() hands the routes: the open task a run is working, and that run. */
+type Seeded = ReturnType<typeof seed>;
 /**
  * What a listening tab reads when someone edits one task (COPL-151): the
  * tasks the write's live event names, one GET /api/tasks/:id each, as
@@ -335,7 +338,7 @@ type Env = Parameters<typeof getBoards>[0];
  * boards list. The write itself is not counted (`skip`), and it comes last
  * in ROUTES so it changes nothing the others read.
  */
-async function taskEditHeard(env: Env, live: string, skip: () => void): Promise<Response> {
+async function taskEditHeard(env: Env, { live }: Seeded, skip: () => void): Promise<Response> {
   const { id } = (await (await getTask(env, sam, live)).json()) as { id: string };
   const changes = new Changes();
   await patchTask(new Request("http://x/", { method: "PATCH", body: JSON.stringify({ title: "edited" }) }), env, sam, id, changes);
@@ -346,8 +349,26 @@ async function taskEditHeard(env: Env, live: string, skip: () => void): Promise<
   return new Response("{}");
 }
 
+/**
+ * What a tab holding the board reads when a run reports changed files
+ * (COPL-207): the board's overlap, nothing else, since the event names no
+ * task. Before, a whole board read. The report itself is not counted, and,
+ * like the edit, it comes last.
+ */
+async function reportHeard(env: Env, seeded: Seeded, skip: () => void): Promise<Response> {
+  const task = (await (await getTask(env, sam, seeded.live)).json()) as { id: string };
+  const run: Viewer = { ...dev, access: { tokenId: "tok-dev", kind: "personal", scope: "write", via: "Claude Code", runId: seeded.run } };
+  const changes = new Changes();
+  const body = JSON.stringify({ base: "abc1234", files: ["src/a.ts", "src/b.ts"] });
+  await putTaskFiles(new Request("http://x/", { method: "PUT", body }), env, run, task.id, changes);
+  skip();
+  const [event] = changes.events(null).get("sam") ?? [];
+  if (!event?.overlap || event.tasks?.length !== 0) return new Response("the report said more than overlap", { status: 500 });
+  return getBoardOverlap(env, sam, "big");
+}
+
 /** What a tab reads to open a task from the inbox without its board (COPL-153): the board's shell, the task, and the tasks it names. */
-async function openedFromInbox(env: Env, live: string): Promise<Response> {
+async function openedFromInbox(env: Env, { live }: Seeded): Promise<Response> {
   await getBoardShell(env, sam, "big");
   const task = (await (await getTask(env, sam, live)).json()) as { parentId: string | null; dependsOn: string[] };
   for (const id of [task.parentId, ...task.dependsOn]) if (id) await getTask(env, sam, id);
@@ -355,12 +376,12 @@ async function openedFromInbox(env: Env, live: string): Promise<Response> {
 }
 
 /** What each route is asked, and by whom: the browser's person, the daemon's agent for ready. */
-const ROUTES: Record<string, (env: Env, live: string, skip: () => void) => Promise<Response>> = {
+const ROUTES: Record<string, (env: Env, seeded: Seeded, skip: () => void) => Promise<Response>> = {
   "GET /api/boards": (env) => getBoards(env, sam),
   "GET /api/boards/:id": (env) => getBoard(env, sam, "big"),
   "GET /api/boards/:id/shell": (env) => getBoardShell(env, sam, "big"),
   "GET /api/boards/:id/closed": (env) => getClosed(env, sam, "big", new URL("http://x/api/boards/big/closed")),
-  "GET /api/tasks/:id": (env, live) => getTask(env, sam, live),
+  "GET /api/tasks/:id": (env, { live }) => getTask(env, sam, live),
   "GET /api/inbox": (env) => getInbox(env, sam, new URL("http://x/api/inbox")),
   "GET /api/wired": (env) => getWired(env, sam),
   "GET /api/tasks/ready": (env) => getReady(env, dev),
@@ -369,6 +390,7 @@ const ROUTES: Record<string, (env: Env, live: string, skip: () => void) => Promi
   "GET /api/tokens": (env) => getTokens(env, sam),
   "live: one task edit, heard": taskEditHeard,
   "inbox: one task opened": openedFromInbox,
+  "live: a changed-files report, heard": reportHeard,
 };
 
 /** Nobody is connected: the Durable Object that would say so isn't here. */
@@ -384,14 +406,14 @@ async function measure(scale: number): Promise<Record<string, number>> {
   const proxy = await getPlatformProxy<{ DB: D1Database }>({ configPath: config, persist: false });
   try {
     const source = sqlite();
-    const { live } = seed(source, scale);
+    const seeded = seed(source, scale);
     await copy(source, proxy.env.DB);
     const { db, take } = counting(proxy.env.DB);
     const env = { DB: db, LIVE } as unknown as Env;
     const out: Record<string, number> = {};
     for (const [route, call] of Object.entries(ROUTES)) {
       take();
-      const response = await call(env, live, take);
+      const response = await call(env, seeded, take);
       if (!response.ok) throw new Error(`${route} answered ${response.status} on seed ×${scale}`);
       out[route] = take();
     }
@@ -407,7 +429,7 @@ const two = await measure(2);
 
 let failed = 0;
 const pad = (s: string | number, n: number) => String(s).padStart(n);
-console.log(`${"route".padEnd(32)} ${pad("×1", 7)} ${pad("×2", 7)} ${pad("budget", 7)}`);
+console.log(`${"route".padEnd(38)} ${pad("×1", 7)} ${pad("×2", 7)} ${pad("budget", 7)}`);
 for (const route of Object.keys(ROUTES)) {
   const budget = BUDGETS[route];
   const problems: string[] = [];
@@ -419,7 +441,7 @@ for (const route of Object.keys(ROUTES)) {
   }
   if (problems.length) failed++;
   console.log(
-    `${problems.length ? "FAIL" : "  ok"}  ${route.padEnd(30)} ${pad(one[route], 6)} ${pad(two[route], 7)} ${pad(budget?.rows ?? "-", 7)}${budget?.flat ? " flat" : "     "}  ${problems.join(", ")}`,
+    `${problems.length ? "FAIL" : "  ok"}  ${route.padEnd(36)} ${pad(one[route], 6)} ${pad(two[route], 7)} ${pad(budget?.rows ?? "-", 7)}${budget?.flat ? " flat" : "     "}  ${problems.join(", ")}`,
   );
 }
 for (const route of Object.keys(BUDGETS)) {
