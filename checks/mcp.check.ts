@@ -172,6 +172,21 @@ t(
     /when that task doesn't exist yet, create it/.test(code) &&
     /never the threads of the tasks it waited on/.test(code),
 );
+/* Stories are lanes (COPL-237): a lead plans an epic as stories, and a story's run does its tasks in turn. */
+t(
+  "the guide's Leading section plans an epic as stories that are lanes, and runs a story as one",
+  /A story is a lane: one run does its tasks one after another in one worktree, each on its own branch from main/.test(leading) &&
+    /tasks that touch the same files go in the same story, stories that share no files run side by side, and a story that needs another's result depends_on it/.test(leading) &&
+    leading.includes("Parallelism comes from stories, not tasks") &&
+    leading.includes("with no approval step") &&
+    /A story you are given with no tasks yet you plan first/.test(leading) &&
+    /a task straight under an epic, with no story/.test(leading) &&
+    !/An epic or a story[^.]*is led/.test(leading),
+);
+t(
+  "the guide's Code section says a lane makes each task's branch from main as it is then",
+  /A story's run \(a lane, see Leading\) starts detached at main instead and makes each task's branch itself/.test(code),
+);
 t(
   "the guide's Leading section puts what a child has to act on in that child's brief",
   /What you learn that a child has to act on goes into that child's brief[^.]*not only in the parent's thread/.test(leading),
