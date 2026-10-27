@@ -248,6 +248,19 @@ export interface WiredTask {
   live: boolean;
   /** A live one's: the host its run started on (COPL-135), when its launcher named one. */
   host: string | null;
+  /** Its stage's position and its rank there: todo and blocked go by board, then these (COPL-211, for re-sorting). */
+  stage: number;
+  rank: number;
+}
+
+/** GET /api/wired?tasks=a,b (COPL-211): the poles for just those tasks; one it names that is on none has left them. */
+export interface WiredPart {
+  tasks: string[];
+  todo: WiredTask[];
+  doing: WiredTask[];
+  blocked: WiredTask[];
+  done: WiredTask[];
+  doneLimit: number;
 }
 
 /** GET /api/wired: what the signed-in person's agents have on, by pole (routes/wired.ts). */
@@ -271,6 +284,8 @@ export interface Wired {
   /** How many were done within the window, all of them. */
   doneCount: number;
   doneWindowHours: number;
+  /** The most done shows (DONE_LIMIT). */
+  doneLimit: number;
 }
 
 /** A parent's children and how far its work has got, counted over its whole subtree, closed tasks of any age included. */

@@ -445,6 +445,8 @@ mod tests {
             since: None,
             live: false,
             host: None,
+            stage: 0,
+            rank: 0.0,
         }
     }
 
@@ -487,6 +489,7 @@ mod tests {
                     done: vec![],
                     done_count: 0,
                     done_window_hours: 24,
+                    done_limit: 20,
                 },
                 std::time::SystemTime::now(),
             )),

@@ -13,7 +13,8 @@
    of 100. Besides the routes, the live rows are a tab's cost: what a tab
    reads when it hears a task edit (COPL-151), a changed-files report
    (COPL-207), a burst of edits, or its socket coming back (COPL-209), which
-   since COPL-210 asks what changed instead of reading the board whole.
+   since COPL-210 asks what changed instead of reading the board whole, and
+   the box's when it hears a task edit (COPL-211).
    ========================================================================== */
 
 export interface Budget {
@@ -38,8 +39,11 @@ export const BUDGETS: Record<string, Budget> = {
   "GET /api/tasks/:id/dependents": { rows: 35, flat: true },
   "GET /api/inbox": { rows: 241, flat: true },
   /* Where each agent runs (COPL-183, for the box): its reported hosts, one
-     read over the owner's agents; 139 before. */
-  "GET /api/wired": { rows: 141, flat: true },
+     read over the owner's agents; 139 before. The boards' stages read once
+     and a task's own row only under one of the owner's agents (COPL-211):
+     141 before, and on the real data the tasks read went from 593 rows to
+     343, the seed having little backlog and few tasks of other people's. */
+  "GET /api/wired": { rows: 139, flat: true },
   "GET /api/tasks/ready": { rows: 43, flat: true },
   "GET /api/tasks/mine": { rows: 5731, flat: false },
   "GET /api/messages/recipients": { rows: 15, flat: true },
@@ -75,4 +79,8 @@ export const BUDGETS: Record<string, Budget> = {
   /* What a tab holding the board reads when a run reports changed files
      (COPL-207): the board's overlap. Until then, GET /api/boards/:id, 806 rows. */
   "live: a changed-files report, heard": { rows: 13, flat: true },
+  /* What a box reads when it hears one of its agents' tasks edited
+     (COPL-211): GET /api/wired?tasks= for the tasks the event names, which
+     it sorts onto its last whole read. Until then, GET /api/wired, 141 rows. */
+  "box: one task edit, heard": { rows: 17, flat: true },
 };

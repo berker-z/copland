@@ -1616,6 +1616,8 @@ mod tests {
             since: since.map(str::to_string),
             live,
             host: None,
+            stage: 0,
+            rank: 0.0,
         }
     }
 
@@ -1668,6 +1670,7 @@ mod tests {
             done: vec![task("T-6", Some("2026-10-02T11:00:00Z"), false)],
             done_count: 7,
             done_window_hours: 24,
+            done_limit: 20,
         };
         let feed = Feed {
             url: "http://x".into(),
@@ -1736,6 +1739,7 @@ mod tests {
                     done: vec![],
                     done_count: 0,
                     done_window_hours: 24,
+                    done_limit: 20,
                 },
                 wall,
             )),
