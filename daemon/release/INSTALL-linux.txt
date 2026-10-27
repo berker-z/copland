@@ -42,7 +42,8 @@ On a machine with no display, run the headless daemon as a service:
   journalctl --user -u copland-daemon -f
 
 --install-service writes ~/.config/systemd/user/copland-daemon.service for
-this binary and config, with your shell's PATH so the runtimes are found.
+this binary and config. The daemon finds the runtimes when it starts, on
+its PATH, your login shell's and ~/.local/bin; --check shows where.
 On a server you aren't logged in to, `sudo loginctl enable-linger $USER`
 keeps it running. share/systemd/user/copland-daemon.service is the same
 unit for ~/.local/bin, to install by hand instead.
