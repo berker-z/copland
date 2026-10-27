@@ -6,6 +6,7 @@
      PUT /api/tasks/:id/files     { base, files, truncated? } → { base, count, truncated, reportedAt }
      GET /api/tasks/:id/overlap   → { files: { reported_at, base, files, truncated } | null,
                                       overlaps: [{ key, title, assignees, claimed_by, shared, reported_at }] }
+     GET /api/boards/:id/overlap  → { tasks: { [taskId]: [{ key, files }] } }
 
    The daemon calls it with the run's secret while a run holds the task, and
    once at the end. Only that run may: a token, a session or an interactive
@@ -23,14 +24,15 @@
    and is information, not a lock.
    ========================================================================== */
 
-import { overlaps, parseFileReport, reportRefusal, sameReport, type TaskOverlapRead } from "@/domain/overlap";
+import { overlaps, parseFileReport, reportRefusal, sameReport, type BoardOverlapRead, type TaskOverlapRead } from "@/domain/overlap";
 import type { Viewer } from "@/domain/types";
 import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
+import { requireBoard } from "../access";
 import { boardAudience } from "../repo/boards";
 import { LIVE_CLAIM } from "../repo/runs";
-import { openTaskFiles } from "../repo/tasks";
+import { boardOverlap, openTaskFiles } from "../repo/tasks";
 import { taskFor } from "./tasks";
 
 const notClaimed = (message: string) => conflict(message, "not_claimed");
@@ -81,7 +83,7 @@ export async function putTaskFiles(request: Request, env: Env, viewer: Viewer, i
     .run();
   if (!written.meta.changes) throw notClaimed(`${task.key}: this run's claim just lapsed; claim it again before reporting its files`);
 
-  if (!unchanged) changes.board(await boardAudience(db, board.id), { board: board.id });
+  if (!unchanged) changes.board(await boardAudience(db, board.id), { board: board.id, tasks: [], assignees: [], overlap: true });
   return json({ base: report.base, count: report.files.length, truncated: report.truncated, reportedAt });
 }
 
@@ -120,5 +122,17 @@ export async function getTaskOverlap(env: Env, viewer: Viewer, id: string): Prom
       };
     }),
   };
+  return json(body);
+}
+
+/**
+ * GET /api/boards/:id/overlap, viewer and up (COPL-207): every open task's
+ * overlap (task.overlap) on the board, by task id, the way the board read
+ * works it out. A tab holding the board reads this, not the board, when
+ * only overlap moved.
+ */
+export async function getBoardOverlap(env: Env, viewer: Viewer, id: string): Promise<Response> {
+  const board = await requireBoard(env.DB, viewer, id);
+  const body: BoardOverlapRead = { tasks: Object.fromEntries(await boardOverlap(env.DB, id, board.key)) };
   return json(body);
 }
