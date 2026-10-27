@@ -164,8 +164,11 @@ jobs:
           sudo useradd -m -s /bin/bash ci
           uid=$(id -u ci)
           sudo loginctl enable-linger ci
-          for _ in $(seq 60); do [ -S /run/user/$uid/bus ] && break; sleep 1; done
-          [ -S /run/user/$uid/bus ] || { echo "no user manager for ci after 60s"; exit 1; }
+          # Started by lingering, but not waited for; this waits. The runner has
+          # no user D-Bus, so systemctl --user uses the manager's own socket.
+          sudo systemctl start user@$uid.service
+          for _ in $(seq 60); do [ -S /run/user/$uid/systemd/private ] && break; sleep 1; done
+          [ -S /run/user/$uid/systemd/private ] || { echo "no user manager for ci after 60s"; exit 1; }
           # A login's environment, not the runner's (its XDG_CONFIG_HOME is /home/runner's).
           sudo -u ci env -i HOME=/home/ci USER=ci LOGNAME=ci SHELL=/bin/bash \
             PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
