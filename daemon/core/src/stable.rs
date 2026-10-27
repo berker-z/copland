@@ -6,6 +6,12 @@
 //! temporary. Refused: a temporary directory, a download directory, a cargo `target/`, and any
 //! directory whose name has a version in it (`copland-box-0.5.0-linux-x86_64`, `0.5.0`).
 //!
+//! On macOS (COPL-221) a launchd agent names its program the same way, so the same holds, with
+//! the Mac's own places: an app in `/Applications` or `~/Applications`
+//! (`Copland.app/Contents/MacOS/copland-daemon`) and Homebrew's `/opt/homebrew/bin` are stable;
+//! `$TMPDIR` (under `/var/folders`) is temporary, a mounted disk image (`/Volumes/…`) is gone once
+//! it is ejected, and an App Translocation path is a copy macOS made to open a quarantined app.
+//!
 //! `check` is the pure classifier, on `Places` it is given; `check_here` is it in this process's
 //! environment, with the fix worked out from what is on disk. Nix's store is the caller's to
 //! tell apart first (`service::nix_managed`): its paths have versions in them and are stable.
@@ -24,20 +30,33 @@ pub struct Places {
     pub temp: Vec<PathBuf>,
     /// Download directories: ~/Downloads, and the XDG download dir.
     pub downloads: Vec<PathBuf>,
+    /// Where disks and disk images are mounted: /Volumes on macOS.
+    pub volumes: Vec<PathBuf>,
+    /// Where apps are installed: /Applications and ~/Applications on macOS. An app bundle right
+    /// in one of them is stable, whatever its name.
+    pub applications: Vec<PathBuf>,
 }
 
-/// The directories a program is always fine in: a package's, and the default install's.
-const SYSTEM: [&str; 4] = ["/usr/bin", "/usr/local/bin", "/bin", "/usr/sbin"];
+/// The directories a program is always fine in: a package's, the default install's, Homebrew's.
+const SYSTEM: [&str; 5] = ["/usr/bin", "/usr/local/bin", "/bin", "/usr/sbin", "/opt/homebrew/bin"];
+
+/// Where `install` puts an app, and the fix copies one to.
+pub const APPLICATIONS: &str = "/Applications";
 
 impl Places {
     /// The places for this process: `HOME`, `TMPDIR`, `XDG_DOWNLOAD_DIR` or the one in
-    /// `$XDG_CONFIG_HOME/user-dirs.dirs`. Each resolved as well as given, so a link (macOS's
-    /// /tmp, a downloads dir on another disk) is recognised from either side.
+    /// `$XDG_CONFIG_HOME/user-dirs.dirs`, and on macOS `/var/folders`, `/Volumes` and the
+    /// Applications folders. Each resolved as well as given, so a link (macOS's /tmp and
+    /// /var, a downloads dir on another disk) is recognised from either side.
     pub fn here() -> Self {
+        let mac = cfg!(target_os = "macos");
         let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
         let home = env("HOME").filter(|h| h.is_absolute());
         let mut temp: Vec<PathBuf> = ["/tmp", "/var/tmp", "/dev/shm"].map(PathBuf::from).into();
         temp.extend(env("TMPDIR").filter(|t| t.is_absolute()));
+        if mac {
+            temp.push("/var/folders".into());
+        }
         let mut downloads: Vec<PathBuf> = home.iter().map(|h| h.join("Downloads")).collect();
         let config = env("XDG_CONFIG_HOME")
             .filter(|c| c.is_absolute())
@@ -60,10 +79,19 @@ impl Places {
             }
             out
         };
+        let volumes = if mac { vec!["/Volumes".into()] } else { Vec::new() };
+        let applications = match mac {
+            true => std::iter::once(PathBuf::from(APPLICATIONS))
+                .chain(home.iter().map(|h| h.join("Applications")))
+                .collect(),
+            false => Vec::new(),
+        };
         Places {
-            home,
             temp: resolved(temp),
             downloads: resolved(downloads),
+            volumes: resolved(volumes),
+            applications: resolved(applications),
+            home,
         }
     }
 
@@ -101,6 +129,11 @@ pub enum Why {
     Build,
     /// This directory of its path has a version in its name.
     Versioned(String),
+    /// It is on this mounted disk or disk image (/Volumes/…), which goes when it is ejected.
+    Volume(PathBuf),
+    /// It is in an app macOS translocated: a copy it made, somewhere temporary, to open an app
+    /// that is still quarantined where it was downloaded.
+    Translocated,
 }
 
 impl std::fmt::Display for Why {
@@ -113,6 +146,11 @@ impl std::fmt::Display for Why {
                 f,
                 "in {c}, a folder named for one version, which the next one won't be in"
             ),
+            Why::Volume(v) => write!(f, "on {}, a mounted disk that is gone once it is ejected", v.display()),
+            Why::Translocated => write!(
+                f,
+                "in a copy macOS made to open an app straight from where it was downloaded (App Translocation)"
+            ),
         }
     }
 }
@@ -123,7 +161,9 @@ impl std::fmt::Display for Why {
 pub struct Unstable {
     pub program: PathBuf,
     pub why: Why,
-    /// The command that copies it (and what ships with it) to `~/.local/bin`.
+    /// Where the fix puts it: `~/.local/bin`, or `/Applications` for an app.
+    pub to: String,
+    /// The command that copies it (and what ships with it) there.
     pub fix: String,
 }
 
@@ -132,9 +172,10 @@ impl std::fmt::Display for Unstable {
         write!(
             f,
             "{} is {}: a service or login entry that runs it from there stops working once it is moved, \
-             deleted or upgraded, so nothing was written. Install it to ~/.local/bin and run that one:\n\n  {}\n",
+             deleted or upgraded, so nothing was written. Install it to {} and run that one:\n\n  {}\n",
             self.program.display(),
             self.why,
+            self.to,
             self.fix
         )
     }
@@ -149,14 +190,36 @@ pub fn versioned(name: &str) -> bool {
     (1..b.len().saturating_sub(1)).any(|i| b[i] == b'.' && b[i - 1].is_ascii_digit() && b[i + 1].is_ascii_digit())
 }
 
+/// The app bundle `program` is in (`X.app` for `X.app/Contents/MacOS/program`), if any.
+pub fn app_bundle(program: &Path) -> Option<&Path> {
+    let macos = program.parent().filter(|d| d.ends_with("Contents/MacOS"))?;
+    macos
+        .parent()?
+        .parent()
+        .filter(|a| a.extension().is_some_and(|e| e == "app"))
+}
+
 /// Why `program` (an absolute path, its links already resolved) won't last where it is, or None
-/// when it will. `~/.local/bin` and the system directories always do; then temporary and
-/// download directories, a cargo `target/` and a versioned directory (below `$HOME`, whose own
-/// name doesn't count) are refused, and anywhere else is fine.
+/// when it will. `~/.local/bin`, the system directories and an app right in an Applications
+/// folder always do; then a translocated app, a mounted volume, temporary and download
+/// directories, a cargo `target/` and a versioned directory (below `$HOME`, whose own name
+/// doesn't count) are refused, and anywhere else is fine.
 pub fn why(program: &Path, places: &Places) -> Option<Why> {
     let dir = program.parent()?;
     if SYSTEM.iter().any(|s| dir == Path::new(s)) || places.local_bin().is_some_and(|l| dir == l) {
         return None;
+    }
+    if app_bundle(program)
+        .and_then(Path::parent)
+        .is_some_and(|a| places.applications.iter().any(|p| p == a))
+    {
+        return None;
+    }
+    if dir.components().any(|c| c.as_os_str() == "AppTranslocation") {
+        return Some(Why::Translocated);
+    }
+    if let Some(v) = places.volumes.iter().find(|v| dir.starts_with(v)) {
+        return Some(Why::Volume(v.clone()));
     }
     if let Some(t) = places.temp.iter().find(|t| dir.starts_with(t)) {
         return Some(Why::Temp(t.clone()));
@@ -178,13 +241,29 @@ pub fn why(program: &Path, places: &Places) -> Option<Why> {
         .map(|c| Why::Versioned(c.to_string()))
 }
 
-/// The command that copies what ships beside `program` to `~/.local/bin`: the whole tarball when
-/// `program` is in its `bin/` (`tarball` says a `share/` is beside it), else the `binaries` that
-/// are there.
-pub fn fix(program: &Path, tarball: bool, binaries: &[&str]) -> String {
+/// Where the fix for `program` puts it, and the command that does: an app is copied whole to
+/// /Applications (a translocated one can only be moved there in the Finder, since the copy macOS
+/// opened doesn't say where the original is); otherwise what ships beside `program` goes to
+/// `~/.local/bin`: the whole tarball when `program` is in its `bin/` (`tarball` says a `share/`
+/// is beside it), else the `binaries` that are there.
+pub fn fix(program: &Path, tarball: bool, binaries: &[&str]) -> (String, String) {
     let dir = program.parent().unwrap_or(Path::new("/"));
     let q = |p: &Path| crate::autostart::quote(&p.display().to_string());
-    match dir
+    if let Some(app) = app_bundle(program) {
+        let name = app.file_name().unwrap_or_default().to_string_lossy();
+        let to = Path::new(APPLICATIONS).join(&*name);
+        let in_it = to.join("Contents/MacOS").join(program.file_name().unwrap_or_default());
+        let fix = if dir.components().any(|c| c.as_os_str() == "AppTranslocation") {
+            format!(
+                "move {name} to Applications in the Finder, then run {} --install-service",
+                q(&in_it)
+            )
+        } else {
+            format!("ditto {} {} && {} --install-service", q(app), q(&to), q(&in_it))
+        };
+        return (APPLICATIONS.into(), fix);
+    }
+    let fix = match dir
         .parent()
         .filter(|_| tarball && dir.file_name().is_some_and(|n| n == "bin"))
     {
@@ -196,18 +275,23 @@ pub fn fix(program: &Path, tarball: bool, binaries: &[&str]) -> String {
                 files.join(" ")
             )
         }
-    }
+    };
+    ("~/.local/bin".into(), fix)
 }
 
 /// `program`'s place checked on `places`: Ok when it will last, else what's wrong and the fix.
 pub fn check(program: &Path, places: &Places, tarball: bool, binaries: &[&str]) -> Result<(), Unstable> {
     match why(program, places) {
         None => Ok(()),
-        Some(why) => Err(Unstable {
-            program: program.to_path_buf(),
-            why,
-            fix: fix(program, tarball, binaries),
-        }),
+        Some(why) => {
+            let (to, fix) = fix(program, tarball, binaries);
+            Err(Unstable {
+                program: program.to_path_buf(),
+                why,
+                to,
+                fix,
+            })
+        }
     }
 }
 
@@ -238,6 +322,23 @@ mod tests {
             home: Some("/home/me".into()),
             temp: vec!["/tmp".into(), "/var/tmp".into(), "/run/user/1000/tmp".into()],
             downloads: vec!["/home/me/Downloads".into(), "/home/me/Indirilenler".into()],
+            volumes: Vec::new(),
+            applications: Vec::new(),
+        }
+    }
+
+    fn mac() -> Places {
+        Places {
+            home: Some("/Users/me".into()),
+            temp: vec![
+                "/tmp".into(),
+                "/private/tmp".into(),
+                "/var/folders".into(),
+                "/private/var/folders".into(),
+            ],
+            downloads: vec!["/Users/me/Downloads".into()],
+            volumes: vec!["/Volumes".into()],
+            applications: vec!["/Applications".into(), "/Users/me/Applications".into()],
         }
     }
 
@@ -352,6 +453,100 @@ mod tests {
         assert_eq!(
             check(Path::new("/usr/bin/copland-daemon"), &places(), false, &BINARIES),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn on_a_mac_apps_and_homebrew_stay_and_images_downloads_and_translocations_dont() {
+        let mac = mac();
+        for p in [
+            "/Applications/Copland.app/Contents/MacOS/copland-daemon",
+            "/Users/me/Applications/Copland.app/Contents/MacOS/copland-daemon",
+            /* Right in Applications, an app's name is its own. */
+            "/Applications/Copland 0.5.app/Contents/MacOS/copland-daemon",
+            "/Users/me/.local/bin/copland-daemon",
+            "/usr/local/bin/copland-daemon",
+            "/opt/homebrew/bin/copland-daemon",
+        ] {
+            assert_eq!(why(Path::new(p), &mac), None, "{p}");
+        }
+        let why_mac = |p: &str| why(Path::new(p), &mac);
+        assert_eq!(
+            why_mac("/Users/me/Downloads/Copland.app/Contents/MacOS/copland-daemon"),
+            Some(Why::Downloads("/Users/me/Downloads".into()))
+        );
+        assert_eq!(
+            why_mac("/Volumes/Copland/Copland.app/Contents/MacOS/copland-daemon"),
+            Some(Why::Volume("/Volumes".into()))
+        );
+        assert_eq!(
+            why_mac(
+                "/private/var/folders/xy/abc123/T/AppTranslocation/0F2A-11/d/Copland.app/Contents/MacOS/copland-daemon"
+            ),
+            Some(Why::Translocated)
+        );
+        assert_eq!(
+            why_mac("/var/folders/xy/abc123/T/copland/copland-daemon"),
+            Some(Why::Temp("/var/folders".into()))
+        );
+        assert_eq!(
+            why_mac("/Users/me/copland-box-0.5.0-macos-arm64/copland-daemon"),
+            Some(Why::Versioned("copland-box-0.5.0-macos-arm64".into()))
+        );
+        /* Not an app straight in Applications: judged like anywhere else. */
+        assert_eq!(
+            why_mac("/Applications/Copland 0.5/Copland.app/Contents/MacOS/copland-daemon"),
+            Some(Why::Versioned("Copland 0.5".into()))
+        );
+        assert_eq!(app_bundle(Path::new("/x/Contents/MacOS/copland-daemon")), None);
+    }
+
+    #[test]
+    fn on_a_mac_the_fix_copies_the_app_to_applications_or_the_binaries_to_local_bin() {
+        let mac = mac();
+        let e = check(
+            Path::new("/Users/me/Downloads/Copland.app/Contents/MacOS/copland-daemon"),
+            &mac,
+            false,
+            &BINARIES,
+        )
+        .unwrap_err();
+        assert_eq!(e.to, "/Applications");
+        assert_eq!(
+            e.fix,
+            "ditto /Users/me/Downloads/Copland.app /Applications/Copland.app && \
+             /Applications/Copland.app/Contents/MacOS/copland-daemon --install-service"
+        );
+        assert!(
+            e.to_string().contains("Install it to /Applications and run that one"),
+            "{e}"
+        );
+        let moved = check(
+            Path::new("/private/var/folders/xy/T/AppTranslocation/0F2A/d/Copland.app/Contents/MacOS/copland-daemon"),
+            &mac,
+            false,
+            &BINARIES,
+        )
+        .unwrap_err();
+        assert_eq!(
+            moved.fix,
+            "move Copland.app to Applications in the Finder, then run \
+             /Applications/Copland.app/Contents/MacOS/copland-daemon --install-service"
+        );
+        assert!(moved.to_string().contains("App Translocation"), "{moved}");
+        /* The bare tarball has no bin/: its binaries go to ~/.local/bin. */
+        let bare = check(
+            Path::new("/Users/me/Downloads/copland-box-0.5.0-macos-arm64/copland-daemon"),
+            &mac,
+            false,
+            &["copland-box", "copland-daemon"],
+        )
+        .unwrap_err();
+        assert_eq!(bare.to, "~/.local/bin");
+        assert_eq!(
+            bare.fix,
+            "mkdir -p ~/.local/bin && install -m 755 /Users/me/Downloads/copland-box-0.5.0-macos-arm64/copland-box \
+             /Users/me/Downloads/copland-box-0.5.0-macos-arm64/copland-daemon ~/.local/bin/"
         );
     }
 }
