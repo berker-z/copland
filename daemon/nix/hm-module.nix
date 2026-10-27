@@ -15,7 +15,7 @@
 # which starts the tray's unit too) or the box, and it stops when the tray goes
 # (COPL-225). The daemon watches for that itself, so the units don't depend on
 # each other.
-{ self }:
+{ mkCopland }:
 {
   config,
   lib,
@@ -73,9 +73,14 @@ in
 
     package = mkOption {
       type = types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.copland;
-      defaultText = lib.literalExpression "copland.packages.\${pkgs.stdenv.hostPlatform.system}.copland";
-      description = "The package with `copland-daemon` and `copland-tray`.";
+      default = mkCopland pkgs;
+      defaultText = lib.literalExpression "copland.lib.mkCopland pkgs";
+      description = ''
+        The package with `copland-daemon` and `copland-tray`. The default is
+        built against this configuration's `pkgs`, so the box shares a glibc
+        with the GPU driver it loads from `/run/opengl-driver`; its compiled
+        dependencies still come from Cachix.
+      '';
     };
 
     runtimes = mkOption {

@@ -83,14 +83,25 @@
           libxi
           libxrandr
         ];
-    in
-    {
-      packages = forAll (
-        pkgs:
+
+      # The package built with `pkgs`. With `pinned` (another build's result,
+      # this flake's own), it reuses that build's toolchain, vendored crates
+      # and compiled dependencies, and only compiles and links on top of them
+      # with `pkgs`: see mkCopland.
+      buildCopland =
+        pkgs: pinned:
         let
           lib = pkgs.lib;
           runtime = runtimeOf pkgs;
-          craneLib = crane.mkLib pkgs;
+          craneLib =
+            if pinned == null then
+              crane.mkLib pkgs
+            else
+              # The pinned rustc, or none of the compiled dependencies would
+              # be usable and Cargo would rebuild them all.
+              (crane.mkLib pkgs).overrideScope (
+                _: _: { inherit (pinned.toolchain) cargo rustc clippy rustfmt; }
+              );
 
           # What both derivations share. The source is the workspace's Rust
           # files, Cargo.toml and Cargo.lock only (crane's filter), so
@@ -117,10 +128,13 @@
             doCheck = false;
             nativeBuildInputs = [ pkgs.pkg-config ];
             buildInputs = runtime;
-          };
+          }
+          # The same vendored sources: Cargo keys compiled crates by their
+          # source paths.
+          // lib.optionalAttrs (pinned != null) { inherit (pinned.deps) cargoVendorDir; };
 
           # Every dependency, built once per Cargo.lock.
-          deps = craneLib.buildDepsOnly common;
+          deps = if pinned == null then craneLib.buildDepsOnly common else pinned.deps;
 
           copland = craneLib.buildPackage (
             common
@@ -178,9 +192,39 @@
         in
         {
           inherit copland deps;
+          toolchain = pkgs;
+        };
+
+      # The cached build, against this flake's own nixpkgs.
+      pinnedCopland = system: buildCopland nixpkgs.legacyPackages.${system} null;
+
+      # The package against the consumer's nixpkgs, which the module and the
+      # overlay install. The box dlopens the GPU driver from
+      # /run/opengl-driver, which the host's nixpkgs builds: in a binary
+      # linked to the pin's older glibc it fails to load once the host's
+      # glibc moves past it (`GLIBC_2.44 not found`, then no GPU and a
+      # panic). The dependencies are still the pinned build's, fetched from
+      # Cachix; Cargo recompiles only the crates whose build scripts read
+      # the host's pkg-config paths, and ours.
+      mkCopland =
+        pkgs: (buildCopland pkgs (pinnedCopland pkgs.stdenv.hostPlatform.system)).copland;
+    in
+    {
+      packages = forAll (
+        pkgs:
+        let
+          inherit (pinnedCopland pkgs.stdenv.hostPlatform.system) copland deps;
+        in
+        {
+          inherit copland deps;
           default = copland;
         }
       );
+
+      lib = { inherit mkCopland; };
+
+      # `copland` built against the nixpkgs it is applied to (mkCopland).
+      overlays.default = final: _prev: { copland = mkCopland final; };
 
       apps = forAll (
         pkgs:
@@ -201,7 +245,7 @@
       );
 
       homeManagerModules = {
-        copland = import ./nix/hm-module.nix { inherit self; };
+        copland = import ./nix/hm-module.nix { inherit mkCopland; };
         default = self.homeManagerModules.copland;
       };
 
