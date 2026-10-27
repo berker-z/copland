@@ -7,7 +7,8 @@
 # by box-release.yml under Nix instead. `macos` runs the daemon's tests on a
 # Mac too, for its sandbox (COPL-140). Both install Codex, pinned, and require
 # its sandbox tests (COPL-143), which run `codex sandbox` with the policy the
-# daemon gives Codex's runs: no model, no account.
+# daemon gives Codex's runs: no model, no account. `nix` runs the daemon
+# flake's checks when a PR touches its Nix files (COPL-217).
 
 name: ci
 
@@ -112,3 +113,30 @@ jobs:
         env:
           COPLAND_TEST_CODEX: "1"
         run: cargo test && cargo clippy --all-targets -- -D warnings
+
+  # The daemon flake's checks (COPL-217): its home-manager module evaluated
+  # in a home configuration and the units it renders compared with
+  # release/copland-daemon.service (daemon/nix/checks.nix). The checks use a
+  # stub package, so this builds no GPUI and needs no cache; `nix flake
+  # check` only evaluates the real package. Only on PRs that touch the Nix
+  # files or the shipped unit.
+  nix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Does it touch the flake?
+        id: flake
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ] || git diff --name-only "$base" HEAD -- 'daemon/flake.*' daemon/nix/ daemon/release/copland-daemon.service | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.flake.outputs.changed == 'true'
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - if: steps.flake.outputs.changed == 'true'
+        run: nix flake check -L ./daemon

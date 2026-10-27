@@ -23,13 +23,24 @@
   # `target/` instead of two compilers invalidating each other's cache.
   # `rust-version` in Cargo.toml is the floor. Only the box needs the shell;
   # the headless daemon (`core`, `cli`) builds with plain cargo outside it.
-  description = "copland-daemon, copland-box and copland-tray, and a dev shell for the GPUI box";
+  #
+  # `homeManagerModules.default` runs the daemon (and the tray) as systemd
+  # user services from this package: `services.copland`, in nix/hm-module.nix.
+  description = "copland-daemon, copland-box and copland-tray, their home-manager module, and a dev shell for the GPUI box";
 
   # Pinned to revs, not just locked, so `nix flake update` cannot move them
   # (AGENTS.md: pins move only when forced). crane is v0.24.0 and has no
   # inputs of its own; it builds with the nixpkgs above.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/624af665418d3c65d544145b4d34ad696439570e";
   inputs.crane.url = "github:ipetkov/crane/692f7e9ef2ece8125b466f66f2af532b3edaed0d";
+  # For the checks only: the home-manager module (nix/hm-module.nix) is
+  # evaluated in a home configuration of its own (nix/checks.nix). Master
+  # of the same week as the nixpkgs above, built with that nixpkgs. A user's
+  # configuration brings its own home-manager; this one never reaches it.
+  inputs.home-manager = {
+    url = "github:nix-community/home-manager/079a3b5d1aa6a719920a51316253b7d6dd22738d";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
 
   # The release workflow (.github/workflows/box-release.yml) pushes both
   # systems' packages to the copland Cachix cache, so `nix run` can download
@@ -46,6 +57,7 @@
       self,
       nixpkgs,
       crane,
+      home-manager,
       ...
     }:
     let
@@ -184,6 +196,20 @@
           default = self.apps.${pkgs.stdenv.hostPlatform.system}.box;
         }
       );
+
+      homeManagerModules = {
+        copland = import ./nix/hm-module.nix { inherit self; };
+        default = self.homeManagerModules.copland;
+      };
+
+      # The module evaluated against a stub package, so the check builds no
+      # GPUI (nix/checks.nix).
+      checks = forAll (pkgs: {
+        home-manager-module = import ./nix/checks.nix {
+          inherit pkgs home-manager;
+          module = self.homeManagerModules.default;
+        };
+      });
 
       devShells = forAll (
         pkgs:

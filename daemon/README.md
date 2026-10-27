@@ -182,13 +182,13 @@ The box isn't needed to run agents: on a machine with no display (a server, a VM
 
 1. **Install** `copland-daemon`: the Linux tarball's `bin/` in `~/.local/bin` (Getting it, below; the window's libraries aren't needed for it), or the Nix package. On macOS, the bare binaries' tarball.
 2. **Set it up:** `copland-daemon --setup` (Setting it up on a terminal, above). Open the link it prints on any machine where you are signed in to Copland.
-3. **Run it as a service:** `copland-daemon --install-service [--config FILE]`. It refuses without a config, pointing at `--setup`, and checks the config loads. On Linux it writes a systemd user unit, `$XDG_CONFIG_HOME/systemd/user/copland-daemon.service`, then `systemctl --user daemon-reload`, `enable` and `restart` (so installing again replaces the one running). On macOS it writes a launchd agent, `~/Library/LaunchAgents/dev.berkerz.copland.daemon.plist`, and loads it with `launchctl bootstrap gui/<uid>` (out first, when it was loaded). Either runs this binary (`std::env::current_exe`) with `--headless --config <the config, absolute>`, with the `PATH` you ran it from, since the runtimes (`claude`, `codex`) are looked up on it and the service manager's own is short. Install it again after moving the binary or changing your `PATH`. It restarts after a failure, ten seconds apart, and not after a clean stop. Stopping it sends SIGTERM to the daemon alone (`KillMode=mixed`), which stops its runtimes and finishes their runs as interrupted, as ctrl+c does. `systemctl --user reload copland-daemon` has it read its config again (`copland-daemon reload`, under "Status").
+3. **Run it as a service:** with Nix and home-manager, the flake's module does it (`services.copland`, under "Installing it" below); don't use `--install-service` there. Elsewhere, `copland-daemon --install-service [--config FILE]`. It refuses without a config, pointing at `--setup`, and checks the config loads. On Linux it writes a systemd user unit, `$XDG_CONFIG_HOME/systemd/user/copland-daemon.service`, then `systemctl --user daemon-reload`, `enable` and `restart` (so installing again replaces the one running). On macOS it writes a launchd agent, `~/Library/LaunchAgents/dev.berkerz.copland.daemon.plist`, and loads it with `launchctl bootstrap gui/<uid>` (out first, when it was loaded). Either runs this binary (`std::env::current_exe`) with `--headless --config <the config, absolute>`, with the `PATH` you ran it from, since the runtimes (`claude`, `codex`) are looked up on it and the service manager's own is short. Install it again after moving the binary or changing your `PATH`. It restarts after a failure, ten seconds apart, and not after a clean stop. Stopping it sends SIGTERM to the daemon alone (`KillMode=mixed`), which stops its runtimes and finishes their runs as interrupted, as ctrl+c does. `systemctl --user reload copland-daemon` has it read its config again (`copland-daemon reload`, under "Status").
 4. **Keep it running.** A user's systemd services stop when the user's last session ends; on a server you aren't logged in to, `sudo loginctl enable-linger $USER` keeps them running and starts them at boot. `--install-service` says so when lingering is off.
 5. **Read its log:** `journalctl --user -u copland-daemon -f`. The daemon logs to stderr without colour when that isn't a terminal, which is how the journal gets it. On macOS it goes to `~/Library/Logs/copland-daemon.log`. `COPLAND_LOG=debug` in the unit (`systemctl --user edit copland-daemon`, `Environment=COPLAND_LOG=debug`) shows each poll.
 
 A second daemon, or the box, started on the same config while the service runs finds the running one and stops with `a daemon is already running …` (One daemon per config, above): stop the service first (`systemctl --user stop copland-daemon`), or give the other a config of its own. `--install-service` notes it when the config is being run already; the service then retries until that one stops. `copland-daemon --uninstall-service` stops, disables and removes it (`systemctl --user disable --now`, `launchctl bootout`). There is one service per user: installing with another `--config` replaces it.
 
-The service code is core's (`core/src/service.rs`, COPL-199), so the box can install one too: `install` takes the program to run (the CLI passes itself) and returns what it did, the file written and notes such as the Nix-store and lingering ones, which `--install-service` prints. The rendering is pure (`systemd_unit` and `launchd_plist`, with tests). The release ships what they render: `release/copland-daemon.service`, for `~/.local/bin` (`ExecStart=%h/.local/bin/copland-daemon --headless`), in the Linux tarball under `share/systemd/user/` and in the Nix package with its store path in `ExecStart`; and `release/dev.berkerz.copland.daemon.plist` in the macOS tarball, a template whose `@DAEMON@` and `@LOG@` are the two absolute paths launchd needs. A test fails when they differ from the functions. A unit installed by hand from those files has the service manager's `PATH`, so give `command` full paths in `daemon.toml` then. When the binary is in the Nix store, `--install-service` warns that the unit points at that one build; on NixOS use the package's unit instead (`systemd.packages = [ copland ];` and `systemd.user.services.copland-daemon.wantedBy = [ "default.target" ];`).
+The service code is core's (`core/src/service.rs`, COPL-199), so the box can install one too: `install` takes the program to run (the CLI passes itself) and returns what it did, the file written and notes such as the Nix-store and lingering ones, which `--install-service` prints. The rendering is pure (`systemd_unit` and `launchd_plist`, with tests). The release ships what they render: `release/copland-daemon.service`, for `~/.local/bin` (`ExecStart=%h/.local/bin/copland-daemon --headless`), in the Linux tarball under `share/systemd/user/` and in the Nix package with its store path in `ExecStart`; and `release/dev.berkerz.copland.daemon.plist` in the macOS tarball, a template whose `@DAEMON@` and `@LOG@` are the two absolute paths launchd needs. A test fails when they differ from the functions. A unit installed by hand from those files has the service manager's `PATH`, so give `command` full paths in `daemon.toml` then. When the binary is in the Nix store, `--install-service` warns that the unit points at that one build; with home-manager use the flake's module instead (`services.copland`, under "Installing it"), whose unit is the shipped one with the package's binary, and which `nix flake check ./daemon` holds to it.
 
 For a program that isn't the daemon (the box, when no daemon runs its config), core has the rest (COPL-199). `service::installed()` says whether the unit or plist is there and, on Linux, whether `systemctl --user is-enabled` says enabled (on macOS a plist there is always loaded at login), so a config with no service can be told from a stopped service; whether it runs is `lock::running`'s to say. `service::start()` starts an installed one (`systemctl --user start`, `launchctl kickstart`, or `bootstrap` again after a `bootout`). `service::daemon_binary()` finds the `copland-daemon` beside the running executable, since the two ship together (the tarballs, the macOS app's `Contents/MacOS`, the Nix package's `bin`), else the first on `PATH`, and says so when there is none. `service::spawn_session(config)` starts `copland-daemon --headless --config <config>` for this session only: in a session of its own (`setsid`), stdin from `/dev/null` and its output appended to `$XDG_STATE_HOME/copland/daemon.log`, so closing whatever started it doesn't stop it. It blocks until the daemon's status socket answers a status request, up to 15 seconds; a daemon that exits first fails it with its exit status and the last lines it logged, one that never answers is killed (it would hold the config's lock unseen) and says so, and a config being run already is refused before anything starts. It isn't a service: it doesn't start at login.
 
@@ -517,24 +517,41 @@ nix profile install ./daemon          # on PATH for good, with the launcher entr
 
 Without a checkout it's `nix run github:berker-z/copland?dir=daemon`, and so on. Nix only sees files git tracks, so a new file in `daemon/` needs at least `git add -N` before any of these find it.
 
-On NixOS, take it as a flake input and add the package where you keep your others:
+On NixOS (or anywhere with home-manager), take it as a flake input and import its home-manager module, which installs the package and runs the daemon, and optionally the tray, as systemd user services:
 
 ```nix
 # flake.nix
 inputs.copland = {
   url = "github:berker-z/copland?dir=daemon";
-  # Not `follows`: the box is built and tested against its own pinned nixpkgs.
+  # Not `follows`: the box is built and tested against its own pinned nixpkgs,
+  # which is also what the Cachix cache has builds for.
 };
 
-# configuration.nix
-environment.systemPackages = [ inputs.copland.packages.${pkgs.stdenv.hostPlatform.system}.default ];
-# or, with home-manager
-home.packages = [ inputs.copland.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+# your home-manager configuration (or home-manager.users.<you> in NixOS)
+imports = [ inputs.copland.homeManagerModules.default ];
+
+services.copland = {
+  enable = true;
+  # On the daemon's PATH, ahead of your profiles: the runtimes daemon.toml
+  # names, and what their runs use.
+  runtimes = [ pkgs.claude-code pkgs.codex pkgs.git pkgs.gh ];
+  tray.enable = true;
+};
 ```
 
-`nix flake update copland` takes the newest box; nothing else moves it.
+Add the `copland` Cachix cache as a substituter (`cachix use copland`, or `nix.settings.substituters` and `trusted-public-keys` with the key in `flake.nix`'s `nixConfig`), or the first switch compiles GPUI. `nix flake update copland` takes the newest box; nothing else moves it, and each switch points the units at the package it installed, so an upgrade or a garbage collection never leaves them on an old build.
 
-Starting it with the session is up to you. With home-manager, a systemd user service:
+The module (`nix/hm-module.nix`, COPL-217) has five options under `services.copland`:
+
+- `enable`: puts the package in `home.packages` and the daemon in `systemd.user.services.copland-daemon`, started with `default.target`: `release/copland-daemon.service` (Server mode, above) with `${package}/bin/copland-daemon --headless` in ExecStart, the same reload, restart and `KillMode=mixed`.
+- `package`: this flake's `packages.${system}.copland` unless you give another.
+- `runtimes`: packages whose `bin` leads the unit's `PATH`, followed by `~/.nix-profile/bin`, `/etc/profiles/per-user/$USER/bin`, the system's profile and `/usr/bin`, so a runtime home-manager or NixOS installs is found anyway; one from npm or `~/.local/bin` is not, so declare it, or give `command` a full path in `daemon.toml`. At start the daemon also adds your login shell's `PATH` and `~/.local/bin` and the like, after these (COPL-216).
+- `configFile`: `null`, the default, is `~/.config/copland/daemon.toml`; an absolute path (or `%h/…`) goes to the daemon and the tray as `--config`. Either way the file is yours, written by `copland-daemon --setup` or the box: it holds the agents' tokens, so it stays out of the Nix store. Set it up once (`copland-daemon --setup`) and `systemctl --user restart copland-daemon`; until then the service fails to start and retries every ten seconds.
+- `tray.enable`: `copland-tray` as `systemd.user.services.copland-tray`, part of and started with `graphical-session.target`, after the daemon.
+
+`nix flake check ./daemon` evaluates the module in a minimal home configuration with a stub package (so it builds no GPUI), reads back the units it renders, and fails when the daemon's differs from `release/copland-daemon.service` in any `[Service]` or `[Install]` line; CI runs it on a PR that changes the Nix files or that unit. There is no NixOS VM test that starts the unit in a session yet.
+
+To add only the package, `home.packages` (or `environment.systemPackages`) takes `inputs.copland.packages.${pkgs.stdenv.hostPlatform.system}.default`. The box itself isn't a service: start it from its launcher entry, or with the session as a unit of your own:
 
 ```nix
 systemd.user.services.copland-box = {
@@ -551,7 +568,7 @@ systemd.user.services.copland-box = {
 };
 ```
 
-Two things make or break that. Your compositor has to start `graphical-session.target` and hand the user manager its environment (`WAYLAND_DISPLAY` above all), which Hyprland does under UWSM or with home-manager's `wayland.windowManager.hyprland.systemd.enable`. And the runtimes in `daemon.toml` (`claude`, `codex`) are looked up on the service's `PATH`, not your shell's; NixOS's user manager has the system and per-user profiles on it, but a `claude` from npm or `~/.local/bin` isn't. Give `command` a full path then. If your session has no target, Hyprland's `exec-once = copland-box` does the same job with your session's environment.
+The tray and the box need your compositor to start `graphical-session.target` and hand the user manager its environment (`WAYLAND_DISPLAY` above all), which Hyprland does under UWSM or with home-manager's `wayland.windowManager.hyprland.systemd.enable`. If your session has no target, Hyprland's `exec-once = copland-box` does the same job with your session's environment.
 
 The package is Linux only (x86_64 and aarch64). Releases have tarballs for both and a macOS app (see "Getting it").
 
