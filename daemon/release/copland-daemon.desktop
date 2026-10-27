@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Copland Daemon
+GenericName=Agent daemon
+Comment=Starts the daemon that runs your Copland agents on this machine, until you stop it or log out
+Exec=copland-daemon start
+Icon=copland-box
+Terminal=false
+StartupNotify=false
+Categories=Utility;Development;
+Actions=stop;
+
+[Desktop Action stop]
+Name=Stop
+Exec=copland-daemon stop

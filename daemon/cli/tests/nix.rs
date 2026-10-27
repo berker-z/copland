@@ -73,6 +73,8 @@ fn install_and_uninstall_under_nix_write_nothing_and_print_the_module() {
     assert!(said.contains("  services.copland.enable = true;\n"), "{said}");
     /* The default config isn't named, and with no display there's no tray line. */
     assert!(!said.contains("configFile") && !said.contains("tray.enable"), "{said}");
+    /* No display is a server's: the module starts it at login (COPL-223). */
+    assert!(said.contains("  services.copland.autostart = true;"), "{said}");
     assert_eq!(
         files(&dir.join("config")),
         std::slice::from_ref(&config),

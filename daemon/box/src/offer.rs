@@ -2,7 +2,10 @@
 //! daemon runs its config it offers one: install the service (core's `service::install`, which
 //! starts it), start the installed one when it is stopped, or run one for this session only
 //! (`service::spawn_session`). Setup ends here too: it installs the service, or starts the
-//! installed one again so it reads the new config. A box upgraded from 0.4.x, which ran the
+//! installed one again so it reads the new config. Nothing here makes it start at login
+//! (COPL-223): the box installs it started now, and the user starts it again by hand
+//! (`copland-daemon start`, its launcher, or here); a server asks for that with
+//! `--install-service --autostart` or the module's `autostart`. A box upgraded from 0.4.x, which ran the
 //! agents itself, is told so once and offered the install (`State::Migration`); the answer is
 //! kept in the box's own state file, so "not now" isn't asked at every start.
 //!
@@ -117,7 +120,7 @@ impl Offer {
 
     /// The module's lines, as `c` copies them: the flake input and the import too.
     pub fn snippet(&self) -> String {
-        service::module_snippet(self.config.as_deref(), true)
+        service::module_snippet(self.config.as_deref(), true, false)
     }
 
     pub fn animating(&self) -> bool {
@@ -147,8 +150,8 @@ impl Offer {
                 vec![
                     head("the box no longer runs your agents itself"),
                     muted("closing it used to stop them. now copland-daemon runs them, as a service".into()),
-                    muted("of your user: from login on, whether the box is open or not.".into()),
-                    faint("this machine has none yet. installing one starts it now.".into()),
+                    muted("of your user: once started, whether the box is open or not.".into()),
+                    faint("this machine has none yet. installing one starts it now, not at login.".into()),
                 ],
                 vec![
                     key("i", "install the service"),
@@ -167,7 +170,7 @@ impl Offer {
             State::Nix => {
                 let mut lines = vec![head("this box is from nix: home-manager runs the daemon")];
                 lines.extend(
-                    service::module_lines(self.config.as_deref(), true)
+                    service::module_lines(self.config.as_deref(), true, false)
                         .into_iter()
                         .map(|l| Line::one(l, Role::Ink)),
                 );
@@ -227,7 +230,11 @@ pub fn said(outcome: &Outcome, nix: bool) -> Vec<Line> {
     match outcome {
         Outcome::Installed(i) => {
             let mut lines = vec![
-                done("the service is installed and started · it runs at login, box or no box"),
+                done(if i.autostart {
+                    "the service is installed and started · it runs at login, box or no box"
+                } else {
+                    "the service is installed and started · it runs box or no box, until stopped"
+                }),
                 faint(format!("{}: {}", i.name, i.file.display())),
                 faint(match &i.log {
                     Log::Journal => "its log: journalctl --user -u copland-daemon".into(),
@@ -236,6 +243,11 @@ pub fn said(outcome: &Outcome, nix: bool) -> Vec<Line> {
             ];
             if let Wrote::Replaced { was: Some(was) } = &i.wrote {
                 lines.push(faint(format!("it ran {} before", was.display())));
+            }
+            if !i.autostart {
+                lines.push(faint(
+                    "not at login: start it again here, or with copland-daemon start or its launcher".into(),
+                ));
             }
             lines.extend(i.notes.iter().map(|n| Line::one(note(n), Role::Yellow)));
             lines
@@ -251,7 +263,7 @@ pub fn said(outcome: &Outcome, nix: bool) -> Vec<Line> {
         Outcome::Session(s) => vec![
             done(&format!("a daemon runs this config for this session (pid {})", s.pid)),
             faint(if nix {
-                "it outlives the window, not your login: m shows the nix module that runs it at login".into()
+                "it outlives the window, not your login: m shows the nix module that runs it as a service".into()
             } else {
                 "it outlives the window, not your login: i installs the service instead".into()
             }),
@@ -289,7 +301,8 @@ pub fn perform(ask: Ask, config: &Path) -> (Result<Outcome>, Option<Service>) {
 
 fn install(config: &Path) -> Result<Outcome> {
     let program = service::daemon_binary()?;
-    service::install(config, &program).map(Outcome::Installed)
+    /* Started now, not at login: a workstation's daemon runs when its user starts it (COPL-223). */
+    service::install(config, &program, false).map(Outcome::Installed)
 }
 
 /// The box's own state file: what it was asked once and shouldn't ask again.
@@ -387,6 +400,7 @@ mod tests {
                 was: Some("/home/me/Downloads/copland-box-0.4.0-linux-x86_64/bin/copland-daemon".into()),
             },
             name: service::UNIT,
+            autostart: true,
             log: Log::Journal,
             notes: vec![
                 Note::NoLinger { user: "me".into() },
@@ -400,7 +414,7 @@ mod tests {
                 },
             ],
         };
-        let lines: Vec<String> = said(&Outcome::Installed(i), false).iter().map(text).collect();
+        let lines: Vec<String> = said(&Outcome::Installed(i.clone()), false).iter().map(text).collect();
         assert!(
             lines[0].starts_with("✓ the service is installed and started"),
             "{lines:?}"
@@ -417,6 +431,18 @@ mod tests {
         assert!(lines[4].contains("sudo loginctl enable-linger me"), "{lines:?}");
         assert!(lines[5].contains("(pid 42)"), "{lines:?}");
         assert_eq!(lines.len(), 6);
+
+        /* The box's own install, by hand: says it won't start at login. */
+        let by_hand = Installed {
+            autostart: false,
+            wrote: Wrote::New,
+            notes: Vec::new(),
+            ..i
+        };
+        let lines: Vec<String> = said(&Outcome::Installed(by_hand), false).iter().map(text).collect();
+        assert!(lines[0].ends_with("until stopped"), "{lines:?}");
+        assert!(lines[3].starts_with("not at login"), "{lines:?}");
+        assert_eq!(lines.len(), 4);
     }
 
     #[test]
@@ -474,6 +500,7 @@ mod tests {
                 "services.copland.enable = true;",
                 "services.copland.runtimes = [ pkgs.claude-code pkgs.git pkgs.gh ];",
                 "services.copland.tray.enable = true;",
+                "# services.copland.autostart = true; # on a server; here it starts from its launcher",
                 "add it with the flake's module, then switch · daemon/README.md, installing it",
             ]
         );

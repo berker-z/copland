@@ -8,6 +8,11 @@
 # the two drift (nix/checks.nix). Every rebuild points it at the current
 # package, so an upgrade or a garbage collection never leaves it on an old
 # store path, which is what `--install-service` gets wrong on Nix.
+#
+# Neither starts at login unless asked (COPL-223): `autostart` (a server, a
+# headless machine) and `tray.autostart`. A workstation starts the daemon by
+# hand, from the package's "Copland Daemon" launcher (`copland-daemon start`,
+# which starts the tray's unit too) or the box.
 { self }:
 {
   config,
@@ -47,6 +52,19 @@ in
   options.services.copland = {
     enable = lib.mkEnableOption "the Copland daemon, which runs your Copland agents on this machine, as a systemd user service";
 
+    autostart = mkOption {
+      type = types.bool;
+      default = false;
+      example = true;
+      description = ''
+        Start the daemon at login (`WantedBy=default.target`). For a server
+        or a headless machine; with `loginctl enable-linger` it starts at boot
+        and keeps running with nobody logged in. Off, the unit is installed
+        and started by hand: the "Copland Daemon" launcher, `copland-daemon
+        start` or `systemctl --user start copland-daemon`, and the box.
+      '';
+    };
+
     package = mkOption {
       type = types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.copland;
@@ -82,7 +100,19 @@ in
       '';
     };
 
-    tray.enable = lib.mkEnableOption "`copland-tray`, the daemon's agents in your bar's tray, with the graphical session";
+    tray.enable = lib.mkEnableOption "`copland-tray`, the daemon's agents in your bar's tray, as a systemd user service";
+
+    tray.autostart = mkOption {
+      type = types.bool;
+      default = false;
+      example = true;
+      description = ''
+        Start the tray with the graphical session
+        (`WantedBy=graphical-session.target`). Off, it starts with the daemon
+        from the launcher (`copland-daemon start`), or with `systemctl --user
+        start copland-tray`.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -115,7 +145,7 @@ in
         # their runs as interrupted, so their tasks go back to todo.
         KillMode = "mixed";
       };
-      Install.WantedBy = [ "default.target" ];
+      Install.WantedBy = lib.optionals cfg.autostart [ "default.target" ];
     };
 
     systemd.user.services.copland-tray = lib.mkIf cfg.tray.enable {
@@ -133,7 +163,7 @@ in
         Restart = "on-failure";
         RestartSec = 10;
       };
-      Install.WantedBy = [ "graphical-session.target" ];
+      Install.WantedBy = lib.optionals cfg.tray.autostart [ "graphical-session.target" ];
     };
   };
 }

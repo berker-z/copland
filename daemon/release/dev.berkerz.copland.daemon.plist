@@ -10,12 +10,7 @@
 		<string>--headless</string>
 	</array>
 	<key>RunAtLoad</key>
-	<true/>
-	<key>KeepAlive</key>
-	<dict>
-		<key>SuccessfulExit</key>
-		<false/>
-	</dict>
+	<false/>
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
 	<key>ProcessType</key>

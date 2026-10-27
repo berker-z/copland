@@ -1,19 +1,20 @@
 //! `copland-daemon --headless`: run the agents in daemon.toml until stopped.
 //! `--setup` writes daemon.toml on a terminal, `--check` checks this machine,
-//! `--install-service` runs it as a systemd or launchd service, `status` asks the one running,
+//! `--install-service` runs it as a systemd or launchd service (`--autostart`: at login too),
+//! `start` and `stop` start and stop it by hand (the launcher's), `status` asks the one running,
 //! `hold` and `release` hold one of its agents on this machine and let it go, `reload` has it read
 //! its config again (as SIGHUP does).
 
 mod setup;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use copland_daemon_core::client;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
 use copland_daemon_core::search_path;
-use copland_daemon_core::service::{self, Log, NixManaged, Note, Uninstalled};
+use copland_daemon_core::service::{self, Installed, Log, NixManaged, Note, Uninstalled};
 use copland_daemon_core::socket::Serve;
 use copland_daemon_core::stable::Unstable;
 use copland_daemon_core::{Config, Daemon, Lock, Paths};
@@ -49,10 +50,15 @@ struct Args {
     #[arg(long, value_name = "ADDRESS", requires = "setup")]
     url: Option<String>,
     /// Run the daemon as a service of yours, on this binary and this config: a systemd user unit
-    /// on Linux, a launchd agent on macOS. Written, enabled and started; it starts again at login
-    /// (or boot, with lingering) and after a failure. Needs the config, so --setup first.
+    /// on Linux, a launchd agent on macOS. Written and started now; it starts again after a
+    /// failure, and by hand (`copland-daemon start`, the "Copland Daemon" launcher), not at login
+    /// unless --autostart. Needs the config, so --setup first.
     #[arg(long, conflicts_with_all = ["check", "setup", "uninstall_service"])]
     install_service: bool,
+    /// With --install-service: start it at login too (or at boot, with lingering), for a server or
+    /// a headless machine. Without it, an earlier install's start at login is turned off.
+    #[arg(long, visible_alias = "enable", requires = "install_service")]
+    autostart: bool,
     /// Stop, disable and remove the service --install-service wrote. When this binary is from the
     /// Nix store, both write and remove nothing: they print the home-manager module to add.
     #[arg(long, conflicts_with_all = ["check", "setup"])]
@@ -88,6 +94,13 @@ enum Command {
     /// each after its runs. Prints what changed. A config that doesn't load changes nothing and
     /// exits 1. Exits 3 when no daemon is running the config.
     Reload,
+    /// Start the daemon by hand, as the "Copland Daemon" launcher does: the installed service
+    /// (and the tray's unit, when the home-manager module made one), else a daemon on this config
+    /// until you log out.
+    Start,
+    /// Stop the daemon running this config (the service, or one started otherwise) and the
+    /// tray's unit, when there is one. Neither starts again until started.
+    Stop,
 }
 
 fn main() -> Result<()> {
@@ -118,6 +131,9 @@ fn main() -> Result<()> {
 async fn run(args: Args) -> Result<()> {
     let named = args.config.is_some();
     let path = args.config.unwrap_or_else(default_config_path);
+    if let Some(Command::Start | Command::Stop) = args.command {
+        return by_hand(matches!(args.command, Some(Command::Start)), &path);
+    }
     if let Some(command) = args.command {
         /* COPL-185: the client lives in core's `client`. */
         let (runtime_dir, out) = (default_runtime_dir(), &mut std::io::stdout());
@@ -130,6 +146,7 @@ async fn run(args: Args) -> Result<()> {
             Command::Hold { handle } => client::hold(&path, &runtime_dir, &handle, true, out).await?,
             Command::Release { handle } => client::hold(&path, &runtime_dir, &handle, false, out).await?,
             Command::Reload => client::reload(&path, &runtime_dir, out).await?,
+            Command::Start | Command::Stop => unreachable!("handled above"),
         };
         if let Some(says) = shown.says(&path, named) {
             eprintln!("{says}");
@@ -141,7 +158,7 @@ async fn run(args: Args) -> Result<()> {
         return setup::run(&path, args.url.as_deref()).await;
     }
     if args.install_service {
-        return install_service(&path);
+        return install_service(&path, args.autostart);
     }
     if args.uninstall_service {
         match service::uninstall()? {
@@ -238,36 +255,84 @@ async fn run(args: Args) -> Result<()> {
 }
 
 /// `--install-service` on this binary, saying what it did (COPL-199: the work is core's).
-fn install_service(config: &std::path::Path) -> Result<()> {
+fn install_service(config: &Path, autostart: bool) -> Result<()> {
     let program = std::env::current_exe().context("finding this binary")?;
     /* Nix's: home-manager runs the service, so nothing is written (COPL-218). */
     /* Somewhere it won't stay: nothing is written, and it says how to install it (COPL-219). */
-    let done = match service::install(config, &program) {
+    let done = match service::install(config, &program, autostart) {
         Err(e) if e.is::<NixManaged>() || e.is::<Unstable>() => {
             print!("{e}");
             std::process::exit(1);
         }
         done => done?,
     };
+    print!("{}", installed_says(&done));
+    Ok(())
+}
+
+/// What an install did, as `--install-service` and `--setup` print it.
+fn installed_says(done: &Installed) -> String {
+    let mut out = String::new();
     let (linger, early): (Vec<_>, Vec<_>) = done.notes.iter().partition(|n| matches!(n, Note::NoLinger { .. }));
     for note in early {
-        println!("{note}");
+        out += &format!("{note}\n");
     }
-    println!("{}.", done.wrote.says(&done.file));
-    match &done.log {
-        Log::File(log) => println!(
-            "Started {}; it starts again at every login. Its log is {}.",
-            done.name,
-            log.display()
-        ),
-        Log::Journal => {
-            println!("Started {}; it starts again with your user's session.", done.name);
-            println!("Its log: journalctl --user -u copland-daemon -f");
+    out += &format!("{}.\n", done.wrote.says(&done.file));
+    let when = match (done.autostart, &done.log) {
+        (true, Log::File(_)) => "it starts again at every login",
+        (true, Log::Journal) => "it starts again with your user's session",
+        (false, _) => {
+            "it doesn't start at login: start it again with `copland-daemon start` or the Copland Daemon \
+             launcher (`--install-service --autostart` starts it at login, for a server)"
+        }
+    };
+    out += &format!("Started {}; {when}.\n", done.name);
+    out += &match &done.log {
+        Log::File(log) => format!("Its log is {}.\n", log.display()),
+        Log::Journal => "Its log: journalctl --user -u copland-daemon -f\n".into(),
+    };
+    for note in linger {
+        out += &format!("{note}\n");
+    }
+    out += "Stop it with `copland-daemon stop`, and remove it with `copland-daemon --uninstall-service`.\n";
+    out
+}
+
+/// `start` and `stop`: the daemon by hand, as the launcher and its Stop action run it (COPL-223).
+fn by_hand(start: bool, config: &Path) -> Result<()> {
+    if !start {
+        let stopped = service::stop_daemon(config)?;
+        let tray = service::tray(false).unwrap_or(false);
+        println!(
+            "{}{}",
+            if stopped {
+                "Stopped the daemon"
+            } else {
+                "No daemon was running"
+            },
+            if tray { ", and the tray." } else { "." }
+        );
+        return Ok(());
+    }
+    match service::installed() {
+        Some(s) => {
+            service::start()?;
+            let tray = service::tray(true)?;
+            println!(
+                "Started the service ({}){}.",
+                s.file.display(),
+                if tray { " and the tray" } else { "" }
+            );
+        }
+        None => {
+            let session = service::spawn_session(config)?;
+            println!(
+                "No service installed, so this daemon (pid {}) runs {} until you log out. Its log is {}.",
+                session.pid,
+                config.display(),
+                session.log.display()
+            );
         }
     }
-    for note in linger {
-        println!("{note}");
-    }
-    println!("Stop and remove it with `copland-daemon --uninstall-service`.");
     Ok(())
 }

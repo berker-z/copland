@@ -6,6 +6,11 @@
 //! files in `release/` are what they render for a release's layout, and a test holds the two
 //! together.
 //!
+//! Starting at login is opt-in (COPL-223): `install` puts the service there and starts it now,
+//! and only with `autostart` does it also start at login (the unit enabled, the plist's
+//! `RunAtLoad`), which is for servers and headless machines. A workstation starts it by hand:
+//! `copland-daemon start`, the "Copland Daemon" launcher, or the box.
+//!
 //! Under Nix (COPL-218) the service is the flake's home-manager module's: when the program is in
 //! the Nix store (`nix_managed`), `install` and `uninstall` write and remove nothing and say what
 //! to add instead (`NixManaged`, `module_lines`).
@@ -104,9 +109,12 @@ fn xml(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// The launchd agent running `program --headless [--config FILE]` at login, again after it
-/// fails (not after a clean stop), with its output appended to `log`. No PATH, as for the unit.
-pub fn launchd_plist(program: &str, config: Option<&str>, log: &str) -> String {
+/// The launchd agent running `program --headless [--config FILE]`, with its output appended to
+/// `log`. No PATH, as for the unit. With `at_login` it runs at login (`RunAtLoad`) and again after
+/// it fails (not after a clean stop); without, it is loaded at login and runs only when started
+/// (`launchctl kickstart`), and has no `KeepAlive`, since launchd's `SuccessfulExit` implies
+/// `RunAtLoad`.
+pub fn launchd_plist(program: &str, config: Option<&str>, log: &str, at_login: bool) -> String {
     let mut out = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
@@ -119,10 +127,16 @@ pub fn launchd_plist(program: &str, config: Option<&str>, log: &str) -> String {
         out.push_str(&format!("\t\t<string>{}</string>\n", xml(&a)));
     }
     out.push_str("\t</array>\n");
+    if at_login {
+        out.push_str(
+            "\t<key>RunAtLoad</key>\n\t<true/>\n\
+             \t<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>\n",
+        );
+    } else {
+        out.push_str("\t<key>RunAtLoad</key>\n\t<false/>\n");
+    }
     out.push_str(&format!(
-        "\t<key>RunAtLoad</key>\n\t<true/>\n\
-         \t<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>\n\
-         \t<key>ThrottleInterval</key>\n\t<integer>{RESTART_SEC}</integer>\n\
+        "\t<key>ThrottleInterval</key>\n\t<integer>{RESTART_SEC}</integer>\n\
          \t<key>ProcessType</key>\n\t<string>Background</string>\n\
          \t<key>StandardOutPath</key>\n\t<string>{log}</string>\n\
          \t<key>StandardErrorPath</key>\n\t<string>{log}</string>\n",
@@ -146,6 +160,15 @@ pub fn plist_program(plist: &str) -> Option<PathBuf> {
         .replace("&apos;", "'")
         .replace("&amp;", "&");
     (!v.is_empty()).then(|| PathBuf::from(v))
+}
+
+/// Whether a launchd plist runs its program at login (`RunAtLoad` true).
+pub fn plist_at_login(plist: &str) -> bool {
+    plist.find("<key>RunAtLoad</key>").is_some_and(|i| {
+        plist[i + "<key>RunAtLoad</key>".len()..]
+            .trim_start()
+            .starts_with("<true/>")
+    })
 }
 
 /// `$XDG_CONFIG_HOME/systemd/user/copland-daemon.service`, where `systemctl --user` looks.
@@ -198,7 +221,8 @@ fn display(p: &Path) -> Result<String> {
 pub enum Note {
     /// A daemon already runs the config; the service retries until it stops.
     AlreadyRunning { config: String, holder: Holder },
-    /// systemd's lingering is off for the user, so the service stops at logout.
+    /// systemd's lingering is off for the user, so the service stops at logout. Only said for a
+    /// service started at login: one started by hand is meant to stop with the session.
     NoLinger { user: String },
 }
 
@@ -273,8 +297,9 @@ pub fn nix_managed_here() -> bool {
 
 /// The module's lines to add to a home-manager configuration, with the option names
 /// `nix/hm-module.nix` has: `configFile` only when the config isn't the default one, the tray's
-/// line when it is wanted.
-pub fn module_lines(config: Option<&Path>, tray: bool) -> Vec<String> {
+/// line when it is wanted, and `autostart` set on a server (`autostart`), or there as a comment
+/// that says when to set it, since a workstation starts the daemon by hand (COPL-223).
+pub fn module_lines(config: Option<&Path>, tray: bool, autostart: bool) -> Vec<String> {
     let mut lines = vec![
         "services.copland.enable = true;".to_string(),
         "services.copland.runtimes = [ pkgs.claude-code pkgs.git pkgs.gh ];".to_string(),
@@ -291,11 +316,15 @@ pub fn module_lines(config: Option<&Path>, tray: bool) -> Vec<String> {
     if tray {
         lines.push("services.copland.tray.enable = true;".to_string());
     }
+    lines.push(match autostart {
+        true => "services.copland.autostart = true; # a server: start it at login (or boot, with linger)".to_string(),
+        false => "# services.copland.autostart = true; # on a server; here it starts from its launcher".to_string(),
+    });
     lines
 }
 
 /// All of it: the flake input, the import and `module_lines`, to paste.
-pub fn module_snippet(config: Option<&Path>, tray: bool) -> String {
+pub fn module_snippet(config: Option<&Path>, tray: bool, autostart: bool) -> String {
     let mut out = String::from(
         "# flake.nix\n\
          inputs.copland.url = \"github:berker-z/copland?dir=daemon\";\n\
@@ -303,7 +332,7 @@ pub fn module_snippet(config: Option<&Path>, tray: bool) -> String {
          # your home-manager configuration\n\
          imports = [ inputs.copland.homeManagerModules.default ];\n",
     );
-    for l in module_lines(config, tray) {
+    for l in module_lines(config, tray, autostart) {
         out.push_str(&l);
         out.push('\n');
     }
@@ -344,13 +373,15 @@ pub struct NixManaged {
     pub config: Option<PathBuf>,
     /// Whether to add the tray's line.
     pub tray: bool,
+    /// Whether to set `autostart` rather than leave it as a comment.
+    pub autostart: bool,
     /// A unit an earlier `--install-service` wrote (`leftover`).
     pub leftover: Option<PathBuf>,
 }
 
 impl NixManaged {
     /// For `program` on `config` (the default one is left out), looking for a leftover unit.
-    pub fn here(program: &Path, config: Option<&Path>, tray: bool) -> Self {
+    pub fn here(program: &Path, config: Option<&Path>, tray: bool, autostart: bool) -> Self {
         let resolved = |c: &Path| fs::canonicalize(c).unwrap_or_else(|_| c.to_path_buf());
         /* Both resolved: on macOS the temp dir and the like are behind a link (/var, /private/var). */
         let default = resolved(&crate::config::default_config_path());
@@ -359,6 +390,7 @@ impl NixManaged {
             program: program.to_path_buf(),
             config,
             tray,
+            autostart,
             leftover: leftover_unit(),
         }
     }
@@ -388,7 +420,7 @@ impl NixManaged {
     /// The module to add, indented to print, then what an earlier install left in the way.
     pub fn add_module(&self) -> String {
         let mut out = format!("Add the flake's module to your configuration and switch ({MODULE_DOCS}):\n\n");
-        for l in module_snippet(self.config.as_deref(), self.tray).lines() {
+        for l in module_snippet(self.config.as_deref(), self.tray, self.autostart).lines() {
             if !l.is_empty() {
                 out.push_str("  ");
                 out.push_str(l);
@@ -461,18 +493,21 @@ fn write_if_changed(file: &Path, text: &str, was: impl Fn(&str) -> Option<PathBu
     Ok(wrote)
 }
 
-/// What `install` did: wrote `file` (or found it as it would write it), then enabled and
-/// started `name` (`UNIT` or `LABEL`).
+/// What `install` did: wrote `file` (or found it as it would write it), then started `name`
+/// (`UNIT` or `LABEL`), set to start at login or not (`autostart`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Installed {
     pub file: PathBuf,
     pub wrote: Wrote,
     pub name: &'static str,
+    pub autostart: bool,
     pub log: Log,
     pub notes: Vec<Note>,
 }
 
-/// Write the platform's service running `program` on `config`, then enable and start it.
+/// Write the platform's service running `program` on `config` and start it now. With
+/// `autostart` it also starts at login (systemd: enabled; launchd: `RunAtLoad`); without, it
+/// doesn't, and an earlier install's start at login is turned off (COPL-223).
 /// `copland-daemon --install-service` passes itself; another program passes `daemon_binary()`.
 /// Refused, writing nothing, when `program` is Nix's (`nix_managed`): its service is the
 /// home-manager module's then, and the error says how to add it (`NixManaged`). Refused too
@@ -483,9 +518,10 @@ pub struct Installed {
 /// replaces one that runs another program (`Wrote::Replaced`), a stale or missing one included;
 /// on macOS the agent is booted out and bootstrapped again either way, so the file loaded is
 /// the one on disk.
-pub fn install(config: &Path, program: &Path) -> Result<Installed> {
+pub fn install(config: &Path, program: &Path, autostart: bool) -> Result<Installed> {
     if nix_managed(program) {
-        return Err(NixManaged::here(program, Some(config), graphical_here()).into());
+        let autostart = autostart || crate::autostart::headless_here();
+        return Err(NixManaged::here(program, Some(config), graphical_here(), autostart).into());
     }
     crate::stable::check_here(program)?;
     if !config.exists() {
@@ -515,17 +551,20 @@ pub fn install(config: &Path, program: &Path) -> Result<Installed> {
         }
         let wrote = write_if_changed(
             &plist,
-            &launchd_plist(&program, Some(&config), &display(&log)?),
+            &launchd_plist(&program, Some(&config), &display(&log)?, autostart),
             plist_program,
         )?;
         let domain = format!("gui/{}", uid()?);
-        /* Loaded already (installed before): out first, so the new file is the one that runs. */
+        /* Loaded already (installed before): out first, so the new file is the one that runs.
+        Bootstrapped, it is loaded at every login; kickstart starts it now, without RunAtLoad too. */
         let _ = run("launchctl", &["bootout", &format!("{domain}/{LABEL}")]);
         run("launchctl", &["bootstrap", &domain, &display(&plist)?])?;
+        run("launchctl", &["kickstart", &format!("{domain}/{LABEL}")])?;
         Ok(Installed {
             file: plist,
             wrote,
             name: LABEL,
+            autostart,
             log: Log::File(log),
             notes,
         })
@@ -533,29 +572,34 @@ pub fn install(config: &Path, program: &Path) -> Result<Installed> {
         let unit = unit_path();
         let wrote = write_if_changed(&unit, &systemd_unit(&program, Some(&config)), unit_program)?;
         /* restart, not start: a reinstall's new unit replaces the one running, and an unchanged
-        one starts the binary on disk, which an upgrade in place has replaced. */
+        one starts the binary on disk, which an upgrade in place has replaced. Disabling a unit
+        that isn't enabled does nothing. */
+        let at_login = if autostart { "enable" } else { "disable" };
         run("systemctl", &["--user", "daemon-reload"])
-            .and_then(|_| run("systemctl", &["--user", "enable", UNIT]))
+            .and_then(|_| run("systemctl", &["--user", "--quiet", at_login, UNIT]))
             .and_then(|_| run("systemctl", &["--user", "restart", UNIT]))
             .with_context(|| {
                 format!(
-                    "{}, but couldn't enable and start it: this needs systemd's user manager \
+                    "{}, but couldn't start it: this needs systemd's user manager \
                      (`systemctl --user`); without one, run `copland-daemon` from your session instead",
                     wrote.says(&unit)
                 )
             })?;
-        let user = std::env::var("USER").unwrap_or_else(|_| "$USER".into());
-        let linger = Command::new("loginctl")
-            .args(["show-user", &user, "--property=Linger", "--value"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-        if !matches!(linger.as_deref(), Ok("yes")) {
-            notes.push(Note::NoLinger { user });
+        if autostart {
+            let user = std::env::var("USER").unwrap_or_else(|_| "$USER".into());
+            let linger = Command::new("loginctl")
+                .args(["show-user", &user, "--property=Linger", "--value"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            if !matches!(linger.as_deref(), Ok("yes")) {
+                notes.push(Note::NoLinger { user });
+            }
         }
         Ok(Installed {
             file: unit,
             wrote,
             name: UNIT,
+            autostart,
             log: Log::Journal,
             notes,
         })
@@ -579,7 +623,7 @@ pub fn uninstall() -> Result<Uninstalled> {
     if let Ok(exe) = std::env::current_exe()
         && nix_managed(&exe)
     {
-        return Ok(Uninstalled::Nix(NixManaged::here(&exe, None, false)));
+        return Ok(Uninstalled::Nix(NixManaged::here(&exe, None, false, false)));
     }
     if cfg!(target_os = "macos") {
         let plist = plist_path();
@@ -610,8 +654,9 @@ pub struct Service {
     /// The unit or plist: on Linux wherever systemd loaded it from (`FragmentPath`), so
     /// home-manager's link in ~/.config/systemd/user, or a unit under /etc, counts too.
     pub file: PathBuf,
-    /// Whether it starts by itself: on Linux, `systemctl --user is-enabled` says enabled; on
-    /// macOS always, since launchd loads every agent in ~/Library/LaunchAgents at login.
+    /// Whether it starts at login: on Linux, `systemctl --user is-enabled` says enabled; on
+    /// macOS, the plist's `RunAtLoad` (launchd loads every agent in ~/Library/LaunchAgents at
+    /// login, and runs those with it).
     pub enabled: bool,
     /// Whether systemd says it is running (`ActiveState`). None where that isn't asked (macOS,
     /// or no user manager to ask): the status socket says then (`lock::running`).
@@ -629,10 +674,11 @@ pub struct Service {
 pub fn installed() -> Option<Service> {
     if cfg!(target_os = "macos") {
         let file = plist_path();
-        let program = fs::read_to_string(&file).ok().as_deref().and_then(plist_program);
+        let text = fs::read_to_string(&file).ok();
+        let program = text.as_deref().and_then(plist_program);
         return file.exists().then_some(Service {
             file,
-            enabled: true,
+            enabled: text.as_deref().is_some_and(plist_at_login),
             running: None,
             nix: false,
             program,
@@ -749,14 +795,22 @@ pub fn describe(service: Option<&Service>, nix_here: bool) -> String {
                  (services.copland.enable = true; {MODULE_DOCS}) and switch."
             )
         } else {
-            "service: none (`copland-daemon --install-service` installs one).".into()
+            "service: none (`copland-daemon --install-service` installs one, with --autostart to start it at login)."
+                .into()
         };
     };
     let mut says = vec![if s.nix { "managed by Nix" } else { "installed" }.to_string()];
-    says.push(if s.enabled { "enabled" } else { "not enabled" }.into());
+    says.push(
+        if s.enabled {
+            "starts at login"
+        } else {
+            "started by hand"
+        }
+        .into(),
+    );
     match s.running {
         Some(true) => says.push("running".into()),
-        Some(false) => says.push(format!("not running: `systemctl --user start {UNIT}` starts it")),
+        Some(false) => says.push("not running: `copland-daemon start` starts it".into()),
         None => {}
     }
     format!("service: {} ({}).", says.join(", "), s.file.display())
@@ -862,12 +916,7 @@ pub fn start() -> Result<()> {
         bail!("no service installed: `copland-daemon --install-service` installs one");
     }
     if cfg!(target_os = "macos") {
-        let domain = format!("gui/{}", uid()?);
-        /* Booted out since login (`launchctl bootout`): load it again, which starts it (RunAtLoad). */
-        if run("launchctl", &["kickstart", &format!("{domain}/{LABEL}")]).is_err() {
-            run("launchctl", &["bootstrap", &domain, &display(&plist_path())?])?;
-        }
-        Ok(())
+        kickstart(false)
     } else {
         run("systemctl", &["--user", "start", UNIT])
     }
@@ -880,18 +929,50 @@ pub fn restart() -> Result<()> {
         bail!("no service installed: `copland-daemon --install-service` installs one");
     }
     if cfg!(target_os = "macos") {
-        let domain = format!("gui/{}", uid()?);
-        if run("launchctl", &["kickstart", "-k", &format!("{domain}/{LABEL}")]).is_err() {
-            run("launchctl", &["bootstrap", &domain, &display(&plist_path())?])?;
-        }
-        Ok(())
+        kickstart(true)
     } else {
         run("systemctl", &["--user", "restart", UNIT])
     }
 }
 
+/// `launchctl kickstart` the agent (`-k` with `again`: stopped first when it runs), loading it
+/// first when it isn't (booted out by `stop`): bootstrapped without `RunAtLoad`, it doesn't
+/// start by itself.
+fn kickstart(again: bool) -> Result<()> {
+    let domain = format!("gui/{}", uid()?);
+    let target = format!("{domain}/{LABEL}");
+    let kick = |again: bool| match again {
+        true => run("launchctl", &["kickstart", "-k", &target]),
+        false => run("launchctl", &["kickstart", &target]),
+    };
+    if kick(again).is_err() {
+        run("launchctl", &["bootstrap", &domain, &display(&plist_path())?])?;
+        kick(false)?;
+    }
+    Ok(())
+}
+
+/// The tray's systemd user unit, the home-manager module's (`services.copland.tray.enable`).
+pub const TRAY_UNIT: &str = "copland-tray.service";
+
+/// Start (`on`) or stop the tray's unit along with the daemon, when systemd has one (the
+/// module's). Says whether there was. Linux only; nothing without a user manager.
+pub fn tray(on: bool) -> Result<bool> {
+    let loaded = !cfg!(target_os = "macos")
+        && Command::new("systemctl")
+            .args(["--user", "show", TRAY_UNIT, "--property=LoadState", "--value"])
+            .output()
+            .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "loaded");
+    if !loaded {
+        return Ok(false);
+    }
+    run("systemctl", &["--user", if on { "start" } else { "stop" }, TRAY_UNIT])?;
+    Ok(true)
+}
+
 /// Stop the installed service without removing it (`systemctl --user stop`, `launchctl
-/// bootout`): it starts again at the next login, or with `start`. Nothing to do without one.
+/// bootout`): it starts again with `start`, and at the next login when it starts at login.
+/// Nothing to do without one.
 pub fn stop() -> Result<()> {
     if installed().is_none() {
         return Ok(());
@@ -1178,6 +1259,7 @@ mod tests {
             "/Applications/Copland.app/Contents/MacOS/copland-daemon",
             Some("/Users/me/a&b/daemon.toml"),
             "/Users/me/Library/Logs/copland-daemon.log",
+            true,
         );
         assert!(plist.contains(&format!("<string>{LABEL}</string>")));
         assert!(plist.contains(
@@ -1192,6 +1274,13 @@ mod tests {
                 .contains("<key>StandardErrorPath</key>\n\t<string>/Users/me/Library/Logs/copland-daemon.log</string>")
         );
         assert!(!plist.contains("EnvironmentVariables"));
+        assert!(plist_at_login(&plist));
+        /* By hand: no RunAtLoad, and no KeepAlive, whose SuccessfulExit would imply it. */
+        let by_hand = launchd_plist("/a/copland-daemon", None, "/l.log", false);
+        assert!(by_hand.contains("<key>RunAtLoad</key>\n\t<false/>"));
+        assert!(!by_hand.contains("KeepAlive"));
+        assert!(!plist_at_login(&by_hand));
+        assert!(by_hand.contains("<key>ThrottleInterval</key>"));
     }
 
     /// The release's files are these renderings: the tarball's unit for its ~/.local layout (the
@@ -1205,8 +1294,10 @@ mod tests {
         );
         assert_eq!(
             release(&format!("{LABEL}.plist")),
-            launchd_plist("@DAEMON@", None, "@LOG@")
+            launchd_plist("@DAEMON@", None, "@LOG@", false)
         );
+        /* Shipped as a workstation's: loaded at login, started by hand (COPL-223). */
+        assert!(!plist_at_login(&release(&format!("{LABEL}.plist"))));
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -1321,9 +1412,12 @@ mod tests {
         let err = install(
             Path::new("/nonexistent/daemon.toml"),
             Path::new("/nix/store/abc-copland/bin/copland-daemon"),
+            true,
         )
         .unwrap_err();
         let nix = err.downcast_ref::<NixManaged>().expect("refused as Nix's");
+        /* --autostart asked for it, so the module sets it. */
+        assert!(nix.autostart);
         assert_eq!(nix.program, Path::new("/nix/store/abc-copland/bin/copland-daemon"));
         assert_eq!(nix.config.as_deref(), Some(Path::new("/nonexistent/daemon.toml")));
         let says = err.to_string();
@@ -1339,6 +1433,7 @@ mod tests {
             "  imports = [ inputs.copland.homeManagerModules.default ];\n",
             "  services.copland.enable = true;\n",
             "  services.copland.configFile = \"/nonexistent/daemon.toml\";\n",
+            "  services.copland.autostart = true; # a server: start it at login (or boot, with linger)\n",
         ] {
             assert!(says.contains(line), "{line} in {says}");
         }
@@ -1348,26 +1443,38 @@ mod tests {
     #[test]
     fn the_module_lines_use_the_modules_option_names() {
         assert_eq!(
-            module_lines(None, true),
+            module_lines(None, true, false),
             [
                 "services.copland.enable = true;",
                 "services.copland.runtimes = [ pkgs.claude-code pkgs.git pkgs.gh ];",
                 "services.copland.tray.enable = true;",
+                "# services.copland.autostart = true; # on a server; here it starts from its launcher",
             ]
         );
         assert_eq!(
-            module_lines(Some(Path::new("/w/my \"x\" ${y}.toml")), false)[2],
+            module_lines(None, false, true)[2],
+            "services.copland.autostart = true; # a server: start it at login (or boot, with linger)"
+        );
+        assert_eq!(
+            module_lines(Some(Path::new("/w/my \"x\" ${y}.toml")), false, false)[2],
             "services.copland.configFile = \"/w/my \\\"x\\\" \\${y}.toml\";"
         );
         /* Every option named here is one the module has. */
         let module = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../nix/hm-module.nix")).unwrap();
-        for option in ["enable", "runtimes", "configFile", "tray.enable"] {
+        for option in [
+            "enable",
+            "autostart",
+            "runtimes",
+            "configFile",
+            "tray.enable",
+            "tray.autostart",
+        ] {
             assert!(
                 module.contains(&format!("\n    {option} = ")),
                 "{option} in hm-module.nix"
             );
         }
-        assert!(module_snippet(None, false).contains("homeManagerModules.default"));
+        assert!(module_snippet(None, false, false).contains("homeManagerModules.default"));
     }
 
     #[test]
@@ -1384,6 +1491,7 @@ mod tests {
             program: "/nix/store/x/bin/copland-daemon".into(),
             config: None,
             tray: false,
+            autostart: false,
             leftover: Some(unit.clone()),
         };
         let says = nix.to_string();
@@ -1456,12 +1564,12 @@ mod tests {
         };
         assert_eq!(
             describe(Some(&s), true),
-            "service: managed by Nix, enabled, running (/home/me/.config/systemd/user/copland-daemon.service)."
+            "service: managed by Nix, starts at login, running (/home/me/.config/systemd/user/copland-daemon.service)."
         );
         (s.nix, s.enabled, s.running) = (false, false, Some(false));
         assert_eq!(
             describe(Some(&s), false),
-            "service: installed, not enabled, not running: `systemctl --user start copland-daemon.service` starts it \
+            "service: installed, started by hand, not running: `copland-daemon start` starts it \
              (/home/me/.config/systemd/user/copland-daemon.service)."
         );
     }
@@ -1546,6 +1654,7 @@ Type=simple
         let err = install(
             Path::new("/nonexistent/daemon.toml"),
             Path::new("/tmp/copland-box-0.5.0-linux-x86_64/bin/copland-daemon"),
+            false,
         )
         .unwrap_err();
         let u = err
@@ -1600,7 +1709,7 @@ Type=simple
 
     #[test]
     fn reads_back_the_program_a_plist_runs() {
-        let plist = launchd_plist("/Users/me/a&b <c>/copland-daemon", Some("/c.toml"), "/l.log");
+        let plist = launchd_plist("/Users/me/a&b <c>/copland-daemon", Some("/c.toml"), "/l.log", true);
         assert_eq!(
             plist_program(&plist),
             Some(PathBuf::from("/Users/me/a&b <c>/copland-daemon"))
@@ -1617,6 +1726,7 @@ Type=simple
             "/Volumes/Copland/Copland.app/Contents/MacOS/copland-daemon",
             None,
             "/l.log",
+            false,
         );
         assert_eq!(write_if_changed(&file, &old, plist_program).unwrap(), Wrote::New);
         assert_eq!(write_if_changed(&file, &old, plist_program).unwrap(), Wrote::Same);
