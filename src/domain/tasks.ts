@@ -174,13 +174,21 @@ export interface Followed {
  *   does. All of them cancelled is not delivery, so that leaves the parent
  *   alone, and so does a parent already closed (a cancelled epic stays
  *   cancelled).
+ * - Otherwise, when nothing under the parent is ready (no child in todo) and
+ *   at least one child is parked in backlog, the rest closed: nothing is being
+ *   worked on or waiting to be, so an open parent goes to the first backlog
+ *   stage, from active and blocked too.
  * - Otherwise, a closed parent with a child ready in todo has work left again
  *   (a child added under it, or reopened): it goes back to the board's
- *   default stage (defaultStage), as a reopened task would.
+ *   default stage (defaultStage), as a reopened task would. So does a parked
+ *   parent when the child that changed is the one now in todo (a parked child
+ *   picked up again, or a new one added ready): ready work under a parked
+ *   parent means it is not parked any more. Another child changing leaves a
+ *   parked parent where it is.
  *
- * A parent already active or blocked is never demoted, a parked parent is
- * not pulled into todo by a todo child, and a board without the stage a rule
- * needs leaves the parent where it is.
+ * A parent already active or blocked is never moved back while it has a child
+ * in todo, and a board without the stage a rule needs leaves the parent where
+ * it is.
  */
 export function followChildren<S extends { id: string; category: StageCategory }>(
   stages: S[],
@@ -204,9 +212,13 @@ export function followChildren<S extends { id: string; category: StageCategory }
   if (finished && counted.length && counted.every(isClosing) && counted.includes("done")) {
     return isClosing(parent) ? undefined : target("done");
   }
-  if (isClosing(parent) && counted.includes("todo")) {
+  if (!isClosing(parent) && counted.includes("backlog") && counted.every((c) => c === "backlog" || isClosing(c))) {
+    return parent === "backlog" ? undefined : target("backlog");
+  }
+  const readied = triggerStageId !== undefined && category(triggerStageId) === "todo";
+  if ((isClosing(parent) || (parent === "backlog" && readied)) && counted.includes("todo")) {
     const open = defaultStage(stages);
-    return open && !isClosing(open.category) ? open.id : undefined;
+    return open && !isClosing(open.category) && open.category !== parent ? open.id : undefined;
   }
   return undefined;
 }

@@ -415,7 +415,9 @@ docs/DESIGN.md under Touch.
   change, logged as "following KEY", mirrored in the browser's optimistic
   cache, and reported to agents as `also_moved`; the guide no longer tells
   them to move parents by hand. Stage edits (recategorising or deleting a
-  stage) don't re-check parents
+  stage) don't re-check parents. A parent with nothing left but parked
+  children (the rest closed) goes to backlog, and comes back to todo when
+  the parked child is picked up again (COPL-214)
 - The notepad on the MCP (COPL-41): `list_notes` (names and excerpts, no
   contents), `read_note`, `write_note` (create, replace, or `append`; pass
   `base_updated` from `read_note` to refuse if the note changed since) and
