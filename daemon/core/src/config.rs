@@ -25,6 +25,9 @@
 //! # "codex", or any other name. Left out, it's read off code_command's program.
 //! runtime = "claude-code"
 //! max_runs = 10                 # optional; runs going at once (coding tasks side by side)
+//! # Optional: the runtime account its runs count against (COPL-232); read off the runtime's
+//! # login when left out (account.rs).
+//! account = "work"
 //! # Optional, off by default: a task waiting on one of the agent's own carries on in its
 //! # worktree and, with Claude Code, its session (chain.rs, COPL-189).
 //! resume_chains = false
@@ -34,6 +37,8 @@
 //! worktrees made (workspace.rs), with Cargo's build output shared per repo under `build/`.
 //! `min_free_gb = 20` (top level, optional) is how much free space on `code_dir`'s filesystem
 //! the preflight wants before it warns (COPL-187).
+//! `max_runs_per_account = 3` (top level, optional) is how many runs go at once on one runtime
+//! account, across all the agents on it (account.rs, COPL-232).
 //!
 //! `copland-box --setup` writes all of an agent's runtime keys (`client`, `command`,
 //! `code_command`, `writable`, `runtime`) from its templates (core/src/runtime.rs, COPL-160):
@@ -87,6 +92,8 @@ pub struct Config {
     pub code_dir: PathBuf,
     /// Free space on `code_dir`'s filesystem, in GB, under which the preflight warns.
     pub min_free_gb: u64,
+    /// Runs going at once on one runtime account, across the agents (`account::Accounts`).
+    pub max_runs_per_account: usize,
     pub agents: Vec<AgentConfig>,
     /// The box's colour theme by name (`theme = "nord"`). Only the window reads it; the headless daemon ignores it.
     pub theme: Option<String>,
@@ -138,6 +145,9 @@ pub struct AgentConfig {
     pub code_dir: PathBuf,
     /// Runs going at once, at most. Only coding tasks run side by side; the rest share `workdir`, one at a time.
     pub max_runs: usize,
+    /// The runtime account its runs count against, as `account =` names it; None reads it off the
+    /// runtime's login (`account::Account::of`).
+    pub account: Option<String>,
     /// A task that waits on one of the agent's own closed tasks, on the same repo, carries on where
     /// that one left off: in its worktree, and with Claude Code in its session (`chain.rs`, COPL-189).
     pub resume_chains: bool,
@@ -149,6 +159,7 @@ struct RawConfig {
     poll_interval: Option<u64>,
     code_dir: Option<String>,
     min_free_gb: Option<u64>,
+    max_runs_per_account: Option<usize>,
     theme: Option<String>,
     motion: Option<bool>,
     notifications: Option<bool>,
@@ -178,6 +189,7 @@ struct RawAgent {
     writable: Vec<String>,
     runtime: Option<String>,
     max_runs: Option<usize>,
+    account: Option<String>,
     resume_chains: Option<bool>,
 }
 
@@ -313,6 +325,12 @@ impl Config {
             bail!("no [[agent]] configured");
         }
         let code_dir = expand_home(raw.code_dir.as_deref().unwrap_or(DEFAULT_CODE_DIR));
+        let max_runs_per_account = raw
+            .max_runs_per_account
+            .unwrap_or(crate::account::DEFAULT_MAX_RUNS_PER_ACCOUNT);
+        if !(1..=50).contains(&max_runs_per_account) {
+            bail!("max_runs_per_account must be between 1 and 50");
+        }
         let mut agents = Vec::new();
         let mut inline_token = false;
         for (n, a) in raw.agents.into_iter().enumerate() {
@@ -351,6 +369,10 @@ impl Config {
                     bail!("{at}: code_command is empty");
                 }
             }
+            let account = match a.account.as_deref().map(str::trim) {
+                Some("") => bail!("{at}: account is empty; leave it out to read it off the runtime's login"),
+                other => other.map(str::to_string),
+            };
             let runtime = match a.runtime.as_deref().map(str::trim) {
                 Some("") => bail!("{at}: runtime is empty; leave it out to read it off code_command"),
                 Some(name) => Runtime::named(name),
@@ -377,6 +399,7 @@ impl Config {
                 runtime,
                 code_dir: code_dir.clone(),
                 max_runs,
+                account,
                 resume_chains: a.resume_chains.unwrap_or(false),
             });
         }
@@ -425,6 +448,7 @@ impl Config {
             poll_interval: Duration::from_secs(poll),
             code_dir,
             min_free_gb: raw.min_free_gb.unwrap_or(DEFAULT_MIN_FREE_GB),
+            max_runs_per_account,
             agents,
             theme: raw.theme.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()),
             motion: raw.motion,
@@ -561,6 +585,22 @@ mod tests {
         assert!(parse(&format!("{base}max_runs=0\n")).is_err());
         assert!(parse(&format!("{base}max_runs=51\n")).is_err());
         assert!(parse(&format!("{base}code_command=[]\n")).is_err());
+    }
+
+    #[test]
+    fn the_account_and_its_cap_have_defaults_and_bounds() {
+        let w = tmp();
+        let base =
+            format!("[[agent]]\nurl=\"http://x\"\nhandle=\"a\"\ntoken=\"cpl_a\"\ncommand=[\"x\"]\nworkdir=\"{w}\"\n");
+        let plain = parse(&base).unwrap();
+        assert_eq!(plain.max_runs_per_account, crate::account::DEFAULT_MAX_RUNS_PER_ACCOUNT);
+        assert_eq!(plain.agents[0].account, None);
+        let set = parse(&format!("max_runs_per_account = 5\n{base}account = \" work \"\n")).unwrap();
+        assert_eq!(set.max_runs_per_account, 5);
+        assert_eq!(set.agents[0].account.as_deref(), Some("work"));
+        assert!(parse(&format!("max_runs_per_account = 0\n{base}")).is_err());
+        assert!(parse(&format!("max_runs_per_account = 51\n{base}")).is_err());
+        assert!(parse(&format!("{base}account = \"\"\n")).is_err());
     }
 
     /// `runtime =` wins; without it the runtime is read off code_command (else command); a name

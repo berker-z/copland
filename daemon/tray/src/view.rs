@@ -266,6 +266,8 @@ mod tests {
             unavailable_since: None,
             held: false,
             out_of_usage_until: None,
+            account: None,
+            waiting_for_slot: None,
             runs: vec![],
             repos: vec![],
             missing: None,

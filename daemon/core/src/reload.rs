@@ -6,7 +6,7 @@
 //! An agent is the same agent across the two when its instance and handle
 //! (as configured, case aside) are. Anything else about it differing (its
 //! command or code_command, writable, runtime, workdir, client, token, max
-//! runs) is a rebind; so is every agent, when the poll interval or code_dir
+//! runs, account) is a rebind; so is every agent, when the poll interval or code_dir
 //! changed. A runtime switch on the agents screen changes the first four
 //! together.
 
@@ -81,6 +81,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
+            account: None,
             resume_chains: false,
         }
     }

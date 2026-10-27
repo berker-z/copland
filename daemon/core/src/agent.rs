@@ -2,7 +2,9 @@
 //! start a run, claim the task, launch the runtime, finish the run.
 //!
 //! Runs go on their own (RunCtx::work), so an agent can have several at once
-//! (COPL-82), up to its `max_runs`. Only coding tasks run side by side, each in
+//! (COPL-82), up to its `max_runs`, and each takes a seat on its runtime
+//! account, whose runs going at once across the daemon's agents are capped
+//! (account.rs, COPL-232). Only coding tasks run side by side, each in
 //! its own worktree; anything else shares the agent's `workdir`, one at a time.
 //! A task is never in two runs from one loop. The loop hears each run's end
 //! (Done) and remembers it in the wake guard, as before.
@@ -24,6 +26,7 @@ use tokio::sync::{Notify, watch};
 use tokio::task::{Id, JoinError, JoinHandle, JoinSet};
 use tracing::Instrument;
 
+use crate::account::{Account, Accounts, Seat};
 use crate::api::{
     Api, ApiError, Backoff, BoardShell, Ending, HostCapabilities, HostReport, InboxItem, MAX_REPOS, Me, RepoCapability,
     RuntimeCapability,
@@ -179,6 +182,14 @@ pub struct AgentLoop {
     runtimes: Option<(Vec<RuntimeCapability>, tokio::time::Instant)>,
     /// The host report as it stands; the reporter (`report_host`) sends it when it changes.
     report: watch::Sender<Option<HostReport>>,
+    /// The daemon's seats on each runtime account, shared by every agent's loop (COPL-232).
+    accounts: Accounts,
+    /// The agent's runtime account, read again every poll.
+    account: Account,
+    /// Moves on when a seat goes back anywhere; looked at by `wait` while `short` is.
+    freed: watch::Receiver<u64>,
+    /// Work waited at the last poll because its account had no seat free.
+    short: bool,
 }
 
 /// How often the runtimes' checks are made again for the host report, so a login made or lost
@@ -234,6 +245,8 @@ struct Inflight {
     workdir: bool,
     /// The inbox items it was started for.
     items: Vec<String>,
+    /// Its seat on the account, given back when the run is done with (dropped with this).
+    _seat: Seat,
 }
 
 /// How often an agent with a `code_command` sweeps the worktrees of closed tasks, after the once
@@ -352,9 +365,15 @@ impl AgentLoop {
         retire: Retire,
         stop_run: watch::Receiver<StopRequest>,
         guard: WakeGuard,
+        accounts: Accounts,
     ) -> Result<Self> {
         let api = Api::new(&agent.url)?;
+        let account = Account::of(&agent);
         Ok(Self {
+            freed: accounts.freed(),
+            accounts,
+            account,
+            short: false,
             slot,
             agent,
             api,
@@ -478,6 +497,46 @@ impl AgentLoop {
             );
         }
         self.update(|s| s.out_of_usage = Some(until));
+        /* The other agents on the same account would run out the same way: they wait for the reset too. */
+        let others: Vec<u64> = self
+            .accounts
+            .on(&self.account.key)
+            .into_iter()
+            .filter(|slot| *slot != self.slot)
+            .collect();
+        if !others.is_empty() {
+            let shown = self.account.shown.clone();
+            self.state.send_if_modified(|s| {
+                let mut changed = false;
+                for a in s.agents.iter_mut().filter(|a| others.contains(&a.slot)) {
+                    if a.out_of_usage.is_none_or(|t| t < until) {
+                        tracing::info!(other = %a.handle, "on the same account ({shown}): held until the reset too");
+                        a.out_of_usage = Some(until);
+                        changed = true;
+                    }
+                }
+                changed
+            });
+        }
+    }
+
+    /// A seat on the agent's account for a run about to start, or None, noted in `short`, when its
+    /// runs going at once are at their cap: the work waits, unclaimed, for a later poll.
+    fn seat(&mut self) -> Option<Seat> {
+        let seat = self.accounts.take(&self.account.key);
+        if seat.is_none() {
+            self.short = true;
+        }
+        seat
+    }
+
+    /// Whether a seat on the agent's account is free now, noting in `short` when none is.
+    fn seat_free(&mut self) -> bool {
+        let free = self.accounts.free(&self.account.key);
+        if !free {
+            self.short = true;
+        }
+        free
     }
 
     /// Shutting down, or this loop's binding has been replaced: start nothing new.
@@ -580,6 +639,7 @@ impl AgentLoop {
         while let Some(ended) = runs.join_next_with_id().await {
             self.done(ended);
         }
+        self.accounts.leave(self.slot);
         if self.retire.now() && !*self.shutdown.borrow() {
             /* The daemon starts whatever replaces it; the agent isn't stopped, so the window doesn't say so. */
             tracing::info!("handing over after a reload");
@@ -738,6 +798,9 @@ impl AgentLoop {
         let board = true;
         /* Set once a board change is heard: when the poll it asks for is due. */
         let mut board_due: Option<tokio::time::Instant> = None;
+        /* Work waiting for a slot on its account polls again as soon as one goes back (COPL-232). */
+        let mut freed = self.freed.clone();
+        let short = self.short;
         loop {
             let connected = *link.borrow_and_update() == Link::Connected;
             let every = if connected {
@@ -751,6 +814,10 @@ impl AgentLoop {
                 _ = async { let _ = shutdown.wait_for(|stop| *stop).await; } => return None,
                 _ = async { let _ = retire.wait_for(|w| w.generation != generation).await; } => return None,
                 _ = async { let _ = holding.wait_for(|s| held(s, slot) != was_held).await; } => return None,
+                _ = async { let _ = freed.changed().await; }, if short => {
+                    tracing::debug!("a slot on its account went back");
+                    return None;
+                }
                 _ = async { tokio::time::sleep_until(resets.expect("guarded")).await }, if resets.is_some() => {
                     tracing::info!("its usage has reset; starting again");
                     return None;
@@ -990,6 +1057,19 @@ impl AgentLoop {
             self.missing = missing;
         }
         let me = self.identity().await?;
+        /* Who is signed in to the runtime can change between polls (a login, a logout). */
+        let account = Account::of(&self.agent);
+        if account != self.account {
+            tracing::info!(
+                "its runtime account is now {} (was {})",
+                account.shown,
+                self.account.shown
+            );
+            self.account = account;
+        }
+        self.accounts.join(self.slot, &self.account.key);
+        self.freed.borrow_and_update();
+        self.short = false;
         if self.agent.code_command.is_some() && !self.boards_checked {
             match self.check_boards().await {
                 Ok(()) => self.boards_checked = true,
@@ -1056,6 +1136,26 @@ impl AgentLoop {
         } else {
             self.launch(&plan, runs).await?;
         }
+        let waiting = self.short.then(|| self.account.shown.clone());
+        if waiting.is_some()
+            && !self
+                .state
+                .borrow()
+                .agents
+                .iter()
+                .any(|a| a.slot == self.slot && a.waiting_for_slot.is_some())
+        {
+            tracing::info!(
+                "{} runs going on {}, the most it may (max_runs_per_account); waiting for a slot",
+                self.accounts.taken(&self.account.key),
+                self.account.shown
+            );
+        }
+        let shown = self.account.shown.clone();
+        self.update(|s| {
+            s.account = Some(shown);
+            s.waiting_for_slot = waiting;
+        });
         self.queued(&plan);
         Ok(())
     }
@@ -1098,12 +1198,21 @@ impl AgentLoop {
             tracing::debug!("{} message(s), but another run has the workdir; next time", batch.len());
             return;
         }
+        let Some(seat) = self.seat() else {
+            tracing::debug!(
+                "{} message(s), but no slot on {}; next time",
+                batch.len(),
+                self.account.shown
+            );
+            return;
+        };
         self.inflight.insert(
             MESSAGES.to_string(),
             Inflight {
                 key: MESSAGES.to_string(),
                 workdir: true,
                 items: batch.iter().map(|m| m.item.clone()).collect(),
+                _seat: seat,
             },
         );
         let (ctx, handle) = (self.ctx(), me.handle.clone());
@@ -1132,6 +1241,12 @@ impl AgentLoop {
             }
             if self.inflight.len() >= self.agent.max_runs {
                 tracing::debug!(task = %wake.task_key, "{} runs going, the most it may; next time", self.inflight.len());
+                break;
+            }
+            /* Its account's runs going at once are at their cap (COPL-232): nothing is claimed or started, so
+            the task stays ready in todo, costs no strike, and starts at the next poll with a slot. */
+            if !self.seat_free() {
+                tracing::debug!(task = %wake.task_key, "no slot on {}; next time", self.account.shown);
                 break;
             }
             if let Check::Seen { updated_at, held } = self.guard.check(wake) {
@@ -1219,12 +1334,18 @@ impl AgentLoop {
                 tracing::debug!(task = %wake.task_key, "another run has the workdir; next time");
                 continue;
             }
+            /* Another agent's loop may have taken the last slot while this one looked the task up. */
+            let Some(seat) = self.seat() else {
+                tracing::debug!(task = %wake.task_key, "no slot on {}; next time", self.account.shown);
+                break;
+            };
             self.inflight.insert(
                 wake.task_id.clone(),
                 Inflight {
                     key: wake.task_key.clone(),
                     workdir,
                     items: wake.items.clone(),
+                    _seat: seat,
                 },
             );
             let (ctx, handle, wake) = (self.ctx(), me.handle.clone(), wake.clone());
@@ -2241,6 +2362,7 @@ mod tests {
             runtime: crate::config::Runtime::detect(&argv(code.unwrap_or(command))),
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
+            account: None,
             resume_chains: false,
         }
     }
@@ -2563,7 +2685,20 @@ mod tests {
             Self::start_agent(url, name, agent(command, None), held)
         }
 
-        fn start_agent(url: &str, name: &str, mut a: AgentConfig, held: bool) -> Self {
+        fn start_agent(url: &str, name: &str, a: AgentConfig, held: bool) -> Self {
+            Self::start_on(url, name, a, held, Accounts::default(), Vec::new())
+        }
+
+        /// `start_agent`, its runs taking seats from `accounts`, with `others` in the daemon's state
+        /// after it (slot 1).
+        fn start_on(
+            url: &str,
+            name: &str,
+            mut a: AgentConfig,
+            held: bool,
+            accounts: Accounts,
+            others: Vec<AgentState>,
+        ) -> Self {
             let dir = std::env::temp_dir().join(format!("copland-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             a.url = url.to_string();
@@ -2572,7 +2707,7 @@ mod tests {
             st.slot = 1;
             st.held = held;
             let (state, watch_state) = watch::channel(DaemonState {
-                agents: vec![st],
+                agents: std::iter::once(st).chain(others).collect(),
                 stopping: false,
                 autostart: false,
             });
@@ -2600,6 +2735,7 @@ mod tests {
                 },
                 stop_run,
                 WakeGuard::default(),
+                accounts,
             )
             .unwrap();
             l.hostname = || Some("test-host".into());
@@ -2759,6 +2895,140 @@ mod tests {
         assert!(repo_stops(Role::Worker, &read_only) && !repo_stops(Role::Lead, &read_only));
         assert!(repo_stops(Role::Worker, &none) && repo_stops(Role::Lead, &none));
         assert!(!repo_stops(Role::Workdir, &none) && !repo_stops(Role::Skip, &none));
+    }
+
+    /// An agent on the account `shared`, running `command`.
+    fn shared(command: &[&str]) -> AgentConfig {
+        let mut a = agent(command, None);
+        a.account = Some("shared".into());
+        a
+    }
+
+    /// COPL-232: work its account has no slot for waits, unclaimed: no run is started or finished
+    /// for it, so it costs no strike, and the status says what it waits for. The slot going back
+    /// starts it at once.
+    #[tokio::test]
+    async fn work_waits_for_a_slot_on_its_account_without_a_run() {
+        let fake = Arc::new(Fake::default());
+        let accounts = Accounts::new(1);
+        /* Another agent's run on the same account holds the one slot. */
+        let elsewhere = accounts.take("shared").unwrap();
+        let mut l = Looping::start_on(
+            &fake.start(),
+            "account-wait",
+            shared(&["true"]),
+            false,
+            accounts.clone(),
+            Vec::new(),
+        );
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            l.state
+                .wait_for(|s| s.agents[0].waiting_for_slot.as_deref() == Some("shared")),
+        )
+        .await
+        .expect("waiting for a slot")
+        .unwrap();
+        let polls = fake.count("GET /api/inbox");
+        while fake.count("GET /api/inbox") < polls + 3 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(fake.count("POST /api/runs"), 0, "no run started");
+        assert_eq!(fake.count("POST /api/tasks/t1/claim"), 0, "nothing claimed");
+        assert!(fake.finished.lock().unwrap().is_none(), "no run finished, so no strike");
+        assert_eq!(l.state.borrow().agents[0].account.as_deref(), Some("shared"));
+        let status = crate::status::Status::of(&l.state.borrow()).render();
+        assert!(status.contains("waiting for a slot on shared"), "{status}");
+
+        drop(elsewhere);
+        let said = finished(&fake).await;
+        assert_eq!(said["status"], "completed", "{said}");
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            l.state.wait_for(|s| s.agents[0].waiting_for_slot.is_none()),
+        )
+        .await
+        .expect("no longer waiting")
+        .unwrap();
+        assert_eq!(accounts.taken("shared"), 0, "the run gave its slot back");
+        l.stop().await;
+    }
+
+    /// COPL-232: two agents on one account never have more runs going together than its cap, and
+    /// both get theirs done, one after the other.
+    #[tokio::test]
+    async fn two_agents_on_one_account_share_its_cap() {
+        let accounts = Accounts::new(1);
+        let (one, two) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
+        let command = ["sh", "-c", "sleep 0.3"];
+        let a = Looping::start_on(
+            &one.start(),
+            "account-one",
+            shared(&command),
+            false,
+            accounts.clone(),
+            Vec::new(),
+        );
+        let b = Looping::start_on(
+            &two.start(),
+            "account-two",
+            shared(&command),
+            false,
+            accounts.clone(),
+            Vec::new(),
+        );
+        let mut most = 0;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while one.finished.lock().unwrap().is_none() || two.finished.lock().unwrap().is_none() {
+                most = most.max(accounts.taken("shared"));
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("both ran");
+        assert_eq!(most, 1, "never past the cap");
+        assert_eq!((one.count("POST /api/runs"), two.count("POST /api/runs")), (1, 1));
+        a.stop().await;
+        b.stop().await;
+    }
+
+    /// COPL-232: a runtime out of usage holds every agent on its account until the reset, since
+    /// they would all run out the same way; an agent on another account goes on.
+    #[tokio::test]
+    async fn out_of_usage_holds_every_agent_on_the_account() {
+        let fake = Arc::new(Fake::default());
+        let accounts = Accounts::default();
+        let mut same = AgentState::new("me/review", "http://x");
+        same.slot = 2;
+        let mut other = AgentState::new("me/ops", "http://x");
+        other.slot = 3;
+        accounts.join(2, "shared");
+        accounts.join(3, "codex");
+        let command = ["sh", "-c", "echo 'Claude AI usage limit reached' >&2; exit 1"];
+        let mut l = Looping::start_on(
+            &fake.start(),
+            "account-usage",
+            shared(&command),
+            false,
+            accounts,
+            vec![same, other],
+        );
+        finished(&fake).await;
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            l.state.wait_for(|s| s.agents[0].out_of_usage.is_some()),
+        )
+        .await
+        .expect("held")
+        .unwrap();
+        let st = l.state.borrow().clone();
+        assert_eq!(
+            st.agents[1].out_of_usage, st.agents[0].out_of_usage,
+            "the same account waits too"
+        );
+        assert!(st.agents[1].holds(SystemTime::now()));
+        assert_eq!(st.agents[2].out_of_usage, None, "another account goes on");
+        l.stop().await;
     }
 
     /// COPL-195: a runtime out of usage finishes its run as interrupted (no strike), not as a

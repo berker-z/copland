@@ -7,6 +7,7 @@
 //! lives, and finishes the run when it exits. `Daemon::subscribe` hands out the
 //! state for a front end to draw.
 
+pub mod account;
 pub mod agent;
 pub mod api;
 pub mod autostart;

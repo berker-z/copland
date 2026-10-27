@@ -1421,6 +1421,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
+            account: None,
             resume_chains: false,
         };
         let api = Api::new(&agent.url).unwrap();
@@ -1518,6 +1519,7 @@ mod tests {
                 runtime: crate::config::Runtime::ClaudeCode,
                 code_dir: "/tmp/copland-code".into(),
                 max_runs: 10,
+                account: None,
                 resume_chains: false,
             };
             let api = Api::new(&url).unwrap();
@@ -1579,6 +1581,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
+            account: None,
             resume_chains: false,
         };
         let api = Api::new(&agent.url).unwrap();
@@ -1626,6 +1629,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
+            account: None,
             resume_chains: false,
         };
         let api = Api::new(&agent.url).unwrap();
@@ -1699,6 +1703,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: root.join("code"),
             max_runs: 10,
+            account: None,
             resume_chains: true,
         };
         if let Err(said) = sandbox::of(&agent).probe() {
@@ -1786,6 +1791,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: code_dir.clone(),
             max_runs: 10,
+            account: None,
             resume_chains: false,
         };
         if let Err(said) = sandbox::of(&agent).probe() {
@@ -1938,6 +1944,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: root.join("code"),
             max_runs: 10,
+            account: None,
             resume_chains: false,
         };
         if let Err(said) = sandbox::of(&agent).probe() {
