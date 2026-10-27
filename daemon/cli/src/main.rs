@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use copland_daemon_core::client;
 use copland_daemon_core::config::{default_config_path, default_runtime_dir, default_state_dir};
 use copland_daemon_core::search_path;
-use copland_daemon_core::service::{self, Log, NixManaged, Note, Uninstalled, Wrote};
+use copland_daemon_core::service::{self, Log, NixManaged, Note, Uninstalled};
 use copland_daemon_core::socket::Serve;
 use copland_daemon_core::stable::Unstable;
 use copland_daemon_core::{Config, Daemon, Lock, Paths};
@@ -253,17 +253,7 @@ fn install_service(config: &std::path::Path) -> Result<()> {
     for note in early {
         println!("{note}");
     }
-    match &done.wrote {
-        Wrote::New => println!("Wrote {}.", done.file.display()),
-        Wrote::Same => println!("{} is already this; left as it is.", done.file.display()),
-        Wrote::Replaced { was } => println!(
-            "Replaced {}{}.",
-            done.file.display(),
-            was.as_ref()
-                .map(|w| format!(", which ran {}", w.display()))
-                .unwrap_or_default()
-        ),
-    }
+    println!("{}.", done.wrote.says(&done.file));
     match &done.log {
         Log::File(log) => println!(
             "Started {}; it starts again at every login. Its log is {}.",

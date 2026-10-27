@@ -9,7 +9,9 @@
 # (COPL-221). Both install Codex, pinned, and require
 # its sandbox tests (COPL-143), which run `codex sandbox` with the policy the
 # daemon gives Codex's runs: no model, no account. `nix` runs the daemon
-# flake's checks when a PR touches its Nix files (COPL-217).
+# flake's checks when a PR touches its Nix files (COPL-217). `linux-install`
+# installs the daemon as a user would, on the runner and in Arch, Fedora and
+# Ubuntu containers, when a PR touches daemon/ (COPL-220).
 
 name: ci
 
@@ -120,6 +122,86 @@ jobs:
       - if: steps.daemon.outputs.changed == 'true'
         working-directory: daemon
         run: cargo build -p copland-daemon && release/check-launchd.sh target/debug/copland-daemon
+
+  # The Linux install as INSTALL-linux.txt has a user do it (COPL-220,
+  # daemon/ci/install-flow.sh): the tarball's copy refused, the copy in
+  # ~/.local/bin installed, the unit stable, verified by systemd-analyze and
+  # left alone when run again, runtimes found off PATH. On the runner, as a new
+  # user with a real systemd user manager (lingering), so the service is
+  # started and removed too; then in Arch (Omarchy's base), Fedora and Ubuntu
+  # containers, which have no user manager, so only the unit is written there.
+  # The daemon is built once, here: it needs only glibc, and the runner's (Ubuntu
+  # 24.04, 2.39) is no newer than any of the three images'. Only on PRs that
+  # touch daemon/.
+  linux-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Does it touch daemon/?
+        id: daemon
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ] || git diff --name-only "$base" HEAD -- daemon/ | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.daemon.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+      - if: steps.daemon.outputs.changed == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+      - if: steps.daemon.outputs.changed == 'true'
+        working-directory: daemon
+        run: cargo build -p copland-daemon
+      # Somewhere every user (and container) can read: the binary, the script
+      # and the release files it installs.
+      - if: steps.daemon.outputs.changed == 'true'
+        run: |
+          sudo mkdir -p /opt/copland
+          sudo cp -r daemon/ci daemon/release /opt/copland/
+          sudo install -m 755 daemon/target/debug/copland-daemon /opt/copland/copland-daemon
+      - if: steps.daemon.outputs.changed == 'true'
+        name: On the runner, with systemd's user manager
+        run: |
+          sudo useradd -m -s /bin/bash ci
+          uid=$(id -u ci)
+          sudo loginctl enable-linger ci
+          # Started by lingering, but not waited for; this waits. The runner has
+          # no user D-Bus, so systemctl --user uses the manager's own socket.
+          sudo systemctl start user@$uid.service
+          # As ci: its /run/user is its own (0700).
+          ready() { sudo -u ci test -S /run/user/$uid/systemd/private; }
+          for _ in $(seq 60); do ready && break; sleep 1; done
+          ready || { sudo systemctl status user@$uid.service --no-pager; exit 1; }
+          # The runner's image gives every login the runner's own XDG_RUNTIME_DIR
+          # (/run/user/1001), and ci's manager passes it on to its services.
+          grep -rs XDG_RUNTIME_DIR /etc/environment /etc/security/pam_env.conf || true
+          sudo -u ci env XDG_RUNTIME_DIR=/run/user/$uid \
+            systemctl --user set-environment XDG_RUNTIME_DIR=/run/user/$uid
+          # A login's environment, not the runner's (its XDG_CONFIG_HOME is /home/runner's).
+          sudo -u ci env -i HOME=/home/ci USER=ci LOGNAME=ci SHELL=/bin/bash \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            XDG_RUNTIME_DIR=/run/user/$uid \
+            bash /opt/copland/ci/install-flow.sh /opt/copland/copland-daemon manager ||
+            { sudo dmesg | grep -i -E 'denied|apparmor' | tail -20; exit 1; }
+      - if: steps.daemon.outputs.changed == 'true'
+        name: In Arch, Fedora and Ubuntu containers
+        run: |
+          for image in archlinux:latest fedora:latest ubuntu:24.04; do
+            echo "::group::$image"
+            id=$(docker run -d -v /opt/copland:/opt/copland:ro "$image" sleep infinity)
+            docker exec "$id" sh -c 'command -v useradd >/dev/null || dnf -y -q install shadow-utils'
+            docker exec "$id" useradd -m ci
+            docker exec --user ci -e HOME=/home/ci -w /home/ci "$id" \
+              bash /opt/copland/ci/install-flow.sh /opt/copland/copland-daemon
+            docker rm -f "$id" >/dev/null
+            echo "::endgroup::"
+          done
 
   # The daemon flake's checks (COPL-217): its home-manager module evaluated
   # in a home configuration and the units it renders compared with

@@ -8,7 +8,7 @@ Copland box @VERSION@, Linux @ARCH@
 
 The layout matches ~/.local, so installing for yourself is one copy:
 
-  cp -r --remove-destination bin share ~/.local/
+  mkdir -p ~/.local && cp -r --remove-destination bin share ~/.local/
   gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor 2>/dev/null || true
 
 That puts the binaries in ~/.local/bin, copland-box.desktop and

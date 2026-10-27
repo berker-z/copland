@@ -433,6 +433,20 @@ pub enum Wrote {
     Replaced { was: Option<PathBuf> },
 }
 
+impl Wrote {
+    /// What became of `file`, as `--install-service` says it (no full stop): also when enabling
+    /// it fails after, so a reinstall without a user manager still says it changed nothing.
+    pub fn says(&self, file: &Path) -> String {
+        let f = file.display();
+        match self {
+            Wrote::New => format!("Wrote {f}"),
+            Wrote::Same => format!("{f} is already this; left as it is"),
+            Wrote::Replaced { was: Some(was) } => format!("Replaced {f}, which ran {}", was.display()),
+            Wrote::Replaced { was: None } => format!("Replaced {f}"),
+        }
+    }
+}
+
 /// Write `text` at `file` unless it is that already. `was` reads the program an old one ran.
 fn write_if_changed(file: &Path, text: &str, was: impl Fn(&str) -> Option<PathBuf>) -> Result<Wrote> {
     let wrote = match fs::read_to_string(file) {
@@ -525,9 +539,9 @@ pub fn install(config: &Path, program: &Path) -> Result<Installed> {
             .and_then(|_| run("systemctl", &["--user", "restart", UNIT]))
             .with_context(|| {
                 format!(
-                    "wrote {}, but couldn't enable and start it: this needs systemd's user manager \
+                    "{}, but couldn't enable and start it: this needs systemd's user manager \
                      (`systemctl --user`); without one, run `copland-daemon` from your session instead",
-                    unit.display()
+                    wrote.says(&unit)
                 )
             })?;
         let user = std::env::var("USER").unwrap_or_else(|_| "$USER".into());
@@ -1502,6 +1516,28 @@ Type=simple
         );
         assert_eq!(fs::read_to_string(&unit).unwrap(), new);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn says_what_became_of_the_unit() {
+        let unit = Path::new("/home/me/.config/systemd/user/copland-daemon.service");
+        assert_eq!(
+            Wrote::New.says(unit),
+            "Wrote /home/me/.config/systemd/user/copland-daemon.service"
+        );
+        assert_eq!(
+            Wrote::Same.says(unit),
+            "/home/me/.config/systemd/user/copland-daemon.service is already this; left as it is"
+        );
+        let was = Some(PathBuf::from("/gone/copland-daemon"));
+        assert_eq!(
+            Wrote::Replaced { was }.says(unit),
+            "Replaced /home/me/.config/systemd/user/copland-daemon.service, which ran /gone/copland-daemon"
+        );
+        assert_eq!(
+            Wrote::Replaced { was: None }.says(unit),
+            "Replaced /home/me/.config/systemd/user/copland-daemon.service"
+        );
     }
 
     #[test]

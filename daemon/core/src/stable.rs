@@ -267,7 +267,10 @@ pub fn fix(program: &Path, tarball: bool, binaries: &[&str]) -> (String, String)
         .parent()
         .filter(|_| tarball && dir.file_name().is_some_and(|n| n == "bin"))
     {
-        Some(root) => format!("cd {} && cp -r --remove-destination bin share ~/.local/", q(root)),
+        Some(root) => format!(
+            "cd {} && mkdir -p ~/.local && cp -r --remove-destination bin share ~/.local/",
+            q(root)
+        ),
         None => {
             let files: Vec<String> = binaries.iter().map(|b| q(&dir.join(b))).collect();
             format!(
@@ -431,7 +434,7 @@ mod tests {
         let e = check(tarball, &places(), true, &BINARIES).unwrap_err();
         assert_eq!(
             e.fix,
-            "cd /home/me/Downloads/copland-box-0.5.0-linux-x86_64 && cp -r --remove-destination bin share ~/.local/"
+            "cd /home/me/Downloads/copland-box-0.5.0-linux-x86_64 && mkdir -p ~/.local && cp -r --remove-destination bin share ~/.local/"
         );
         let says = e.to_string();
         assert!(

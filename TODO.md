@@ -738,8 +738,18 @@ docs/DESIGN.md under Touch.
   Reinstalling leaves an unchanged unit alone and replaces a stale one,
   naming what it ran. `--check` says what the unit runs, its version, and
   when the running daemon is older (the lock file now carries the
-  version). Unit-tested only; the Arch, Fedora and Ubuntu containers are
-  COPL-220.
+  version).
+- CI installs the daemon on Linux the way a user would (COPL-220, for
+  COPL-215): `daemon/ci/install-flow.sh` in the `linux-install` job, on the
+  runner with a real systemd user manager (enabled, started, removed) and
+  in Arch, Fedora and Ubuntu containers without one (unit written only).
+  It checks the refusals, a stable ExecStart with no PATH,
+  `systemd-analyze verify --user` on the written and shipped units,
+  idempotence, the replacement of a stale unit, and `--check` finding
+  runtimes off PATH. It found that `cp -r … ~/.local/` fails without a
+  `~/.local`, so the note and the refusal now `mkdir -p` it. Not tried:
+  a booted systemd inside a container, or a graphical session (the tray's
+  and the box's autostart entries).
 - macOS (COPL-221, for COPL-215): the launchd agent's program has to be
   somewhere it stays too: an app right in `/Applications` or
   `~/Applications`, `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`.
