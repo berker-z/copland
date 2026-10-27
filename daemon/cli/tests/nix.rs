@@ -108,10 +108,13 @@ fn install_and_uninstall_under_nix_write_nothing_and_print_the_module() {
     let said = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(1), "{said}");
     assert!(said.contains("nothing was stopped or removed"), "{said}");
-    assert!(said.contains("was written by an earlier --install-service"), "{said}");
     assert!(unit.exists(), "not removed");
-    let out = run(&program, &dir, &["--install-service"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains(&format!("rm {}", unit.display())));
+    /* Named only where home-manager's unit would go there: launchd has no module. */
+    if cfg!(target_os = "linux") {
+        assert!(said.contains("was written by an earlier --install-service"), "{said}");
+        let out = run(&program, &dir, &["--install-service"]);
+        assert!(String::from_utf8_lossy(&out.stdout).contains(&format!("rm {}", unit.display())));
+    }
     assert_eq!(
         fs::read_to_string(&unit).unwrap(),
         "[Service]\nExecStart=/nix/store/old/bin/copland-daemon --headless\n",
