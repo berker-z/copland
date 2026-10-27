@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 
+use crate::stable::{Places, Unstable};
+
 /// The tray's binary, and its app id.
 pub const TRAY: &str = "copland-tray";
 
@@ -31,39 +33,60 @@ pub struct Exec {
     pub program: String,
     /// Set when the program is a path that the next upgrade will leave behind, or isn't found.
     pub caveat: Option<String>,
+    /// Set when the program is somewhere it won't stay (COPL-219): `set` writes no entry for it.
+    pub unstable: Option<Unstable>,
 }
 
 /// The program `name` to start at login. On PATH first, as found there, not resolved: a Nix
 /// profile's `bin/copland-box` is a link that moves to each new build, where the store path it
-/// points at stays the old one. Without it, `fallback` (this binary, or the one beside it), said
-/// plainly when it is a store path (a later build won't be the one that starts) or a build tree;
-/// without that either, `name` by name.
-pub fn exec(name: &str, path_var: Option<&str>, fallback: Option<&Path>) -> Exec {
+/// points at stays the old one. A PATH directory that won't stay (`stable::why` on `places`: a
+/// tarball's versioned dir, a download or temporary one) is passed over. Without it on PATH,
+/// `fallback` (this binary, or the one beside it), said plainly when it is a store path (a later
+/// build won't be the one that starts), and refused (`unstable`) when it won't stay; without
+/// that either, `name` by name.
+pub fn exec(name: &str, path_var: Option<&str>, fallback: Option<&Path>, places: &Places) -> Exec {
     let on_path = path_var.into_iter().flat_map(|p| p.split(':')).find_map(|dir| {
         let c = Path::new(dir).join(name);
-        (!dir.is_empty() && Path::new(dir).is_absolute() && is_executable(&c)).then_some(c)
+        (!dir.is_empty()
+            && Path::new(dir).is_absolute()
+            && is_executable(&c)
+            && crate::stable::why(&c, places).is_none())
+        .then_some(c)
     });
     if let Some(p) = on_path {
         return Exec {
             program: p.display().to_string(),
             caveat: None,
+            unstable: None,
         };
     }
     let Some(cur) = fallback else {
         return Exec {
             program: name.into(),
             caveat: Some(format!("not on PATH; the entry runs {name} by name")),
+            unstable: None,
         };
     };
     let s = cur.display().to_string();
-    let caveat = if s.starts_with("/nix/store/") {
-        Some("this exact build, from the Nix store: install it in a profile to follow upgrades".into())
-    } else if s.contains("/target/") {
-        Some(format!("a build from target/: install {name} to start the real one"))
-    } else {
-        None
-    };
-    Exec { program: s, caveat }
+    if s.starts_with("/nix/store/") {
+        return Exec {
+            program: s,
+            caveat: Some("this exact build, from the Nix store: install it in a profile to follow upgrades".into()),
+            unstable: None,
+        };
+    }
+    match crate::stable::on_disk(cur, places) {
+        Ok(()) => Exec {
+            program: s,
+            caveat: None,
+            unstable: None,
+        },
+        Err(u) => Exec {
+            program: s,
+            caveat: Some(format!("{}: install it to ~/.local/bin first", u.why)),
+            unstable: Some(u),
+        },
+    }
 }
 
 /// `name` beside `exe` (the running binary), when it is there and executable: the tarball's
@@ -81,6 +104,7 @@ pub fn here(name: &str) -> Exec {
         name,
         std::env::var("PATH").ok().as_deref(),
         beside(current.as_deref(), name).as_deref(),
+        &Places::here(),
     )
 }
 
@@ -164,7 +188,8 @@ pub fn entry(about: &About, program: &str, config: Option<&Path>) -> String {
     )
 }
 
-/// Write the entry at `file`, or remove it (removing what isn't there is fine).
+/// Write the entry at `file`, or remove it (removing what isn't there is fine). Refused, writing
+/// nothing, for a program somewhere it won't stay (`Exec::unstable`), saying how to install it.
 pub fn set(file: &Path, on: bool, about: &About, config: Option<&Path>, exec: &Exec) -> Result<()> {
     if !on {
         return match std::fs::remove_file(file) {
@@ -173,6 +198,9 @@ pub fn set(file: &Path, on: bool, about: &About, config: Option<&Path>, exec: &E
             }
             _ => Ok(()),
         };
+    }
+    if let Some(u) = &exec.unstable {
+        return Err(u.clone().into());
     }
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
@@ -211,31 +239,53 @@ mod tests {
         let bin = scratch.join("profile/bin");
         std::fs::create_dir_all(&bin).unwrap();
         let path = format!("/nonexistent:{}", bin.display());
+        /* The scratch dir is a temporary one, so the places here leave temporary dirs out. */
+        let places = Places {
+            home: Some("/home/me".into()),
+            ..Places::default()
+        };
         /* Not on PATH: the fallback, with what's odd about it. */
         let e = exec(
             "copland-box",
             Some(&path),
             Some(Path::new("/nix/store/abc-copland-box/bin/copland-box")),
+            &places,
         );
         assert_eq!(e.program, "/nix/store/abc-copland-box/bin/copland-box");
         assert!(e.caveat.unwrap().contains("Nix store"));
         assert!(
-            exec(TRAY, None, Some(Path::new("/src/daemon/target/release/copland-tray")))
-                .caveat
-                .unwrap()
-                .contains("install copland-tray")
+            exec(
+                "copland-box",
+                None,
+                Some(Path::new("/usr/local/bin/copland-box")),
+                &places
+            )
+            .caveat
+            .is_none()
         );
-        assert!(
-            exec("copland-box", None, Some(Path::new("/usr/local/bin/copland-box")))
-                .caveat
-                .is_none()
+        /* Somewhere it won't stay (COPL-219): refused, with how to install it. */
+        let build = exec(
+            TRAY,
+            None,
+            Some(Path::new("/src/daemon/target/release/copland-tray")),
+            &places,
         );
+        assert!(build.caveat.as_deref().unwrap().contains("target/"));
+        assert_eq!(build.unstable.as_ref().unwrap().why, crate::stable::Why::Build);
+        let tarball = exec(
+            TRAY,
+            None,
+            Some(Path::new("/home/me/copland-box-0.5.0-linux-x86_64/bin/copland-tray")),
+            &places,
+        );
+        assert!(tarball.unstable.unwrap().fix.contains("install -m 755"));
         /* Nowhere: by name, saying so. */
         assert_eq!(
-            exec(TRAY, Some(&path), None),
+            exec(TRAY, Some(&path), None, &places),
             Exec {
                 program: TRAY.into(),
-                caveat: Some("not on PATH; the entry runs copland-tray by name".into())
+                caveat: Some("not on PATH; the entry runs copland-tray by name".into()),
+                unstable: None,
             }
         );
         /* On PATH (a profile's link): that, unresolved. */
@@ -245,14 +295,26 @@ mod tests {
             std::fs::write(&tray, "#!/bin/sh\n").unwrap();
             std::fs::set_permissions(&tray, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let e = exec(TRAY, Some(&path), Some(Path::new("/nix/store/abc/bin/copland-tray")));
+        let e = exec(
+            TRAY,
+            Some(&path),
+            Some(Path::new("/nix/store/abc/bin/copland-tray")),
+            &places,
+        );
         assert_eq!(
             e,
             Exec {
                 program: tray.display().to_string(),
-                caveat: None
+                caveat: None,
+                unstable: None,
             }
         );
+        /* A PATH dir that won't stay is passed over. */
+        let temp = Places {
+            temp: vec![scratch.clone()],
+            ..places.clone()
+        };
+        assert_eq!(exec(TRAY, Some(&path), None, &temp).program, TRAY);
         /* Beside a binary: only when it is there. */
         assert_eq!(beside(Some(&bin.join("copland-box")), TRAY), Some(tray.clone()));
         assert_eq!(beside(Some(&bin.join("copland-box")), "copland-nope"), None);
@@ -277,6 +339,11 @@ mod tests {
         set(&file, false, &TRAY_ENTRY, None, &e).unwrap();
         assert!(!file.exists());
         set(&file, false, &TRAY_ENTRY, None, &e).unwrap();
+        /* An unstable program gets no entry; turning it off still removes one. */
+        let err = set(&file, true, &TRAY_ENTRY, None, &build).unwrap_err();
+        assert!(err.to_string().contains("nothing was written"), "{err}");
+        assert!(!file.exists());
+        set(&file, false, &TRAY_ENTRY, None, &build).unwrap();
         std::fs::remove_dir_all(&scratch).unwrap();
         assert_eq!(quote("a$b"), "\"a\\$b\"");
         assert_eq!(quote("50%"), "\"50%%\"");

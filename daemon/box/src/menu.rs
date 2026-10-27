@@ -234,8 +234,9 @@ impl Menu {
     pub fn open(control: Control, tab: Tab, cx: &mut Context<BoxView>) -> Self {
         let path = std::env::var("PATH").ok();
         let current = std::env::current_exe().ok();
-        let exec = prefs::exec(path.as_deref(), current.as_deref());
-        let tray_exec = prefs::tray_exec(path.as_deref(), current.as_deref());
+        let places = copland_daemon_core::stable::Places::here();
+        let exec = prefs::exec(path.as_deref(), current.as_deref(), &places);
+        let tray_exec = prefs::tray_exec(path.as_deref(), current.as_deref(), &places);
         let mut m = Self {
             tab: Tab::Needs,
             control,
@@ -547,7 +548,11 @@ impl Menu {
                 self.message = Some(match set(&file, on, config, exec) {
                     Ok(()) if on => (format!("wrote {}", setup::tilde(&file)), Role::Green),
                     Ok(()) => (format!("removed {}", setup::tilde(&file)), Role::Green),
-                    Err(e) => (format!("× {e:#}"), Role::Red),
+                    /* Somewhere it won't stay (COPL-219): why, and the copy that fixes it, on one line. */
+                    Err(e) => match e.downcast_ref::<copland_daemon_core::stable::Unstable>() {
+                        Some(u) => (format!("× not written: it is {} · {}", u.why, u.fix), Role::Red),
+                        None => (format!("× {e:#}"), Role::Red),
+                    },
                 });
             }
             5 => {

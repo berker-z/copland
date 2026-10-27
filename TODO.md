@@ -729,6 +729,16 @@ docs/DESIGN.md under Touch.
   `--check` says whether there is one, whether it's Nix's and running.
   Tried with a scratch store and `XDG_CONFIG_HOME`, not yet on a NixOS
   session with the module.
+- Other Linux (COPL-219, for COPL-215): `--install-service`, the box's
+  offer and setup's end, tray at login and the box's start at login refuse
+  a binary in a place that won't last (temporary, download, cargo
+  `target/`, a versioned directory: `daemon/core/src/stable.rs`) and print
+  the copy to `~/.local/bin` instead; they don't copy it themselves.
+  Reinstalling leaves an unchanged unit alone and replaces a stale one,
+  naming what it ran. `--check` says what the unit runs, its version, and
+  when the running daemon is older (the lock file now carries the
+  version). Unit-tested only; the Arch, Fedora and Ubuntu containers are
+  COPL-220.
 - Waiting work starts when what it waits on closes (COPL-164): a write
   that closes or deletes the last open task a todo task depends on puts an
   `unblocked` item in each of its assignees' inboxes (migration 0035,

@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use copland_daemon_core::autostart;
-use copland_daemon_core::service::{self, Installed, Log, Note, Service, Session};
+use copland_daemon_core::service::{self, Installed, Log, Note, Service, Session, Wrote};
 
 use crate::scene::{Line, Role};
 use crate::wizard::{Panel, key};
@@ -180,10 +180,14 @@ impl Offer {
                 )
             }
             State::Failed(ask, why) => (
-                vec![
-                    Line::one(format!("× couldn't {}", failed(*ask)), Role::Red),
-                    muted(why.clone()),
-                ],
+                /* A line each: a refusal for an unstable place ends with the command to run. */
+                std::iter::once(Line::one(format!("× couldn't {}", failed(*ask)), Role::Red))
+                    .chain(
+                        why.lines()
+                            .filter(|l| !l.trim().is_empty())
+                            .map(|l| muted(l.trim().to_string())),
+                    )
+                    .collect(),
                 ok,
             ),
         };
@@ -230,6 +234,9 @@ pub fn said(outcome: &Outcome, nix: bool) -> Vec<Line> {
                     Log::File(f) => format!("its log: {}", f.display()),
                 }),
             ];
+            if let Wrote::Replaced { was: Some(was) } = &i.wrote {
+                lines.push(faint(format!("it ran {} before", was.display())));
+            }
             lines.extend(i.notes.iter().map(|n| Line::one(note(n), Role::Yellow)));
             lines
         }
@@ -344,6 +351,7 @@ mod tests {
             enabled: false,
             running: Some(false),
             nix: false,
+            program: None,
         }
     }
 
@@ -375,6 +383,9 @@ mod tests {
     fn says_what_install_did_with_its_notes() {
         let i = Installed {
             file: "/home/me/.config/systemd/user/copland-daemon.service".into(),
+            wrote: Wrote::Replaced {
+                was: Some("/home/me/Downloads/copland-box-0.4.0-linux-x86_64/bin/copland-daemon".into()),
+            },
             name: service::UNIT,
             log: Log::Journal,
             notes: vec![
@@ -384,6 +395,7 @@ mod tests {
                     holder: Holder {
                         pid: Some(42),
                         binary: None,
+                        version: None,
                     },
                 },
             ],
@@ -398,9 +410,13 @@ mod tests {
             "copland-daemon.service: /home/me/.config/systemd/user/copland-daemon.service"
         );
         assert_eq!(lines[2], "its log: journalctl --user -u copland-daemon");
-        assert!(lines[3].contains("sudo loginctl enable-linger me"), "{lines:?}");
-        assert!(lines[4].contains("(pid 42)"), "{lines:?}");
-        assert_eq!(lines.len(), 5);
+        assert_eq!(
+            lines[3],
+            "it ran /home/me/Downloads/copland-box-0.4.0-linux-x86_64/bin/copland-daemon before"
+        );
+        assert!(lines[4].contains("sudo loginctl enable-linger me"), "{lines:?}");
+        assert!(lines[5].contains("(pid 42)"), "{lines:?}");
+        assert_eq!(lines.len(), 6);
     }
 
     #[test]

@@ -27,6 +27,7 @@ pub mod search_path;
 pub mod service;
 pub mod setup;
 pub mod socket;
+pub mod stable;
 pub mod state;
 pub mod status;
 pub mod usage;
