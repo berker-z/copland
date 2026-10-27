@@ -706,7 +706,8 @@ docs/DESIGN.md under Touch.
   tarball the plist as a template (`daemon/cli/src/service.rs`, tested
   against `daemon/release/`). A config written by `copland-daemon --setup`
   no longer points at the box's agents screen. The systemd side checked
-  with systemd-analyze; launchd not yet tried on a Mac. No PATH goes into
+  with systemd-analyze; launchd on CI's macOS runner (COPL-221), not yet
+  on a real Mac. No PATH goes into
   either (COPL-216): the daemon builds the one runtimes are found on when
   it starts, from its own, the login shell's and the usual install dirs
   (`daemon/core/src/search_path.rs`), and `--check` says where each was
@@ -749,6 +750,17 @@ docs/DESIGN.md under Touch.
   `~/.local`, so the note and the refusal now `mkdir -p` it. Not tried:
   a booted systemd inside a container, or a graphical session (the tray's
   and the box's autostart entries).
+- macOS (COPL-221, for COPL-215): the launchd agent's program has to be
+  somewhere it stays too: an app right in `/Applications` or
+  `~/Applications`, `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`.
+  A disk image (`/Volumes`), an App Translocation copy, `$TMPDIR` under
+  `/var/folders`, Downloads or a versioned dir is refused with the `ditto`
+  to /Applications (or the copy to `~/.local/bin`) instead. Reinstalling
+  over a stale plist names what it ran; `--check` reads the plist's
+  program back. CI's `macos-14` runner installs the agent into its
+  `gui/<uid>` domain, reinstalls, is refused from a temp dir and
+  uninstalls (`daemon/release/check-launchd.sh`). Not yet on a real Mac:
+  the agent starting at a real login, and the app's quarantine.
 - Waiting work starts when what it waits on closes (COPL-164): a write
   that closes or deletes the last open task a todo task depends on puts an
   `unblocked` item in each of its assignees' inboxes (migration 0035,

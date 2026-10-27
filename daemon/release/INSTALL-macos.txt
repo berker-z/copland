@@ -26,7 +26,12 @@ To run the headless daemon without the window, at every login:
   copland-daemon --install-service    # a launchd agent, loaded and started
 
 That writes ~/Library/LaunchAgents/dev.berkerz.copland.daemon.plist for
-this binary and config, and logs to ~/Library/Logs/copland-daemon.log. The daemon finds the
+this binary and config, and logs to ~/Library/Logs/copland-daemon.log.
+The agent runs the binary from where it is, so it has to stay there:
+~/.local/bin as above, or Copland.app in /Applications. One run from this
+archive's folder, Downloads, a disk image or a temporary folder is refused,
+with the command that copies it somewhere that lasts. Running it again
+leaves the agent as it is, or points it at the binary it was run from. The daemon finds the
 runtimes when it starts, on its PATH, your login shell's, ~/.local/bin and
 /opt/homebrew/bin; --check shows where.
 dev.berkerz.copland.daemon.plist here is the same agent as a template

@@ -5,7 +5,8 @@
 # require; the daemon part is skipped, not left pending, on PRs that don't
 # touch it. The box (daemon/box) needs GPUI's native libraries and is checked
 # by box-release.yml under Nix instead. `macos` runs the daemon's tests on a
-# Mac too, for its sandbox (COPL-140). Both install Codex, pinned, and require
+# Mac too, for its sandbox (COPL-140), and installs its launchd agent
+# (COPL-221). Both install Codex, pinned, and require
 # its sandbox tests (COPL-143), which run `codex sandbox` with the policy the
 # daemon gives Codex's runs: no model, no account. `nix` runs the daemon
 # flake's checks when a PR touches its Nix files (COPL-217). `linux-install`
@@ -115,6 +116,12 @@ jobs:
         env:
           COPLAND_TEST_CODEX: "1"
         run: cargo test && cargo clippy --all-targets -- -D warnings
+      # The launchd agent for real (COPL-221): installed into the runner's gui
+      # domain from ~/.local/bin, reinstalled, refused from a temporary dir,
+      # and uninstalled (release/check-launchd.sh).
+      - if: steps.daemon.outputs.changed == 'true'
+        working-directory: daemon
+        run: cargo build -p copland-daemon && release/check-launchd.sh target/debug/copland-daemon
 
   # The Linux install as INSTALL-linux.txt has a user do it (COPL-220,
   # daemon/ci/install-flow.sh): the tarball's copy refused, the copy in
