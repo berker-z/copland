@@ -10,6 +10,7 @@
    a board, which board and which tasks (COPL-151): the refetch goes through
    the API like any other read. A board event that names its tasks
    refetches those and patches them into the cached board (lib/boardPatch.ts);
+   one that says only overlap moved reads the board's overlap (COPL-207);
    one that names a board but no tasks reads that board whole; one that
    names no board (an older Worker) reads every board, as before. The boards
    list refetches only on "boards". A tab ignores its own writes, which it
@@ -27,7 +28,7 @@ import { useEffect } from "react";
 import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import type { BoardChange, LiveEvent, LiveTopic } from "@/domain/live";
 import { applyBoardEvents } from "./boardPatch";
-import { fetchTask, KEYS } from "./queries";
+import { fetchOverlap, fetchTask, KEYS } from "./queries";
 import { setCatchingUp, setLive, TAB_ID } from "./liveState";
 import { listen } from "./liveSocket";
 
@@ -69,7 +70,7 @@ const ACROSS_BOARDS = [KEYS.myWork, KEYS.wired, KEYS.recipients];
 function boardRefresh(queryClient: QueryClient, byBoard: Map<string, BoardChange[]>): void {
   const hidden = document.hidden;
   for (const queryKey of ACROSS_BOARDS) void queryClient.invalidateQueries({ queryKey, refetchType: hidden ? "none" : "active" });
-  for (const [boardId, events] of byBoard) void applyBoardEvents(queryClient, fetchTask, boardId, events, hidden);
+  for (const [boardId, events] of byBoard) void applyBoardEvents(queryClient, { task: fetchTask, overlap: fetchOverlap }, boardId, events, hidden);
 }
 
 export function useLiveUpdates(enabled: boolean): void {

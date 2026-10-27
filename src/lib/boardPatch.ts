@@ -14,13 +14,20 @@
    under a parent, or one entering or leaving done or cancelled) names every
    task above, each read comes with its progress, and the patch takes it.
    Should one the tab holds above such a task not be named (an older Worker),
-   it reads the board whole. Other things the read counts over more than the
-   named tasks read it whole too: overlap (task.overlap) moves when a task
-   closes or reopens on a board with code, and a task's new dependencies
-   may be closed tasks the read doesn't hold. Everything else keeps each
-   task's overlap. A closed task the board read doesn't hold (closed
-   too long ago) is not added to it: the paged older ones and a stray
-   task opened by key refetch under their own keys instead.
+   it reads the board whole. A task's new dependencies may be closed tasks
+   the read doesn't hold, so they read it whole too. A closed task the board
+   read doesn't hold (closed too long ago) is not added to it: the paged
+   older ones and a stray task opened by key refetch under their own keys
+   instead.
+
+   Overlap (task.overlap) is worked out over all the board's open tasks
+   together, so a task's own read leaves it empty and a patch keeps what the
+   tab held. When it may have moved (an event that says so, BoardChange
+   .overlap: a changed-files report; or a task closing or reopening on a
+   board with code), the tab reads the board's overlap
+   (GET /api/boards/:id/overlap, COPL-207) and puts it on every task it
+   holds, rather than the board. A report changes nothing else, so it
+   patches no task and leaves the version alone.
 
    A tab that holds no read of the board may still show one of its tasks,
    opened from the inbox or /wired without the board (useTaskView, COPL-153):
@@ -33,6 +40,7 @@
 
 import type { QueryClient } from "@tanstack/react-query";
 import { planBoard, type BoardChange } from "@/domain/live";
+import type { BoardOverlapRead } from "@/domain/overlap";
 import type { BoardDetail, ParentProgress, Task, TaskRead } from "@/domain/types";
 import { COMMENTS_KEY, EVENTS_KEY } from "./boardEdits";
 import { KEYS } from "./queries";
@@ -40,17 +48,23 @@ import { KEYS } from "./queries";
 /** One task's read (GET /api/tasks/:id), or null when it is gone (404). */
 export type FetchTask = (id: string) => Promise<TaskRead | null>;
 
+/** What a patch reads: a task (null when it is gone), and a board's overlap. */
+export interface BoardReads {
+  task: FetchTask;
+  overlap: (boardId: string) => Promise<BoardOverlapRead>;
+}
+
 const inFlight = new Map<string, Promise<void>>();
 
 /** Apply these events about one board, after any batch for it still under way. */
 export function applyBoardEvents(
   queryClient: QueryClient,
-  fetchTask: FetchTask,
+  reads: BoardReads,
   boardId: string,
   events: BoardChange[],
   hidden: boolean,
 ): Promise<void> {
-  const next = (inFlight.get(boardId) ?? Promise.resolve()).then(() => apply(queryClient, fetchTask, boardId, events, hidden));
+  const next = (inFlight.get(boardId) ?? Promise.resolve()).then(() => apply(queryClient, reads, boardId, events, hidden));
   const settled = next.finally(() => {
     if (inFlight.get(boardId) === settled) inFlight.delete(boardId);
   });
@@ -70,9 +84,12 @@ function movesProgress(detail: BoardDetail, before: Task | undefined, after: Tas
   return before.parentId !== after.parentId || (after.parentId !== null && counted(before) !== counted(after));
 }
 
-/** What the read counts over more than the tasks named, that a patch can't put right: overlap, and dependencies it may not hold. */
-const beyondPatch = (detail: BoardDetail, before: Task | undefined, after: Task) =>
-  !!before && ((isOpen(before) !== isOpen(after) && detail.repos.length > 0) || before.dependsOn.join() !== after.dependsOn.join());
+/** New dependencies, which may be closed tasks the read doesn't hold: a patch can't put those right. */
+const beyondPatch = (before: Task | undefined, after: Task) => !!before && before.dependsOn.join() !== after.dependsOn.join();
+
+/** Whether a patch from `before` to `after` moves who overlaps whom: an open task closing, or a closed one reopening, on a board with code. */
+const movesOverlap = (detail: BoardDetail, before: Task | undefined, after: Task) =>
+  !!before && isOpen(before) !== isOpen(after) && detail.repos.length > 0;
 
 /** Every task above these, as the board holds them. */
 function above(byId: Map<string, Task>, parents: Array<string | null>): Set<string> {
@@ -88,7 +105,7 @@ function above(byId: Map<string, Task>, parents: Array<string | null>): Set<stri
 
 async function apply(
   queryClient: QueryClient,
-  fetchTask: FetchTask,
+  reads: BoardReads,
   boardId: string,
   events: BoardChange[],
   hidden: boolean,
@@ -115,8 +132,31 @@ async function apply(
     void queryClient.invalidateQueries({ queryKey: [...key, "overlap"], refetchType });
     return;
   }
+  /* The board's overlap, read and put on every task the tab holds (a closed one shares nothing). */
+  const patchOverlap = async () => {
+    let read: BoardOverlapRead;
+    try {
+      read = await reads.overlap(boardId);
+    } catch {
+      return whole();
+    }
+    const now = queryClient.getQueryData<BoardDetail>(key);
+    if (!now) return;
+    queryClient.setQueryData<BoardDetail>(key, {
+      ...now,
+      tasks: now.tasks.map((t) => ({ ...t, overlap: isOpen(t) ? (read.tasks[t.id] ?? []) : [] })),
+    });
+  };
+  let overlapMoved = events.some((e) => e.overlap);
+
   const plan = planBoard(held.version, events);
-  if (plan.kind === "none") return;
+  if (plan.kind === "none") {
+    if (!overlapMoved) return;
+    /* A hidden tab fetches nothing. The task modal's overlap is under the board's key too. */
+    if (hidden) return whole();
+    void queryClient.invalidateQueries({ queryKey: [...key, "overlap"], refetchType });
+    return patchOverlap();
+  }
   /* A hidden tab fetches nothing, and an edit of this tab's own in flight would be overwritten by a patch. */
   if (plan.kind === "whole" || hidden || queryClient.isMutating() > 0) return whole();
 
@@ -129,7 +169,7 @@ async function apply(
 
   let read: Array<[string, TaskRead | null]>;
   try {
-    read = await Promise.all(plan.tasks.map(async (id) => [id, await fetchTask(id)] as [string, TaskRead | null]));
+    read = await Promise.all(plan.tasks.map(async (id) => [id, await reads.task(id)] as [string, TaskRead | null]));
   } catch {
     return whole();
   }
@@ -154,7 +194,8 @@ async function apply(
       continue;
     }
     const { progress: counted, ...task } = fresh;
-    if (beyondPatch(now, before, task)) return whole();
+    if (beyondPatch(before, task)) return whole();
+    if (movesOverlap(now, before, task)) overlapMoved = true;
     /* Everything above it, before and after, must have come with its new progress. */
     if (movesProgress(now, before, task) && [...above(cached, [before?.parentId ?? null, task.parentId])].some((p) => !named.has(p))) return whole();
     if (counted) progress[id] = counted;
@@ -164,4 +205,5 @@ async function apply(
     byId.set(id, { ...task, overlap: before?.overlap ?? [] });
   }
   queryClient.setQueryData<BoardDetail>(key, { ...now, tasks: [...byId.values()], progress, version: plan.version });
+  if (overlapMoved) await patchOverlap();
 }

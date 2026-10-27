@@ -8,21 +8,26 @@
    whole boards through those same routes. A burst of task writes patches
    the named tasks in and reads nothing else; a skipped version, a delete,
    anything without its tasks reads the board whole; and the tab ends with
-   the board as the server has it.
+   the board as the server has it. A changed-files report (COPL-207) tells
+   only that overlap moved: no task, no version, and the tab reads the
+   board's overlap, not the board; an unchanged report and a claim renewed
+   tell nobody.
    ========================================================================== */
 
 import { d1, sqlite } from "./worker.ts";
 import type { BoardDetail, Task, Viewer } from "../src/domain/types.ts";
 import type { BoardChange, LiveEvent } from "../src/domain/live.ts";
+import type { BoardOverlapRead } from "../src/domain/overlap.ts";
 
-const { planBoard, PATCH_LIMIT } = await import("../src/domain/live.ts");
+const { onlyOverlap, planBoard, PATCH_LIMIT } = await import("../src/domain/live.ts");
 const { progress } = await import("../src/domain/tasks.ts");
 const { Changes } = await import("../src/worker/live.ts");
 const { HttpError } = await import("../src/worker/http.ts");
 const { getBoard } = await import("../src/worker/routes/boards.ts");
 const { deleteTask, getTask, patchTask, postTask } = await import("../src/worker/routes/tasks.ts");
 const { postComment } = await import("../src/worker/routes/comments.ts");
-const { deleteClaim } = await import("../src/worker/routes/runs.ts");
+const { deleteClaim, getCurrentRun, postClaim, postRunNews } = await import("../src/worker/routes/runs.ts");
+const { getBoardOverlap, putTaskFiles } = await import("../src/worker/routes/files.ts");
 const { applyBoardEvents } = await import("../src/lib/boardPatch.ts");
 const { QueryClient } = await import("@tanstack/react-query");
 
@@ -53,6 +58,9 @@ t("no version (an older Worker, or a write that doesn't bump) reads it whole", p
 t("no tasks (stages, labels, a delete) reads it whole", planBoard(4, [ev(5)]).kind === "whole");
 t("a board held without a version reads it whole", planBoard(undefined, [ev(5, ["a"])]).kind === "whole");
 t(`more than ${PATCH_LIMIT} tasks reads it whole`, planBoard(0, [ev(1, Array.from({ length: PATCH_LIMIT + 1 }, (_, i) => `t${i}`))]).kind === "whole");
+t("an event that moves only overlap is no task's: nothing to patch", onlyOverlap({ board: "b", tasks: [], overlap: true }) && planBoard(4, [{ board: "b", tasks: [], overlap: true }]).kind === "none");
+t("and it doesn't hide the task events beside it", planBoard(4, [{ board: "b", tasks: [], overlap: true }, ev(5, ["a"])]).kind === "patch");
+t("an overlap flag on an event with tasks is still that event's", !onlyOverlap({ board: "b", version: 5, tasks: ["a"], overlap: true }));
 t(`${PATCH_LIMIT} tasks is still a patch`, planBoard(0, [ev(1, Array.from({ length: PATCH_LIMIT }, (_, i) => `t${i}`))]).kind === "patch");
 
 /* -------------------------------------------------------------- Changes -- */
@@ -78,6 +86,10 @@ t(`${PATCH_LIMIT} tasks is still a patch`, planBoard(0, [ev(1, Array.from({ leng
   w.board(["sam"], { board: "b", version: 3, tasks: ["a"] });
   w.board(["sam"], { board: "b" });
   t("one of them without tasks: the merge has none", (w.events(null).get("sam") ?? [])[0].tasks === undefined);
+  const o = new Changes();
+  o.board(["sam"], { board: "b", tasks: [], assignees: [], overlap: true });
+  o.board(["sam"], { board: "b", tasks: [], assignees: [] });
+  t("an overlap note survives a merge", (o.events(null).get("sam") ?? [])[0].overlap === true);
   const plain = new Changes();
   plain.notify(["sam"], "settings");
   t("no board: one event, topics only, as before", JSON.stringify(plain.events(null).get("sam")) === JSON.stringify([{ topics: ["settings"], tab: null }]));
@@ -90,6 +102,8 @@ db.exec(`
   INSERT INTO users (id, email, handle) VALUES ('sam', 'sam@x.test', 'sam'), ('kim', 'kim@x.test', 'kim');
   INSERT INTO users (id, email, handle, kind, owner_id) VALUES ('dev', 'dev@agents.invalid', 'sam/dev', 'agent', 'sam');
   INSERT INTO agents (user_id, name, work_from) VALUES ('dev', 'dev', 'members');
+  INSERT INTO api_tokens (id, user_id, kind, name, scope, token_hash) VALUES ('tok-dev', 'dev', 'personal', 'box', 'write', 'h-dev');
+  INSERT INTO runs (id, user_id, token_id, token_hash, client, kind) VALUES ('run1', 'dev', 'tok-dev', 'h-run1', 'claude-code', 'supervised');
   INSERT INTO boards (id, name, key, created_by) VALUES ('b1', 'B', 'BB', 'sam');
   INSERT INTO board_members (board_id, user_id, role) VALUES ('b1', 'sam', 'owner'), ('b1', 'kim', 'editor'), ('b1', 'dev', 'editor');
   INSERT INTO stages (id, board_id, name, position, category) VALUES
@@ -143,11 +157,17 @@ const fetchTask = async (id: string): Promise<Task | null> => {
     throw error;
   }
 };
+const overlapReads: string[] = [];
+const fetchOverlap = async (boardId: string) => {
+  overlapReads.push(boardId);
+  return (await (await getBoardOverlap(env, kim, boardId)).json()) as BoardOverlapRead;
+};
+const boardReads = { task: fetchTask, overlap: fetchOverlap };
 const held = () => tab.getQueryData<BoardDetail>(key)!;
 const apply = (events: LiveEvent[], hidden = false) =>
   applyBoardEvents(
     tab,
-    fetchTask,
+    boardReads,
     "b1",
     events.filter((e) => e.board === "b1").map(({ topics: _t, tab: _b, ...change }) => change as BoardChange),
     hidden,
@@ -287,18 +307,87 @@ t("and is the server's board again, at its version", same(held(), await boardRea
   const stale = (k: unknown[]) => modal.getQueryState(k)?.isInvalidated === true;
   const edit = await heard((c) => patchTask(req("PATCH", { title: "seen from the inbox" }), env, sam, looseId, c));
   reads.length = 0;
-  await applyBoardEvents(modal, fetchTask, "b1", edit.events.map(({ topics: _t, tab: _b, ...change }) => change as BoardChange), false);
+  await applyBoardEvents(modal, boardReads, "b1", edit.events.map(({ topics: _t, tab: _b, ...change }) => change as BoardChange), false);
   t("without the board, an event refetches the tasks it names and reads none itself", stale(under("task", looseId)) && reads.length === 0);
   t("and leaves the others and the shell alone", !stale(under("task", childId)) && !stale(under("task", epicId)) && !stale(under("shell")));
   t("and reads no board", modal.getQueryData(key) === undefined);
   const parentMoved = await heard((c) => patchTask(req("PATCH", { stageId: "doing" }), env, sam, childId, c));
-  await applyBoardEvents(modal, fetchTask, "b1", parentMoved.events.map(({ topics: _t, tab: _b, ...change }) => change as BoardChange), false);
+  await applyBoardEvents(modal, boardReads, "b1", parentMoved.events.map(({ topics: _t, tab: _b, ...change }) => change as BoardChange), false);
   t("a child's move refetches the parent it names, whose progress moved", stale(under("task", childId)) && stale(under("task", epicId)));
   const dropped = await heard((c) => postTask(req("POST", { title: "dropped" }), env, sam, "b1", c));
   const droppedGone = await heard((c) => deleteTask(env, sam, dropped.body.id as string, c));
   modal.setQueryData(under("shell"), {});
-  await applyBoardEvents(modal, fetchTask, "b1", droppedGone.events.map(({ topics: _t, tab: _b, ...change }) => change as BoardChange), false);
+  await applyBoardEvents(modal, boardReads, "b1", droppedGone.events.map(({ topics: _t, tab: _b, ...change }) => change as BoardChange), false);
   t("an event naming no tasks refetches everything under the board's key", stale(under("shell")));
+}
+
+/* ------------------------------------------------- reports and renewals -- */
+
+{
+  const run: Viewer = {
+    user: { id: "dev", kind: "agent", email: null, handle: "sam/dev", avatar: null, isAdmin: false, ownerId: "sam" },
+    agent: { owner: sam.user, grants: [], workFrom: "members", description: "" },
+    access: { tokenId: "tok-dev", kind: "personal", scope: "write", via: "Claude Code", runId: "run1" },
+  };
+  const overlapOf = (d: BoardDetail) => JSON.stringify(d.tasks.map((x) => [x.id, x.overlap]).sort());
+  const BASE = "9431726c06153edf2f5348aae996cd62832bf486";
+  const report = (id: string, files: string[]) => heard((c) => putTaskFiles(req("PUT", { base: BASE, files }), env, run, id, c));
+  /* The hidden tab above is behind: start from the server's board. */
+  tab.setQueryData(key, await boardRead());
+  whole.length = 0;
+
+  const a = await heard((c) => postTask(req("POST", { title: "worked a" }), env, sam, "b1", c));
+  const b = await heard((c) => postTask(req("POST", { title: "worked b" }), env, sam, "b1", c));
+  const [aId, bId] = [a.body.id as string, b.body.id as string];
+  const claimA = await heard((c) => postClaim(env, run, aId, c));
+  const claimB = await heard((c) => postClaim(env, run, bId, c));
+  await apply([...a.events, ...b.events, ...claimA.events, ...claimB.events]);
+  t("a run's first claim is news, patched in", claimA.events.length === 1 && whole.length === 0 && held().tasks.find((x) => x.id === aId)?.claim?.runId === "run1");
+
+  const at = version();
+  const renewed = await heard((c) => postClaim(env, run, aId, c));
+  t("claiming again a task the run holds renews it and tells nobody", renewed.events.length === 0 && renewed.body.claim !== null);
+  t("and bumps no version, so the next event still patches", version() === at);
+  t("a heartbeat takes no Changes at all: it can't tell anyone", getCurrentRun.length === 1 && postRunNews.length === 2);
+
+  const first = await report(aId, ["src/x.ts", "src/y.ts"]);
+  const [event] = first.events;
+  t("a changed report tells the board that only overlap moved", first.events.length === 1 && event.board === "b1" && event.overlap === true && event.tasks?.length === 0);
+  t("naming no task and no assignee, so the box skips it", event.assignees?.length === 0);
+  t("and bumping no version", event.version === undefined && version() === at);
+  reads.length = 0;
+  overlapReads.length = 0;
+  await apply(first.events);
+  t("a tab reads the board's overlap once, and no task and no board", whole.length === 0 && reads.length === 0 && overlapReads.length === 1);
+
+  const second = await report(bId, ["src/y.ts"]);
+  overlapReads.length = 0;
+  await apply(second.events);
+  t("a report that makes two tasks overlap shows on both", held().tasks.find((x) => x.id === aId)?.overlap.length === 1 && held().tasks.find((x) => x.id === bId)?.overlap.length === 1);
+  t("as the server's board has it", overlapOf(held()) === overlapOf(await boardRead()) && whole.length === 0);
+  t("and the board is still the server's, at its version", same(held(), await boardRead()) && held().version === version());
+
+  const again = await report(bId, ["src/y.ts"]);
+  t("an unchanged report tells nobody", again.events.length === 0 && version() === at);
+
+  const edit = await heard((c) => patchTask(req("PATCH", { title: "worked a, edited" }), env, sam, aId, c));
+  const third = await report(bId, ["src/z.ts"]);
+  reads.length = 0;
+  overlapReads.length = 0;
+  await apply([...third.events, ...edit.events]);
+  t("a report in a burst with an edit: the edit patches, the overlap is read once", whole.length === 0 && reads.join() === aId && overlapReads.length === 1);
+  t("and the overlap it ended is gone", held().tasks.every((x) => x.overlap.length === 0) && overlapOf(held()) === overlapOf(await boardRead()));
+
+  /* With code on the board, a task closing moves overlap: read, not the board. */
+  await report(bId, ["src/x.ts"]);
+  db.exec(`INSERT INTO board_repos (id, board_id, repo, connected_by, created_at) VALUES ('repo', 'b1', 'sam/b', 'sam', '2026-01-01T00:00:00.000Z')`);
+  tab.setQueryData(key, await boardRead());
+  t("the tab holds the overlap", held().tasks.find((x) => x.id === aId)?.overlap.length === 1);
+  const shutB = await heard((c) => patchTask(req("PATCH", { stageId: "done" }), env, sam, bId, c));
+  overlapReads.length = 0;
+  await apply(shutB.events);
+  t("on a board with code, a task closing patches it and reads the overlap, not the board", whole.length === 0 && overlapReads.length === 1);
+  t("so the task it overlapped overlaps nothing now", held().tasks.find((x) => x.id === aId)?.overlap.length === 0 && overlapOf(held()) === overlapOf(await boardRead()));
 }
 
 /* --------------------------------------------------------------- report -- */
