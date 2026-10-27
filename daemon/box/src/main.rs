@@ -446,6 +446,7 @@ mod tests {
             Status::of(&copland_daemon_core::DaemonState {
                 agents: vec![copland_daemon_core::AgentState::new("me/dev", "http://x")],
                 stopping: false,
+                autostart: false,
             })
             .agents
             .remove(0),

@@ -128,6 +128,13 @@ docs/DESIGN.md under Touch.
       yet: clicking Open the box in a real bar's tray, the entry starting
       the tray at a real login, and the box's tray at login switch in its
       window (no GPU in the run's sandbox).
+- [ ] The tray stopping what it started (COPL-224) is tested as units (the
+      menu on a workstation, a server and with no daemon, the confirmation
+      submenu, the systemd and launchd stop commands, `autostart` read from
+      `systemctl show`, a tray holding the config's lock stopped by SIGTERM
+      while the daemon is left). Not yet: Stop Copland and Start Copland
+      clicked in a real bar's tray against a real systemd user manager, the
+      launcher's Stop ending a tray started at login, and macOS's launchd.
 - [ ] What runs cost (COPL-71) was checked against the routes in
       `checks/usage.check.ts`, the parser against a real `claude -p
       --output-format json` result, and a fake runtime through the runner;

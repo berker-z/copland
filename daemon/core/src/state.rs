@@ -13,6 +13,8 @@ pub struct DaemonState {
     pub agents: Vec<AgentState>,
     /// Set once shutdown has begun.
     pub stopping: bool,
+    /// This daemon is the service and starts at login (`service::autostarts`, COPL-224).
+    pub autostart: bool,
 }
 
 #[derive(Debug, Clone)]

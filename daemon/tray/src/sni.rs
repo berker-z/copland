@@ -102,28 +102,37 @@ impl ksni::Tray for Tray {
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        self.view
-            .menu
-            .iter()
-            .map(|e| match e {
-                Entry::Separator => ksni::MenuItem::Separator,
-                Entry::Item { label: text, action } => {
-                    let action = action.clone();
-                    ksni::menu::StandardItem {
-                        label: label(text),
-                        enabled: action.is_some(),
-                        activate: Box::new(move |tray: &mut Self| {
-                            if let Some(a) = &action {
-                                let _ = tray.actions.send(a.clone());
-                            }
-                        }),
-                        ..Default::default()
-                    }
-                    .into()
-                }
-            })
-            .collect()
+        items(&self.view.menu)
     }
+}
+
+fn items(entries: &[Entry]) -> Vec<ksni::MenuItem<Tray>> {
+    entries
+        .iter()
+        .map(|e| match e {
+            Entry::Separator => ksni::MenuItem::Separator,
+            Entry::Menu { label: text, entries } => ksni::menu::SubMenu {
+                label: label(text),
+                submenu: items(entries),
+                ..Default::default()
+            }
+            .into(),
+            Entry::Item { label: text, action } => {
+                let action = action.clone();
+                ksni::menu::StandardItem {
+                    label: label(text),
+                    enabled: action.is_some(),
+                    activate: Box::new(move |tray: &mut Tray| {
+                        if let Some(a) = &action {
+                            let _ = tray.actions.send(a.clone());
+                        }
+                    }),
+                    ..Default::default()
+                }
+                .into()
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -144,10 +153,17 @@ mod tests {
         assert_eq!(tray.icon_pixmap().len(), icons::SIZES.len());
         assert_eq!(tray.tool_tip().description, "not running");
         let menu = tray.menu();
+        /* No daemon: Quit tray last, after Start Copland. */
         let Some(ksni::MenuItem::Standard(quit)) = menu.last() else {
             panic!("Quit tray last");
         };
         assert_eq!(quit.label, "Quit tray");
+        let Some(ksni::MenuItem::Standard(start)) = menu.iter().rev().nth(2) else {
+            panic!("Start Copland before it");
+        };
+        assert_eq!(start.label, "Start Copland");
+        (start.activate)(&mut tray);
+        assert_eq!(rx.try_recv().unwrap(), Action::StartCopland);
         assert!(quit.enabled);
         (quit.activate)(&mut tray);
         assert_eq!(rx.try_recv().unwrap(), Action::Quit);
@@ -171,5 +187,50 @@ mod tests {
         assert_eq!(tray.tool_tip().description, "not running\n× no copland-box");
         tray.show(&Seen::default());
         assert_eq!(tray.tool_tip().description, "not running");
+    }
+
+    /* COPL-224: with a run going, Stop Copland is a submenu whose last item stops. */
+    #[test]
+    fn stop_copland_with_a_run_is_a_submenu() {
+        use copland_daemon_core::status::{Agent, Run, Status};
+        use ksni::Tray as _;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = Tray::new(tx);
+        let agent: Agent = serde_json::from_value(serde_json::json!({
+            "slot": 1, "configured": "me/dev", "handle": "me/dev", "user_id": null,
+            "url": "http://x", "state": "running", "live": "connected", "last_poll": null,
+            "unread": 0, "waiting": [], "messages": 0, "retiring": false,
+            "unavailable_since": null, "runs": [], "missing": null, "needs": [],
+            "last_error": null, "last_run": null
+        }))
+        .unwrap();
+        let mut agent = agent;
+        agent.runs = vec![Run {
+            run: "aaaa".into(),
+            task: Some("COPL-7".into()),
+            kind: "task".into(),
+            since: "2026-10-27T10:00:00Z".into(),
+            worktree: None,
+        }];
+        tray.show(&Seen {
+            status: Some(Status {
+                version: 1,
+                stopping: false,
+                autostart: false,
+                agents: vec![agent],
+            }),
+            error: None,
+        });
+        let menu = tray.menu();
+        let Some(ksni::MenuItem::SubMenu(stop)) = menu.iter().rev().nth(1) else {
+            panic!("Stop Copland before Hide tray");
+        };
+        assert_eq!(stop.label, "Stop Copland");
+        let Some(ksni::MenuItem::Standard(confirm)) = stop.submenu.last() else {
+            panic!("the confirmation in it");
+        };
+        assert_eq!(confirm.label, "Stop Copland: 1 run on COPL-7 will go back to todo");
+        (confirm.activate)(&mut tray);
+        assert_eq!(rx.try_recv().unwrap(), Action::StopCopland);
     }
 }

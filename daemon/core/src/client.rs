@@ -298,6 +298,7 @@ mod tests {
         DaemonState {
             agents: vec![a],
             stopping: false,
+            autostart: false,
         }
     }
 
