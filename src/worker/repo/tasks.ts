@@ -210,48 +210,30 @@ async function hydrate(db: D1Database, rows: TaskRow[], overlap: boolean): Promi
 }
 
 /**
- * Each of these tasks that has children: how many, and its leaf tasks at any
+ * Each of these tasks that has children: how many, its leaf tasks at any
  * depth done out of those not cancelled, the way progress() in
- * domain/tasks.ts counts them, but over the whole subtree in the database,
- * closed tasks of any age included. A looped parent chain is walked once
- * (UNION), and a task is never counted under itself.
+ * domain/tasks.ts counts them, closed tasks of any age included, and what
+ * the runs on it and its subtree cost. Read from task_rollup, which the
+ * database keeps on every write (migrations/0038_task_rollup.sql): one row
+ * per parent, however big its subtree, and none for a leaf, which the
+ * parents' index doesn't hold.
  */
 export async function progressFor(db: D1Database, ids: string[]): Promise<Record<string, ParentProgress>> {
   if (ids.length === 0) return {};
+  /* One task (a task read) is bound as itself: json_each costs rows read too. */
+  const one = ids.length === 1;
   const { results } = await db
     .prepare(
-      `WITH RECURSIVE below(root, id) AS (
-         SELECT parent_id, id FROM tasks WHERE parent_id ${IN_IDS} AND deleted_at IS NULL
-         UNION
-         SELECT b.root, t.id FROM below b JOIN tasks t ON t.parent_id = b.id AND t.deleted_at IS NULL
-       ),
-       counted AS (
-         SELECT root, sum(parent_id = root) AS children,
-                sum(leaf AND category = 'done') AS done, sum(leaf AND category != 'cancelled') AS total
-           FROM (SELECT b.root, t.parent_id, s.category,
-                        t.level IS NOT 'milestone'
-                          AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id AND c.deleted_at IS NULL) AS leaf
-                   FROM below b JOIN tasks t ON t.id = b.id JOIN stages s ON s.id = t.stage_id
-                  WHERE b.id != b.root)
-          GROUP BY root
-       ),
-       /* What the runs on the parent and on its subtree cost (COPL-71): each task once (UNION), the parent too. */
-       tree(root, id) AS (SELECT root, id FROM below UNION SELECT root, root FROM counted),
-       spent AS (
-         SELECT x.root, ${SPENT_SUMS}
-           FROM tree x JOIN runs r ON r.task_id = x.id AND r.input_tokens IS NOT NULL
-          GROUP BY x.root
-       )
-       SELECT c.root, c.children, c.done, c.total, s.runs, s.resumed, s.input_tokens, s.output_tokens,
-              s.cache_read_tokens, s.cache_write_tokens, s.cost_usd, s.turns, s.duration_ms
-         FROM counted c LEFT JOIN spent s ON s.root = c.root`,
+      `SELECT task_id, children, done, total, runs, resumed, input_tokens, output_tokens, cache_read_tokens,
+              cache_write_tokens, cost_usd, turns, duration_ms
+         FROM task_rollup INDEXED BY task_rollup_parents WHERE task_id ${one ? "= ?1" : IN_IDS} AND children > 0`,
     )
-    .bind(JSON.stringify(ids))
-    .all<SpentRow & { root: string; children: number; done: number; total: number }>();
+    .bind(one ? ids[0] : JSON.stringify(ids))
+    .all<SpentRow & { task_id: string; children: number; done: number; total: number }>();
   return Object.fromEntries(
     results.map((r) => {
       const spent = toSpent(r);
-      return [r.root, { children: r.children, done: r.done, total: r.total, ...(spent ? { spent } : {}) }];
+      return [r.task_id, { children: r.children, done: r.done, total: r.total, ...(spent ? { spent } : {}) }];
     }),
   );
 }

@@ -257,13 +257,15 @@ async function copy(from: DatabaseSync, to: D1Database) {
     const rows = from.prepare(`SELECT * FROM "${name}" ORDER BY rowid`).all() as Array<Record<string, SQLInputValue>>;
     if (!rows.length) continue;
     const cols = Object.keys(rows[0]);
-    /* D1 binds at most 100 values a statement. */
+    /* D1 binds at most 100 values a statement. task_rollup's triggers have
+       already filled it as tasks and runs went in: the copy replaces those. */
+    const verb = name === "task_rollup" ? "INSERT OR REPLACE" : "INSERT";
     const per = Math.max(1, Math.floor(100 / cols.length));
     for (let i = 0; i < rows.length; i += per) {
       const chunk = rows.slice(i, i + per);
       statements.push(
         to
-          .prepare(`INSERT INTO "${name}" (${cols.join(", ")}) VALUES ${chunk.map(() => `(${cols.map(() => "?").join(", ")})`).join(", ")}`)
+          .prepare(`${verb} INTO "${name}" (${cols.join(", ")}) VALUES ${chunk.map(() => `(${cols.map(() => "?").join(", ")})`).join(", ")}`)
           .bind(...chunk.flatMap((row) => cols.map((c) => row[c]))),
       );
     }
