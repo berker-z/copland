@@ -182,7 +182,8 @@ jobs:
           sudo -u ci env -i HOME=/home/ci USER=ci LOGNAME=ci SHELL=/bin/bash \
             PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
             XDG_RUNTIME_DIR=/run/user/$uid \
-            bash /opt/copland/ci/install-flow.sh /opt/copland/copland-daemon manager
+            bash /opt/copland/ci/install-flow.sh /opt/copland/copland-daemon manager ||
+            { sudo dmesg | grep -i -E 'denied|apparmor' | tail -20; exit 1; }
       - if: steps.daemon.outputs.changed == 'true'
         name: In Arch, Fedora and Ubuntu containers
         run: |

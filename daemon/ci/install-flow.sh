@@ -149,7 +149,9 @@ if [ -n "$manager" ]; then
     sleep 0.5
   done
   systemctl --user is-active --quiet copland-daemon.service || {
-    journalctl --user -u copland-daemon.service --no-pager | tail -20
+    journalctl --user -u copland-daemon.service --no-pager | head -30
+    id
+    ls -la "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/copland" || true
     fail "not running"
   }
 fi
