@@ -658,7 +658,16 @@ export async function deleteTask(env: Env, viewer: Viewer, id: string, changes: 
   /* An open task gone is one less to wait on: told before its dependencies go with it. */
   const closed = [...(task.completedAt ? [] : [id]), ...follow.closed];
   const unblock = closed.length ? [unblockedStatement(db, closed, viewer.user.id)] : [];
+  /* What the delete changes besides itself: the children it unparents and the tasks that stop waiting on it. */
+  const { results: touched } = await db
+    .prepare(
+      `SELECT id FROM tasks WHERE parent_id = ?1 AND deleted_at IS NULL
+       UNION SELECT task_id FROM task_dependencies WHERE depends_on_id = ?1`,
+    )
+    .bind(id)
+    .all<{ id: string }>();
   const done = await db.batch([
+    bumpStatement(db, board.id),
     db.prepare(`UPDATE tasks SET deleted_at = ?2 WHERE id = ?1`).bind(id, nowIso()),
     /* Nothing should hang off a task that is gone. */
     db.prepare(`UPDATE tasks SET parent_id = NULL WHERE parent_id = ?1`).bind(id),
@@ -674,8 +683,11 @@ export async function deleteTask(env: Env, viewer: Viewer, id: string, changes: 
     db.prepare(`DELETE FROM task_dependencies WHERE depends_on_id = ?1 OR task_id = ?1`).bind(id),
     releaseClaimsStatement(db, board.id),
   ]);
-  /* No task ids: a task gone (and its children unparented) is read with the whole board. */
-  changes.board(await boardAudience(db, board.id), { board: board.id, assignees: task.assigneeIds }, "boards");
+  /* The task gone (its read is a 404), and everything it changed, its parent's progress up the tree included (COPL-210). */
+  const news = await taskChange(db, board.id, versionOf(done[0]), [id, ...touched.map((r) => r.id), ...follow.moved.map((m) => m.id)], task.assigneeIds, [
+    task.parentId,
+  ]);
+  changes.board(await boardAudience(db, board.id), news, "boards");
   if (unblock.length) changes.notify(unblockedAudience(done[done.length - 3]), "inbox");
   return json(follow.moved.length ? { ok: true, alsoMoved: follow.moved } : { ok: true });
 }

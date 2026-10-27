@@ -16,9 +16,11 @@
    messages, the sockets stay open on Cloudflare's side, and keepalive pings
    are answered by the auto-response without waking it.
 
-   Nothing is stored and nothing is replayed. A tab that reconnects refetches
-   everything it shows, so a missed message costs a refetch, never a stale
-   screen.
+   Nothing is replayed. What is stored is each board version's change, in
+   the board's log (Changes.record, COPL-210): a tab that reconnects, or
+   finds it missed an event, asks the board what changed since the version
+   it holds and patches that in, or reads the board whole when the log
+   can't say. A missed message costs a read, never a stale screen.
 
    The daemon and the box listen too (COPL-62), with a Bearer token in the
    upgrade's Authorization header, resolved like any other request. A socket
@@ -40,10 +42,11 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { HOST_HEADER, parseHostname } from "@/domain/hosts";
-import { listeningSockets, type BoardChange, type Listening, type LiveEvent, type LiveTopic } from "@/domain/live";
+import { listeningSockets, onlyOverlap, type BoardChange, type Listening, type LiveEvent, type LiveTopic } from "@/domain/live";
 import type { Viewer } from "@/domain/types";
 import type { Env } from "./env";
 import { forbidden } from "./http";
+import { changeLogStatements, versionOf, wholeChangeStatements } from "./repo/boards";
 import { liveTokenIds } from "./tokens";
 
 const PING = "ping";
@@ -207,6 +210,10 @@ function merge(a: BoardChange, b: BoardChange): BoardChange {
  */
 export class Changes {
   private readonly byUser = new Map<string, { topics: Set<LiveTopic>; boards: Map<string, BoardChange> }>();
+  /** Each board change as its route noted it, before any merge, for the board's change log (record). */
+  private readonly noted: BoardChange[] = [];
+  /** The version record gave each board whose change was more than its tasks. */
+  private readonly wholeAt = new Map<string, number>();
 
   private of(id: string) {
     let entry = this.byUser.get(id);
@@ -224,6 +231,7 @@ export class Changes {
 
   /** These users (the board's audience) should hear what changed on one board, and these other topics. */
   board(userIds: Iterable<string>, change: BoardChange, ...topics: LiveTopic[]): void {
+    this.noted.push(change);
     for (const id of userIds) {
       const entry = this.of(id);
       entry.topics.add("board");
@@ -239,20 +247,75 @@ export class Changes {
     for (const [userId, { topics, boards }] of this.byUser) {
       const all = [...topics];
       if (boards.size === 0) out.set(userId, [{ topics: all, tab }]);
-      else out.set(userId, [...boards.values()].map((change, i) => ({ topics: i === 0 ? all : ["board"], tab, ...change })));
+      else out.set(userId, [...boards.values()].map((change, i) => ({ topics: i === 0 ? all : ["board"], tab, ...this.versioned(change) })));
     }
     return out;
   }
 
-  /** Run under waitUntil so it never slows or fails the write. */
-  publish(env: Env, ctx: ExecutionContext, tab: string | null): void {
-    for (const [userId, events] of this.events(tab)) {
-      const target = hub(env, userId);
-      ctx.waitUntil(
-        (async () => {
-          for (const event of events) await target.broadcast(event);
-        })().catch((error: unknown) => console.warn("live broadcast failed", error)),
-      );
+  /** A change of more than tasks, with the version record gave it: one a tab reads whole without asking first. */
+  private versioned(change: BoardChange): BoardChange {
+    const at = this.wholeAt.get(change.board);
+    return at !== undefined && change.version === undefined && !change.tasks ? { ...change, version: at } : change;
+  }
+
+  /**
+   * Write what each version this request made changed into its board's log
+   * (migrations/0039_board_changes.sql), which GET /api/boards/:id/changes
+   * answers from: the tasks a versioned change named, or, for one that
+   * changed more than tasks (no version of its own), a new version recorded
+   * as such, once per board. A change of only overlap is no version's. A
+   * write whose record fails leaves a version with no row, which the read
+   * answers "read it whole": never wrong, only dearer.
+   */
+  async record(db: D1Database): Promise<void> {
+    const statements: D1PreparedStatement[] = [];
+    const whole: string[] = [];
+    const seen = new Set<string>();
+    for (const change of this.noted) {
+      if (onlyOverlap(change)) continue;
+      if (change.version === undefined) {
+        if (!whole.includes(change.board)) whole.push(change.board);
+        continue;
+      }
+      const at = `${change.board} ${change.version}`;
+      if (seen.has(at)) continue;
+      seen.add(at);
+      statements.push(...changeLogStatements(db, change.board, change.version, change.tasks ?? null));
     }
+    /* Each whole change's bump, by where it sits in the batch. */
+    const bumps = whole.map((board) => {
+      const at = statements.length;
+      statements.push(...wholeChangeStatements(db, board));
+      return [board, at] as const;
+    });
+    if (!statements.length) return;
+    const results = await db.batch(statements);
+    for (const [board, at] of bumps) {
+      const version = versionOf(results[at]);
+      if (version !== undefined) this.wholeAt.set(board, version);
+    }
+  }
+
+  /** Run under waitUntil so it never slows or fails the write. The log is written first, so a tab that hears an event can ask about it. */
+  publish(env: Env, ctx: ExecutionContext, tab: string | null): void {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          await this.record(env.DB);
+        } catch (error) {
+          console.warn("recording board changes failed", error);
+        }
+        await Promise.all(
+          [...this.events(tab)].map(async ([userId, events]) => {
+            const target = hub(env, userId);
+            try {
+              for (const event of events) await target.broadcast(event);
+            } catch (error) {
+              console.warn("live broadcast failed", error);
+            }
+          }),
+        );
+      })(),
+    );
   }
 }

@@ -3,7 +3,7 @@
    starts from.
    ========================================================================== */
 
-import type { BoardChange } from "@/domain/live";
+import { CHANGES_KEPT, type BoardChange } from "@/domain/live";
 import type { BoardAccess, BoardMember, BoardRole, BoardSummary, StageCategory } from "@/domain/types";
 import { rowToUser, type UserRow } from "./users";
 
@@ -239,4 +239,52 @@ export async function taskChange(
 export async function bumped(db: D1Database, boardId: string, statements: D1PreparedStatement[]): Promise<number | undefined> {
   const results = await db.batch([bumpStatement(db, boardId), ...statements]);
   return versionOf(results[0]);
+}
+
+/* ---------------------------------------------------- the change log -- */
+
+/** Drops what the log no longer keeps of a board: versions CHANGES_KEPT or more behind `upTo` (an SQL value over ?1). */
+const pruneStatement = (db: D1Database, boardId: string, upTo: string, ...binds: unknown[]) =>
+  db.prepare(`DELETE FROM board_changes WHERE board_id = ?1 AND version <= ${upTo} - ${CHANGES_KEPT}`).bind(boardId, ...binds);
+
+/**
+ * Records what one version of a board changed (migrations/0039): the tasks
+ * its event named, or null for more than tasks. Already recorded is kept.
+ */
+export function changeLogStatements(db: D1Database, boardId: string, version: number, tasks: string[] | null): D1PreparedStatement[] {
+  return [
+    db
+      .prepare(`INSERT OR IGNORE INTO board_changes (board_id, version, tasks) VALUES (?1, ?2, ?3)`)
+      .bind(boardId, version, tasks ? JSON.stringify(tasks) : null),
+    pruneStatement(db, boardId, "?2", version),
+  ];
+}
+
+/**
+ * A change beyond a board's tasks (stages, labels, members, docs), which
+ * bumps no version in its own write: a version of its own, recorded as one
+ * a tab can't patch. The first statement answers the version (versionOf).
+ */
+export function wholeChangeStatements(db: D1Database, boardId: string): D1PreparedStatement[] {
+  return [
+    bumpStatement(db, boardId),
+    db.prepare(`INSERT OR IGNORE INTO board_changes (board_id, version, tasks) SELECT id, version, NULL FROM boards WHERE id = ?1`).bind(boardId),
+    pruneStatement(db, boardId, "(SELECT version FROM boards WHERE id = ?1)"),
+  ];
+}
+
+/**
+ * What a board's log says changed after `since`, up to `upTo` (its version
+ * as the caller read it): the tasks named, or null when it can't say (a
+ * version not recorded, or one that changed more than tasks).
+ */
+export async function changedSince(db: D1Database, boardId: string, since: number, upTo: number): Promise<string[] | null> {
+  if (since === upTo) return [];
+  if (since > upTo || upTo - since > CHANGES_KEPT) return null;
+  const { results } = await db
+    .prepare(`SELECT tasks FROM board_changes WHERE board_id = ?1 AND version > ?2 AND version <= ?3`)
+    .bind(boardId, since, upTo)
+    .all<{ tasks: string | null }>();
+  if (results.length !== upTo - since || results.some((r) => r.tasks === null)) return null;
+  return [...new Set(results.flatMap((r) => JSON.parse(r.tasks!) as string[]))];
 }

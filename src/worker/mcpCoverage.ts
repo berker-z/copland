@@ -90,6 +90,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
     ],
   },
   "GET /api/boards/:id/shell": { skip: "browser: a task modal opened from the inbox or /wired, without the board's tasks; get_board and get_task cover it" },
+  "GET /api/boards/:id/changes": { skip: "browser: a tab that fell behind on a board reads what changed since its version; get_board and get_task read the board as it is now" },
   "GET /api/boards/:id/overlap": { skip: "browser: a tab holding a board rereads its overlap when a live event says only that moved; get_board's tasks and the overlap tool cover it" },
   "GET /api/boards/:id/closed": {
     tools: [

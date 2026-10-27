@@ -6,16 +6,19 @@
    node:sqlite, collecting their events with the Worker's own Changes; then
    a tab's side, lib/boardPatch.ts on a real QueryClient, reading tasks and
    whole boards through those same routes. A burst of task writes patches
-   the named tasks in and reads nothing else; a skipped version, a delete,
-   anything without its tasks reads the board whole; and the tab ends with
-   the board as the server has it. A changed-files report (COPL-207) tells
+   the named tasks in and reads nothing else, a delete too; a tab that falls
+   behind (a skipped version, a catch-up) reads what changed since its
+   version (GET /api/boards/:id/changes, COPL-210) and patches that, parents'
+   progress and deletes included; a change of more than tasks, or a log that
+   can't say, reads the board whole; and the tab ends with the board as the
+   server has it. A changed-files report (COPL-207) tells
    only that overlap moved: no task, no version, and the tab reads the
    board's overlap, not the board; an unchanged report and a claim renewed
    tell nobody.
    ========================================================================== */
 
 import { d1, sqlite } from "./worker.ts";
-import type { BoardDetail, Task, Viewer } from "../src/domain/types.ts";
+import type { BoardChanges, BoardDetail, Task, Viewer } from "../src/domain/types.ts";
 import type { BoardChange, LiveEvent } from "../src/domain/live.ts";
 import type { BoardOverlapRead } from "../src/domain/overlap.ts";
 
@@ -23,7 +26,9 @@ const { onlyOverlap, planBoard, PATCH_LIMIT } = await import("../src/domain/live
 const { progress } = await import("../src/domain/tasks.ts");
 const { Changes } = await import("../src/worker/live.ts");
 const { HttpError } = await import("../src/worker/http.ts");
-const { getBoard } = await import("../src/worker/routes/boards.ts");
+const { getBoard, getBoardChanges } = await import("../src/worker/routes/boards.ts");
+const { CHANGES_KEPT, CHANGES_LIMIT } = await import("../src/domain/live.ts");
+const { changeLogStatements } = await import("../src/worker/repo/boards.ts");
 const { deleteTask, getTask, patchTask, postTask } = await import("../src/worker/routes/tasks.ts");
 const { postComment } = await import("../src/worker/routes/comments.ts");
 const { deleteClaim, getCurrentRun, postClaim, postRunNews } = await import("../src/worker/routes/runs.ts");
@@ -46,18 +51,20 @@ t("a run of versions with no gap patches them all, in any order", (() => {
   const p = planBoard(4, [ev(6, ["b"]), ev(5, ["a"]), ev(7, ["a"])]);
   return p.kind === "patch" && p.version === 7 && p.tasks.sort().join() === "a,b";
 })());
-t("a skipped version reads the board whole", planBoard(4, [ev(6, ["a"])]).kind === "whole");
-t("a gap inside a run reads it whole", planBoard(4, [ev(5, ["a"]), ev(7, ["b"])]).kind === "whole");
-t("the same version twice reads it whole", planBoard(4, [ev(5, ["a"]), ev(5, ["b"])]).kind === "whole");
+t("a skipped version is behind: the tab asks what changed", planBoard(4, [ev(6, ["a"])]).kind === "behind");
+t("a gap inside a run is behind", planBoard(4, [ev(5, ["a"]), ev(7, ["b"])]).kind === "behind");
+t("the same version twice is behind", planBoard(4, [ev(5, ["a"]), ev(5, ["b"])]).kind === "behind");
 t("an event the board already has does nothing", planBoard(5, [ev(4, ["a"]), ev(5, ["b"])]).kind === "none");
 t("old ones are dropped, the new rest patched", (() => {
   const p = planBoard(5, [ev(5, ["a"]), ev(6, ["b"])]);
   return p.kind === "patch" && p.tasks.join() === "b";
 })());
-t("no version (an older Worker, or a write that doesn't bump) reads it whole", planBoard(4, [ev(undefined, ["a"])]).kind === "whole");
-t("no tasks (stages, labels, a delete) reads it whole", planBoard(4, [ev(5)]).kind === "whole");
+t("no version (an older Worker, two writes merged) is behind", planBoard(4, [ev(undefined, ["a"])]).kind === "behind");
+t("a catch-up (the board, nothing else) is behind", planBoard(4, [ev(undefined)]).kind === "behind");
+t("a version without tasks (stages, labels) reads it whole", planBoard(4, [ev(5)]).kind === "whole");
+t("and wins over being behind", planBoard(4, [ev(undefined), ev(7, ["a"]), ev(6)]).kind === "whole");
 t("a board held without a version reads it whole", planBoard(undefined, [ev(5, ["a"])]).kind === "whole");
-t(`more than ${PATCH_LIMIT} tasks reads it whole`, planBoard(0, [ev(1, Array.from({ length: PATCH_LIMIT + 1 }, (_, i) => `t${i}`))]).kind === "whole");
+t(`more than ${PATCH_LIMIT} tasks is behind`, planBoard(0, [ev(1, Array.from({ length: PATCH_LIMIT + 1 }, (_, i) => `t${i}`))]).kind === "behind");
 t("an event that moves only overlap is no task's: nothing to patch", onlyOverlap({ board: "b", tasks: [], overlap: true }) && planBoard(4, [{ board: "b", tasks: [], overlap: true }]).kind === "none");
 t("and it doesn't hide the task events beside it", planBoard(4, [{ board: "b", tasks: [], overlap: true }, ev(5, ["a"])]).kind === "patch");
 t("an overlap flag on an event with tasks is still that event's", !onlyOverlap({ board: "b", version: 5, tasks: ["a"], overlap: true }));
@@ -81,7 +88,7 @@ t(`${PATCH_LIMIT} tasks is still a patch`, planBoard(0, [ev(1, Array.from({ leng
   m.board(["sam"], { board: "b", version: 3, tasks: ["a"], assignees: ["x"] });
   m.board(["sam"], { board: "b", version: 4, tasks: ["b"], assignees: ["y"] });
   const [merged] = m.events(null).get("sam") ?? [];
-  t("two writes to one board in a request: tasks joined, the version dropped (a whole read)", merged.tasks?.join() === "a,b" && merged.version === undefined && merged.assignees?.join() === "x,y");
+  t("two writes to one board in a request: tasks joined, the version dropped (behind)", merged.tasks?.join() === "a,b" && merged.version === undefined && merged.assignees?.join() === "x,y");
   const w = new Changes();
   w.board(["sam"], { board: "b", version: 3, tasks: ["a"] });
   w.board(["sam"], { board: "b" });
@@ -118,6 +125,8 @@ const kim = who("kim");
 async function heard(write: (changes: InstanceType<typeof Changes>) => Promise<Response>): Promise<{ body: Record<string, unknown>; events: LiveEvent[] }> {
   const changes = new Changes();
   const response = await write(changes);
+  /* What publish does first: the board's change log. */
+  await changes.record(env.DB);
   return { body: (await response.json()) as Record<string, unknown>, events: changes.events(null).get("kim") ?? [] };
 }
 const req = (method: string, body: unknown) => new Request("https://x.test/", { method, body: JSON.stringify(body) });
@@ -162,7 +171,12 @@ const fetchOverlap = async (boardId: string) => {
   overlapReads.push(boardId);
   return (await (await getBoardOverlap(env, kim, boardId)).json()) as BoardOverlapRead;
 };
-const boardReads = { task: fetchTask, overlap: fetchOverlap };
+const changeReads: number[] = [];
+const fetchChanges = async (boardId: string, since: number) => {
+  changeReads.push(since);
+  return (await (await getBoardChanges(env, kim, boardId, new URL(`https://x.test/?since=${since}`))).json()) as BoardChanges;
+};
+const boardReads = { task: fetchTask, overlap: fetchOverlap, changes: fetchChanges };
 const held = () => tab.getQueryData<BoardDetail>(key)!;
 const apply = (events: LiveEvent[], hidden = false) =>
   applyBoardEvents(
@@ -255,10 +269,10 @@ await apply(doomed.events);
 const doomedId = doomed.body.id as string;
 const gone = await heard((c) => deleteTask(env, sam, doomedId, c));
 const born = await heard((c) => postTask(req("POST", { title: "born" }), env, sam, "b1", c));
-t("a delete names no tasks and tells the boards list", gone.events[0].tasks === undefined && gone.events[0].topics.includes("boards"));
+t("a delete names the task, at a version, and tells the boards list", gone.events[0].tasks?.join() === doomedId && gone.events[0].version !== undefined && gone.events[0].topics.includes("boards"));
+reads.length = 0;
 await apply([...gone.events, ...born.events]);
-t("a delete in the burst reads the board whole", whole.length === 1);
-await settle();
+t("a delete in the burst is patched: the deleted task reads a 404 and is dropped", whole.length === 0 && reads.includes(doomedId));
 t("after which the tab has the new task and not the deleted one", held().tasks.some((x) => x.title === "born") && !held().tasks.some((x) => x.id === doomedId));
 t("and is the server's board again, at its version", same(held(), await boardRead()) && held().version === version());
 
@@ -281,10 +295,12 @@ t("and is the server's board again, at its version", same(held(), await boardRea
   const next = await heard((c) => patchTask(req("PATCH", { title: "next" }), env, sam, childId, c));
   void missed;
   reads.length = 0;
+  changeReads.length = 0;
+  const behindAt = held().version;
   await apply(next.events);
-  t("an event after a missed one reads the board whole, and no task", whole.length === 1 && reads.length === 0);
-  await settle();
+  t("an event after a missed one asks what changed since the version held, and reads no task and no board", whole.length === 0 && reads.length === 0 && changeReads.join() === String(behindAt));
   t("which puts it right", held().tasks.find((x) => x.id === childId)?.title === "next" && held().version === version());
+  t("and leaves it the server's board", same(held(), await boardRead()) && sameProgress(held(), await boardRead()));
 }
 
 /* A hidden tab fetches nothing. */
@@ -315,9 +331,12 @@ t("and is the server's board again, at its version", same(held(), await boardRea
   await applyBoardEvents(modal, boardReads, "b1", parentMoved.events.map(({ topics: _t, tab: _b, ...change }) => change as BoardChange), false);
   t("a child's move refetches the parent it names, whose progress moved", stale(under("task", childId)) && stale(under("task", epicId)));
   const dropped = await heard((c) => postTask(req("POST", { title: "dropped" }), env, sam, "b1", c));
-  const droppedGone = await heard((c) => deleteTask(env, sam, dropped.body.id as string, c));
-  modal.setQueryData(under("shell"), {});
+  const droppedId = dropped.body.id as string;
+  modal.setQueryData(under("task", droppedId), {});
+  const droppedGone = await heard((c) => deleteTask(env, sam, droppedId, c));
   await applyBoardEvents(modal, boardReads, "b1", droppedGone.events.map(({ topics: _t, tab: _b, ...change }) => change as BoardChange), false);
+  t("a delete refetches the task it names, and not the shell", stale(under("task", droppedId)) && !stale(under("shell")));
+  await applyBoardEvents(modal, boardReads, "b1", [{ board: "b1" }], false);
   t("an event naming no tasks refetches everything under the board's key", stale(under("shell")));
 }
 
@@ -388,6 +407,97 @@ t("and is the server's board again, at its version", same(held(), await boardRea
   await apply(shutB.events);
   t("on a board with code, a task closing patches it and reads the overlap, not the board", whole.length === 0 && overlapReads.length === 1);
   t("so the task it overlapped overlaps nothing now", held().tasks.find((x) => x.id === aId)?.overlap.length === 0 && overlapOf(held()) === overlapOf(await boardRead()));
+}
+
+/* ------------------------------------------------- behind (COPL-210) -- */
+
+{
+  tab.setQueryData(key, await boardRead());
+  whole.length = 0;
+  const at = held().version;
+  /* What the tab misses while away: a story with two children and a dependency, one child closed, then the story's other child deleted. */
+  const story = await heard((c) => postTask(req("POST", { title: "story", level: "story" }), env, sam, "b1", c));
+  const storyId = story.body.id as string;
+  const kept = await heard((c) => postTask(req("POST", { title: "kept", parentId: storyId }), env, sam, "b1", c));
+  const doomed = await heard((c) => postTask(req("POST", { title: "doomed", parentId: storyId }), env, sam, "b1", c));
+  const [keptId, doomedId] = [kept.body.id as string, doomed.body.id as string];
+  const sub = await heard((c) => postTask(req("POST", { title: "under doomed", parentId: doomedId }), env, sam, "b1", c));
+  const subId = sub.body.id as string;
+  const waiting = await heard((c) => postTask(req("POST", { title: "waits on doomed" }), env, sam, "b1", c));
+  const waitingId = waiting.body.id as string;
+  await heard((c) => patchTask(req("PATCH", { dependsOn: [doomedId] }), env, sam, waitingId, c));
+  await heard((c) => patchTask(req("PATCH", { stageId: "done" }), env, sam, keptId, c));
+  const deleted = await heard((c) => deleteTask(env, sam, doomedId, c));
+  t("a delete names the children it unparented, the tasks that waited on it, and its parent", [doomedId, subId, waitingId, storyId].every((id) => deleted.events[0].tasks?.includes(id)));
+
+  const answer = await fetchChanges("b1", at);
+  t("the changes since a version: every task written since, with none twice", !answer.whole && answer.version === version() && new Set(answer.tasks.map((x) => x.id)).size === answer.tasks.length);
+  t("each as the board reads it", !answer.whole && [storyId, keptId, subId, waitingId].every((id) => answer.tasks.some((x) => x.id === id)));
+  t("the parent with its progress, which moved", !answer.whole && answer.tasks.find((x) => x.id === storyId)?.progress?.done === 1);
+  t("and the deleted one as gone", !answer.whole && answer.gone.join() === doomedId);
+  t("nothing more than what changed", !answer.whole && answer.tasks.length + answer.gone.length === 5);
+
+  reads.length = 0;
+  changeReads.length = 0;
+  /* A catch-up after the socket was away: the board, nothing else (lib/live.ts). */
+  await apply([{ topics: ["board"], tab: null, board: "b1" }]);
+  t("a catch-up asks what changed since the version held, once, and reads no task and no board", whole.length === 0 && reads.length === 0 && changeReads.join() === String(at));
+  t("and patches it all in: the new tasks, the deleted one dropped, its child unparented, its dependent freed", same(held(), await boardRead()) && !held().tasks.some((x) => x.id === doomedId) && held().tasks.find((x) => x.id === subId)?.parentId === null && held().tasks.find((x) => x.id === waitingId)?.dependsOn.length === 0);
+  t("with the parent's progress, at the board's version", sameProgress(held(), await boardRead()) && held().version === version());
+
+  reads.length = 0;
+  changeReads.length = 0;
+  await apply([{ topics: ["board"], tab: null, board: "b1" }]);
+  t("caught up, it asks again and changes nothing", whole.length === 0 && reads.length === 0 && changeReads.length === 1 && same(held(), await boardRead()));
+
+  /* More than tasks: a stage renamed, say, which bumps no version in its own write. */
+  const before = version();
+  const staged = await heard(async (c) => {
+    c.board(["kim"], { board: "b1" });
+    return new Response("{}");
+  });
+  t("a change of more than tasks gets a version of its own when it is recorded", version() === before + 1 && staged.events[0].version === before + 1 && staged.events[0].tasks === undefined);
+  t("which a tab reads whole without asking first", planBoard(before, staged.events.map((e) => ({ ...e, board: "b1" }))).kind === "whole");
+  const after = await heard((c) => patchTask(req("PATCH", { title: "after the stage" }), env, sam, keptId, c));
+  changeReads.length = 0;
+  await apply(after.events);
+  t("a tab behind it asks, and is told to read the board whole", changeReads.length === 1 && whole.length === 1);
+  await settle();
+  t("which it does", held().version === version() && same(held(), await boardRead()));
+
+  /* A version the log has no row for (its record failed): the board can't say. */
+  db.prepare(`UPDATE boards SET version = version + 1 WHERE id = 'b1'`).run();
+  const unrecorded = await fetchChanges("b1", held().version);
+  t("a version with no row in the log answers whole", unrecorded.whole === true && unrecorded.version === version());
+  t("so does a version the board is not yet at", (await fetchChanges("b1", version() + 1)).whole === true);
+  t(`and one more than ${CHANGES_KEPT} back`, (await fetchChanges("b1", Math.max(0, version() - CHANGES_KEPT - 1))).whole === true);
+  const nothing = await fetchChanges("b1", version());
+  t("the version it is at: nothing changed", !nothing.whole && nothing.tasks.length === 0 && nothing.gone.length === 0);
+  let badSince = false;
+  try {
+    await getBoardChanges(env, kim, "b1", new URL("https://x.test/?since=soon"));
+  } catch (error) {
+    badSince = error instanceof HttpError && error.status === 400;
+  }
+  t("a since that is no version is refused", badSince);
+  let outsider = false;
+  try {
+    await getBoardChanges(env, who("ada"), "b1", new URL("https://x.test/?since=0"));
+  } catch (error) {
+    outsider = error instanceof HttpError && error.status === 404;
+  }
+  t("and so is someone not on the board", outsider);
+
+  /* More tasks than the read answers for. */
+  const from = version();
+  db.prepare(`UPDATE boards SET version = version + 1 WHERE id = 'b1'`).run();
+  await env.DB.batch(changeLogStatements(env.DB, "b1", from + 1, Array.from({ length: CHANGES_LIMIT + 1 }, (_, i) => `t${i}`)));
+  t(`more than ${CHANGES_LIMIT} tasks changed: whole`, (await fetchChanges("b1", from)).whole === true);
+
+  /* The log keeps the last CHANGES_KEPT versions of a board. */
+  await env.DB.batch(changeLogStatements(env.DB, "b1", from + 1 + CHANGES_KEPT, []));
+  const left = db.prepare(`SELECT min(version) AS low FROM board_changes WHERE board_id = 'b1'`).get() as { low: number };
+  t(`recording a version drops the ones ${CHANGES_KEPT} or more behind it`, left.low > from + 1);
 }
 
 /* --------------------------------------------------------------- report -- */

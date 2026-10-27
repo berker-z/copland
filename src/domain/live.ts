@@ -55,7 +55,9 @@ export interface BoardChange {
   version?: number;
   /**
    * The tasks whose rows changed: the one written and the parents that moved
-   * with it. Never a deleted task: a delete leaves this out.
+   * with it. A delete names the task it deleted (whose read is then a 404),
+   * the children it unparented, the tasks that waited on it and everything
+   * above it (COPL-210).
    */
   tasks?: string[];
   /** Everyone assigned to those tasks, before the write and after it. */
@@ -90,7 +92,9 @@ export type BoardPlan =
   | { kind: "none" }
   /** Refetch these tasks, patch them in, and hold the board at `version`. */
   | { kind: "patch"; tasks: string[]; version: number }
-  /** Read the board whole. */
+  /** It can't tell from the events which tasks changed: ask the board what changed since its version (BoardChanges). */
+  | { kind: "behind" }
+  /** Something beyond its tasks changed (stages, labels, members, docs): read the board whole. */
   | { kind: "whole" };
 
 /**
@@ -99,21 +103,33 @@ export type BoardPlan =
  * below `held` are already in what it holds. The rest are patched in only
  * when they run on from `held` without a gap (held + 1, held + 2, ...: one
  * event each, nothing missed), each names its tasks, and together they name
- * at most PATCH_LIMIT. Anything else (a missed or doubled version, an event
- * without a version or tasks, too many tasks) reads the board whole. An
- * event that moves only overlap (onlyOverlap) is no task's, and left to the
- * caller.
+ * at most PATCH_LIMIT. An event with a version and no tasks changed more
+ * than tasks, and reads the board whole. Anything else (a missed or doubled
+ * version, an event without a version, too many tasks) is behind: the tab
+ * asks what changed since `held` (GET /api/boards/:id/changes, COPL-210).
+ * An event that moves only overlap (onlyOverlap) is no task's, and left to
+ * the caller.
  */
 export function planBoard(held: number | undefined, events: BoardChange[]): BoardPlan {
   const fresh = events.filter((e) => !onlyOverlap(e) && (held === undefined || e.version === undefined || e.version > held));
   if (fresh.length === 0) return { kind: "none" };
-  if (held === undefined || fresh.some((e) => e.version === undefined || !e.tasks)) return { kind: "whole" };
+  if (held === undefined || fresh.some((e) => e.version !== undefined && !e.tasks)) return { kind: "whole" };
+  if (fresh.some((e) => e.version === undefined)) return { kind: "behind" };
   const versions = fresh.map((e) => e.version as number).sort((a, b) => a - b);
-  if (versions.some((v, i) => v !== held + 1 + i)) return { kind: "whole" };
+  if (versions.some((v, i) => v !== held + 1 + i)) return { kind: "behind" };
   const tasks = [...new Set(fresh.flatMap((e) => e.tasks ?? []))];
-  if (tasks.length > PATCH_LIMIT) return { kind: "whole" };
+  if (tasks.length > PATCH_LIMIT) return { kind: "behind" };
   return { kind: "patch", tasks, version: versions[versions.length - 1] };
 }
+
+/**
+ * How many of a board's versions its change log keeps (board_changes,
+ * COPL-210): a tab further behind than this reads the board whole.
+ */
+export const CHANGES_KEPT = 500;
+
+/** More tasks than this changed since a tab's version, and GET /api/boards/:id/changes tells it to read the board whole. */
+export const CHANGES_LIMIT = 100;
 
 /** The request header a tab identifies itself with. */
 export const TAB_HEADER = "x-copland-tab";
