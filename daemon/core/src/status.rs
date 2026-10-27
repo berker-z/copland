@@ -22,6 +22,12 @@ pub struct Status {
     pub version: u32,
     /// Shutdown has begun.
     pub stopping: bool,
+    /// This daemon is the service and it starts at login (`--install-service --autostart`, the
+    /// home-manager module's `autostart`): a server's, meant to outlive the tray. False for a
+    /// workstation's, started by hand (COPL-224). Added after version 1 shipped, so an older
+    /// daemon's status has none.
+    #[serde(default)]
+    pub autostart: bool,
     /// One per configured agent, in config order.
     pub agents: Vec<Agent>,
 }
@@ -147,6 +153,7 @@ impl Status {
         Self {
             version: VERSION,
             stopping: st.stopping,
+            autostart: st.autostart,
             agents: st.agents.iter().map(Agent::of).collect(),
         }
     }
@@ -480,6 +487,7 @@ mod tests {
         DaemonState {
             agents: vec![a],
             stopping: false,
+            autostart: false,
         }
     }
 
@@ -507,6 +515,7 @@ mod tests {
             serde_json::json!({
                 "version": 1,
                 "stopping": false,
+                "autostart": false,
                 "agents": [{
                     "slot": 3,
                     "configured": "me/dev",
@@ -636,6 +645,7 @@ mod tests {
         let s = Status::of(&DaemonState {
             agents: vec![a],
             stopping: true,
+            autostart: false,
         });
         let a = &s.agents[0];
         assert_eq!(a.state, "stopped");
@@ -668,6 +678,7 @@ mod tests {
         let mut st = DaemonState {
             agents: vec![a],
             stopping: false,
+            autostart: false,
         };
         let s = Status::of(&st);
         assert_eq!(s.agents[0].out_of_usage_until, Some(rfc3339(until)));

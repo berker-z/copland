@@ -2443,6 +2443,7 @@ mod tests {
             let (state, watch_state) = watch::channel(DaemonState {
                 agents: vec![st],
                 stopping: false,
+                autostart: false,
             });
             let (stop, shutdown) = watch::channel(false);
             let (wanted_tx, wanted) = watch::channel(Wanted {

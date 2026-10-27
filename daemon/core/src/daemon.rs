@@ -401,6 +401,12 @@ impl Daemon {
         });
     }
 
+    /// Say whether this daemon starts at login (`service::autostarts`), for the status: the tray
+    /// offers to stop it only when it doesn't (COPL-224).
+    pub fn set_autostart(&self, on: bool) {
+        self.state_tx.send_modify(|s| s.autostart = on);
+    }
+
     /// Stop polling, stop running runtimes (their runs finish as cancelled). Returns at once; `join` waits.
     pub fn shutdown(&self) {
         self.state_tx.send_modify(|s| s.stopping = true);

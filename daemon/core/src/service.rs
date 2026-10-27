@@ -977,13 +977,51 @@ pub fn stop() -> Result<()> {
     if installed().is_none() {
         return Ok(());
     }
-    if cfg!(target_os = "macos") {
+    let macos = cfg!(target_os = "macos");
+    let (program, args) = stop_command(macos, &if macos { uid()? } else { String::new() });
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match run(program, &args) {
         /* Not loaded (booted out already) is stopped too. */
-        let _ = run("launchctl", &["bootout", &format!("gui/{}/{LABEL}", uid()?)]);
-        Ok(())
-    } else {
-        run("systemctl", &["--user", "stop", UNIT])
+        Err(_) if macos => Ok(()),
+        done => done,
     }
+}
+
+/// What stops the service: the systemd user unit, or on macOS (`macos`) the launchd agent in
+/// the user `uid`'s GUI domain. Either stops the daemon the way SIGTERM does: its runtimes
+/// stopped, their runs finished as interrupted, their tasks back in todo (COPL-224).
+fn stop_command(macos: bool, uid: &str) -> (&'static str, Vec<String>) {
+    if macos {
+        ("launchctl", vec!["bootout".into(), format!("gui/{uid}/{LABEL}")])
+    } else {
+        ("systemctl", vec!["--user".into(), "stop".into(), UNIT.into()])
+    }
+}
+
+/// Whether the daemon `pid` is the service, and the service starts at login (COPL-224): what
+/// the status says as `autostart`, so the tray knows a server's daemon from a workstation's.
+/// On Linux `systemctl --user show` says the unit is enabled and its main process is `pid`; on
+/// macOS launchd started this process for the agent (`XPC_SERVICE_NAME`) and its plist has
+/// `RunAtLoad`. A daemon started any other way (a session's, a terminal's) doesn't.
+pub fn autostarts(pid: u32) -> bool {
+    if cfg!(target_os = "macos") {
+        let ours = std::env::var("XPC_SERVICE_NAME").is_ok_and(|n| n == LABEL);
+        return ours && fs::read_to_string(plist_path()).is_ok_and(|p| plist_at_login(&p));
+    }
+    Command::new("systemctl")
+        .args(["--user", "show", UNIT, "--property=UnitFileState,MainPID"])
+        .output()
+        .is_ok_and(|o| o.status.success() && autostarts_shown(&String::from_utf8_lossy(&o.stdout), pid))
+}
+
+/// `autostarts` in what `systemctl show` printed.
+fn autostarts_shown(text: &str, pid: u32) -> bool {
+    let get = |key: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+            .map(str::trim)
+    };
+    is_enabled(get("UnitFileState").unwrap_or("")) && get("MainPID") == Some(pid.to_string().as_str())
 }
 
 /// How long `stop_daemon` waits for a daemon it sent SIGTERM to: its runs get ten seconds
@@ -996,7 +1034,30 @@ pub const STOP_TIMEOUT: Duration = Duration::from_secs(20);
 pub fn stop_daemon(config: &Path) -> Result<bool> {
     let was = installed().is_some() && running_now(config)?;
     stop()?;
-    Ok(stop_holder(config, &default_runtime_dir(), STOP_TIMEOUT)? || was)
+    let runtime_dir = default_runtime_dir();
+    let config = fs::canonicalize(config).unwrap_or_else(|_| config.to_path_buf());
+    let holder = stop_holder("daemon", &config, || lock::running(&config, &runtime_dir), STOP_TIMEOUT)?;
+    Ok(holder || was)
+}
+
+/// How long `stop_tray` waits for a tray it sent SIGTERM to.
+pub const TRAY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Stop the tray showing `config` (COPL-224), as `copland-daemon stop` does after the daemon:
+/// its systemd unit when there is one (`tray`), and any other tray holding the config's tray
+/// lock (one started at login by its autostart entry, or by hand) with SIGTERM. Says whether
+/// there was one.
+pub fn stop_tray(config: &Path) -> Result<bool> {
+    let unit = tray(false).unwrap_or(false);
+    let runtime_dir = default_runtime_dir();
+    let config = fs::canonicalize(config).unwrap_or_else(|_| config.to_path_buf());
+    let holder = stop_holder(
+        "tray",
+        &config,
+        || lock::tray_running(&config, &runtime_dir),
+        TRAY_TIMEOUT,
+    )?;
+    Ok(unit || holder)
 }
 
 fn running_now(config: &Path) -> Result<bool> {
@@ -1004,29 +1065,34 @@ fn running_now(config: &Path) -> Result<bool> {
     Ok(lock::running(&config, &default_runtime_dir())?.is_some())
 }
 
-/// SIGTERM to the daemon holding `config`'s lock, then wait up to `timeout` for the lock to go.
-fn stop_holder(config: &Path, runtime_dir: &Path, timeout: Duration) -> Result<bool> {
-    let config = fs::canonicalize(config).unwrap_or_else(|_| config.to_path_buf());
-    let Some(holder) = lock::running(&config, runtime_dir)? else {
+/// SIGTERM to the `what` (daemon, tray) holding `config`'s lock, as `holder` finds it, then wait
+/// up to `timeout` for the lock to go.
+fn stop_holder(
+    what: &str,
+    config: &Path,
+    holder: impl Fn() -> Result<Option<Holder>>,
+    timeout: Duration,
+) -> Result<bool> {
+    let Some(held) = holder()? else {
         return Ok(false);
     };
-    let Some(pid) = holder.pid else {
+    let Some(pid) = held.pid else {
         bail!(
-            "a daemon is running {} but its pid is unknown: stop it yourself",
+            "a {what} is running {} but its pid is unknown: stop it yourself",
             config.display()
         );
     };
     if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == -1 {
         let e = std::io::Error::last_os_error();
         if e.raw_os_error() != Some(libc::ESRCH) {
-            return Err(e).with_context(|| format!("stopping the daemon ({holder})"));
+            return Err(e).with_context(|| format!("stopping the {what} ({held})"));
         }
     }
     let started = Instant::now();
-    while lock::running(&config, runtime_dir)?.is_some() {
+    while holder()?.is_some() {
         if started.elapsed() >= timeout {
             bail!(
-                "the daemon running {} ({holder}) didn't stop within {}s",
+                "the {what} running {} ({held}) didn't stop within {}s",
                 config.display(),
                 timeout.as_secs()
             );
@@ -1768,6 +1834,13 @@ Type=simple
                     std::thread::sleep(Duration::from_secs(1));
                 }
             }
+            "tray" => {
+                let _held = lock::Lock::take_tray(&config, &default_runtime_dir(), "stub").unwrap();
+                eprintln!("holding");
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
             "fail" => {
                 eprintln!("starting");
                 eprintln!("Error: agent @me/dev: the token is read-only");
@@ -1869,34 +1942,95 @@ Type=simple
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[test]
-    fn a_daemon_holding_the_config_is_stopped() {
-        let dir = scratch("stop");
-        let (config, runtime) = (dir.join("daemon.toml"), dir.join("run"));
-        fs::write(&config, "").unwrap();
-        fs::create_dir_all(&runtime).unwrap();
-        /* Nothing running: nothing stopped. */
-        assert!(!stop_holder(&config, &runtime, Duration::from_secs(1)).unwrap());
-        let program = stub(&dir, "hold");
-        let config = fs::canonicalize(&config).unwrap();
-        let mut child = Command::new(&program)
+    /// The process `stub` runs in `mode` (hold, tray) on `config`, once it holds that lock.
+    fn holding(program: &Path, config: &Path, runtime: &Path, held: impl Fn() -> bool) -> Child {
+        let child = Command::new(program)
             .args(["--headless", "--config"])
-            .arg(&config)
-            .env("XDG_RUNTIME_DIR", &runtime)
+            .arg(config)
+            .env("XDG_RUNTIME_DIR", runtime)
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let started = Instant::now();
-        while lock::running(&config, &runtime).unwrap().is_none() {
+        while !held() {
             assert!(
                 started.elapsed() < Duration::from_secs(20),
                 "the stub never took the lock"
             );
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(stop_holder(&config, &runtime, Duration::from_secs(20)).unwrap());
-        assert!(lock::running(&config, &runtime).unwrap().is_none());
+        child
+    }
+
+    #[test]
+    fn a_daemon_holding_the_config_is_stopped() {
+        let dir = scratch("stop");
+        let (config, runtime) = (dir.join("daemon.toml"), dir.join("run"));
+        fs::write(&config, "").unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        let config = fs::canonicalize(&config).unwrap();
+        let daemon = || lock::running(&config, &runtime);
+        /* Nothing running: nothing stopped. */
+        assert!(!stop_holder("daemon", &config, daemon, Duration::from_secs(1)).unwrap());
+        let program = stub(&dir, "hold");
+        let mut child = holding(&program, &config, &runtime, || daemon().unwrap().is_some());
+        assert!(stop_holder("daemon", &config, daemon, Duration::from_secs(20)).unwrap());
+        assert!(daemon().unwrap().is_none());
         assert!(!child.wait().unwrap().success(), "ended by the signal");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /* COPL-224: `copland-daemon stop` ends a tray that isn't a unit by its lock, and only it. */
+    #[test]
+    fn a_tray_holding_the_config_is_stopped_and_the_daemon_left() {
+        let dir = scratch("stop-tray");
+        let (config, runtime) = (dir.join("daemon.toml"), dir.join("run"));
+        fs::write(&config, "").unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        let config = fs::canonicalize(&config).unwrap();
+        let tray = || lock::tray_running(&config, &runtime);
+        assert!(!stop_holder("tray", &config, tray, Duration::from_secs(1)).unwrap());
+        let mut daemon = holding(&stub(&dir, "hold"), &config, &runtime, || {
+            lock::running(&config, &runtime).unwrap().is_some()
+        });
+        let program = dir.join("tray");
+        fs::create_dir_all(&program).unwrap();
+        let mut child = holding(&stub(&program, "tray"), &config, &runtime, || tray().unwrap().is_some());
+        assert!(stop_holder("tray", &config, tray, Duration::from_secs(20)).unwrap());
+        assert!(tray().unwrap().is_none());
+        assert!(!child.wait().unwrap().success(), "ended by the signal");
+        assert!(daemon.try_wait().unwrap().is_none(), "the daemon is still running");
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /* COPL-224: the tray's Stop Copland goes through the service where there is one. */
+    #[test]
+    fn the_service_is_stopped_by_systemd_or_launchd() {
+        assert_eq!(
+            stop_command(false, ""),
+            ("systemctl", vec!["--user".into(), "stop".into(), UNIT.to_string()])
+        );
+        assert_eq!(
+            stop_command(true, "501"),
+            (
+                "launchctl",
+                vec!["bootout".into(), "gui/501/dev.berkerz.copland.daemon".to_string()]
+            )
+        );
+    }
+
+    #[test]
+    fn autostart_is_the_enabled_service_running_this_daemon() {
+        let shown = |state: &str, pid: &str| format!("UnitFileState={state}\nMainPID={pid}\n");
+        assert!(autostarts_shown(&shown("enabled", "4242"), 4242));
+        assert!(autostarts_shown(&shown("enabled-runtime", "4242"), 4242));
+        /* Started by hand, or by the service for another daemon than this one. */
+        assert!(!autostarts_shown(&shown("disabled", "4242"), 4242));
+        assert!(!autostarts_shown(&shown("static", "4242"), 4242));
+        assert!(!autostarts_shown(&shown("enabled", "0"), 4242));
+        assert!(!autostarts_shown(&shown("enabled", "42420"), 4242));
+        assert!(!autostarts_shown("", 4242));
     }
 }

@@ -109,6 +109,7 @@ pub fn no_daemon() -> Status {
     Status {
         version: copland_daemon_core::status::VERSION,
         stopping: false,
+        autostart: false,
         agents: Vec::new(),
     }
 }
@@ -1666,6 +1667,7 @@ mod tests {
         Status::of(&DaemonState {
             agents: vec![a],
             stopping: false,
+            autostart: false,
         })
     }
 

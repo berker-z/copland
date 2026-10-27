@@ -98,8 +98,9 @@ enum Command {
     /// (and the tray's unit, when the home-manager module made one), else a daemon on this config
     /// until you log out.
     Start,
-    /// Stop the daemon running this config (the service, or one started otherwise) and the
-    /// tray's unit, when there is one. Neither starts again until started.
+    /// Stop the daemon running this config (the service, or one started otherwise) and the tray
+    /// showing it (its unit, or one started otherwise), as the tray's Stop Copland does. Runs
+    /// going finish as interrupted, their tasks back in todo. Neither starts again until started.
     Stop,
 }
 
@@ -220,6 +221,8 @@ async fn run(args: Args) -> Result<()> {
             config: path.clone(),
         }),
     )?;
+    /* A server's daemon outlives the tray, a workstation's is stopped from it (COPL-224). */
+    daemon.set_autostart(service::autostarts(std::process::id()));
     let mut reloads = daemon.reloads().expect("taken once, here");
     let reloader = daemon.reloader(path.clone());
     let mut term = signal(SignalKind::terminate())?;
@@ -302,7 +305,7 @@ fn installed_says(done: &Installed) -> String {
 fn by_hand(start: bool, config: &Path) -> Result<()> {
     if !start {
         let stopped = service::stop_daemon(config)?;
-        let tray = service::tray(false).unwrap_or(false);
+        let tray = service::stop_tray(config)?;
         println!(
             "{}{}",
             if stopped {

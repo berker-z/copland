@@ -829,6 +829,7 @@ mod tests {
             Status::of(&DaemonState {
                 agents,
                 stopping: false,
+                autostart: false,
             })
         };
         let feed = |live: Link, refused: bool| Feed {

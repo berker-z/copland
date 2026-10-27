@@ -68,10 +68,20 @@ impl std::error::Error for Held {}
 /// the config's canonical path (as given, made absolute, when it can't be resolved), so the same
 /// file reached by two paths is one lock.
 pub fn path_for(config: &Path, runtime_dir: &Path) -> PathBuf {
+    named("daemon", config, runtime_dir)
+}
+
+/// The tray's lock for a config (COPL-224), `tray-<hash>.lock` beside the daemon's: one tray per
+/// config, and `copland-daemon stop` finds the tray to stop by it.
+pub fn tray_path_for(config: &Path, runtime_dir: &Path) -> PathBuf {
+    named("tray", config, runtime_dir)
+}
+
+fn named(kind: &str, config: &Path, runtime_dir: &Path) -> PathBuf {
     let resolved = fs::canonicalize(config).unwrap_or_else(|_| std::path::absolute(config).unwrap_or(config.into()));
     let digest = ring::digest::digest(&ring::digest::SHA256, resolved.as_os_str().as_encoded_bytes());
     let hex: String = digest.as_ref()[..8].iter().map(|b| format!("{b:02x}")).collect();
-    runtime_dir.join("copland").join(format!("daemon-{hex}.lock"))
+    runtime_dir.join("copland").join(format!("{kind}-{hex}.lock"))
 }
 
 fn open(path: &Path, create: bool) -> std::io::Result<File> {
@@ -126,7 +136,15 @@ impl Lock {
     /// Take the config's lock for `binary` (`copland-daemon`, `copland-box`). Fails with `Held`
     /// (downcast the error to read it) when another process, or another `Lock` in this one, has it.
     pub fn take(config: &Path, runtime_dir: &Path, binary: &str) -> Result<Lock> {
-        let path = path_for(config, runtime_dir);
+        Self::take_at(path_for(config, runtime_dir), config, binary)
+    }
+
+    /// Take the tray's lock for a config (`tray_path_for`), as `take` does the daemon's.
+    pub fn take_tray(config: &Path, runtime_dir: &Path, binary: &str) -> Result<Lock> {
+        Self::take_at(tray_path_for(config, runtime_dir), config, binary)
+    }
+
+    fn take_at(path: PathBuf, config: &Path, binary: &str) -> Result<Lock> {
         let mut file = open(&path, true).with_context(|| format!("opening the lock {}", path.display()))?;
         if !try_flock(&file, libc::LOCK_EX).with_context(|| format!("locking {}", path.display()))? {
             return Err(Held {
@@ -171,8 +189,16 @@ pub fn socket_for(config: &Path, runtime_dir: &Path) -> PathBuf {
 /// Whether a daemon is running this config, and who, without taking its lock. It tests with a
 /// shared lock for an instant, so a daemon starting in that instant can be refused; it says so.
 pub fn running(config: &Path, runtime_dir: &Path) -> Result<Option<Holder>> {
-    let path = path_for(config, runtime_dir);
-    let mut file = match open(&path, false) {
+    running_at(&path_for(config, runtime_dir))
+}
+
+/// Whether a tray is showing this config, and whose, as `running` says for the daemon.
+pub fn tray_running(config: &Path, runtime_dir: &Path) -> Result<Option<Holder>> {
+    running_at(&tray_path_for(config, runtime_dir))
+}
+
+fn running_at(path: &Path) -> Result<Option<Holder>> {
+    let mut file = match open(path, false) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).with_context(|| format!("opening the lock {}", path.display())),

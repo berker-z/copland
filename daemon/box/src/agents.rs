@@ -1553,6 +1553,7 @@ mod tests {
         let st = DaemonState {
             agents: vec![dev, renamed],
             stopping: false,
+            autostart: false,
         };
         let wired = [
             wired_agent("u1", "me/dev", false),
@@ -1602,6 +1603,7 @@ mod tests {
         let mut st = DaemonState {
             agents: vec![dev],
             stopping: false,
+            autostart: false,
         };
         let Row::Here {
             doing: Doing::Failed(f),
@@ -1679,6 +1681,7 @@ mod tests {
         let mut st = DaemonState {
             agents: vec![dev],
             stopping: false,
+            autostart: false,
         };
         let said = format!("out of usage until {}", copland_daemon_core::state::clock(until));
         assert!(matches!(
@@ -1712,6 +1715,7 @@ mod tests {
         let st = status(&DaemonState {
             agents: vec![dev],
             stopping: false,
+            autostart: false,
         });
         let a = &st.agents[0];
         assert!(held(a, now).is_some_and(|w| w.starts_with("out of usage until ")));
@@ -1735,6 +1739,7 @@ mod tests {
         let st = DaemonState {
             agents: vec![dev],
             stopping: false,
+            autostart: false,
         };
         assert!(matches!(
             &rows(&configured, &st, None)[0],
@@ -1775,12 +1780,14 @@ mod tests {
         let idle = DaemonState {
             agents: vec![dev.clone()],
             stopping: false,
+            autostart: false,
         };
         assert!(!running(&idle, "me/dev"));
         dev.run_started("8f31", "T-1");
         let st = DaemonState {
             agents: vec![dev],
             stopping: false,
+            autostart: false,
         };
         assert!(running(&st, "@me/dev") && !running(&st, "me/review"));
         assert_eq!(sent("me/dev", false), "sent to dev");
