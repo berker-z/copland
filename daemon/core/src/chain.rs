@@ -5,7 +5,8 @@
 //! - **The worktree.** The next task gets the last one's (`workspace::continue_from`),
 //!   on a branch of its own from the default branch as it is now, so its build
 //!   output is still warm. The sweep keeps a closed task's worktree while a task
-//!   waiting on it could still have it (`waited_on`).
+//!   waiting on it could still have it (`waited_on`, from the tasks depending on it
+//!   rather than its whole board, COPL-212).
 //! - **The session.** With `resume_chains` on, a worker's Claude Code run keeps
 //!   its session (no `--no-session-persistence`), and the daemon keeps its id with
 //!   the run under `state_dir/sessions/<KEY>.json`. The next task's run starts with
@@ -23,39 +24,30 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{BoardRepos, BoardTask, Task};
+use crate::api::{Dependent, Task};
 
-/// The task `task` carries on from: one it depends on, closed, assigned to `me` (the agent) as
-/// `task` is. The one closed last, when there are several. They share a board, so a repo.
-pub fn before<'a>(task: &Task, board: &'a BoardRepos, me: &str) -> Option<&'a BoardTask> {
+/// The task `task` carries on from: one it depends on (`deps`, those it names, as read), closed,
+/// assigned to `me` (the agent) as `task` is. The one closed last, when there are several. They
+/// share a board, so a repo.
+pub fn before<'a>(task: &Task, deps: &'a [Task], me: &str) -> Option<&'a Task> {
     if !task.assignee_ids.iter().any(|a| a == me) {
         return None;
     }
-    board
-        .tasks
-        .iter()
+    deps.iter()
         .filter(|t| task.depends_on.contains(&t.id) && !t.key.is_empty())
         .filter(|t| t.completed_at.is_some() && t.assignee_ids.iter().any(|a| a == me))
         .max_by(|a, b| a.completed_at.cmp(&b.completed_at))
 }
 
-/// Whether the sweep keeps the worktree of `key`, closed (COPL-189): a task on its board that
-/// depends on it may still carry on in it. That is an open one, not parked in backlog, sharing an
-/// assignee with it, and with no worktree of its own yet (one that has started elsewhere doesn't
-/// want it). Whatever the sweeping agent's `resume_chains`, since agents share `code_dir` and
-/// another's may be on; with it off, the waiting task starts in a worktree of its own and the next
-/// sweep takes this one.
-pub fn waited_on(key: &str, board: &BoardRepos, code_dir: &Path) -> bool {
-    let Some(done) = board.tasks.iter().find(|t| t.key.eq_ignore_ascii_case(key)) else {
-        return false;
-    };
-    board.tasks.iter().any(|t| {
-        t.completed_at.is_none()
-            && t.depends_on.contains(&done.id)
-            && t.stage_id
-                .as_deref()
-                .and_then(|s| board.category(s))
-                .is_some_and(|c| c != "backlog")
+/// Whether the sweep keeps the worktree of `done`, closed (COPL-189): a task that depends on it
+/// (`dependents`, the open ones, `Api::dependents`) may still carry on in it. That is one not
+/// parked in backlog, sharing an assignee with it, and with no worktree of its own yet (one that
+/// has started elsewhere doesn't want it). Whatever the sweeping agent's `resume_chains`, since
+/// agents share `code_dir` and another's may be on; with it off, the waiting task starts in a
+/// worktree of its own and the next sweep takes this one.
+pub fn waited_on(done: &Task, dependents: &[Dependent], code_dir: &Path) -> bool {
+    dependents.iter().any(|t| {
+        t.category != "backlog"
             && t.assignee_ids.iter().any(|a| done.assignee_ids.contains(a))
             && crate::workspace::valid_key(&t.key)
             && !code_dir.join("work").join(&t.key).exists()
@@ -190,35 +182,27 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn board(tasks: serde_json::Value) -> BoardRepos {
-        serde_json::from_value(serde_json::json!({
-            "tasks": tasks,
-            "stages": [
-                { "id": "s-backlog", "category": "backlog" },
-                { "id": "s-todo", "category": "todo" },
-                { "id": "s-done", "category": "done" },
-            ],
-        }))
-        .unwrap()
+    fn task(depends: &[&str], assignees: &[&str]) -> Task {
+        closed("t", "COPL-9", None, depends, assignees)
     }
 
-    fn task(depends: &[&str], assignees: &[&str]) -> Task {
+    fn closed(id: &str, key: &str, at: Option<&str>, depends: &[&str], assignees: &[&str]) -> Task {
         serde_json::from_value(serde_json::json!({
-            "id": "t", "key": "COPL-9", "boardId": "b", "title": "x", "updatedAt": "",
-            "completedAt": null, "dependsOn": depends, "assigneeIds": assignees,
+            "id": id, "key": key, "boardId": "b", "title": "x", "updatedAt": "",
+            "completedAt": at, "dependsOn": depends, "assigneeIds": assignees,
         }))
         .unwrap()
     }
 
     #[test]
     fn a_task_carries_on_from_the_agents_own_closed_task_closed_last() {
-        let b = board(serde_json::json!([
-            { "id": "a", "key": "COPL-1", "completedAt": "2026-10-01T00:00:00Z", "assigneeIds": ["me"] },
-            { "id": "b", "key": "COPL-2", "completedAt": "2026-10-03T00:00:00Z", "assigneeIds": ["me", "sam"] },
-            { "id": "c", "key": "COPL-3", "completedAt": "2026-10-05T00:00:00Z", "assigneeIds": ["sam"] },
-            { "id": "d", "key": "COPL-4", "completedAt": null, "assigneeIds": ["me"] },
-        ]));
-        let pick = |deps: &[&str], who: &[&str]| before(&task(deps, who), &b, "me").map(|t| t.key.clone());
+        let deps = [
+            closed("a", "COPL-1", Some("2026-10-01T00:00:00Z"), &[], &["me"]),
+            closed("b", "COPL-2", Some("2026-10-03T00:00:00Z"), &[], &["me", "sam"]),
+            closed("c", "COPL-3", Some("2026-10-05T00:00:00Z"), &[], &["sam"]),
+            closed("d", "COPL-4", None, &[], &["me"]),
+        ];
+        let pick = |names: &[&str], who: &[&str]| before(&task(names, who), &deps, "me").map(|t| t.key.clone());
         assert_eq!(pick(&["a", "b", "c"], &["me"]).as_deref(), Some("COPL-2"));
         assert_eq!(pick(&["a"], &["me"]).as_deref(), Some("COPL-1"));
         /* Someone else's, still open, or not one it waits on: cold. */
@@ -232,22 +216,21 @@ mod tests {
     fn a_closed_worktree_is_kept_while_its_chain_may_want_it() {
         let code = std::env::temp_dir().join(format!("copland-chain-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&code);
-        let waiting = |stage: &str, who: &str, closed: bool| {
-            board(serde_json::json!([
-                { "id": "a", "key": "COPL-1", "completedAt": "2026-10-01T00:00:00Z", "assigneeIds": ["me"] },
-                { "id": "n", "key": "COPL-5", "completedAt": if closed { serde_json::json!("2026-10-02T00:00:00Z") } else { serde_json::Value::Null },
-                  "stageId": stage, "dependsOn": ["a"], "assigneeIds": [who] },
+        let done = closed("a", "COPL-1", Some("2026-10-01T00:00:00Z"), &[], &["me"]);
+        let waiting = |category: &str, who: &str| -> Vec<Dependent> {
+            serde_json::from_value(serde_json::json!([
+                { "id": "n", "key": "COPL-5", "stageId": "s", "category": category, "assigneeIds": [who] },
             ]))
+            .unwrap()
         };
-        assert!(waited_on("COPL-1", &waiting("s-todo", "me", false), &code));
-        assert!(waited_on("copl-1", &waiting("s-todo", "me", false), &code));
-        assert!(!waited_on("COPL-1", &waiting("s-backlog", "me", false), &code));
-        assert!(!waited_on("COPL-1", &waiting("s-todo", "sam", false), &code));
-        assert!(!waited_on("COPL-1", &waiting("s-done", "me", true), &code));
-        assert!(!waited_on("COPL-7", &waiting("s-todo", "me", false), &code));
+        assert!(waited_on(&done, &waiting("todo", "me"), &code));
+        assert!(waited_on(&done, &waiting("active", "me"), &code));
+        assert!(!waited_on(&done, &waiting("backlog", "me"), &code));
+        assert!(!waited_on(&done, &waiting("todo", "sam"), &code));
+        assert!(!waited_on(&done, &[], &code));
         /* Started in a worktree of its own: it doesn't want this one. */
         std::fs::create_dir_all(code.join("work/COPL-5")).unwrap();
-        assert!(!waited_on("COPL-1", &waiting("s-todo", "me", false), &code));
+        assert!(!waited_on(&done, &waiting("todo", "me"), &code));
         let _ = std::fs::remove_dir_all(&code);
     }
 

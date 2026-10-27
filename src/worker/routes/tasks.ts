@@ -41,6 +41,7 @@ import {
   PRIORITIES,
   type AlsoMoved,
   type BoardAccess,
+  type Dependent,
   type Level,
   type Priority,
   type Stage,
@@ -427,6 +428,20 @@ export async function taskFor(env: Env, viewer: Viewer, id: string, role: "viewe
 /** "CPL-12": a board key and a task number. A uuid never looks like this. */
 const TASK_KEY = /^([A-Za-z][A-Za-z0-9]{1,5})-(\d{1,9})$/;
 
+/** A task's id from its id or its key. */
+async function taskIdOf(env: Env, ref: string): Promise<string> {
+  const key = TASK_KEY.exec(ref);
+  if (!key) return ref;
+  const row = await env.DB.prepare(
+    `SELECT t.id FROM tasks t JOIN boards b ON b.id = t.board_id
+      WHERE b.key = ?1 AND t.number = ?2 AND t.deleted_at IS NULL`,
+  )
+    .bind(key[1].toUpperCase(), Number(key[2]))
+    .first<{ id: string }>();
+  if (!row) throw notFound("No such task");
+  return row.id;
+}
+
 /**
  * GET /api/tasks/:ref, where ref is a task's id or its key ("cpl-12" works
  * too). The board screen has every task already; this is for a caller that
@@ -434,23 +449,42 @@ const TASK_KEY = /^([A-Za-z][A-Za-z0-9]{1,5})-(\d{1,9})$/;
  * on reads as not found, the same as a key that names nothing.
  */
 export async function getTask(env: Env, viewer: Viewer, ref: string): Promise<Response> {
-  let id = ref;
-  const key = TASK_KEY.exec(ref);
-  if (key) {
-    const row = await env.DB.prepare(
-      `SELECT t.id FROM tasks t JOIN boards b ON b.id = t.board_id
-        WHERE b.key = ?1 AND t.number = ?2 AND t.deleted_at IS NULL`,
-    )
-      .bind(key[1].toUpperCase(), Number(key[2]))
-      .first<{ id: string }>();
-    if (!row) throw notFound("No such task");
-    id = row.id;
-  }
-  const { task } = await taskFor(env, viewer, id, "viewer");
+  const { task } = await taskFor(env, viewer, await taskIdOf(env, ref), "viewer");
   /* A parent's progress, as the board read has it, so a tab patching it in
      from a live event has it too: one row of task_rollup. */
   const progress = (await progressFor(env.DB, [task.id]))[task.id];
   return json((progress ? { ...task, progress } : task) satisfies TaskRead);
+}
+
+/**
+ * GET /api/tasks/:ref/dependents, ref an id or a key as for getTask: the
+ * open tasks that depend on it, which are on its board. What the daemon reads, instead of the whole board, to
+ * tell whether a closed task's worktree may still be carried on in
+ * (COPL-212); one indexed read (task_dependencies_on), however long the
+ * board's history.
+ */
+export async function getDependents(env: Env, viewer: Viewer, ref: string): Promise<Response> {
+  const { task } = await taskFor(env, viewer, await taskIdOf(env, ref), "viewer");
+  const { results } = await env.DB.prepare(
+    `SELECT t.id, b.key || '-' || t.number AS key, t.stage_id, s.category,
+            (SELECT json_group_array(a.user_id) FROM task_assignees a WHERE a.task_id = t.id) AS assignees
+       FROM task_dependencies d
+       JOIN tasks t ON t.id = d.task_id
+       JOIN boards b ON b.id = t.board_id
+       JOIN stages s ON s.id = t.stage_id
+      WHERE d.depends_on_id = ?1 AND t.deleted_at IS NULL AND t.completed_at IS NULL
+      ORDER BY t.created_at`,
+  )
+    .bind(task.id)
+    .all<{ id: string; key: string; stage_id: string; category: Dependent["category"]; assignees: string }>();
+  const tasks: Dependent[] = results.map((r) => ({
+    id: r.id,
+    key: r.key,
+    stageId: r.stage_id,
+    category: r.category,
+    assigneeIds: (JSON.parse(r.assignees) as string[]).sort(),
+  }));
+  return json({ tasks });
 }
 
 /**

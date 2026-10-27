@@ -4,7 +4,6 @@
 //! box's setup uses to get those tokens in the first place (`device_start`,
 //! `device_poll`). Shapes follow `src/domain/types.ts`.
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::Once;
 use std::time::Duration;
@@ -120,7 +119,7 @@ pub struct Task {
     /// A run on it right now; only live claims are sent.
     #[serde(default)]
     pub claim: Option<Claim>,
-    /// Its stage, whose category is on its board's stages (`BoardRepos::stages`).
+    /// Its stage, whose category is on its board's stages (`BoardShell::stages`).
     #[serde(default)]
     pub stage_id: Option<String>,
     /// A person merges its PR, not the agent (COPL-77).
@@ -134,9 +133,17 @@ pub struct Task {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub assignee_ids: Vec<String>,
+    /// A parent's: how many children it has. Sent only for a task with children.
+    #[serde(default)]
+    pub progress: Option<ParentProgress>,
 }
 
 impl Task {
+    /// Whether it has children, closed ones of any age included.
+    pub fn has_children(&self) -> bool {
+        self.progress.as_ref().is_some_and(|p| p.children > 0)
+    }
+
     /// Whether an open PR (a draft too) names it.
     pub fn open_pr(&self) -> bool {
         self.code
@@ -169,32 +176,18 @@ struct Ready {
     tasks: Vec<ReadyTask>,
 }
 
-/// The part of GET /api/boards/:id the daemon reads: the GitHub repos connected to it.
+/// The part of GET /api/boards/:id/shell the daemon reads: the repos connected to the board and
+/// its stages, without its tasks (COPL-212).
 #[derive(Debug, Clone, Deserialize)]
-pub struct BoardRepos {
+pub struct BoardShell {
     #[serde(default)]
     pub repos: Vec<BoardRepo>,
-    /// Its tasks, for which have children: the open ones, the recently
-    /// closed ones and those they name, not the whole history (COPL-150).
-    #[serde(default)]
-    pub tasks: Vec<BoardTask>,
-    /// Every task in `tasks` with children, by id, counted over all of
-    /// them, closed long ago too. An older server sends none.
-    #[serde(default)]
-    pub progress: HashMap<String, ParentProgress>,
     /// Its stages, for what a task's stage means.
     #[serde(default)]
     pub stages: Vec<Stage>,
 }
 
-impl BoardRepos {
-    /// Whether a task has children: by the server's count, or, from an
-    /// older server without one, by the tasks it sent.
-    pub fn has_children(&self, task_id: &str) -> bool {
-        self.progress.get(task_id).is_some_and(|p| p.children > 0)
-            || self.tasks.iter().any(|t| t.parent_id.as_deref() == Some(task_id))
-    }
-
+impl BoardShell {
     /// The category of one of its stages: backlog, todo, active, blocked, done or cancelled.
     pub fn category(&self, stage_id: &str) -> Option<&str> {
         self.stages
@@ -204,6 +197,7 @@ impl BoardRepos {
     }
 }
 
+/// A parent's progress, as GET /api/tasks/:id sends it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ParentProgress {
     /// Its direct children, closed ones of any age included.
@@ -216,24 +210,22 @@ pub struct Stage {
     pub category: String,
 }
 
+/// GET /api/tasks/:id/dependents: an open task that depends on it (`Dependent` in
+/// `src/domain/types.ts`), what a chain (COPL-189, `chain.rs`) reads.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BoardTask {
+pub struct Dependent {
     pub id: String,
-    #[serde(default)]
-    pub parent_id: Option<String>,
-    /// What a chain (COPL-189, `chain.rs`) reads: which task it is, whether it is closed, where
-    /// it stands, what it waits on and whose it is. An older server's tasks have them too.
-    #[serde(default)]
     pub key: String,
-    #[serde(default)]
-    pub completed_at: Option<String>,
-    #[serde(default)]
-    pub stage_id: Option<String>,
-    #[serde(default)]
-    pub depends_on: Vec<String>,
+    /// Its stage's: backlog, todo, active or blocked, since it is open.
+    pub category: String,
     #[serde(default)]
     pub assignee_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Dependents {
+    tasks: Vec<Dependent>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -897,10 +889,20 @@ impl Api {
             .await
     }
 
-    /// A board's repos ("owner/name") and its tasks' parents.
-    pub async fn board_repos(&self, cred: &Secret, board_id: &str) -> ApiResult<BoardRepos> {
-        self.send(self.http.get(self.url(&format!("/api/boards/{board_id}"))), cred)
+    /// A board's repos and stages, not its tasks.
+    pub async fn board_shell(&self, cred: &Secret, board_id: &str) -> ApiResult<BoardShell> {
+        self.send(self.http.get(self.url(&format!("/api/boards/{board_id}/shell"))), cred)
             .await
+    }
+
+    /// The open tasks that depend on a task (COPL-212).
+    pub async fn dependents(&self, cred: &Secret, task_id: &str) -> ApiResult<Vec<Dependent>> {
+        self.send::<Dependents>(
+            self.http.get(self.url(&format!("/api/tasks/{task_id}/dependents"))),
+            cred,
+        )
+        .await
+        .map(|d| d.tasks)
     }
 
     /// Start a run with the agent's own token.
@@ -1109,19 +1111,37 @@ mod tests {
     }
 
     #[test]
-    fn a_board_says_which_tasks_have_children() {
-        /* Children closed long ago aren't in tasks (COPL-150): the server's count says so. */
-        let b: BoardRepos = serde_json::from_str(
-            r#"{"repos":[],"stages":[],"tasks":[{"id":"e"},{"id":"s","parentId":"e"},{"id":"old"}],
-                "progress":{"e":{"children":1,"done":0,"total":1},"old":{"children":4,"done":4,"total":4}}}"#,
+    fn a_task_says_whether_it_has_children() {
+        /* A parent's progress counts its children, closed long ago too; a leaf has none. */
+        let task = |extra: serde_json::Value| -> Task {
+            let mut t = json!({ "id": "t", "key": "COPL-1", "boardId": "b", "title": "", "updatedAt": "", "completedAt": null });
+            t.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            serde_json::from_value(t).unwrap()
+        };
+        assert!(task(json!({ "progress": { "children": 4, "done": 4, "total": 4 } })).has_children());
+        assert!(!task(json!({ "progress": { "children": 0, "done": 0, "total": 0 } })).has_children());
+        assert!(!task(json!({})).has_children());
+    }
+
+    #[test]
+    fn reads_a_shell_and_what_waits_on_a_task() {
+        let b: BoardShell = serde_json::from_str(
+            r#"{"board":{"id":"b"},"members":[],"labels":[],"version":3,
+                "repos":[{"repo":"o/r","kind":"github"}],"stages":[{"id":"s","name":"todo","position":0,"category":"todo"}]}"#,
         )
         .unwrap();
-        assert!(b.has_children("e"));
-        assert!(b.has_children("old"));
-        assert!(!b.has_children("s"));
-        /* An older server sends no progress: the tasks it sent decide. */
-        let b: BoardRepos = serde_json::from_str(r#"{"tasks":[{"id":"e"},{"id":"s","parentId":"e"}]}"#).unwrap();
-        assert!(b.has_children("e") && !b.has_children("s"));
+        assert_eq!(b.repos[0].repo, "o/r");
+        assert_eq!(b.category("s"), Some("todo"));
+        assert_eq!(b.category("x"), None);
+        let d: Dependents = serde_json::from_str(
+            r#"{"tasks":[{"id":"n","key":"COPL-5","stageId":"s","category":"todo","assigneeIds":["me"]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(d.tasks[0].key, "COPL-5");
+        assert_eq!(
+            (d.tasks[0].category.as_str(), d.tasks[0].assignee_ids.as_slice()),
+            ("todo", &["me".to_string()][..])
+        );
     }
 
     #[test]

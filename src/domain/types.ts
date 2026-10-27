@@ -212,6 +212,19 @@ export interface ReadyTask {
   updatedAt: string;
 }
 
+/**
+ * GET /api/tasks/:id/dependents: an open task that depends on it (routes/tasks.ts
+ * getDependents), the parts the daemon reads to keep a closed task's worktree for
+ * the task carrying on in it (COPL-189, COPL-212).
+ */
+export interface Dependent {
+  id: string;
+  key: string;
+  stageId: string;
+  category: StageCategory;
+  assigneeIds: string[];
+}
+
 export interface MyWork {
   mine: { taskId: string; boardId: string }[];
   /** Always empty for an agent. */

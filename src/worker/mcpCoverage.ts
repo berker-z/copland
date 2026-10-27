@@ -112,6 +112,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /api/tasks/:id/revalidate": { tools: ["revalidate"] },
   "GET /api/tasks/ready": { skip: "not yet: what the caller can start now (todo, dependencies closed, unclaimed); the daemon pulls it, an assistant asks my_work" },
   "GET /api/tasks/mine": { tools: ["my_work"] },
+  "GET /api/tasks/:id/dependents": {
+    skip: "not yet: the open tasks waiting on a task; the daemon reads it for its chains, an assistant finds them with list_tasks",
+  },
   "GET /api/inbox": { tools: ["inbox", "mark_read"] },
   "POST /api/inbox/read": { tools: ["mark_read"] },
   "POST /api/inbox/dismiss": { tools: ["mark_read"] },
