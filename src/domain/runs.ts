@@ -138,11 +138,12 @@ export function runStatus(stored: "running" | RunEnding, lastSeenAt: string, kin
 /**
  * Why POST /api/tasks/:id/claim said no, as the `code` of its 409: the task
  * is closed, it is assigned to others and not the claimer, another run holds
- * a live claim on it, or a task it depends on is still open (COPL-78). A
- * daemon tells them apart: "claimed" passes when that run ends, "waiting"
- * when the tasks it waits on close, the first two do not.
+ * a live claim on it, a task it depends on is still open (COPL-78), or
+ * another run holds its parent story as a lane and so does its tasks itself
+ * (COPL-235). A daemon tells them apart: "claimed" and "lane" pass when that
+ * run ends, "waiting" when the tasks it waits on close, the first two do not.
  */
-export const CLAIM_REFUSALS = ["closed", "assigned_elsewhere", "claimed", "waiting"] as const;
+export const CLAIM_REFUSALS = ["closed", "assigned_elsewhere", "claimed", "waiting", "lane"] as const;
 export type ClaimRefusal = (typeof CLAIM_REFUSALS)[number];
 
 /**
