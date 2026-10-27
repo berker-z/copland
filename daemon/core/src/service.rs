@@ -230,7 +230,18 @@ pub fn in_store(path: &Path, stores: &[PathBuf]) -> bool {
 /// tray at login are then the home-manager module's (`services.copland`): nothing here writes
 /// or removes a unit or an autostart entry for it.
 pub fn nix_managed_in(exe: &Path, stores: &[PathBuf]) -> bool {
-    in_store(exe, stores) || fs::canonicalize(exe).is_ok_and(|r| in_store(&r, stores))
+    if in_store(exe, stores) {
+        return true;
+    }
+    let Ok(resolved) = fs::canonicalize(exe) else {
+        return false;
+    };
+    /* The stores resolved too: a store behind a link (macOS's /tmp is /private/tmp) holds what resolves into it. */
+    let stores: Vec<PathBuf> = stores
+        .iter()
+        .flat_map(|s| [s.clone(), fs::canonicalize(s).unwrap_or_else(|_| s.clone())])
+        .collect();
+    in_store(&resolved, &stores)
 }
 
 /// `nix_managed_in` the stores there are (`nix_stores`).
