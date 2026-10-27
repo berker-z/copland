@@ -23,12 +23,13 @@ export interface Budget {
 
 export const BUDGETS: Record<string, Budget> = {
   "GET /api/boards": { rows: 39, flat: true },
-  /* What runs cost (COPL-71): every task's own runs, and each parent's
-     subtree's, one grouped read each over the same ids. 739 and 2914 before;
-     neither grows with history. */
-  "GET /api/boards/:id": { rows: 806, flat: true },
+  /* What runs cost (COPL-71): every task's own runs, one grouped read. Each
+     parent's progress and its subtree's cost are one row of task_rollup
+     (COPL-208), not a walk of its subtree and its runs: 806 before. */
+  "GET /api/boards/:id": { rows: 737, flat: true },
   "GET /api/boards/:id/shell": { rows: 29, flat: true },
-  "GET /api/boards/:id/closed": { rows: 3116, flat: true },
+  /* 3116 before task_rollup (COPL-208). */
+  "GET /api/boards/:id/closed": { rows: 3112, flat: true },
   "GET /api/tasks/:id": { rows: 26, flat: true },
   "GET /api/inbox": { rows: 241, flat: true },
   /* Where each agent runs (COPL-183, for the box): its reported hosts, one
@@ -47,6 +48,7 @@ export const BUDGETS: Record<string, Budget> = {
   /* What a tab reads to open a task from the inbox or /wired without holding
      its board (COPL-153): its shell, the task and its parent. Until then,
      GET /api/boards/:id, 739 rows. 107 before its parent's progress summed
-     what its subtree's runs cost (COPL-71). */
-  "inbox: one task opened": { rows: 136, flat: true },
+     what its subtree's runs cost (COPL-71), 136 after, and 64 since its
+     parent's progress is one row of task_rollup (COPL-208). */
+  "inbox: one task opened": { rows: 64, flat: true },
 };

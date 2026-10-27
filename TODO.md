@@ -303,6 +303,18 @@ docs/DESIGN.md under Touch.
   tasks (`useTaskView` in `src/lib/queries.ts`). A live event naming one
   of those tasks refetches just it. 107 rows on the reads check's seed
   (its `inbox:` row), where it read the board (739)
+- Progress and spent are kept, not counted on every read (COPL-208, for
+  COPL-131): `task_rollup` (migration 0038) holds each task's child count,
+  leaves done out of those not cancelled, and what the runs on it and its
+  subtree cost, and SQLite triggers keep it on every write that moves them
+  (a task added, deleted, reparented, moved, its level changed, a run's
+  usage reported or forgotten, a stage's category changed), whichever route
+  makes it. `progressFor` reads one row per parent through the
+  `task_rollup_parents` index, so a leaf costs nothing. It had been the
+  largest share of reads after the board query (611k + 480k rows on
+  2026-10-27). On the reads check's seed the board read is 737 (806), a
+  task opened from the inbox 64 (136); checks/progress.check.ts holds the
+  stored rows to `progress()` and the runs after a few hundred random writes
 - Comments reach the run working on the task (COPL-139, for COPL-130):
   `POST /api/runs/current/news` tells a run, once each, the unread comments
   and mentions on the tasks it has claimed since it started
