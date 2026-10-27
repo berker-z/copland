@@ -301,8 +301,8 @@ docs/DESIGN.md under Touch.
   a reconnect's catch-up goes through the same lanes and only reads what's
   on screen. The box reads at most every `SPACING` (5 s, `box/src/feed.rs`
   `read_at`), a socket dropping included. Pinned by checks/live.check.ts
-  and the reads check's `live: a burst of edits, heard` (105 rows for ten
-  edits) and `live: a reconnect` (845) rows
+  and the reads check's `live: a burst of edits, heard` (33 rows for ten
+  edits) and `live: a reconnect` (776) rows
 - A task opened from the inbox or /wired loads that task, not its board
   (COPL-153, for COPL-131): when the tab doesn't hold the board already,
   the modal reads the task, the board's shell (`GET /api/boards/:id/shell`:
