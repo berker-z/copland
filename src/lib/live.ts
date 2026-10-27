@@ -34,7 +34,7 @@ import { useEffect } from "react";
 import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import type { BoardChange, LiveEvent, LiveTopic } from "@/domain/live";
 import { applyBoardEvents } from "./boardPatch";
-import { fetchOverlap, fetchTask, KEYS } from "./queries";
+import { fetchChanges, fetchOverlap, fetchTask, KEYS } from "./queries";
 import { setCatchingUp, setLive, TAB_ID } from "./liveState";
 import { listen } from "./liveSocket";
 import { catchUpLanes, lanes } from "./liveWindow";
@@ -88,7 +88,7 @@ export function useLiveUpdates(enabled: boolean): void {
     if (!enabled || typeof WebSocket === "undefined") return;
 
     /* Each board's events, by board: patched or read on its own, at most once a window (lib/liveWindow.ts). */
-    const boards = lanes<BoardChange>((boardId, events) => void applyBoardEvents(queryClient, { task: fetchTask, overlap: fetchOverlap }, boardId, events, document.hidden));
+    const boards = lanes<BoardChange>((boardId, events) => void applyBoardEvents(queryClient, { task: fetchTask, overlap: fetchOverlap, changes: fetchChanges }, boardId, events, document.hidden));
     /* What reads across boards (only ever one lane), and every other topic (one lane too). */
     const across = lanes<never>(() => {
       for (const queryKey of ACROSS_BOARDS) void queryClient.invalidateQueries({ queryKey, refetchType: document.hidden ? "none" : "active" });

@@ -12,7 +12,8 @@
    and the last two weeks' closed ones); its paged older history is a page
    of 100. Besides the routes, the live rows are a tab's cost: what a tab
    reads when it hears a task edit (COPL-151), a changed-files report
-   (COPL-207), a burst of edits, or its socket coming back (COPL-209).
+   (COPL-207), a burst of edits, or its socket coming back (COPL-209), which
+   since COPL-210 asks what changed instead of reading the board whole.
    ========================================================================== */
 
 export interface Budget {
@@ -54,11 +55,17 @@ export const BUDGETS: Record<string, Budget> = {
      since COPL-208; 105 before). Acting every 300 ms as before, a round
      for each edit or two read them again each round. */
   "live: a burst of edits, heard": { rows: 33, flat: true },
-  /* What a tab on a board reads when its socket comes back (COPL-209): the
-     board and the boards list, now at most once a window however often the
-     network drops; before, every query the tab held, on every reconnect.
-     845 before COPL-208's rollup. */
-  "live: a reconnect": { rows: 776, flat: true },
+  /* What changed on a board since a tab's version (COPL-210), here one
+     task edit it missed: the board's change log after that version and the
+     task, as the board read has it. Until then, a tab that fell behind read
+     GET /api/boards/:id. */
+  "GET /api/boards/:id/changes": { rows: 26, flat: true },
+  /* What a tab on a board reads when its socket comes back (COPL-209),
+     having missed an edit: what changed since its version (COPL-210) and the
+     boards list, at most once a window however often the network drops.
+     776 when it read the board whole (845 before COPL-208's rollup); before
+     COPL-209, every query the tab held, on every reconnect. */
+  "live: a reconnect": { rows: 65, flat: true },
   /* What a tab reads to open a task from the inbox or /wired without holding
      its board (COPL-153): its shell, the task and its parent. Until then,
      GET /api/boards/:id, 739 rows. 107 before its parent's progress summed
