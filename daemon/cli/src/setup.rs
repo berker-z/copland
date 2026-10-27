@@ -1,9 +1,11 @@
 //! `copland-daemon --setup`: the box's setup on a terminal (COPL-177), with plain
 //! prompts on stdin and stdout. The address, approving this machine in the
 //! browser (a device code), a runtime and a workdir per agent, whether to start
-//! the tray at login (COPL-201; not asked under Nix, where it ends with the
+//! the tray at login (COPL-201) and the daemon at login (COPL-223), both no
+//! unless answered yes (neither asked under Nix, where it ends with the
 //! home-manager module instead, COPL-218), then daemon.toml written and the
-//! preflight run on it, offering the fixes it can run. The
+//! preflight run on it, offering the fixes it can run, and the service
+//! installed when it is to start at login. The
 //! parts are core's (`copland_daemon_core::setup`), the same the box's wizard
 //! drives, so the config and the resume note are the box's too.
 
@@ -83,6 +85,7 @@ pub async fn run(config: &Path, url: Option<&str>) -> Result<()> {
         std::env::var("DISPLAY").ok().as_deref(),
         std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
     );
+    let headless = autostart::headless_here();
     /* Under Nix the service and the tray at login are the home-manager module's (COPL-218):
     nothing is asked or written, the end says what to add. */
     let program = std::env::current_exe().context("finding this binary")?;
@@ -96,6 +99,7 @@ pub async fn run(config: &Path, url: Option<&str>) -> Result<()> {
         (true, Some(_), Some(file)) => Some((ask_tray(&mut input, &mut out, graphical)?, file)),
         _ => None,
     };
+    let at_login = !nix && ask_autostart(&mut input, &mut out, headless)?;
     drop(input);
 
     if let Some(b) = setup::write_config(config, CLIENT, &saved, &choices)? {
@@ -124,15 +128,27 @@ pub async fn run(config: &Path, url: Option<&str>) -> Result<()> {
     }
     if nix {
         let service = service::installed();
-        let nix = NixManaged::here(&program, Some(config), graphical);
+        let nix = NixManaged::here(&program, Some(config), graphical, headless);
         write!(out, "{}", nix_ending(service.as_ref(), &nix))?;
+    } else if at_login {
+        /* Somewhere it won't stay, or no user manager: said, and the config stays written. */
+        match service::install(config, &program, true) {
+            Ok(done) => write!(out, "\n{}", crate::installed_says(&done))?,
+            Err(e) => writeln!(out, "\nThe service isn't installed: {e:#}")?,
+        }
     } else {
-        writeln!(
-            out,
-            "Start the daemon with `{CLIENT}`, or run it as a service with `{CLIENT} --install-service`."
-        )?;
+        writeln!(out, "{}", by_hand_ending())?;
     }
     Ok(())
+}
+
+/// How setup ends when the daemon isn't to start at login: the ways to start it by hand.
+pub fn by_hand_ending() -> String {
+    format!(
+        "Start the daemon when you want your agents running: `{CLIENT} start` (or the Copland Daemon launcher), \
+         or `{CLIENT}` in a terminal. `{CLIENT} --install-service` makes it a service, still started by hand; \
+         `--install-service --autostart` starts it at login, for a server."
+    )
 }
 
 /// How setup ends when this daemon is Nix's: the module's service started again on the new
@@ -326,19 +342,37 @@ pub fn choose(input: &mut impl BufRead, out: &mut impl Write, saved: &Saved, fou
     Ok(choices)
 }
 
-/// Whether to start the tray at login. Enter takes yes in a graphical session and no without
-/// one (a server, over ssh), where a tray has nowhere to show.
+/// Whether to start the tray at login. Enter takes no (COPL-223); without a display (a server,
+/// over ssh) it says a tray has nowhere to show here.
 pub fn ask_tray(input: &mut impl BufRead, out: &mut impl Write, graphical: bool) -> Result<bool> {
     let prompt = if graphical {
-        format!("\nStart {TRAY} (the daemon in your bar's tray) at login? [Y/n] ")
+        format!("\nStart {TRAY} (the daemon in your bar's tray) at login? [y/N] ")
     } else {
         format!("\nNo display here. Start {TRAY} (the daemon in a desktop's tray) at login anyway? [y/N] ")
     };
+    yes_no(input, out, &prompt)
+}
+
+/// Whether to start the daemon at login (installing the service with `--autostart`). Enter takes
+/// no: a workstation starts it by hand. On a machine without a display or over SSH (`headless`)
+/// the question says yes is what a server wants.
+pub fn ask_autostart(input: &mut impl BufRead, out: &mut impl Write, headless: bool) -> Result<bool> {
+    let prompt = if headless {
+        "\nThis looks like a server (no display, or over SSH), where yes is usual: start the daemon at login \
+         (or boot, with lingering), so your agents run whenever it is up? [y/N] "
+    } else {
+        "\nStart the daemon at login, so your agents run whenever you are logged in? \
+         No starts it by hand, from its launcher. [y/N] "
+    };
+    yes_no(input, out, prompt)
+}
+
+/// A y/N question: Enter is no, anything but yes or no is asked again.
+fn yes_no(input: &mut impl BufRead, out: &mut impl Write, prompt: &str) -> Result<bool> {
     loop {
-        match ask(input, out, &prompt)?.to_ascii_lowercase().as_str() {
-            "" => return Ok(graphical),
+        match ask(input, out, prompt)?.to_ascii_lowercase().as_str() {
+            "" | "n" | "no" => return Ok(false),
             "y" | "yes" => return Ok(true),
-            "n" | "no" => return Ok(false),
             _ => writeln!(out, "  y or n")?,
         }
     }
@@ -424,11 +458,13 @@ mod tests {
             program: "/nix/store/x/bin/copland-daemon".into(),
             config: None,
             tray: true,
+            autostart: false,
             leftover: None,
         };
         let says = nix_ending(None, &nix);
         assert!(says.starts_with("This copland-daemon is from the Nix store"), "{says}");
         assert!(says.contains("  services.copland.tray.enable = true;\n"), "{says}");
+        assert!(says.contains("  # services.copland.autostart = true;"), "{says}");
         assert!(!says.contains("--install-service"), "{says}");
         let hm = Service {
             file: "/home/me/.config/systemd/user/copland-daemon.service".into(),
@@ -515,16 +551,31 @@ mod tests {
     }
 
     #[test]
-    fn asks_about_the_tray_with_a_default_for_the_session() {
+    fn asks_about_the_tray_and_the_daemon_at_login_with_no_by_default() {
         let mut out = Vec::new();
-        assert!(ask_tray(&mut io::Cursor::new("\n"), &mut out, true).unwrap());
-        assert!(String::from_utf8(out).unwrap().contains("[Y/n]"));
+        assert!(!ask_tray(&mut io::Cursor::new("\n"), &mut out, true).unwrap());
+        assert!(String::from_utf8(out).unwrap().contains("[y/N]"));
         let mut out = Vec::new();
         assert!(!ask_tray(&mut io::Cursor::new("\n"), &mut out, false).unwrap());
         assert!(String::from_utf8(out).unwrap().contains("No display here"));
         assert!(ask_tray(&mut io::Cursor::new("maybe\nY\n"), &mut Vec::new(), false).unwrap());
         assert!(!ask_tray(&mut io::Cursor::new("no\n"), &mut Vec::new(), true).unwrap());
         assert!(ask_tray(&mut io::Cursor::new(""), &mut Vec::new(), true).is_err());
+
+        /* The daemon at login: no unless answered yes, on a workstation and a server alike. */
+        for headless in [false, true] {
+            let mut out = Vec::new();
+            assert!(!ask_autostart(&mut io::Cursor::new("\n"), &mut out, headless).unwrap());
+            let said = String::from_utf8(out).unwrap();
+            assert!(said.ends_with("[y/N] "), "{said}");
+            assert_eq!(said.contains("looks like a server"), headless, "{said}");
+            assert!(ask_autostart(&mut io::Cursor::new("what\nyes\n"), &mut Vec::new(), headless).unwrap());
+        }
+        let ending = by_hand_ending();
+        assert!(
+            ending.contains("copland-daemon start") && ending.contains("--autostart"),
+            "{ending}"
+        );
 
         let dir = scratch("tray");
         let file = dir.join("autostart").join(format!("{TRAY}.desktop"));

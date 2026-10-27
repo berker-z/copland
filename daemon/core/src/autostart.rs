@@ -218,9 +218,36 @@ pub fn graphical(display: Option<&str>, wayland_display: Option<&str>) -> bool {
     display.is_some_and(|d| !d.is_empty()) || wayland_display.is_some_and(|d| !d.is_empty())
 }
 
+/// Whether this looks like a server or a remote machine, where the daemon is worth starting at
+/// login or boot (COPL-223): no display, or a session over SSH (`ssh`: `$SSH_CONNECTION` or
+/// `$SSH_TTY` is set). A workstation starts it by hand.
+pub fn headless(display: Option<&str>, wayland_display: Option<&str>, ssh: bool) -> bool {
+    ssh || !graphical(display, wayland_display)
+}
+
+/// `headless` for this process's environment.
+pub fn headless_here() -> bool {
+    let var = |k: &str| std::env::var(k).ok();
+    let set = |k: &str| var(k).is_some_and(|v| !v.is_empty());
+    headless(
+        var("DISPLAY").as_deref(),
+        var("WAYLAND_DISPLAY").as_deref(),
+        set("SSH_CONNECTION") || set("SSH_TTY"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_machine_without_a_display_or_over_ssh_is_headless() {
+        assert!(headless(None, None, false));
+        assert!(headless(Some(""), Some(""), false));
+        assert!(headless(Some(":0"), None, true));
+        assert!(!headless(Some(":0"), None, false));
+        assert!(!headless(None, Some("wayland-1"), false));
+    }
 
     #[test]
     fn finds_where_the_entry_goes_and_what_it_runs() {

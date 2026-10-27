@@ -3,7 +3,9 @@
 # both plists lint, `--install-service` bootstraps the agent into this user's
 # gui domain from a stable path, a second install leaves it as it is, one
 # from a temporary dir is refused before anything is written, and
-# `--uninstall-service` takes it out again.
+# `--uninstall-service` takes it out again. Installed, it runs now but not at
+# login (no RunAtLoad); --autostart sets RunAtLoad; `stop` boots it out and
+# `start` loads and starts it again (COPL-223).
 #   daemon/release/check-launchd.sh path/to/copland-daemon
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -15,6 +17,18 @@ plist=$HOME/Library/LaunchAgents/$label.plist
 fail() {
   echo "::error::$*" >&2
   exit 1
+}
+
+# The agent has a pid within ten seconds: it was started, not only loaded.
+running() {
+  for _ in $(seq 20); do
+    launchctl print "$domain/$label" 2>/dev/null | grep -qE '^\s*pid = [0-9]+' && return 0
+    sleep 0.5
+  done
+  fail "$label isn't running: $(launchctl print "$domain/$label" 2>&1 | head -40)"
+}
+at_login() {
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :RunAtLoad' "$plist")" = "$1" ] || fail "RunAtLoad isn't $1"
 }
 
 work=$(mktemp -d)
@@ -53,6 +67,8 @@ grep -q "program = $daemon" "$work/print" || grep -q "$daemon" "$work/print" ||
   fail "$label doesn't run $daemon: $(cat "$work/print")"
 [ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist")" = "$daemon" ] ||
   fail "ProgramArguments[0] isn't $daemon"
+at_login false
+running
 
 echo "--- install again"
 "$daemon" --config "$work/daemon.toml" --install-service | tee "$work/again"
@@ -66,6 +82,24 @@ grep -q "Replaced" "$work/stale" || fail "a stale plist wasn't replaced"
 [ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist")" = "$daemon" ] ||
   fail "the replaced plist doesn't run $daemon"
 launchctl print "$domain/$label" >/dev/null || fail "$label isn't loaded after replacing a stale plist"
+
+echo "--- --autostart: RunAtLoad"
+"$daemon" --config "$work/daemon.toml" --install-service --autostart | tee "$work/autostart"
+grep -q "starts again at every login" "$work/autostart" || fail "--autostart doesn't say it starts at login"
+at_login true
+running
+"$daemon" --config "$work/daemon.toml" --install-service | tee "$work/by-hand"
+grep -q "doesn't start at login" "$work/by-hand" || fail "without --autostart it doesn't say so"
+at_login false
+
+echo "--- stop, then start as the launcher does"
+"$daemon" --config "$work/daemon.toml" stop
+if launchctl print "$domain/$label" >/dev/null 2>&1; then
+  fail "$label is still loaded after stop"
+fi
+"$daemon" --config "$work/daemon.toml" start | tee "$work/start"
+grep -q "Started the service" "$work/start" || fail "start doesn't say it started the service"
+running
 
 echo "--- --check reads the program back"
 "$daemon" --config "$work/daemon.toml" --check | tee "$work/check" || true

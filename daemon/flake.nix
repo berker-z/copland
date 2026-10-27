@@ -144,9 +144,12 @@
               # The headless daemon as a systemd user unit, the tarball's with
               # this package's binary in ExecStart (daemon/README.md, Server mode).
               # The tray gets a launcher entry too; its state icons are in the binary.
+              # So does the daemon, which a workstation starts by hand from it
+              # (`copland-daemon start`, with a Stop action; COPL-223).
               postInstall = ''
                 install -Dm644 ${./release/copland-box.desktop} $out/share/applications/copland-box.desktop
                 install -Dm644 ${./release/copland-tray.desktop} $out/share/applications/copland-tray.desktop
+                install -Dm644 ${./release/copland-daemon.desktop} $out/share/applications/copland-daemon.desktop
                 install -Dm644 ${./release/copland-daemon.service} $out/share/systemd/user/copland-daemon.service
                 substituteInPlace $out/share/systemd/user/copland-daemon.service \
                   --replace-fail '%h/.local/bin/copland-daemon' "$out/bin/copland-daemon"

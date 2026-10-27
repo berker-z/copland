@@ -6,13 +6,17 @@
 # Nix files without a cache. What the module would install is the units, and
 # those are what is checked:
 # - with the defaults, ExecStart and ExecReload are the stub's daemon with no
-#   --config, PATH has the usual profiles and no tray unit is rendered;
+#   --config, PATH has the usual profiles, no tray unit is rendered, and the
+#   daemon starts at nothing (no WantedBy, COPL-223);
 # - with runtimes, configFile and the tray, the runtimes lead PATH, --config
-#   follows both commands and the tray is tied to graphical-session.target;
+#   follows both commands and the tray is part of graphical-session.target,
+#   still started by hand;
+# - with autostart and tray.autostart, the daemon is wanted by default.target
+#   and the tray by graphical-session.target;
 # - every line of release/copland-daemon.service's [Service] and [Install]
-#   is in the module's unit (with the stub for %h/.local/bin), and every key
-#   the module sets there is in the shipped one, PATH aside: the two can't
-#   drift apart.
+#   is in the autostarting module's unit (with the stub for %h/.local/bin),
+#   and every key the module sets there is in the shipped one, PATH aside:
+#   the two can't drift apart.
 {
   pkgs,
   home-manager,
@@ -55,12 +59,21 @@ let
     configFile = "%h/.config/copland/work.toml";
     tray.enable = true;
   };
+  server = home {
+    autostart = true;
+    tray = {
+      enable = true;
+      autostart = true;
+    };
+  };
 in
 pkgs.runCommand "copland-home-manager-module"
   {
     plainDaemon = unit plain "copland-daemon";
     fullDaemon = unit full "copland-daemon";
     fullTray = unit full "copland-tray";
+    serverDaemon = unit server "copland-daemon";
+    serverTray = unit server "copland-tray";
     hasPlainTray =
       if plain.config.xdg.configFile ? "systemd/user/copland-tray.service" then "yes" else "no";
     shipped = ../release/copland-daemon.service;
@@ -70,12 +83,14 @@ pkgs.runCommand "copland-home-manager-module"
     set -eu
     fail() { echo "FAIL: $*" >&2; exit 1; }
     has() { grep -Fxq -- "$2" "$1" || { cat "$1" >&2; fail "$1 has no line '$2'"; }; }
+    hasnt() { ! grep -q -- "$2" "$1" || { cat "$1" >&2; fail "$1 has '$2'"; }; }
 
     has "$plainDaemon" "ExecStart=$stub/bin/copland-daemon --headless"
     has "$plainDaemon" "ExecReload=$stub/bin/copland-daemon reload"
     grep -q '^Environment=PATH=%h/.nix-profile/bin:/etc/profiles/per-user/%u/bin:' "$plainDaemon" \
       || fail "the default PATH doesn't start with the profiles"
     [ "$hasPlainTray" = no ] || fail "a tray unit without tray.enable"
+    hasnt "$plainDaemon" "WantedBy="
 
     has "$fullDaemon" "ExecStart=$stub/bin/copland-daemon --headless --config %h/.config/copland/work.toml"
     has "$fullDaemon" "ExecReload=$stub/bin/copland-daemon reload --config %h/.config/copland/work.toml"
@@ -83,14 +98,18 @@ pkgs.runCommand "copland-home-manager-module"
       || fail "the runtimes don't lead PATH"
     has "$fullTray" "ExecStart=$stub/bin/copland-tray --config %h/.config/copland/work.toml"
     has "$fullTray" "PartOf=graphical-session.target"
-    has "$fullTray" "WantedBy=graphical-session.target"
+    hasnt "$fullTray" "WantedBy="
+    hasnt "$fullDaemon" "WantedBy="
+
+    has "$serverDaemon" "WantedBy=default.target"
+    has "$serverTray" "WantedBy=graphical-session.target"
 
     # The lines of the [Service] and [Install] sections, comments and blanks dropped.
     sections() {
       awk '/^\[/ { on = ($0 == "[Service]" || $0 == "[Install]") } on && !/^(#|$|\[)/' "$1"
     }
     sections "$shipped" | sed "s|%h/.local/bin|$stub/bin|g" > shipped
-    sections "$plainDaemon" | grep -v '^Environment=PATH=' > module
+    sections "$serverDaemon" | grep -v '^Environment=PATH=' > module
     while IFS= read -r line; do has module "$line"; done < shipped
     while IFS= read -r line; do has shipped "$line"; done < module
 

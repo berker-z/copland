@@ -14,16 +14,21 @@ quarantine flag is removed as above (only needed when a browser downloaded
 the archive). Check them against SHA256SUMS on the release page first.
 
 Started without a config, the box sets itself up in its window and ends by
-installing the daemon as a launchd agent (the copland-daemon next to it),
-which runs your agents at every login, whether the box is open or not.
-Whenever no daemon is running, the box offers to install or start it, or to
-run one until you log out. A box upgraded from 0.4.x, which ran the agents
+installing the daemon as a launchd agent (the copland-daemon next to it) and
+starting it: it runs your agents whether the box is open or not, until you
+stop it or log out. It doesn't start at login: `copland-daemon start` or the
+box starts it again (`copland-daemon stop` stops it). Whenever no daemon is
+running, the box offers to install or start it, or to run one until you log
+out. A box upgraded from 0.4.x, which ran the agents
 itself, says so once and offers the agent.
 
-To run the headless daemon without the window, at every login:
+To run the headless daemon without the window, at every login (a server,
+a Mac that runs your agents whenever it is on):
 
   copland-daemon --setup              # approve it in Copland, pick runtimes
-  copland-daemon --install-service    # a launchd agent, loaded and started
+  copland-daemon --install-service --autostart   # a launchd agent, run at load
+
+Without --autostart the agent is loaded at login but runs only when started.
 
 That writes ~/Library/LaunchAgents/dev.berkerz.copland.daemon.plist for
 this binary and config, and logs to ~/Library/Logs/copland-daemon.log.
@@ -35,7 +40,8 @@ leaves the agent as it is, or points it at the binary it was run from. The daemo
 runtimes when it starts, on its PATH, your login shell's, ~/.local/bin and
 /opt/homebrew/bin; --check shows where.
 dev.berkerz.copland.daemon.plist here is the same agent as a template
-(@DAEMON@ and @LOG@ are absolute paths), to install by hand instead.
+(@DAEMON@ and @LOG@ are absolute paths), started by hand, to install by
+hand instead.
 `copland-daemon --uninstall-service` stops and removes it.
 
 Built on macOS 14 for macOS 11 and later. Not yet tried on real hardware.

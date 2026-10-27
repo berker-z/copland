@@ -20,6 +20,8 @@ install -Dm755 "$bin/copland-tray" "$root/bin/copland-tray"
 install -Dm644 "$here/copland-box.desktop" "$root/share/applications/copland-box.desktop"
 # The tray's state icons are built into it; it uses the box's icon for its launcher entry.
 install -Dm644 "$here/copland-tray.desktop" "$root/share/applications/copland-tray.desktop"
+# The daemon's launcher: starts it (or the service) by hand, with a Stop action (COPL-223).
+install -Dm644 "$here/copland-daemon.desktop" "$root/share/applications/copland-daemon.desktop"
 # The headless daemon as a systemd user service, for ~/.local/bin (daemon/README.md, Server mode).
 install -Dm644 "$here/copland-daemon.service" "$root/share/systemd/user/copland-daemon.service"
 

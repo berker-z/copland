@@ -699,8 +699,9 @@ docs/DESIGN.md under Touch.
   server; not yet against a real Copland.
 - Server mode (COPL-180): `copland-daemon --install-service [--config]`
   writes a systemd user unit (Linux) or launchd agent (macOS) for the
-  running binary and its config, then enables and starts it,
-  noting `loginctl enable-linger` when lingering is off;
+  running binary and its config, then starts it, and enables it only with
+  `--autostart` (COPL-223), noting `loginctl enable-linger` then when
+  lingering is off;
   `--uninstall-service` removes it. Refuses without a config, pointing at
   `--setup`. The Linux tarball and the Nix package ship the unit, the macOS
   tarball the plist as a template (`daemon/cli/src/service.rs`, tested
@@ -714,7 +715,8 @@ docs/DESIGN.md under Touch.
   found.
 - On NixOS and home-manager (COPL-217, for COPL-215): the daemon flake
   exports `homeManagerModules.default`, `services.copland` (`enable`,
-  `package`, `runtimes`, `configFile`, `tray.enable`), the daemon as a user
+  `autostart`, `package`, `runtimes`, `configFile`, `tray.enable`,
+  `tray.autostart`), the daemon as a user
   unit with the package's binary in ExecStart and the declared runtimes on
   its PATH, and the tray tied to `graphical-session.target`
   (`daemon/nix/hm-module.nix`). `nix flake check ./daemon` evaluates it in a
@@ -750,6 +752,19 @@ docs/DESIGN.md under Touch.
   `~/.local`, so the note and the refusal now `mkdir -p` it. Not tried:
   a booted systemd inside a container, or a graphical session (the tray's
   and the box's autostart entries).
+- Autostart is opt-in (COPL-223, for COPL-215): nothing starts at login
+  unless asked. `--install-service` installs and starts the service
+  without enabling it (and disables an earlier enabled one);
+  `--install-service --autostart` (`--enable`) enables it, and on macOS
+  sets `RunAtLoad`. `copland-daemon start` and `stop` start and stop it by
+  hand (a session daemon when there is no service, and the module's tray
+  unit), which `release/copland-daemon.desktop`, shipped in the tarball
+  and the Nix package, runs. The module's `autostart` and
+  `tray.autostart` default to false; `--setup` asks about both with no as
+  the default, saying yes is usual on a headless machine; the box's offer
+  never makes it start at login. The flake check and CI's install flows
+  (Linux with a user manager, the macOS runner) cover both. Not yet tried
+  in a desktop session: the launcher entry itself.
 - macOS (COPL-221, for COPL-215): the launchd agent's program has to be
   somewhere it stays too: an app right in `/Applications` or
   `~/Applications`, `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`.

@@ -10,9 +10,10 @@
 # left alone on a second run and replaced when it runs something else. Then --check finds stub
 # runtimes in ~/.local/bin and ~/.npm-global/bin, neither on PATH (COPL-216).
 #
-# `manager`: this user has systemd's user manager, so the service is enabled and started too, and
-# removed at the end. Without it there is none (a container), and --install-service has to write
-# the unit and then say it couldn't start it.
+# `manager`: this user has systemd's user manager, so the service is started too, and removed at
+# the end: by hand without --autostart (not enabled), at login with it (enabled), and stopped and
+# started again with `copland-daemon stop` and `start` (COPL-223). Without a manager there is none
+# (a container), and --install-service has to write the unit and then say it couldn't start it.
 set -euo pipefail
 bin=$(realpath "$1")
 manager=${2:-}
@@ -93,7 +94,7 @@ install_ok() {
     [ "$status" = 0 ] || fail "exit $status"
   else
     [ "$status" = 1 ] || fail "exit $status, not 1 without a user manager"
-    has "but couldn't enable and start it"
+    has "but couldn't start it"
   fi
 }
 
@@ -141,9 +142,9 @@ install_ok
 has "Replaced $unit, which ran $HOME/old/copland-daemon"
 grep -qxF "ExecStart=$daemon --headless --config $config" "$unit" || fail "ExecStart wasn't put back"
 
-if [ -n "$manager" ]; then
-  step "the service is enabled and running"
-  [ "$(systemctl --user is-enabled copland-daemon.service)" = enabled ] || fail "not enabled"
+# Running, and enabled (`enabled`) or not (`disabled`): what systemctl says.
+service_is() {
+  [ "$(systemctl --user is-enabled copland-daemon.service || true)" = "$1" ] || fail "is-enabled isn't $1"
   for _ in $(seq 20); do
     systemctl --user is-active --quiet copland-daemon.service && break
     sleep 0.5
@@ -154,6 +155,21 @@ if [ -n "$manager" ]; then
     ls -la "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/copland" || true
     fail "not running"
   }
+}
+
+if [ -n "$manager" ]; then
+  step "the service is running, started by hand: not enabled"
+  has "it doesn't start at login"
+  service_is disabled
+fi
+
+step "--install-service --autostart: the same unit, enabled"
+run "$daemon" --install-service --autostart
+install_ok
+has "$unit is already this; left as it is"
+if [ -n "$manager" ]; then
+  has "it starts again with your user's session"
+  service_is enabled
 fi
 
 step "--check finds runtimes that aren't on PATH"
@@ -169,7 +185,24 @@ grep -qE "^  claude +$HOME/.local/bin/claude\$" <<<"$out" || fail "--check didn'
 grep -qE "^  codex +$HOME/.npm-global/bin/codex\$" <<<"$out" || fail "--check didn't find codex in ~/.npm-global/bin"
 has "It runs $daemon ("
 if [ -n "$manager" ]; then
-  has "service: installed, enabled, running"
+  has "service: installed, starts at login, running"
+fi
+
+step "--install-service without --autostart again: no longer enabled"
+run "$daemon" --install-service
+install_ok
+if [ -n "$manager" ]; then
+  service_is disabled
+
+  step "stop and start, as the launcher does"
+  run "$daemon" stop
+  [ "$status" = 0 ] || fail "exit $status"
+  has "Stopped the daemon"
+  ! systemctl --user is-active --quiet copland-daemon.service || fail "still running after stop"
+  run "$daemon" start
+  [ "$status" = 0 ] || fail "exit $status"
+  has "Started the service ($unit)"
+  service_is disabled
 fi
 
 if [ -n "$manager" ]; then
