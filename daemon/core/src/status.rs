@@ -66,6 +66,16 @@ pub struct Agent {
     /// until then. Added after version 1 shipped, so an older daemon's status has none.
     #[serde(default)]
     pub out_of_usage_until: Option<String>,
+    /// Its runtime account (COPL-232): the runtime and, masked, who is signed in to it
+    /// ("claude-code (b…@…)", "codex (3f2a91)"), or the config's `account`. Added after version 1
+    /// shipped, so an older daemon's status has none.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// The account whose cap on runs going at once (`max_runs_per_account`) holds back work of
+    /// this agent's, while it does: that work is left in todo until a seat is free. Added after
+    /// version 1 shipped, so an older daemon's status has none.
+    #[serde(default)]
+    pub waiting_for_slot: Option<String>,
     /// Every run going, oldest first.
     pub runs: Vec<Run>,
     /// Each board repo checked from this machine (COPL-178): coding tasks on one it can't push to
@@ -253,6 +263,8 @@ impl Agent {
             unavailable_since: a.unavailable.map(rfc3339),
             held: a.held,
             out_of_usage_until: a.until(SystemTime::now()).map(rfc3339),
+            account: a.account.clone(),
+            waiting_for_slot: a.waiting_for_slot.clone(),
             runs: a
                 .runs
                 .iter()
@@ -340,6 +352,9 @@ impl Agent {
         };
         out.push_str(&format!("@{}  {doing}\n", self.handle));
         let mut about = vec![self.url.clone(), format!("live {}", self.live)];
+        if let Some(account) = &self.account {
+            about.push(account.clone());
+        }
         if self.handle != self.configured {
             about.insert(0, format!("configured as {}", self.configured));
         }
@@ -352,6 +367,9 @@ impl Agent {
                 "  ‖ out of usage until {}: starts nothing until then\n",
                 clock(t)
             ));
+        }
+        if let Some(account) = &self.waiting_for_slot {
+            out.push_str(&format!("  ‖ waiting for a slot on {account}\n"));
         }
         if let Some(t) = &self.unavailable_since {
             out.push_str(&format!("  × Copland unavailable since {}\n", clock(t)));
@@ -452,6 +470,8 @@ mod tests {
         a.waiting = vec!["T-1".into(), "T-2".into()];
         a.messages = 1;
         a.held = true;
+        a.account = Some("claude-code (b…@…)".into());
+        a.waiting_for_slot = a.account.clone();
         a.run_started("aaaa", "T-1");
         a.run_started("bbbb", MESSAGES);
         for r in &mut a.runs {
@@ -532,6 +552,8 @@ mod tests {
                     "unavailable_since": null,
                     "held": true,
                     "out_of_usage_until": null,
+                    "account": "claude-code (b…@…)",
+                    "waiting_for_slot": "claude-code (b…@…)",
                     "runs": [
                         {
                             "run": "aaaa",
@@ -597,8 +619,18 @@ mod tests {
         /* A daemon from before `held` says nothing of it: not held. */
         v["agents"][0].as_object_mut().unwrap().remove("held");
         v["agents"][0].as_object_mut().unwrap().remove("repos");
+        /* Nor one from before accounts (COPL-232): no account, nothing waiting for a slot. */
+        v["agents"][0].as_object_mut().unwrap().remove("account");
+        v["agents"][0].as_object_mut().unwrap().remove("waiting_for_slot");
         let old = serde_json::from_value::<Status>(v).unwrap();
         assert!(!old.agents[0].held && old.agents[0].repos.is_empty());
+        assert_eq!(
+            (
+                old.agents[0].account.as_deref(),
+                old.agents[0].waiting_for_slot.as_deref()
+            ),
+            (None, None)
+        );
     }
 
     #[test]
@@ -717,8 +749,9 @@ mod tests {
         assert_eq!(
             Status::of(&st).render(),
             "@me/dev  ● T-1, messages\n  \
-             https://copland.example · live connected\n  \
+             https://copland.example · live connected · claude-code (b…@…)\n  \
              ‖ held on this machine: starts nothing until released\n  \
+             ‖ waiting for a slot on claude-code (b…@…)\n  \
              ● T-1: run aaaa since 23:20 UTC in /code/repo/T-1\n  \
              ● messages: run bbbb since 23:20 UTC\n  \
              4 unread · todo T-2 · 1 message waiting\n  \

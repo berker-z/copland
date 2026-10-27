@@ -1416,6 +1416,7 @@ mod tests {
             runtime: Runtime::detect(&argv(&["copland-no-such-program"])),
             code_dir: "/tmp/copland-code".into(),
             max_runs: 1,
+            account: None,
             resume_chains: false,
         };
         let said = |name: &str, on_path, logged_in| RuntimeCapability {

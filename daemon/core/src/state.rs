@@ -71,6 +71,11 @@ pub struct AgentState {
     /// said, or a back-off when it said none. Until then the agent is held as by `held`; a release
     /// by hand clears it, and the loop does once it has passed.
     pub out_of_usage: Option<SystemTime>,
+    /// Its runtime account as shown (`account::Account::shown`, COPL-232), as its loop last read it.
+    pub account: Option<String>,
+    /// The account (as shown) whose runs going at once are at their cap, while work of the agent's
+    /// waits for a seat there: nothing is claimed or started for it until one is free.
+    pub waiting_for_slot: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +203,8 @@ impl AgentState {
             held: false,
             repos: Vec::new(),
             out_of_usage: None,
+            account: None,
+            waiting_for_slot: None,
         }
     }
 }

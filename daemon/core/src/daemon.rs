@@ -20,6 +20,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
+use crate::account::Accounts;
 use crate::agent::{AgentLoop, Paths, Retire, StopRequest, Wanted};
 use crate::api::Api;
 use crate::config::{AgentConfig, Config};
@@ -48,6 +49,8 @@ pub struct Daemon {
     leaving: Vec<watch::Sender<Wanted>>,
     poll: Duration,
     paths: Arc<Paths>,
+    /// The seats on each runtime account, shared by every agent's loop (COPL-232).
+    accounts: Accounts,
     next_slot: u64,
     /// The status socket, served while this lives (COPL-184).
     socket: Option<Server>,
@@ -231,6 +234,7 @@ impl Daemon {
             leaving: Vec::new(),
             poll: config.poll_interval,
             paths: Arc::new(paths),
+            accounts: Accounts::new(config.max_runs_per_account),
             next_slot: 1,
             socket: None,
             reload_tx,
@@ -311,6 +315,7 @@ impl Daemon {
                 self.state_tx.clone(),
                 self.shutdown.subscribe(),
                 self.stop_run.subscribe(),
+                self.accounts.clone(),
             )
             .instrument(span),
         );
@@ -337,6 +342,8 @@ impl Daemon {
             stop,
         } = reload::plan(&old, &config.agents, poll_changed);
         self.poll = config.poll_interval;
+        /* The cap is the daemon's, not an agent's: it applies from each loop's next poll, and runs going keep their seats. */
+        self.accounts.set_cap(config.max_runs_per_account);
         let mut done = Reloaded::default();
 
         let mut old_slots: Vec<Option<Slot>> = std::mem::take(&mut self.slots).into_iter().map(Some).collect();
@@ -435,6 +442,7 @@ async fn supervise(
     state: watch::Sender<DaemonState>,
     shutdown: watch::Receiver<bool>,
     stop_run: watch::Receiver<StopRequest>,
+    accounts: Accounts,
 ) {
     let mut guard = WakeGuard::default();
     let update = |f: &dyn Fn(&mut AgentState)| {
@@ -481,6 +489,7 @@ async fn supervise(
             retire,
             stop_run.clone(),
             guard,
+            accounts.clone(),
         ) {
             Ok(worker) => guard = worker.run().await,
             Err(e) => {
@@ -520,6 +529,7 @@ mod tests {
             runtime: crate::config::Runtime::ClaudeCode,
             code_dir: "/tmp/copland-code".into(),
             max_runs: 10,
+            account: None,
             resume_chains: false,
         }
     }
@@ -600,6 +610,23 @@ mod tests {
                 ..Reloaded::default()
             }
         );
+
+        /* A new cap on runs per account (COPL-232) is the daemon's: it applies to every loop as it
+        is, rebinding none, and a run holding a seat keeps it. */
+        assert_eq!(d.accounts.cap(), crate::account::DEFAULT_MAX_RUNS_PER_ACCOUNT);
+        let going = d.accounts.take("claude-code").unwrap();
+        let mut capped = config(vec![agent("me/dev", "codex"), agent("me/new", "claude")]);
+        capped.max_runs_per_account = 1;
+        let done = d.reload(capped).unwrap();
+        assert_eq!(done.kept, ["me/dev", "me/new"]);
+        assert!(done.rebound.is_empty());
+        assert_eq!(d.accounts.cap(), 1);
+        assert!(
+            d.accounts.take("claude-code").is_none(),
+            "the run going holds the one slot"
+        );
+        drop(going);
+        assert!(d.accounts.take("claude-code").is_some());
 
         d.shutdown();
         tokio::time::timeout(Duration::from_secs(5), d.join())
