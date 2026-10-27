@@ -537,8 +537,9 @@ On NixOS (or anywhere with home-manager), take it as a flake input and import it
 # flake.nix
 inputs.copland = {
   url = "github:berker-z/copland?dir=daemon";
-  # Not `follows`: the box is built and tested against its own pinned nixpkgs,
-  # which is also what the Cachix cache has builds for.
+  # Not `follows`: the dependencies are built against its own pinned nixpkgs,
+  # which is what the Cachix cache has builds for. The module builds the
+  # binaries against yours anyway (below).
 };
 
 # your home-manager configuration (or home-manager.users.<you> in NixOS)
@@ -556,13 +557,17 @@ services.copland = {
 };
 ```
 
-Add the `copland` Cachix cache as a substituter (`cachix use copland`, or `nix.settings.substituters` and `trusted-public-keys` with the key in `flake.nix`'s `nixConfig`), or the first switch compiles GPUI. `nix flake update copland` takes the newest box; nothing else moves it, and each switch points the units at the package it installed, so an upgrade or a garbage collection never leaves them on an old build.
+Add the `copland` Cachix cache as a substituter (`cachix use copland`, or `nix.settings.substituters` and `trusted-public-keys` with the key in `flake.nix`'s `nixConfig`), or the first switch compiles GPUI.
+
+The module doesn't install the cached package as it is: it builds the binaries against your configuration's `pkgs` (`copland.lib.mkCopland pkgs`). The box loads your system's GPU driver from `/run/opengl-driver`, which your nixpkgs built, and a binary linked to the flake's older glibc can't load it once yours moves past it: the loader prints `GLIBC_2.44' not found (required by libLLVM…)`, finds no GPU, and the box panics with `Unable to init GPU context`. Mesa's AMD driver links LLVM and hits this first; Intel's doesn't link it and can keep working for a while. The compiled dependencies, GPUI among them, are still `deps` from Cachix, built with the same rustc and the same vendored sources, so a switch compiles only the crates whose build scripts read your libraries' pkg-config paths, and ours. `overlays.default` does the same for `pkgs.copland`. `nix run` and `packages.${system}` stay the pinned, fully cached build, which works as long as your drivers' glibc isn't newer than the flake's.
+
+`nix flake update copland` takes the newest box; nothing else moves it, and each switch points the units at the package it installed, so an upgrade or a garbage collection never leaves them on an old build.
 
 The module (`nix/hm-module.nix`, COPL-217) has seven options under `services.copland`:
 
 - `enable`: puts the package in `home.packages` (with its launcher entries, the "Copland Daemon" one included) and the daemon in `systemd.user.services.copland-daemon`: `release/copland-daemon.service` (Server mode, above) with `${package}/bin/copland-daemon --headless` in ExecStart, the same reload, restart and `KillMode=mixed`. It starts at nothing: start it from the launcher, `copland-daemon start` or the box (COPL-223).
 - `autostart`: `false` by default; `true` adds `WantedBy=default.target`, so it starts at login, and at boot with `loginctl enable-linger`. For a server or a headless machine.
-- `package`: this flake's `packages.${system}.copland` unless you give another.
+- `package`: `copland.lib.mkCopland pkgs`, the package built against your nixpkgs (above), unless you give another.
 - `runtimes`: packages whose `bin` leads the unit's `PATH`, followed by `~/.nix-profile/bin`, `/etc/profiles/per-user/$USER/bin`, the system's profile and `/usr/bin`, so a runtime home-manager or NixOS installs is found anyway; at start the daemon adds your login shell's `PATH` and `~/.local/bin` and the like after these ("Where runtimes are found", COPL-216), so one from npm is found too, but a declared one wins.
 - `configFile`: `null`, the default, is `~/.config/copland/daemon.toml`; an absolute path (or `%h/…`) goes to the daemon and the tray as `--config`. Either way the file is yours, written by `copland-daemon --setup` or the box: it holds the agents' tokens, so it stays out of the Nix store. Set it up once (`copland-daemon --setup`) and `systemctl --user restart copland-daemon`; until then the service fails to start and retries every ten seconds.
 - `tray.enable`: `copland-tray` as `systemd.user.services.copland-tray`, part of `graphical-session.target`, after the daemon; `copland-daemon start` (the launcher) starts it with the daemon.
@@ -570,7 +575,7 @@ The module (`nix/hm-module.nix`, COPL-217) has seven options under `services.cop
 
 `nix flake check ./daemon` evaluates the module in a minimal home configuration with a stub package (so it builds no GPUI), reads back the units it renders (no `WantedBy` by default, `default.target` and `graphical-session.target` with the two `autostart`s), and fails when the autostarting daemon's differs from `release/copland-daemon.service` in any `[Service]` or `[Install]` line; CI runs it (`.github/workflows/nix-ci.yml`) on a PR that changes the Nix files, `Cargo.toml`, that unit or the desktop entries. There is no NixOS VM test that starts the unit in a session yet.
 
-To add only the package, `home.packages` (or `environment.systemPackages`) takes `inputs.copland.packages.${pkgs.stdenv.hostPlatform.system}.default`. The box itself isn't a service: start it from its launcher entry, or with the session as a unit of your own:
+To add only the package, `home.packages` (or `environment.systemPackages`) takes `inputs.copland.lib.mkCopland pkgs`, or `pkgs.copland` with `inputs.copland.overlays.default` in your overlays. The box itself isn't a service: start it from its launcher entry, or with the session as a unit of your own:
 
 ```nix
 systemd.user.services.copland-box = {
@@ -580,7 +585,7 @@ systemd.user.services.copland-box = {
     After = [ "graphical-session.target" ];
   };
   Service = {
-    ExecStart = "${inputs.copland.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/copland-box";
+    ExecStart = "${inputs.copland.lib.mkCopland pkgs}/bin/copland-box";
     Restart = "on-failure";
   };
   Install.WantedBy = [ "graphical-session.target" ];
