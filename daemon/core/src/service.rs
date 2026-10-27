@@ -2005,7 +2005,7 @@ Type=simple
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /* COPL-224: the tray's Stop Copland goes through the service where there is one. */
+    /* COPL-224: the tray's Quit Copland goes through the service where there is one. */
     #[test]
     fn the_service_is_stopped_by_systemd_or_launchd() {
         assert_eq!(

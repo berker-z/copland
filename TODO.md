@@ -135,6 +135,11 @@ docs/DESIGN.md under Touch.
       while the daemon is left). Not yet: Stop Copland and Start Copland
       clicked in a real bar's tray against a real systemd user manager, the
       launcher's Stop ending a tray started at login, and macOS's launchd.
+- [ ] A workstation's daemon going with its tray (COPL-225) is tested as
+      units (the menu with Quit Copland as its one way out, the watch on the
+      tray's lock that waits out a restart, and a daemon hearing a real tray
+      lock go). Not yet: `systemctl --user stop copland-tray`, a tray crashing
+      for good and logging out, against a real systemd user manager.
 - [ ] What runs cost (COPL-71) was checked against the routes in
       `checks/usage.check.ts`, the parser against a real `claude -p
       --output-format json` result, and a fake runtime through the runner;

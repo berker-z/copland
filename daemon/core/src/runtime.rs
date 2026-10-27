@@ -56,14 +56,28 @@ macro_rules! claude_hooks {
     };
 }
 
-/// Claude Code's settings for a run with nothing to code: the hooks alone. The same hooks as
-/// Copland's own `.claude/settings.json`, which a test holds it to, so a run in that repo gets
-/// them once.
-const CLAUDE_SETTINGS: &str = concat!(r#"{"hooks":"#, claude_hooks!(), "}");
+/// No attribution line on a run's commits or pull requests, as `AGENTS.md` asks of everyone.
+macro_rules! claude_attribution {
+    () => {
+        r#""attribution":{"commit":"","pr":""},"#
+    };
+}
+
+/// Claude Code's settings for a run with nothing to code: no attribution and the hooks. The same
+/// as Copland's own `.claude/settings.json`, which a test holds it to, so a run in that repo gets
+/// the hooks once.
+const CLAUDE_SETTINGS: &str = concat!("{", claude_attribution!(), r#""hooks":"#, claude_hooks!(), "}");
 
 /// Claude Code's settings for a coding run (COPL-160): Claude's own sandbox off, since it would
-/// run inside the daemon's, where its push fails and the retry outside it asks; and the same hooks.
-const CLAUDE_CODE_SETTINGS: &str = concat!(r#"{"sandbox":{"enabled":false},"hooks":"#, claude_hooks!(), "}");
+/// run inside the daemon's, where its push fails and the retry outside it asks; and the same
+/// attribution and hooks.
+const CLAUDE_CODE_SETTINGS: &str = concat!(
+    r#"{"sandbox":{"enabled":false},"#,
+    claude_attribution!(),
+    r#""hooks":"#,
+    claude_hooks!(),
+    "}"
+);
 
 /// Codex can't read the MCP JSON file, so a shell takes the run's secret out of it into an
 /// environment variable Codex reads as the bearer token, kept from Codex's own shell commands;
