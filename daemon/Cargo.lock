@@ -1108,7 +1108,7 @@ checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
 name = "copland-box"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "copland-daemon"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "copland-daemon-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "copland-tray"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
