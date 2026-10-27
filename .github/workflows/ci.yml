@@ -178,6 +178,11 @@ jobs:
           ready() { sudo -u ci test -S /run/user/$uid/systemd/private; }
           for _ in $(seq 60); do ready && break; sleep 1; done
           ready || { sudo systemctl status user@$uid.service --no-pager; exit 1; }
+          # The runner's image gives every login the runner's own XDG_RUNTIME_DIR
+          # (/run/user/1001), and ci's manager passes it on to its services.
+          grep -rs XDG_RUNTIME_DIR /etc/environment /etc/security/pam_env.conf || true
+          sudo -u ci env XDG_RUNTIME_DIR=/run/user/$uid \
+            systemctl --user set-environment XDG_RUNTIME_DIR=/run/user/$uid
           # A login's environment, not the runner's (its XDG_CONFIG_HOME is /home/runner's).
           sudo -u ci env -i HOME=/home/ci USER=ci LOGNAME=ci SHELL=/bin/bash \
             PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
