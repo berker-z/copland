@@ -10,6 +10,7 @@ import type { BoardOverlapRead, TaskOverlapRead } from "@/domain/overlap";
 import type { MarketExtras, Note } from "@/domain/panes";
 import type { Settings, VaultEntry } from "@/domain/settings";
 import type {
+  BoardChanges,
   Agent,
   ApiToken,
   BoardDetail,
@@ -116,6 +117,10 @@ export const fetchTask = (ref: string): Promise<TaskRead | null> =>
 
 /** Every open task's overlap on a board (GET /api/boards/:id/overlap, COPL-207), for lib/boardPatch.ts. */
 export const fetchOverlap = (boardId: string): Promise<BoardOverlapRead> => api<BoardOverlapRead>(`/boards/${encodeURIComponent(boardId)}/overlap`);
+
+/** What changed on a board since a version (GET /api/boards/:id/changes, COPL-210), for lib/boardPatch.ts. */
+export const fetchChanges = (boardId: string, since: number): Promise<BoardChanges> =>
+  api<BoardChanges>(`/boards/${encodeURIComponent(boardId)}/changes?since=${since}`);
 
 /** A task by key or id, under its board's key: whatever refetches the board refetches it too. */
 const taskQuery = (boardId: string, ref: string) => ({

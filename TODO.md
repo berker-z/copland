@@ -302,7 +302,7 @@ docs/DESIGN.md under Touch.
   on screen. The box reads at most every `SPACING` (5 s, `box/src/feed.rs`
   `read_at`), a socket dropping included. Pinned by checks/live.check.ts
   and the reads check's `live: a burst of edits, heard` (33 rows for ten
-  edits) and `live: a reconnect` (776) rows
+  edits) and `live: a reconnect` (776, 65 since COPL-210) rows
 - A task opened from the inbox or /wired loads that task, not its board
   (COPL-153, for COPL-131): when the tab doesn't hold the board already,
   the modal reads the task, the board's shell (`GET /api/boards/:id/shell`:
@@ -343,6 +343,22 @@ docs/DESIGN.md under Touch.
   every run's start, every runtime exit, every closed task the sweep found
   and every board at start. An older server without the dependents route
   makes a closed task's worktree go, and the chain's next task start cold
+- A tab that falls behind on a board reads what changed since its version
+  (COPL-210, for COPL-206): each version's change goes into the board's
+  change log (`board_changes`, migration 0039: the tasks its event named,
+  or NULL for more than tasks) as the event goes out, and
+  `GET /api/boards/:id/changes?since=` answers the tasks named since, read
+  as the board read has them (a parent with its progress), and those gone,
+  or "whole" when the log can't say (a version with no row, a change to
+  stages, labels, members or docs, more than 500 versions or 100 tasks
+  back). A missed or crossed version, more than ten tasks, an event without
+  a version, a hidden tab shown again and a reconnect ask it and patch the
+  answer in, where they read the board whole. A change of more than tasks
+  gets a version of its own when it is recorded, so a tab reads it whole
+  without asking first. A delete now bumps the version and names the task,
+  the children it unparents, the tasks that waited on it and everything
+  above it, so it patches too. 26 rows on the reads check's seed for one
+  missed edit; a reconnect 65 (776). Pinned by checks/boardEvents.check.ts
 - The box re-reads only the wired tasks that changed (COPL-211, for
   COPL-206): a board event that names its tasks makes the box read
   `GET /api/wired?tasks=` for those of them it shows (all of them when one

@@ -27,7 +27,7 @@ import { sqlite } from "./worker.ts";
 import type { BoardChange } from "../src/domain/live.ts";
 import type { Viewer } from "../src/domain/types.ts";
 
-const { getBoard, getBoardShell, getBoards, getClosed } = await import("../src/worker/routes/boards.ts");
+const { getBoard, getBoardChanges, getBoardShell, getBoards, getClosed } = await import("../src/worker/routes/boards.ts");
 const { getDependents, getTask, patchTask } = await import("../src/worker/routes/tasks.ts");
 const { getBoardOverlap, putTaskFiles } = await import("../src/worker/routes/files.ts");
 const { Changes } = await import("../src/worker/live.ts");
@@ -398,13 +398,41 @@ async function burstHeard(env: Env, { live }: Seeded, skip: () => void): Promise
 }
 
 /**
- * What a tab on a board reads when its socket comes back (COPL-209): what's
- * on screen, its board and the boards list. Before COPL-209, every query
- * the tab held, once a reconnect; now once a window at most, however often
- * the network drops (lib/liveWindow.ts).
+ * What changed on the board since the version a tab holds (COPL-210), for a
+ * tab that missed an event: a task edit, recorded in the board's change log
+ * as publish records it, and then the read since the version before it. The
+ * edit and its record are not counted (`skip`), and it comes last.
  */
-async function reconnect(env: Env): Promise<Response> {
-  await getBoard(env, sam, "big");
+let missed = 0;
+async function missedEdit(env: Env, { live }: Seeded, skip: () => void): Promise<number> {
+  const { id } = (await (await getTask(env, sam, live)).json()) as { id: string };
+  const changes = new Changes();
+  await patchTask(new Request("http://x/", { method: "PATCH", body: JSON.stringify({ title: `missed ${++missed}` }) }), env, sam, id, changes);
+  await changes.record(env.DB);
+  skip();
+  const [event] = changes.events(null).get("sam") ?? [];
+  if (event?.version === undefined) throw new Error("the edit bumped no version");
+  return event.version - 1;
+}
+
+async function changesSince(env: Env, seeded: Seeded, skip: () => void): Promise<Response> {
+  const since = await missedEdit(env, seeded, skip);
+  const response = await getBoardChanges(env, sam, "big", new URL(`http://x/api/boards/big/changes?since=${since}`));
+  const read = (await response.clone().json()) as { whole: boolean; tasks?: unknown[] };
+  if (read.whole || read.tasks?.length !== 1) return new Response("the changes since the edit weren't the edit", { status: 500 });
+  return response;
+}
+
+/**
+ * What a tab on a board reads when its socket comes back (COPL-209), having
+ * missed an edit meanwhile: what changed on its board since the version it
+ * holds (COPL-210), and the boards list. Before COPL-210 the board whole;
+ * before COPL-209, every query the tab held, once a reconnect; now once a
+ * window at most, however often the network drops (lib/liveWindow.ts).
+ */
+async function reconnect(env: Env, seeded: Seeded, skip: () => void): Promise<Response> {
+  const since = await missedEdit(env, seeded, skip);
+  await getBoardChanges(env, sam, "big", new URL(`http://x/api/boards/big/changes?since=${since}`));
   return getBoards(env, sam);
 }
 
@@ -448,11 +476,12 @@ const ROUTES: Record<string, (env: Env, seeded: Seeded, skip: () => void) => Pro
   "GET /api/tasks/mine": (env) => getMyWork(env, sam),
   "GET /api/messages/recipients": (env) => getRecipients(env, sam),
   "GET /api/tokens": (env) => getTokens(env, sam),
-  "live: a reconnect": reconnect,
   "live: one task edit, heard": taskEditHeard,
   "live: a burst of edits, heard": burstHeard,
   "inbox: one task opened": openedFromInbox,
   "live: a changed-files report, heard": reportHeard,
+  "GET /api/boards/:id/changes": changesSince,
+  "live: a reconnect": reconnect,
   "box: one task edit, heard": boxEditHeard,
 };
 

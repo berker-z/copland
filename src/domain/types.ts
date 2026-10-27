@@ -336,6 +336,25 @@ export interface BoardDetail {
  */
 export type BoardShell = Pick<BoardDetail, "board" | "members" | "stages" | "labels" | "repos" | "version">;
 
+/**
+ * GET /api/boards/:id/changes?since=: what changed on a board after the
+ * version a tab holds (COPL-210), so a tab that fell behind patches rather
+ * than reading the board whole. `whole` when the board can't say (more than
+ * its tasks changed, or `since` is further back than it keeps): then the
+ * tab reads the board whole.
+ */
+export type BoardChanges =
+  | { whole: true; version: number }
+  | {
+      whole: false;
+      /** boards.version when this was read. */
+      version: number;
+      /** Each task whose row changed since, as GET /api/tasks/:id reads it (a parent with its progress). */
+      tasks: TaskRead[];
+      /** Tasks that changed since and are gone: deleted, or moved to another board. */
+      gone: string[];
+    };
+
 /** GET /api/boards/:id/closed: a board's tasks closed longer ago than RECENT_CLOSED_DAYS, newest first, a page at a time. */
 export interface ClosedPage {
   tasks: Task[];

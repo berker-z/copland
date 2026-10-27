@@ -16,20 +16,22 @@
    editor, below everything here that needs an owner.
    ========================================================================== */
 
-import { BOARD_ROLES, type BoardDetail, type BoardRole, type BoardShell, type Person, type Viewer } from "@/domain/types";
+import { CHANGES_LIMIT } from "@/domain/live";
+import { BOARD_ROLES, type BoardChanges, type BoardDetail, type BoardRole, type BoardShell, type Person, type Viewer } from "@/domain/types";
 import { boardSummariesFor, requireBoard, requirePerson } from "../access";
 import type { Env } from "../env";
 import { badRequest, conflict, forbidden, json, notFound, nowIso, readJson } from "../http";
 import type { Changes } from "../live";
 import {
   boardAudience,
+  changedSince,
   createBoardStatements,
   listMembers,
   uniqueBoardKey,
 } from "../repo/boards";
 import { boardNotes, listDocs } from "../repo/docs";
 import { listRepos } from "../repo/github";
-import { boardTasks, CLOSED_PAGE, closedTasks, listLabels, listStages } from "../repo/tasks";
+import { boardTasks, boardTasksIn, CLOSED_PAGE, closedTasks, listLabels, listStages } from "../repo/tasks";
 import { avatarUrl, findUserByEmail, findUserById, type UserRow } from "../repo/users";
 import { createInvite } from "./admin";
 import { ownerOf } from "./agents";
@@ -83,6 +85,25 @@ export async function getBoardShell(env: Env, viewer: Viewer, id: string): Promi
   ]);
   const shell: BoardShell = { board, members, stages, labels, repos, version };
   return json(shell);
+}
+
+/**
+ * GET /api/boards/:id/changes?since=: what changed after the version a tab
+ * holds (BoardChanges, COPL-210), from the board's change log
+ * (repo/boards.ts changedSince): the tasks named since, read as the board
+ * read has them, and those gone. Whole when the log can't say, or when more
+ * than CHANGES_LIMIT tasks changed. The version comes with the access
+ * check, before the log and the tasks, as in getBoard.
+ */
+export async function getBoardChanges(env: Env, viewer: Viewer, id: string, url: URL): Promise<Response> {
+  const { version } = await requireBoard(env.DB, viewer, id);
+  const since = Number(url.searchParams.get("since") ?? NaN);
+  if (!Number.isInteger(since) || since < 0) throw badRequest("`since` must be a board version: a whole number, 0 or more");
+  const ids = await changedSince(env.DB, id, since, version);
+  if (!ids || ids.length > CHANGES_LIMIT) return json({ whole: true, version } satisfies BoardChanges);
+  const { tasks, progress, gone } = await boardTasksIn(env.DB, id, ids);
+  const out: BoardChanges = { whole: false, version, tasks: tasks.map((t) => (progress[t.id] ? { ...t, progress: progress[t.id] } : t)), gone };
+  return json(out);
 }
 
 /**

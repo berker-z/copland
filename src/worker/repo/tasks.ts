@@ -291,6 +291,31 @@ export async function boardTasks(
   return { tasks, progress, olderClosed: older !== null };
 }
 
+/**
+ * These tasks as a board's read has them (GET /api/boards/:id/changes,
+ * COPL-210): those still live on the board, with their parents' progress,
+ * and `gone` the rest (deleted, or on another board now). Overlap is the
+ * board's to work out, not theirs: it stays empty.
+ */
+export async function boardTasksIn(
+  db: D1Database,
+  boardId: string,
+  ids: string[],
+): Promise<{ tasks: Task[]; progress: Record<string, ParentProgress>; gone: string[] }> {
+  if (ids.length === 0) return { tasks: [], progress: {}, gone: [] };
+  const { results } = await db
+    /* From the ids, by primary key: left to itself the planner walks the board's every task (tasks_board). */
+    .prepare(
+      `SELECT t.*, b.key AS board_key FROM json_each(?1) j CROSS JOIN tasks t ON t.id = j.value JOIN boards b ON b.id = t.board_id
+        WHERE t.board_id = ?2 AND t.deleted_at IS NULL`,
+    )
+    .bind(JSON.stringify(ids), boardId)
+    .all<TaskRow>();
+  const [tasks, progress] = await Promise.all([hydrate(db, results, false), progressFor(db, results.map((r) => r.id))]);
+  const found = new Set(results.map((r) => r.id));
+  return { tasks, progress, gone: ids.filter((id) => !found.has(id)) };
+}
+
 /** The most a page of closedTasks holds. */
 export const CLOSED_PAGE = 100;
 
