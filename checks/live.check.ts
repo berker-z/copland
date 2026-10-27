@@ -3,10 +3,14 @@
    ----------------------------------------------------------------------------
    Run: npm run check. Drives it with a fake socket, page, query client and
    clock: a drop refetches once, a hidden tab lets go of its socket and stays
-   quiet, and showing it again catches up once.
+   quiet, and showing it again catches up once. And the window a tab's live
+   events and catch-ups go through (src/lib/liveWindow.ts): a burst is a
+   read or two, not one per event, and a flapping network reads a board at
+   most once a window.
    ========================================================================== */
 
 import { listen, type LivePage, type LiveSocket } from "../src/lib/liveSocket.ts";
+import { catchUpLanes, lanes, QUICK_MS, READ_EVERY_MS } from "../src/lib/liveWindow.ts";
 
 const cases: Array<[string, boolean]> = [];
 const t = (name: string, pass: boolean) => cases.push([name, pass]);
@@ -61,7 +65,7 @@ class FakeSocket implements LiveSocket {
   }
 }
 
-function setup(startHidden = false) {
+function setup(startHidden = false, catchUp?: () => void) {
   const log: string[] = [];
   const sockets: FakeSocket[] = [];
   const listeners = new Map<string, () => void>();
@@ -86,9 +90,13 @@ function setup(startHidden = false) {
     setLive: (v) => (state.live = v),
     setCatchingUp: (v) => (state.catchingUp = v),
     message: (data) => log.push(`message ${data}`),
+    catchUp: () => {
+      log.push("catchup");
+      catchUp?.();
+    },
   };
   const stop = listen(client as never, page);
-  const fetches = () => log.filter((x) => x === "invalidate" || x === "refetch").length;
+  const fetches = () => log.filter((x) => x === "invalidate" || x === "refetch" || x === "catchup").length;
   const fire = (event: string) => listeners.get(event)?.();
   const setHidden = (hidden: boolean) => {
     state.hidden = hidden;
@@ -134,7 +142,7 @@ function setup(startHidden = false) {
   t("a failed attempt fetches nothing either", s.fetches() === 0 && s.sockets.length === 3);
   s.last().accept();
   t("back: live", s.state.live);
-  t("back: one refetch of everything", s.fetches() === 1 && s.log.includes("invalidate"));
+  t("back: one catch-up of what's on screen", s.fetches() === 1 && s.log.includes("catchup"));
   s.stop();
 }
 
@@ -203,6 +211,80 @@ function setup(startHidden = false) {
   s.last().accept();
   t("opened hidden, then shown: one catch-up", s.fetches() === 1);
   s.stop();
+}
+
+/* The window (liveWindow.ts): each lane acts at most once in READ_EVERY_MS, trailing, dropping nothing. */
+{
+  const rounds: Array<[string, number[], number]> = [];
+  const l = lanes<number>((lane, items) => rounds.push([lane, items, now]), { now: () => now });
+  const start = now;
+  /* Twenty events on one board over four seconds, as a few busy agent runs send. */
+  for (let i = 0; i < 20; i++) {
+    l.add("b", [i]);
+    advance(200);
+  }
+  advance(READ_EVERY_MS * 2);
+  const b = rounds.filter(([lane]) => lane === "b");
+  t("a burst: the first round after a moment for the rest of it", b[0]?.[2] === start + QUICK_MS);
+  t("a burst over four seconds: two rounds, not twenty", b.length === 2);
+  t("a burst: the second round waits for the window's end", b[1]?.[2] === b[0][2] + READ_EVERY_MS);
+  t("a burst: nothing dropped, nothing twice", b.flatMap(([, items]) => items).join() === [...Array(20).keys()].join());
+
+  /* A steady stream for a minute: one round a window, give or take the first. */
+  rounds.length = 0;
+  for (let i = 0; i < 600; i++) {
+    l.add("b", [i]);
+    advance(100);
+  }
+  advance(READ_EVERY_MS * 2);
+  t("a minute of events every 100 ms: a round every window", rounds.length <= 60_000 / READ_EVERY_MS + 1);
+  t("every round at least a window apart", rounds.every(([, , at], i) => i === 0 || at - rounds[i - 1][2] >= READ_EVERY_MS));
+
+  /* A burst that comes after a quiet window: one round. */
+  rounds.length = 0;
+  advance(READ_EVERY_MS * 3);
+  for (let i = 0; i < 5; i++) l.add("b", [i]);
+  advance(READ_EVERY_MS * 2);
+  t("a burst after a quiet spell: one round", rounds.length === 1 && rounds[0][1].length === 5);
+
+  /* Boards are lanes of their own. */
+  rounds.length = 0;
+  l.add("b", [1]);
+  l.add("c", [2]);
+  advance(QUICK_MS);
+  t("two boards: a round each, neither waits for the other", rounds.map(([lane]) => lane).sort().join() === "b,c");
+  l.add("b", [3]);
+  l.stop();
+  advance(READ_EVERY_MS * 2);
+  t("stopped: the round still due doesn't run", rounds.length === 2 && timers.size === 0);
+}
+
+/* What a catch-up reads, by lane: the boards on screen, and what reads across them. */
+{
+  const on = catchUpLanes([["board", "b1"], ["board", "b1", "overlap", "x"], ["board", "b2", "task", "B2-1"], ["board", "~mine"], ["inbox"], ["comments", "t"]]);
+  t("catch-up: each board on screen once", on.boards.sort().join() === "b1,b2");
+  t("catch-up: what reads across boards is a lane of its own", on.across);
+  t("catch-up: nothing across boards on screen, no across lane", !catchUpLanes([["board", "b1"], ["settings"]]).across);
+}
+
+/* A flapping network: every reconnect catches up, but a board is read at most once a window. */
+{
+  const reads: number[] = [];
+  const l = lanes<string>(() => reads.push(now), { now: () => now });
+  const s = setup(false, () => l.add("b", ["whole"]));
+  s.last().accept();
+  const start = now;
+  for (let i = 0; i < 6; i++) {
+    s.last().drop();
+    advance(1000);
+    s.last().accept();
+  }
+  advance(READ_EVERY_MS * 2);
+  t("flapping: a catch-up each time the socket is back", s.log.filter((x) => x === "catchup").length === 6);
+  t("flapping for six seconds: the board read twice at most, not six times", reads.length <= 2 && reads.length >= 1);
+  t("flapping: the last catch-up is still read, at the window's end", reads[reads.length - 1] >= start + 5000);
+  s.stop();
+  l.stop();
 }
 
 let failed = 0;

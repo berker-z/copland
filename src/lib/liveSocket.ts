@@ -4,8 +4,11 @@
    ----------------------------------------------------------------------------
    A visible tab keeps one socket open. While it is up the fallback polls
    stand down. When it drops, the polls come back, it reconnects with
-   backoff, and once it is open again everything on screen is refetched,
-   once: whatever changed meanwhile was never sent to us.
+   backoff, and once it is open again what's on screen is caught up, once:
+   whatever changed meanwhile was never sent to us. Catching up is the
+   page's (catchUp), which in lib/live.ts goes through the same per-board
+   window as live events (lib/liveWindow.ts), so a network that keeps
+   dropping doesn't read each board on every reconnect.
 
    A hidden tab lets go of its socket (Chromium wakes a background tab about
    once a minute and the socket dies each time anyway). It marks everything
@@ -39,6 +42,8 @@ export interface LivePage {
   setLive(value: boolean): void;
   setCatchingUp(value: boolean): void;
   message(data: string): void;
+  /** Refetch what's on screen: something may have changed that was never sent. */
+  catchUp(): void;
 }
 
 const OPEN = 1;
@@ -80,11 +85,11 @@ export function listen(queryClient: QueryClient, page: LivePage): () => void {
       attempts = 0;
       page.setLive(true);
       owed = false;
+      rereadPolls(queryClient);
       if (behind) {
         behind = false;
-        /* Refetching also re-reads the polls' interval, which stands them down. */
-        void queryClient.invalidateQueries();
-      } else rereadPolls(queryClient);
+        page.catchUp();
+      }
       ping = setInterval(() => ws.readyState === OPEN && ws.send("ping"), PING_MS);
     };
 
@@ -101,7 +106,7 @@ export function listen(queryClient: QueryClient, page: LivePage): () => void {
       down();
       if (owed) {
         owed = false;
-        void queryClient.refetchQueries({ type: "active" });
+        page.catchUp();
       }
       if (stopped) return;
       const delay = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** attempts) * (0.5 + Math.random() / 2);
