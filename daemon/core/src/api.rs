@@ -581,12 +581,29 @@ fn finish_body(ending: Ending, reason: Option<&str>, usage: Option<&Usage>) -> s
     body
 }
 
-/// What `POST /api/runs` is sent: the client, and the machine the run starts on (COPL-179) when
-/// there is a name for it.
-fn start_run_body(client: &str, host: Option<&str>) -> serde_json::Value {
+/// The runtime account a run starts on, as Copland counts it (COPL-234): `account` is the hash
+/// `Account::shared` makes, `cap` this daemon's `max_runs_per_account`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OnAccount<'a> {
+    pub account: &'a str,
+    pub cap: usize,
+}
+
+/// Why `POST /api/runs` refuses a run whose account is at its cap (`RUN_START_REFUSALS` in
+/// `src/domain/runs.ts`): the owner's live runs on it, from any machine, are at `account_cap`.
+pub const ACCOUNT_FULL: &str = "account_full";
+
+/// What `POST /api/runs` is sent: the client, the machine the run starts on (COPL-179) when
+/// there is a name for it, and its runtime account with this daemon's cap when it is one to share
+/// across machines (COPL-234).
+fn start_run_body(client: &str, host: Option<&str>, on: Option<OnAccount<'_>>) -> serde_json::Value {
     let mut body = json!({ "client": client });
     if let Some(h) = host {
         body["host"] = json!(h);
+    }
+    if let Some(on) = on {
+        body["account"] = json!(on.account);
+        body["account_cap"] = json!(on.cap);
     }
     body
 }
@@ -946,12 +963,19 @@ impl Api {
         .map(|d| d.tasks)
     }
 
-    /// Start a run with the agent's own token.
-    pub async fn start_run(&self, token: &Secret, client: &str, host: Option<&str>) -> ApiResult<StartedRun> {
+    /// Start a run with the agent's own token. With an account, refused with `ACCOUNT_FULL` while
+    /// its runs going at once, across the owner's machines, are at the cap.
+    pub async fn start_run(
+        &self,
+        token: &Secret,
+        client: &str,
+        host: Option<&str>,
+        on: Option<OnAccount<'_>>,
+    ) -> ApiResult<StartedRun> {
         self.send(
             self.http
                 .post(self.url("/api/runs"))
-                .json(&start_run_body(client, host)),
+                .json(&start_run_body(client, host, on)),
             token,
         )
         .await
@@ -1078,13 +1102,31 @@ mod tests {
     #[test]
     fn a_run_is_started_naming_its_host_when_there_is_one() {
         assert_eq!(
-            start_run_body("copland-daemon", Some("laptop")),
+            start_run_body("copland-daemon", Some("laptop"), None),
             json!({ "client": "copland-daemon", "host": "laptop" })
         );
         assert_eq!(
-            start_run_body("copland-daemon", None),
+            start_run_body("copland-daemon", None, None),
             json!({ "client": "copland-daemon" })
         );
+    }
+
+    /// COPL-234: the account and the cap go together, named as the route reads them.
+    #[test]
+    fn a_run_is_started_on_its_account_with_the_cap() {
+        let on = OnAccount {
+            account: "3f2a91c04d5e6b7a",
+            cap: 3,
+        };
+        assert_eq!(
+            start_run_body("copland-daemon", Some("laptop"), Some(on)),
+            json!({ "client": "copland-daemon", "host": "laptop", "account": "3f2a91c04d5e6b7a", "account_cap": 3 })
+        );
+        let route = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/worker/routes/runs.ts")).unwrap();
+        assert!(route.contains("body.account") && route.contains("body.account_cap"));
+        let runs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/domain/runs.ts")).unwrap();
+        assert!(runs.contains(&format!("RUN_START_REFUSALS = [\"{ACCOUNT_FULL}\"]")));
+        assert!(runs.contains("export const ACCOUNT_CAP_MAX = 100;"));
     }
 
     #[test]

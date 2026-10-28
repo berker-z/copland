@@ -2,7 +2,7 @@
    Runs and claims (migrations/0015_runs_claims.sql, 0018_interactive_runs.sql,
    docs/AGENT-IDENTITIES.md).
    ----------------------------------------------------------------------------
-     POST   /api/runs               { client?, host? } → { run, secret }
+     POST   /api/runs               { client?, host?, account?, account_cap? } → { run, secret }
      GET    /api/runs/current       { run: { id, short, kind } | null }: this credential's run
      POST   /api/runs/current/news  { run, items }: what came in on its claimed tasks since it was last told
      GET    /api/runs/:id           the run, with what it has claimed
@@ -86,15 +86,20 @@
 import { clientLabel } from "@/domain/clients";
 import { parseHostname } from "@/domain/hosts";
 import {
+  ACCOUNT_CAP_MAX,
+  parseRunAccount,
   RUN_ENDINGS,
+  RUN_LEASE_MS,
   RUN_REASON_MAX,
   runReason,
   runUsage,
+  shortAccount,
   shortRunId,
   type ClaimRefusal,
   type MessageClaimRefusal,
   type RunEnding,
   type RunKind,
+  type RunStartRefusal,
 } from "@/domain/runs";
 import type { MessageClaimed, RunNews, RunNewsItem, RunUsage, StartedRun, TaskClaim, Viewer } from "@/domain/types";
 import { personOf } from "../access";
@@ -176,9 +181,24 @@ export async function postRunNews(env: Env, viewer: Viewer): Promise<Response> {
 }
 
 /**
- * POST /api/runs { client?, host? }: a new run of the token's principal, and
- * its secret, once. `host` is the machine its launcher starts it on
- * (COPL-135), a hostname as PUT /api/hosts/self takes it, shown on the run.
+ * The live runs on an account of an owner, given the numbers of the
+ * statement's parameters for them: the owner's own runs and their agents',
+ * running and heard from within the lease (COPL-234). An account is one
+ * person's, so nobody else's runs count.
+ */
+const accountRuns = (account: number, since: number, owner: number) => `runs r JOIN users u ON u.id = r.user_id
+   WHERE r.account = ?${account} AND r.status = 'running' AND r.kind = 'supervised' AND r.last_seen_at > ?${since}
+     AND coalesce(u.owner_id, u.id) = ?${owner}`;
+
+/**
+ * POST /api/runs { client?, host?, account?, account_cap? }: a new run of
+ * the token's principal, and its secret, once. `host` is the machine its
+ * launcher starts it on (COPL-135), a hostname as PUT /api/hosts/self takes
+ * it, shown on the run. `account` is the runtime account it runs on, as the
+ * daemon hashed it (COPL-234), and `account_cap` the most runs the daemon
+ * lets go at once on it: with a cap, the run is refused (409 account_full,
+ * saying how many are going and where) while the owner's live runs on that
+ * account, across the person and all their agents and machines, are at it.
  */
 export async function postRun(request: Request, env: Env, viewer: Viewer, changes: Changes): Promise<Response> {
   const access = viewer.access;
@@ -193,11 +213,37 @@ export async function postRun(request: Request, env: Env, viewer: Viewer, change
   if (host === null && body.host !== undefined && body.host !== null) {
     throw badRequest("`host` must be a hostname: 1 to 253 of letters, digits, `.`, `-` and `_`, starting with a letter or digit");
   }
+  const account = body.account === undefined || body.account === null ? null : parseRunAccount(body.account);
+  if (account === null && body.account !== undefined && body.account !== null) {
+    throw badRequest("`account` must be 1 to 64 of letters, digits, `:`, `.`, `_` and `-`, starting with a letter or digit");
+  }
+  const cap = body.account_cap ?? null;
+  if (cap !== null && (typeof cap !== "number" || !Number.isInteger(cap) || cap < 1 || cap > ACCOUNT_CAP_MAX)) {
+    throw badRequest(`\`account_cap\` must be a whole number from 1 to ${ACCOUNT_CAP_MAX}`);
+  }
+  if (cap !== null && account === null) throw badRequest("`account_cap` caps an `account`; send the account with it");
   const { secret, hash } = await mint(RUN_PREFIX);
   const id = crypto.randomUUID();
-  await env.DB.prepare(`INSERT INTO runs (id, user_id, token_id, token_hash, client, host) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`)
-    .bind(id, viewer.user.id, access.tokenId, hash, client, host)
+  const live = new Date(Date.now() - RUN_LEASE_MS).toISOString();
+  const owner = personOf(viewer);
+  /* The count and the insert are one statement, so two daemons racing for the last slot can't both get it. */
+  const inserted = await env.DB.prepare(
+    `INSERT INTO runs (id, user_id, token_id, token_hash, client, host, account)
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+      WHERE ?8 IS NULL OR (SELECT count(*) FROM ${accountRuns(7, 9, 10)}) < ?8`,
+  )
+    .bind(id, viewer.user.id, access.tokenId, hash, client, host, account, cap, live, owner)
     .run();
+  if (!inserted.meta.changes) {
+    const { results } = await env.DB.prepare(`SELECT r.host FROM ${accountRuns(1, 2, 3)}`)
+      .bind(account, live, owner)
+      .all<{ host: string | null }>();
+    const hosts = [...new Set(results.map((r) => r.host ?? "a host it didn't name"))];
+    throw conflict(
+      `${results.length} run${results.length === 1 ? "" : "s"} going on account ${shortAccount(account!)} (${hosts.join(", ") || "none named"}), at its cap of ${cap}; start it once one ends`,
+      "account_full" satisfies RunStartRefusal,
+    );
+  }
   /* An agent's runs show on its owner's settings page. */
   if (viewer.agent) changes.notify([personOf(viewer)], "agents");
   const run = await findRun(env.DB, id);

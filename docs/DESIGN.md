@@ -253,7 +253,9 @@ The daemon's window keeps a copy of the table in `daemon/box/src/theme.rs`; add 
   `text-faint` and the status in a hue:
   running `text-ink`, stale `text-yellow`, failed `text-red`, completed
   `text-muted`, cancelled `text-faint`, and `at laptop` in `text-muted`
-  for the host its launcher started it on. A card's claim doesn't name
+  for the host its launcher started it on, then `on account 3f2a91` in
+  `text-faint` for the runtime account it ran on (COPL-234), only ever
+  the short hash. A card's claim doesn't name
   the host: where an agent runs is its owner's to know, and a card is
   every board member's.
 - An agent's settings page (COPL-182) has a `hosts` group above its runs:

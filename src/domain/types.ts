@@ -578,6 +578,8 @@ export interface Run {
   claims: string[];
   /** The hostname its launcher started it on (COPL-135), when it said. */
   host: string | null;
+  /** The runtime account it ran on (COPL-234), in short ("3f2a91"), when its launcher said. */
+  account: string | null;
   /** The key of the first task it claimed, whose cost it counts toward (COPL-71), or null. */
   task: string | null;
   /** What it cost, as its launcher reported with its finish (COPL-71), or null when nobody did. */
